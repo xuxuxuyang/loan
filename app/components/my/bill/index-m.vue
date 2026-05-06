@@ -14,8 +14,6 @@ const billItems = computed(() => [
   { label: '可用额度', value: `￥${billSummary.value.availableQuota.toFixed(2)}` },
   { label: '账单日', value: billSummary.value.billDate },
 ])
-let syncTimer: ReturnType<typeof setInterval> | null = null
-
 async function goBack() {
   await smartNavigate('/my')
 }
@@ -23,6 +21,18 @@ async function goBack() {
 function displayAmount(amount: number) {
   const abs = Math.abs(amount).toFixed(2)
   return `${amount >= 0 ? '+' : '-'}￥${abs}`
+}
+
+function billStatusClass(status: string) {
+  return status === '待还款'
+    ? 'border-[#f4c66a] bg-[#fff7e8] text-[#b7791f]'
+    : 'border-[#9fd8b9] bg-[#edf9f1] text-[#1f8a4c]'
+}
+
+function billStatusDotClass(status: string) {
+  return status === '待还款'
+    ? 'bg-[#f59e0b]'
+    : 'bg-[#22a35a]'
 }
 
 function extractOrderId(title: string) {
@@ -84,37 +94,17 @@ const groupedBills = computed(() => {
     .sort((a, b) => String(b.latestTime).localeCompare(String(a.latestTime)))
 })
 
-async function syncBillsOnce() {
-  if (!currentUserAccount.value) {
-    billList.value = []
-    return
-  }
-  await fetchBills(currentUserAccount.value)
-}
-
 watch(currentUserAccount, async (account) => {
   if (!account) {
     billList.value = []
     return
   }
   await fetchBills(account)
-})
+}, { immediate: true })
 
 if (import.meta.client) {
   onMounted(() => {
-    void syncFromStorage().then(async () => {
-      await syncBillsOnce()
-    })
-    syncTimer = setInterval(() => {
-      void syncBillsOnce()
-    }, 3000)
-  })
-
-  onBeforeUnmount(() => {
-    if (syncTimer) {
-      clearInterval(syncTimer)
-      syncTimer = null
-    }
+    void syncFromStorage()
   })
 }
 </script>
@@ -194,7 +184,16 @@ if (import.meta.client) {
               </div>
               <div class="flex items-center justify-between text-xs text-black/45">
                 <span>{{ record.time }}</span>
-                <span>{{ record.status }}</span>
+                <span
+                  class="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium leading-none"
+                  :class="billStatusClass(record.status)"
+                >
+                  <span
+                    class="h-1.5 w-1.5 rounded-full"
+                    :class="billStatusDotClass(record.status)"
+                  />
+                  {{ record.status }}
+                </span>
               </div>
             </div>
           </div>

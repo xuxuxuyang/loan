@@ -29,10 +29,10 @@ const statusStyleMap: Record<MallOrderStatus, { color: string, backgroundColor: 
 
 const statusTabs: Array<{ key: 'all' | MallOrderStatus, label: string }> = [
   { key: 'all', label: '全部' },
-  { key: 'reviewing', label: '审核中' },
+  { key: 'reviewing', label: '待审核' },
   { key: 'shipping', label: '待发货' },
   { key: 'receiving', label: '待收货' },
-  { key: 'enjoying', label: '享用中' },
+  { key: 'enjoying', label: '已收货' },
 ]
 
 const activeStatus = computed<'all' | MallOrderStatus>(() => {
@@ -79,7 +79,19 @@ async function changeStatus(status: 'all' | MallOrderStatus) {
   })
 }
 
-function getStatusStyle(status: MallOrderStatus, paid: boolean) {
+function getStatusStyle(status: MallOrderStatus, paid: boolean, payType: 'installment' | 'full', riskStatus?: 'passed' | 'failed') {
+  if (status === 'reviewing' && payType === 'installment' && riskStatus === 'failed') {
+    return {
+      color: '#c62f2f',
+      backgroundColor: '#ffecec',
+    }
+  }
+  if (status === 'reviewing' && payType === 'installment') {
+    return {
+      color: '#bd6a00',
+      backgroundColor: '#fff4e5',
+    }
+  }
   if (status === 'reviewing' && !paid) {
     return {
       color: '#bd6a00',
@@ -89,15 +101,21 @@ function getStatusStyle(status: MallOrderStatus, paid: boolean) {
   return statusStyleMap[status] || statusStyleMap.reviewing
 }
 
-function getStatusLabel(status: MallOrderStatus, paid: boolean) {
+function getStatusLabel(status: MallOrderStatus, paid: boolean, payType: 'installment' | 'full', riskStatus?: 'passed' | 'failed') {
+  if (status === 'reviewing' && payType === 'installment' && riskStatus === 'failed') {
+    return '审核未通过'
+  }
+  if (status === 'reviewing' && payType === 'installment') {
+    return '待审核'
+  }
   if (status === 'reviewing' && !paid) {
     return '待支付'
   }
   const labelMap: Record<MallOrderStatus, string> = {
-    reviewing: '审核中',
+    reviewing: '待审核',
     shipping: '待发货',
     receiving: '待收货',
-    enjoying: '享用中',
+    enjoying: '已收货',
   }
   return labelMap[status]
 }
@@ -149,9 +167,9 @@ function getStatusLabel(status: MallOrderStatus, paid: boolean) {
             </p>
             <span
               class="shrink-0 rounded-full px-2.5 py-0.5 text-xs font-semibold leading-5"
-              :style="getStatusStyle(item.status, item.paid)"
+              :style="getStatusStyle(item.status, item.paid, item.payType, item.riskStatus)"
             >
-              {{ getStatusLabel(item.status, item.paid) }}
+              {{ getStatusLabel(item.status, item.paid, item.payType, item.riskStatus) }}
             </span>
           </div>
           <p class="mb-1 text-lg leading-[1.45] text-black/60">

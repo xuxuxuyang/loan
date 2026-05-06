@@ -63,129 +63,203 @@
   ],
   "orders": [
     {
-      "id": "OD1778054951570",
-      "productId": 4,
-      "name": "行书书法定制",
-      "spec": "名家手写，支持题字落款",
-      "totalAmount": 1210,
-      "createdAt": "2026-05-06T08:09:11.570Z",
-      "status": "shipping",
-      "paid": true,
+      "id": "OD1778081954377",
+      "productId": 1,
+      "name": "三亚海岛自由行",
+      "spec": "五星海景酒店，往返机票",
+      "totalAmount": 15832,
+      "createdAt": "2026-05-06T15:39:14.377Z",
+      "status": "reviewing",
+      "paid": false,
       "payType": "installment",
-      "payChannel": "card",
+      "installmentPeriods": 12,
+      "payChannel": "wechat",
       "receiverName": "商城管理员",
       "receiverPhone": "19900000000",
       "receiverAddress": "广东省广州市天河区珠江新城（测试定位）",
+      "riskStatus": "passed",
+      "riskReason": "",
+      "riskCheckedAt": "2026-05-06T15:39:14.499Z",
       "installmentPlan": [
         {
           "period": 1,
           "dueDate": "2026-06-06",
-          "principal": 100.83,
-          "fee": 2.02,
-          "amount": 102.85,
-          "paid": true
+          "principal": 1319.33,
+          "fee": 26.39,
+          "amount": 1345.72,
+          "paid": false
         },
         {
           "period": 2,
           "dueDate": "2026-07-06",
-          "principal": 100.83,
-          "fee": 2.02,
-          "amount": 102.85,
+          "principal": 1319.33,
+          "fee": 26.39,
+          "amount": 1345.72,
           "paid": false
         },
         {
           "period": 3,
           "dueDate": "2026-08-06",
-          "principal": 100.83,
-          "fee": 2.02,
-          "amount": 102.85,
+          "principal": 1319.33,
+          "fee": 26.39,
+          "amount": 1345.72,
           "paid": false
         },
         {
           "period": 4,
           "dueDate": "2026-09-06",
-          "principal": 100.83,
-          "fee": 2.02,
-          "amount": 102.85,
+          "principal": 1319.33,
+          "fee": 26.39,
+          "amount": 1345.72,
           "paid": false
         },
         {
           "period": 5,
           "dueDate": "2026-10-06",
-          "principal": 100.83,
-          "fee": 2.02,
-          "amount": 102.85,
+          "principal": 1319.33,
+          "fee": 26.39,
+          "amount": 1345.72,
           "paid": false
         },
         {
           "period": 6,
           "dueDate": "2026-11-06",
-          "principal": 100.83,
-          "fee": 2.02,
-          "amount": 102.85,
+          "principal": 1319.33,
+          "fee": 26.39,
+          "amount": 1345.72,
           "paid": false
         },
         {
           "period": 7,
           "dueDate": "2026-12-06",
-          "principal": 100.83,
-          "fee": 2.02,
-          "amount": 102.85,
+          "principal": 1319.33,
+          "fee": 26.39,
+          "amount": 1345.72,
           "paid": false
         },
         {
           "period": 8,
           "dueDate": "2027-01-06",
-          "principal": 100.83,
-          "fee": 2.02,
-          "amount": 102.85,
+          "principal": 1319.33,
+          "fee": 26.39,
+          "amount": 1345.72,
           "paid": false
         },
         {
           "period": 9,
           "dueDate": "2027-02-06",
-          "principal": 100.83,
-          "fee": 2.02,
-          "amount": 102.85,
+          "principal": 1319.33,
+          "fee": 26.39,
+          "amount": 1345.72,
           "paid": false
         },
         {
           "period": 10,
           "dueDate": "2027-03-06",
-          "principal": 100.83,
-          "fee": 2.02,
-          "amount": 102.85,
+          "principal": 1319.33,
+          "fee": 26.39,
+          "amount": 1345.72,
           "paid": false
         },
         {
           "period": 11,
           "dueDate": "2027-04-06",
-          "principal": 100.83,
-          "fee": 2.02,
-          "amount": 102.85,
+          "principal": 1319.33,
+          "fee": 26.39,
+          "amount": 1345.72,
           "paid": false
         },
         {
           "period": 12,
           "dueDate": "2027-05-06",
-          "principal": 100.83,
-          "fee": 2.02,
-          "amount": 102.85,
+          "principal": 1319.33,
+          "fee": 26.39,
+          "amount": 1345.72,
           "paid": false
         }
       ]
     },
     {
-      "id": "OD1778050278216",
+      "id": "OD1778077469981",
       "productId": 3,
       "name": "日本关西深度游",
       "spec": "大阪+京都+奈良，中文导览",
-      "totalAmount": 11272,
-      "createdAt": "2026-05-06T06:51:18.216Z",
-      "status": "shipping",
+      "totalAmount": 5592,
+      "createdAt": "2026-05-06T14:24:29.981Z",
+      "status": "reviewing",
       "paid": false,
       "payType": "installment",
-      "payChannel": "card",
+      "installmentPeriods": 6,
+      "payChannel": "wechat",
+      "receiverName": "商城管理员",
+      "receiverPhone": "19900000000",
+      "receiverAddress": "广东省广州市天河区珠江新城（测试定位）",
+      "riskStatus": "passed",
+      "riskReason": "",
+      "riskCheckedAt": "2026-05-06T14:24:30.115Z",
+      "installmentPlan": [
+        {
+          "period": 1,
+          "dueDate": "2026-06-06",
+          "principal": 932,
+          "fee": 18.64,
+          "amount": 950.64,
+          "paid": false
+        },
+        {
+          "period": 2,
+          "dueDate": "2026-07-06",
+          "principal": 932,
+          "fee": 18.64,
+          "amount": 950.64,
+          "paid": false
+        },
+        {
+          "period": 3,
+          "dueDate": "2026-08-06",
+          "principal": 932,
+          "fee": 18.64,
+          "amount": 950.64,
+          "paid": false
+        },
+        {
+          "period": 4,
+          "dueDate": "2026-09-06",
+          "principal": 932,
+          "fee": 18.64,
+          "amount": 950.64,
+          "paid": false
+        },
+        {
+          "period": 5,
+          "dueDate": "2026-10-06",
+          "principal": 932,
+          "fee": 18.64,
+          "amount": 950.64,
+          "paid": false
+        },
+        {
+          "period": 6,
+          "dueDate": "2026-11-06",
+          "principal": 932,
+          "fee": 18.64,
+          "amount": 950.64,
+          "paid": false
+        }
+      ]
+    },
+    {
+      "id": "OD1778076705333",
+      "productId": 1,
+      "name": "三亚海岛自由行",
+      "spec": "五星海景酒店，往返机票",
+      "totalAmount": 3892,
+      "createdAt": "2026-05-06T14:11:45.333Z",
+      "status": "reviewing",
+      "paid": false,
+      "payType": "installment",
+      "installmentPeriods": 3,
+      "payChannel": "wechat",
       "receiverName": "商城管理员",
       "receiverPhone": "19900000000",
       "receiverAddress": "广东省广州市天河区珠江新城（测试定位）",
@@ -193,105 +267,35 @@
         {
           "period": 1,
           "dueDate": "2026-06-06",
-          "principal": 939.33,
-          "fee": 18.79,
-          "amount": 958.12,
+          "principal": 1297.33,
+          "fee": 25.95,
+          "amount": 1323.28,
           "paid": false
         },
         {
           "period": 2,
           "dueDate": "2026-07-06",
-          "principal": 939.33,
-          "fee": 18.79,
-          "amount": 958.12,
+          "principal": 1297.33,
+          "fee": 25.95,
+          "amount": 1323.28,
           "paid": false
         },
         {
           "period": 3,
           "dueDate": "2026-08-06",
-          "principal": 939.33,
-          "fee": 18.79,
-          "amount": 958.12,
-          "paid": false
-        },
-        {
-          "period": 4,
-          "dueDate": "2026-09-06",
-          "principal": 939.33,
-          "fee": 18.79,
-          "amount": 958.12,
-          "paid": false
-        },
-        {
-          "period": 5,
-          "dueDate": "2026-10-06",
-          "principal": 939.33,
-          "fee": 18.79,
-          "amount": 958.12,
-          "paid": false
-        },
-        {
-          "period": 6,
-          "dueDate": "2026-11-06",
-          "principal": 939.33,
-          "fee": 18.79,
-          "amount": 958.12,
-          "paid": false
-        },
-        {
-          "period": 7,
-          "dueDate": "2026-12-06",
-          "principal": 939.33,
-          "fee": 18.79,
-          "amount": 958.12,
-          "paid": false
-        },
-        {
-          "period": 8,
-          "dueDate": "2027-01-06",
-          "principal": 939.33,
-          "fee": 18.79,
-          "amount": 958.12,
-          "paid": false
-        },
-        {
-          "period": 9,
-          "dueDate": "2027-02-06",
-          "principal": 939.33,
-          "fee": 18.79,
-          "amount": 958.12,
-          "paid": false
-        },
-        {
-          "period": 10,
-          "dueDate": "2027-03-06",
-          "principal": 939.33,
-          "fee": 18.79,
-          "amount": 958.12,
-          "paid": false
-        },
-        {
-          "period": 11,
-          "dueDate": "2027-04-06",
-          "principal": 939.33,
-          "fee": 18.79,
-          "amount": 958.12,
-          "paid": false
-        },
-        {
-          "period": 12,
-          "dueDate": "2027-05-06",
-          "principal": 939.33,
-          "fee": 18.79,
-          "amount": 958.12,
+          "principal": 1297.33,
+          "fee": 25.95,
+          "amount": 1323.28,
           "paid": false
         }
-      ]
+      ],
+      "riskStatus": "passed",
+      "riskReason": ""
     }
   ],
   "users": [
     {
-      "id": "U19900000000",
+      "id": "U1778081940010",
       "name": "商城管理员",
       "phone": "19900000000",
       "idCardFront": "mock://admin/id-card-front",
@@ -301,6 +305,19 @@
       "latitude": 23.119751,
       "longitude": 113.327676,
       "creditStatus": "良好",
+      "registerAt": "2026-05-06T15:39:00.010Z"
+    },
+    {
+      "id": "U19900000000",
+      "name": "管理测试",
+      "phone": "18888888888",
+      "idCardFront": "mock://admin/id-card-front",
+      "idCardBack": "mock://admin/id-card-back",
+      "idCardHandheld": "mock://admin/id-card-handheld",
+      "locationText": "广东省广州市天河区珠江新城（测试定位）",
+      "latitude": 23.119751,
+      "longitude": 113.327676,
+      "creditStatus": "优秀",
       "registerAt": "2026-05-01T09:00:00+08:00"
     }
   ],

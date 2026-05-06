@@ -10,8 +10,11 @@ export interface MallOrder {
   totalAmount: number
   createdAt: string
   status: MallOrderStatus
+  riskStatus?: 'passed' | 'failed'
+  riskReason?: string
   paid: boolean
   payType: MallPayType
+  installmentPeriods?: number
   payChannel: MallPayChannel
   receiverName: string
   receiverPhone: string
@@ -26,6 +29,7 @@ interface CreateOrderPayload {
   status: MallOrderStatus
   paid: boolean
   payType: MallPayType
+  installmentPeriods?: 3 | 6 | 12
   payChannel: MallPayChannel
   receiverName: string
   receiverPhone: string

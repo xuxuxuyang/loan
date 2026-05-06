@@ -187,8 +187,7 @@ async function saveEdit() {
       throw new Error(payload.msg || `更新用户失败: ${response.status}`)
     }
     await fetchUsers()
-    previewUser.value = users.value.find(item => item.id === target.id) || null
-    editingUserId.value = null
+    closePreview()
   }
   catch (error) {
     console.error('保存用户失败', error)

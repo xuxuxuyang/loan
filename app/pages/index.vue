@@ -32,7 +32,10 @@ function handleSelectCategory(category: MallCategoryKey) {
 </script>
 
 <template>
-  <div class="bg-[#f7f7f5] min-h-screen pb-16">
+  <div
+    class="bg-[#f7f7f5] min-h-screen"
+    style="padding-bottom: calc(4rem + env(safe-area-inset-bottom));"
+  >
     <IndexBannerM
       v-if="device.isMobile"
       :products="filteredProducts"

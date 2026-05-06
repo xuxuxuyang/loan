@@ -11,6 +11,8 @@ const {
 
 const DB_DIR = path.join(__dirname, '..', 'data')
 const DB_FILE = path.join(DB_DIR, 'db.json')
+const ADMIN_USER_ID = 'U19900000000'
+const ADMIN_PHONE = '19900000000'
 
 // TODO(db): 后续接入真实数据库时，可在此替换为仓储层实现。
 
@@ -43,19 +45,19 @@ function buildSeedDb() {
 }
 
 function ensureAdminUser(list) {
-  const hasAdmin = list.some(item => item && item.phone === '19900000000')
+  const hasAdmin = list.some(item => item && (item.phone === ADMIN_PHONE || item.id === ADMIN_USER_ID))
   if (hasAdmin) {
     return list
   }
-  const adminSeed = users.find(item => item.phone === '19900000000')
+  const adminSeed = users.find(item => item.phone === ADMIN_PHONE || item.id === ADMIN_USER_ID)
   if (adminSeed) {
     return [{ ...adminSeed }, ...list]
   }
   return [
     {
-      id: 'U19900000000',
+      id: ADMIN_USER_ID,
       name: '商城管理员',
-      phone: '19900000000',
+      phone: ADMIN_PHONE,
       idCardFront: 'mock://admin/id-card-front',
       idCardBack: 'mock://admin/id-card-back',
       idCardHandheld: 'mock://admin/id-card-handheld',
@@ -67,6 +69,19 @@ function ensureAdminUser(list) {
     },
     ...list,
   ]
+}
+
+function dedupeUsersById(list) {
+  const map = new Map()
+  list.forEach((item) => {
+    if (!item || !item.id) {
+      return
+    }
+    if (!map.has(item.id)) {
+      map.set(item.id, item)
+    }
+  })
+  return [...map.values()]
 }
 
 function readDb() {
@@ -82,7 +97,7 @@ function readDb() {
       bankCards: Array.isArray(parsed.bankCards) ? parsed.bankCards : bankCards.map(item => ({ ...item })),
       bills: Array.isArray(parsed.bills) ? parsed.bills : bills.map(item => ({ ...item })),
     }
-    db.users = ensureAdminUser(db.users)
+    db.users = dedupeUsersById(ensureAdminUser(db.users))
     return {
       products: db.products,
       orders: db.orders,

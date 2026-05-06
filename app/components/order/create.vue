@@ -1,20 +1,14 @@
 <script setup lang="ts">
-import type { MallPayChannel } from '~/composables/useMallOrders'
-
 const route = useRoute()
 const { smartNavigate } = useCustomRouting(route)
 const products = useTeaProducts()
 const { ensureRegistered, profile, loginPhone } = useMallAuth()
-const { createOrder, markOrderPaid } = useMallOrders()
+const { createOrder } = useMallOrders()
 
 const quantity = ref(1)
-const selectedPayType = ref<'installment' | 'full'>('installment')
+const selectedInstallmentPeriods = ref<3 | 6 | 12>(12)
 const submitting = ref(false)
-const paying = ref(false)
-const payDialogVisible = ref(false)
-const payResult = ref<'idle' | 'success' | 'failed'>('idle')
 const currentOrderNo = ref('')
-const selectedChannel = ref<MallPayChannel>('wechat')
 
 const productId = computed(() => {
   const rawId = Number.parseInt(String(route.query.productId || ''), 10)
@@ -43,7 +37,7 @@ const shippingFee = computed(() => {
 })
 
 const discountAmount = computed(() => {
-  return selectedPayType.value === 'installment' ? 88 : 120
+  return 88
 })
 
 const payableAmount = computed(() => {
@@ -51,16 +45,14 @@ const payableAmount = computed(() => {
 })
 
 const installmentPlanText = computed(() => {
-  const monthly = payableAmount.value / 12
-  return `分12期，预计每期 ¥${monthly.toFixed(2)}`
+  const monthly = payableAmount.value / selectedInstallmentPeriods.value
+  return `分${selectedInstallmentPeriods.value}期，预计每期 ¥${monthly.toFixed(2)}`
 })
 
-const payTypeLabel = computed(() => {
-  return selectedPayType.value === 'installment' ? '分期支付' : '一次性付款'
-})
-
-function sleep(ms: number) {
-  return new Promise(resolve => setTimeout(resolve, ms))
+function selectInstallmentPeriods(period: number) {
+  if (period === 3 || period === 6 || period === 12) {
+    selectedInstallmentPeriods.value = period
+  }
 }
 
 async function submitOrder() {
@@ -87,8 +79,9 @@ async function submitOrder() {
       totalAmount: payableAmount.value,
       status: 'reviewing',
       paid: false,
-      payType: selectedPayType.value,
-      payChannel: selectedChannel.value,
+      payType: 'installment',
+      payChannel: 'wechat',
+      installmentPeriods: selectedInstallmentPeriods.value,
       receiverName: receiverName.value,
       receiverPhone: receiverPhone.value,
       receiverAddress: receiverAddress.value,
@@ -100,72 +93,14 @@ async function submitOrder() {
     submitting.value = false
     return
   }
-  if (selectedPayType.value === 'installment') {
-    submitting.value = false
-    ElMessage.success(`订单已提交审核，订单号 ${currentOrderNo.value}`)
-    await smartNavigate({
-      path: '/orders',
-      query: {
-        status: 'reviewing',
-        productId: String(selectedProduct.value.id),
-        fromOrderCreate: '1',
-      },
-    })
-    return
-  }
-
-  payResult.value = 'idle'
-  payDialogVisible.value = true
   submitting.value = false
-}
-
-async function handleMockPay() {
-  if (paying.value || !selectedProduct.value) {
-    return
-  }
-
-  paying.value = true
-  payResult.value = 'idle'
-  await sleep(1400)
-
-  const success = Math.random() < 0.9
-  payResult.value = success ? 'success' : 'failed'
-  paying.value = false
-
-  if (!success) {
-    ElMessage.error('支付通道繁忙，请重试')
-    return
-  }
-
-  await markOrderPaid(currentOrderNo.value, selectedChannel.value)
-  ElMessage.success(`支付成功，订单号 ${currentOrderNo.value}`)
-  await sleep(800)
-  payDialogVisible.value = false
+  ElMessage.success(`订单已提交审核，订单号 ${currentOrderNo.value}`)
   await smartNavigate({
     path: '/orders',
     query: {
       status: 'reviewing',
       productId: String(selectedProduct.value.id),
       fromOrderCreate: '1',
-      paid: '1',
-    },
-  })
-}
-
-async function handlePayLater() {
-  if (!selectedProduct.value || paying.value) {
-    return
-  }
-
-  payDialogVisible.value = false
-  ElMessage.info('已创建订单，可在订单页继续支付')
-  await smartNavigate({
-    path: '/orders',
-    query: {
-      status: 'reviewing',
-      productId: String(selectedProduct.value.id),
-      fromOrderCreate: '1',
-      paid: '0',
     },
   })
 }
@@ -243,33 +178,25 @@ async function handlePayLater() {
         <h2 class="mb-3 text-lg font-semibold text-black/82">
           支付方式
         </h2>
-        <div class="grid gap-2 sm:grid-cols-2">
-          <button
-            type="button"
-            class="rounded-xl border px-3 py-3 text-left"
-            :class="selectedPayType === 'installment' ? 'border-[var(--theme-color)] bg-[#eefcf8]' : 'border-black/10 bg-white'"
-            @click="selectedPayType = 'installment'"
-          >
-            <p class="text-sm font-semibold text-black/82">
-              分期支付
-            </p>
-            <p class="mt-1 text-xs text-black/55">
-              {{ installmentPlanText }}
-            </p>
-          </button>
-          <button
-            type="button"
-            class="rounded-xl border px-3 py-3 text-left"
-            :class="selectedPayType === 'full' ? 'border-[var(--theme-color)] bg-[#eefcf8]' : 'border-black/10 bg-white'"
-            @click="selectedPayType = 'full'"
-          >
-            <p class="text-sm font-semibold text-black/82">
-              一次性付款
-            </p>
-            <p class="mt-1 text-xs text-black/55">
-              优先发货，支持 7 天无理由
-            </p>
-          </button>
+        <div class="rounded-xl border border-[var(--theme-color)] bg-[#eefcf8] px-3 py-3">
+          <p class="text-sm font-semibold text-black/82">
+            分期支付
+          </p>
+          <p class="mt-1 text-xs text-black/55">
+            {{ installmentPlanText }}
+          </p>
+          <div class="mt-3 grid grid-cols-3 gap-2">
+            <button
+              v-for="period in [3, 6, 12]"
+              :key="period"
+              type="button"
+              class="rounded-lg border px-2 py-2 text-sm"
+              :class="selectedInstallmentPeriods === period ? 'border-[var(--theme-color)] bg-white text-[var(--theme-color)]' : 'border-black/10 bg-white text-black/72'"
+              @click="selectInstallmentPeriods(period)"
+            >
+              {{ period }} 期
+            </button>
+          </div>
         </div>
       </div>
 
@@ -313,110 +240,13 @@ async function handlePayLater() {
           :disabled="submitting || !selectedProduct"
           @click="submitOrder"
         >
-          {{ submitting ? '提交中...' : (selectedPayType === 'installment' ? '提交订单并等待审核' : '提交订单并去支付') }}
+          {{ submitting ? '提交中...' : '提交订单并等待审核' }}
         </button>
         <p class="mt-2 text-center text-xs text-black/45">
-          {{ selectedPayType === 'installment' ? '审核通过后可进入发货流程' : '提交后将进入模拟支付交互' }}
+          审核通过后可进入发货流程
         </p>
       </div>
     </div>
-
-    <el-dialog
-      v-model="payDialogVisible"
-      width="92%"
-      :close-on-click-modal="!paying"
-      :show-close="!paying"
-      align-center
-      title="模拟支付"
-    >
-      <div class="space-y-3 text-sm text-black/70">
-        <p class="flex items-center justify-between">
-          <span>订单号</span>
-          <span class="font-medium text-black/82">{{ currentOrderNo }}</span>
-        </p>
-        <p class="flex items-center justify-between">
-          <span>支付类型</span>
-          <span class="font-medium text-black/82">{{ payTypeLabel }}</span>
-        </p>
-        <p class="flex items-center justify-between">
-          <span>应付金额</span>
-          <span class="text-base font-semibold text-[#e35f82]">￥{{ payableAmount.toFixed(2) }}</span>
-        </p>
-        <div class="rounded-xl bg-[#f7f8fa] p-3">
-          <p class="mb-2 text-xs text-black/50">
-            选择支付通道
-          </p>
-          <div class="grid grid-cols-3 gap-2">
-            <button
-              type="button"
-              class="rounded-lg border px-2 py-2 text-xs"
-              :class="selectedChannel === 'wechat' ? 'border-[var(--theme-color)] bg-[#eefcf8]' : 'border-black/10'"
-              :disabled="paying"
-              @click="selectedChannel = 'wechat'"
-            >
-              微信支付
-            </button>
-            <button
-              type="button"
-              class="rounded-lg border px-2 py-2 text-xs"
-              :class="selectedChannel === 'alipay' ? 'border-[var(--theme-color)] bg-[#eefcf8]' : 'border-black/10'"
-              :disabled="paying"
-              @click="selectedChannel = 'alipay'"
-            >
-              支付宝
-            </button>
-            <button
-              type="button"
-              class="rounded-lg border px-2 py-2 text-xs"
-              :class="selectedChannel === 'card' ? 'border-[var(--theme-color)] bg-[#eefcf8]' : 'border-black/10'"
-              :disabled="paying"
-              @click="selectedChannel = 'card'"
-            >
-              银行卡
-            </button>
-          </div>
-        </div>
-        <p
-          v-if="paying"
-          class="rounded-lg bg-[#fff8e8] px-3 py-2 text-xs text-[#9f6b00]"
-        >
-          正在拉起支付通道并进行风控校验...
-        </p>
-        <p
-          v-else-if="payResult === 'success'"
-          class="rounded-lg bg-[#ebfbf6] px-3 py-2 text-xs text-[#0d8a72]"
-        >
-          支付成功，正在跳转订单页...
-        </p>
-        <p
-          v-else-if="payResult === 'failed'"
-          class="rounded-lg bg-[#fff1f2] px-3 py-2 text-xs text-[#d13f63]"
-        >
-          支付失败，请更换通道或重试。
-        </p>
-      </div>
-
-      <template #footer>
-        <div class="flex items-center justify-end gap-2">
-          <button
-            type="button"
-            class="rounded-lg border border-black/10 px-4 py-2 text-sm text-black/65"
-            :disabled="paying"
-            @click="handlePayLater"
-          >
-            稍后支付
-          </button>
-          <button
-            type="button"
-            class="rounded-lg bg-[var(--theme-color)] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
-            :disabled="paying"
-            @click="handleMockPay"
-          >
-            {{ paying ? '支付处理中...' : '确认支付' }}
-          </button>
-        </div>
-      </template>
-    </el-dialog>
   </section>
 </template>
 

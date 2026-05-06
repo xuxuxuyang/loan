@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import * as echarts from 'echarts'
 import { useOrdersStore, type OrderItem } from '../stores/useOrdersStore'
 
-const { orders } = useOrdersStore()
+const { orders, fetchOrders } = useOrdersStore()
 const todayKey = new Date().toISOString().slice(0, 10)
 
 interface InstallmentRow {
@@ -236,6 +236,31 @@ function resetTableFilters() {
   filterRepayState.value = 'all'
 }
 
+function toMonthKey(value: string) {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) {
+    return ''
+  }
+  const yyyy = date.getFullYear()
+  const mm = `${date.getMonth() + 1}`.padStart(2, '0')
+  return `${yyyy}-${mm}`
+}
+
+function buildRecentMonthKeys() {
+  const keys: string[] = []
+  const cursor = new Date()
+  cursor.setDate(1)
+  for (let i = 5; i >= 0; i -= 1) {
+    const date = new Date(cursor)
+    date.setMonth(cursor.getMonth() - i)
+    const key = toMonthKey(date.toISOString())
+    if (key) {
+      keys.push(key)
+    }
+  }
+  return keys
+}
+
 const trendChartRef = ref<HTMLElement | null>(null)
 const gaugeChartRef = ref<HTMLElement | null>(null)
 const collectionChartRef = ref<HTMLElement | null>(null)
@@ -244,30 +269,52 @@ let trendChart: echarts.ECharts | null = null
 let gaugeChart: echarts.ECharts | null = null
 let collectionChart: echarts.ECharts | null = null
 
-const trendMonths = computed(() => ['1月', '2月', '3月', '4月', '5月', '6月'])
+const trendMonthKeys = computed(() => buildRecentMonthKeys())
+
+const trendMonths = computed(() => {
+  return trendMonthKeys.value.map((key) => {
+    const month = Number(key.split('-')[1] || 0)
+    return `${month}月`
+  })
+})
 
 const salesTrendData = computed(() => {
-  const base = totalSales.value || 1
-  const factors = [0.62, 0.74, 0.81, 0.93, 1.04, 1.12]
-  return factors.map(item => Number(((base * item) / 6).toFixed(2)))
+  const monthMap = new Map<string, number>()
+  orders.value.forEach((order) => {
+    const monthKey = toMonthKey(order.createdAt)
+    if (!monthKey) return
+    monthMap.set(monthKey, (monthMap.get(monthKey) || 0) + order.totalAmount)
+  })
+  return trendMonthKeys.value.map(key => Number((monthMap.get(key) || 0).toFixed(2)))
 })
 
 const receivableTrendData = computed(() => {
-  const base = totalReceivable.value || 1
-  const factors = [1.18, 1.07, 0.96, 0.89, 0.82, 0.76]
-  return factors.map(item => Number(((base * item) / 6).toFixed(2)))
+  const monthMap = new Map<string, number>()
+  installmentRows.value
+    .filter(item => item.repayState !== '已回款')
+    .forEach((item) => {
+      const monthKey = toMonthKey(item.dueDate)
+      if (!monthKey) return
+      monthMap.set(monthKey, (monthMap.get(monthKey) || 0) + item.amount)
+    })
+  return trendMonthKeys.value.map(key => Number((monthMap.get(key) || 0).toFixed(2)))
 })
 
 const profitRateTrendData = computed(() => {
-  const base = profitRate.value
-  return [
-    Number((base * 0.84).toFixed(2)),
-    Number((base * 0.9).toFixed(2)),
-    Number((base * 0.96).toFixed(2)),
-    Number((base * 1.02).toFixed(2)),
-    Number((base * 1.06).toFixed(2)),
-    Number((base * 1.12).toFixed(2)),
-  ]
+  const feeMap = new Map<string, number>()
+  installmentRows.value.forEach((item) => {
+    const monthKey = toMonthKey(item.dueDate)
+    if (!monthKey) return
+    feeMap.set(monthKey, (feeMap.get(monthKey) || 0) + item.fee)
+  })
+  return trendMonthKeys.value.map((key, index) => {
+    const sales = salesTrendData.value[index] || 0
+    const fee = feeMap.get(key) || 0
+    if (!sales) {
+      return 0
+    }
+    return Number(((fee / sales) * 100).toFixed(2))
+  })
 })
 
 function renderTrendChart() {
@@ -425,6 +472,7 @@ function handleResize() {
 }
 
 onMounted(() => {
+  void fetchOrders()
   renderTrendChart()
   renderGaugeChart()
   renderCollectionChart()

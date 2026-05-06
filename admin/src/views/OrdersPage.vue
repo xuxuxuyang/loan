@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import type { InstallmentItem, OrderItem } from '../stores/useOrdersStore'
 import { useOrdersStore } from '../stores/useOrdersStore'
 
@@ -9,11 +9,13 @@ const payType = ref<'全部' | OrderItem['payType']>('全部')
 const orderDate = ref('')
 const selectedOrder = ref<OrderItem | null>(null)
 const loading = ref(false)
-const { orders, recalculateOrderFields, fetchOrders, updateInstallmentPaid } = useOrdersStore()
-let syncTimer: number | null = null
+const changingStatusOrderId = ref('')
+const statusDraftMap = ref<Record<string, OrderItem['status']>>({})
+const { orders, recalculateOrderFields, fetchOrders, updateInstallmentPaid, updateOrderStatus } = useOrdersStore()
 
 const filteredOrders = computed(() => {
-  return orders.value
+  // 订单管理仅展示已通过人工审核后的订单，待审核订单统一在“审核订单”页面处理。
+  return orders.value.filter(item => item.status !== '待审核' && item.status !== '风控未通过')
 })
 
 function openPlan(order: OrderItem) {
@@ -40,6 +42,62 @@ async function toggleRepay(order: OrderItem, period: InstallmentItem) {
   }
 }
 
+function toMallOrderStatus(value: OrderItem['status']) {
+  if (value === '待收货') return 'receiving'
+  if (value === '已完成') return 'enjoying'
+  if (value === '待发货') return 'shipping'
+  return 'reviewing'
+}
+
+function getRowStatusDraft(order: OrderItem) {
+  return statusDraftMap.value[order.id] || order.status
+}
+
+async function applyOrderStatus(order: OrderItem) {
+  if (changingStatusOrderId.value) {
+    return
+  }
+  const nextStatus = getRowStatusDraft(order)
+  if (nextStatus === order.status) {
+    return
+  }
+
+  changingStatusOrderId.value = order.id
+  try {
+    await updateOrderStatus(order.id, toMallOrderStatus(nextStatus))
+    await loadOrders()
+  }
+  catch (error) {
+    // eslint-disable-next-line no-alert
+    window.alert('更新订单状态失败，请稍后重试')
+  }
+  finally {
+    changingStatusOrderId.value = ''
+  }
+}
+
+async function rollbackToReview(order: OrderItem) {
+  if (changingStatusOrderId.value) {
+    return
+  }
+  if (order.status === '待审核') {
+    return
+  }
+
+  changingStatusOrderId.value = order.id
+  try {
+    await updateOrderStatus(order.id, 'reviewing')
+    await loadOrders()
+  }
+  catch (error) {
+    // eslint-disable-next-line no-alert
+    window.alert('打回审核失败，请稍后重试')
+  }
+  finally {
+    changingStatusOrderId.value = ''
+  }
+}
+
 async function loadOrders() {
   loading.value = true
   try {
@@ -49,26 +107,20 @@ async function loadOrders() {
       payType: payType.value,
       date: orderDate.value,
     })
+    statusDraftMap.value = Object.fromEntries(
+      orders.value.map(item => [item.id, item.status]),
+    )
   }
   finally {
     loading.value = false
   }
 }
 
+async function refreshOrders() {
+  await loadOrders()
+}
+
 onMounted(() => {
-  void loadOrders()
-  syncTimer = window.setInterval(() => {
-    void loadOrders()
-  }, 3000)
-})
-
-onBeforeUnmount(() => {
-  if (syncTimer !== null) {
-    window.clearInterval(syncTimer)
-  }
-})
-
-watch([keyword, status, payType, orderDate], () => {
   void loadOrders()
 })
 </script>
@@ -86,9 +138,6 @@ watch([keyword, status, payType, orderDate], () => {
         </option>
         <option value="待付款">
           待付款
-        </option>
-        <option value="待审核">
-          待审核
         </option>
         <option value="待发货">
           待发货
@@ -115,6 +164,22 @@ watch([keyword, status, payType, orderDate], () => {
         v-model="orderDate"
         type="date"
       >
+      <button
+        class="btn btn-secondary"
+        type="button"
+        :disabled="loading"
+        @click="loadOrders"
+      >
+        查询
+      </button>
+      <button
+        class="btn btn-primary"
+        type="button"
+        :disabled="loading"
+        @click="refreshOrders"
+      >
+        {{ loading ? '刷新中...' : '刷新' }}
+      </button>
     </div>
 
     <table class="table">
@@ -157,14 +222,55 @@ watch([keyword, status, payType, orderDate], () => {
           <td>{{ item.status }}</td>
           <td>{{ item.payType }}</td>
           <td>{{ item.createdAt }}</td>
-          <td>
-            <button
-              class="btn btn-primary"
-              type="button"
-              @click="openPlan(item)"
-            >
-              查看分期
-            </button>
+          <td class="actions-cell">
+            <div class="actions">
+              <button
+                class="btn btn-primary"
+                type="button"
+                @click="openPlan(item)"
+              >
+                查看分期
+              </button>
+              <select
+                v-model="statusDraftMap[item.id]"
+                class="status-select"
+              >
+                <option disabled value="">
+                  选择状态
+                </option>
+                <option value="待付款">
+                  待付款
+                </option>
+                <option value="待审核">
+                  待审核
+                </option>
+                <option value="待发货">
+                  待发货
+                </option>
+                <option value="待收货">
+                  待收货
+                </option>
+                <option value="已完成">
+                  已完成
+                </option>
+              </select>
+              <button
+                class="btn btn-success"
+                type="button"
+                :disabled="changingStatusOrderId === item.id"
+                @click="applyOrderStatus(item)"
+              >
+                {{ changingStatusOrderId === item.id ? '更新中...' : '更新状态' }}
+              </button>
+              <button
+                class="btn btn-warning"
+                type="button"
+                :disabled="changingStatusOrderId === item.id || item.status === '待审核'"
+                @click="rollbackToReview(item)"
+              >
+                {{ changingStatusOrderId === item.id ? '处理中...' : '打回审核' }}
+              </button>
+            </div>
           </td>
         </tr>
         <tr v-if="!loading && filteredOrders.length === 0">
@@ -244,12 +350,22 @@ watch([keyword, status, payType, orderDate], () => {
   background: #fff;
   cursor: pointer;
   padding: 0 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  white-space: nowrap;
 }
 
 .btn-primary {
   border-color: #2563eb;
   background: #2563eb;
   color: #fff;
+}
+
+.btn-secondary {
+  border-color: #9ca3af;
+  background: #f8fafc;
+  color: #374151;
 }
 
 .btn-success {
@@ -262,6 +378,30 @@ watch([keyword, status, payType, orderDate], () => {
   border-color: #d97706;
   background: #d97706;
   color: #fff;
+}
+
+.status-select {
+  height: 30px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  padding: 0 8px;
+  background: #fff;
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: nowrap;
+  min-width: max-content;
+}
+
+.actions-cell {
+  overflow-x: auto;
+}
+
+.actions-cell::-webkit-scrollbar {
+  height: 6px;
 }
 
 .modal-mask {

@@ -47,7 +47,26 @@ function addMonths(iso, months) {
   return formatDate(date.toISOString())
 }
 
-function buildInstallmentPlan(totalAmount, payType, createdAt, paid) {
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+async function mockRiskCheck({ totalAmount, installmentPeriods, receiverPhone }) {
+  // 模拟风控接口调用耗时。
+  await sleep(120)
+  const base = Number(totalAmount || 0)
+  const periods = Number(installmentPeriods || 12)
+  const phoneTail = Number(String(receiverPhone || '').slice(-2) || '0')
+  const score = Math.round(base / Math.max(1, periods)) + phoneTail
+  const passed = score <= 2200
+  return {
+    status: passed ? 'passed' : 'failed',
+    reason: passed ? '' : '风控评分未通过，请调整分期期数或更换商品后重试',
+    checkedAt: new Date().toISOString(),
+  }
+}
+
+function buildInstallmentPlan(totalAmount, payType, createdAt, paid, installmentPeriods) {
   const parsedAmount = Number(totalAmount || 0)
   if (payType !== 'installment') {
     return [{
@@ -60,7 +79,9 @@ function buildInstallmentPlan(totalAmount, payType, createdAt, paid) {
     }]
   }
 
-  const periods = 12
+  const periods = [3, 6, 12].includes(Number(installmentPeriods))
+    ? Number(installmentPeriods)
+    : 12
   const feeRate = 0.02
   const principalPerPeriod = Number((parsedAmount / periods).toFixed(2))
   const feePerPeriod = Number((parsedAmount * feeRate / periods).toFixed(2))
@@ -77,7 +98,22 @@ function buildInstallmentPlan(totalAmount, payType, createdAt, paid) {
   })
 }
 
+function ensureOrderRiskState(order) {
+  if (order.payType !== 'installment') {
+    if (!order.riskStatus) {
+      order.riskStatus = 'passed'
+      order.riskReason = ''
+    }
+    return
+  }
+  if (!order.riskStatus) {
+    order.riskStatus = 'passed'
+    order.riskReason = ''
+  }
+}
+
 function ensureOrderInstallmentPlan(order) {
+  ensureOrderRiskState(order)
   if (Array.isArray(order.installmentPlan) && order.installmentPlan.length > 0) {
     if (order.payType === 'installment' && order.paid) {
       const hasPaidPeriod = order.installmentPlan.some(item => item.paid)
@@ -92,6 +128,7 @@ function ensureOrderInstallmentPlan(order) {
     order.payType,
     order.createdAt,
     order.paid,
+    order.installmentPeriods,
   )
 }
 
@@ -193,6 +230,10 @@ function calcMySummary(db, phone) {
   }
   const currentMonth = formatDate(new Date().toISOString()).slice(0, 7)
   const billPendingAmount = Number(userOrders.reduce((sum, order) => {
+    // 未审核通过（reviewing）订单不进入还款口径。
+    if (order.status === 'reviewing') {
+      return sum
+    }
     ensureOrderInstallmentPlan(order)
     const monthRepay = order.installmentPlan
       .filter(plan => !plan.paid && String(plan.dueDate || '').startsWith(currentMonth))
@@ -508,10 +549,13 @@ router.get('/bills', (ctx) => {
     return
   }
   const list = []
-  const orders = db.orders
+  const loanOrders = db.orders
     .filter(item => item.receiverPhone === phone)
+    .filter(item => item.payType === 'installment')
+    // 仅展示已审核通过后的订单还款信息。
+    .filter(item => item.status !== 'reviewing')
     .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
-  orders.forEach((order) => {
+  loanOrders.forEach((order) => {
     ensureOrderInstallmentPlan(order)
     order.installmentPlan.forEach((planItem) => {
       list.push({
@@ -541,14 +585,22 @@ router.get('/bills', (ctx) => {
       .reduce((sum, item) => sum + Math.abs(Number(item.amount || 0)), 0)
       .toFixed(2),
   )
+
+  const baseQuota = 10000
   const availableQuota = Number(
-    (20000 - totalPending).toFixed(2),
+    Math.max(0, baseQuota - totalPending).toFixed(2),
   )
+
+  const latestLoanOrder = loanOrders[0]
+  const latestLoanDate = latestLoanOrder ? new Date(latestLoanOrder.createdAt) : null
+  const billDateDay = latestLoanDate && !Number.isNaN(latestLoanDate.getTime())
+    ? `${latestLoanDate.getDate()}`.padStart(2, '0')
+    : '08'
   ctx.body = success({
     summary: {
       shouldRepay,
       availableQuota,
-      billDate: '每月 08 日',
+      billDate: `每月 ${billDateDay} 日`,
       minRepayment: Number((shouldRepay * 0.1).toFixed(2)),
     },
     list,
@@ -619,6 +671,10 @@ router.get('/orders', (ctx) => {
   } = ctx.query
 
   const getAdminStatus = (item) => {
+    ensureOrderRiskState(item)
+    if (item.status === 'reviewing' && item.payType === 'installment') {
+      return item.riskStatus === 'failed' ? '风控未通过' : '待审核'
+    }
     if (item.status === 'reviewing' && !item.paid) {
       return '待付款'
     }
@@ -650,7 +706,7 @@ router.get('/orders', (ctx) => {
   ctx.body = success(list)
 })
 
-router.post('/orders', (ctx) => {
+router.post('/orders', async (ctx) => {
   const db = readDb()
   const payload = ctx.request.body || {}
   const nextOrder = {
@@ -663,16 +719,27 @@ router.post('/orders', (ctx) => {
     status: payload.status || 'reviewing',
     paid: Boolean(payload.paid),
     payType: payload.payType || 'full',
+    installmentPeriods: Number(payload.installmentPeriods) || 12,
     payChannel: payload.payChannel || 'wechat',
     receiverName: payload.receiverName || '匿名用户',
     receiverPhone: payload.receiverPhone || '',
     receiverAddress: payload.receiverAddress || '',
+    riskStatus: 'passed',
+    riskReason: '',
+    riskCheckedAt: '',
+  }
+  if (nextOrder.payType === 'installment') {
+    const riskResult = await mockRiskCheck(nextOrder)
+    nextOrder.riskStatus = riskResult.status
+    nextOrder.riskReason = riskResult.reason
+    nextOrder.riskCheckedAt = riskResult.checkedAt
   }
   nextOrder.installmentPlan = buildInstallmentPlan(
     nextOrder.totalAmount,
     nextOrder.payType,
     nextOrder.createdAt,
     nextOrder.paid,
+    nextOrder.installmentPeriods,
   )
   db.orders.unshift(nextOrder)
   writeDb(db)
@@ -754,6 +821,11 @@ router.patch('/orders/:id/status', (ctx) => {
   }
 
   if (status) {
+    ensureOrderRiskState(target)
+    if (status === 'shipping' && target.payType === 'installment' && target.riskStatus !== 'passed') {
+      fail(ctx, '该订单风控未通过，不能审核通过')
+      return
+    }
     target.status = status
   }
   writeDb(db)

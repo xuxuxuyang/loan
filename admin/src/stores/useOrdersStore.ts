@@ -18,7 +18,9 @@ export interface OrderItem {
   periodAmount: number
   currentPeriod: number
   nextRepayDate: string
-  status: '待付款' | '待审核' | '待发货' | '待收货' | '已完成'
+  status: '待付款' | '待审核' | '风控未通过' | '待发货' | '待收货' | '已完成'
+  riskStatus: 'passed' | 'failed'
+  riskReason: string
   payType: '分期' | '全款'
   createdAt: string
   installmentPlan: InstallmentItem[]
@@ -30,6 +32,8 @@ interface MallOrderPayload {
   totalAmount: number
   createdAt: string
   status: 'reviewing' | 'shipping' | 'receiving' | 'enjoying'
+  riskStatus?: 'passed' | 'failed'
+  riskReason?: string
   paid: boolean
   payType: 'installment' | 'full'
   receiverName: string
@@ -61,12 +65,21 @@ function formatDateTime(value: string) {
   return `${yyyy}-${mm}-${dd} ${hh}:${min}`
 }
 
-function mapMallOrderStatus(status: MallOrderPayload['status'], paid: boolean): OrderItem['status'] {
-  if (status === 'reviewing' && !paid) {
-    return '待付款'
-  }
+function mapMallOrderStatus(
+  status: MallOrderPayload['status'],
+  paid: boolean,
+  payType: MallOrderPayload['payType'],
+  riskStatus?: MallOrderPayload['riskStatus'],
+): OrderItem['status'] {
   if (status === 'reviewing') {
-    return '待审核'
+    // 分期订单在人工审核通过前，统一归入“待审核”。
+    if (payType === 'installment') {
+      if (riskStatus === 'failed') {
+        return '风控未通过'
+      }
+      return '待审核'
+    }
+    return paid ? '待发货' : '待付款'
   }
   if (status === 'shipping') {
     return '待发货'
@@ -107,6 +120,7 @@ function mapMallOrderToAdminOrder(order: MallOrderPayload): OrderItem {
   const periods = safePlan.length || fallbackPeriods
   const nextPending = safePlan.find(item => !item.paid)
   const allPaid = safePlan.every(item => item.paid)
+  const riskStatus = order.riskStatus === 'failed' ? 'failed' : 'passed'
 
   return {
     id: order.id,
@@ -117,7 +131,9 @@ function mapMallOrderToAdminOrder(order: MallOrderPayload): OrderItem {
     periodAmount: safePlan[0]?.amount || 0,
     currentPeriod: allPaid ? periods : (nextPending?.period || 1),
     nextRepayDate: allPaid ? '-' : (nextPending?.dueDate || '-'),
-    status: mapMallOrderStatus(order.status, order.paid),
+    status: mapMallOrderStatus(order.status, order.paid, order.payType, order.riskStatus),
+    riskStatus,
+    riskReason: order.riskReason || '',
     payType: order.payType === 'installment' ? '分期' : '全款',
     createdAt: formatDateTime(order.createdAt),
     installmentPlan: safePlan,

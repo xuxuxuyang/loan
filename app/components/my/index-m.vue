@@ -9,7 +9,7 @@ const orderStatus = [
   { title: '审核中', icon: 'tabler:clock-bolt', key: 'reviewing' },
   { title: '待发货', icon: 'tabler:clock-hour-4', key: 'shipping' },
   { title: '待收货', icon: 'tabler:truck-delivery', key: 'receiving' },
-  { title: '享用中', icon: 'tabler:clipboard-check', key: 'enjoying' },
+  { title: '已收货', icon: 'tabler:clipboard-check', key: 'enjoying' },
 ]
 
 const serviceList = [

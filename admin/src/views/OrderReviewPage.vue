@@ -1,15 +1,15 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import type { OrderItem } from '../stores/useOrdersStore'
 import { useOrdersStore } from '../stores/useOrdersStore'
 
 const loading = ref(false)
 const reviewingId = ref('')
 const { orders, fetchOrders, updateOrderStatus } = useOrdersStore()
-let syncTimer: number | null = null
 
 const reviewOrders = computed(() => {
-  return orders.value.filter(item => item.status === '待审核')
+  // 审核订单页展示人工待审和风控打回订单，避免与订单管理页重复展示。
+  return orders.value.filter(item => item.status === '待审核' || item.status === '风控未通过')
 })
 
 async function loadReviewOrders() {
@@ -28,6 +28,9 @@ async function approveOrder(order: OrderItem) {
   if (reviewingId.value) {
     return
   }
+  if (order.riskStatus !== 'passed') {
+    return
+  }
   reviewingId.value = order.id
   try {
     await updateOrderStatus(order.id, 'shipping')
@@ -44,15 +47,6 @@ async function approveOrder(order: OrderItem) {
 
 onMounted(() => {
   void loadReviewOrders()
-  syncTimer = window.setInterval(() => {
-    void loadReviewOrders()
-  }, 3000)
-})
-
-onBeforeUnmount(() => {
-  if (syncTimer !== null) {
-    window.clearInterval(syncTimer)
-  }
 })
 </script>
 
@@ -60,9 +54,17 @@ onBeforeUnmount(() => {
   <div class="panel">
     <div class="toolbar">
       <input
-        value="分期订单需人工审核，审核通过后进入待发货"
+        value="分期订单先过风控，风控通过后可人工审核；风控未通过将直接打回"
         readonly
       >
+      <button
+        class="btn btn-refresh"
+        type="button"
+        :disabled="loading"
+        @click="loadReviewOrders"
+      >
+        {{ loading ? '刷新中...' : '刷新' }}
+      </button>
     </div>
 
     <table class="table">
@@ -73,6 +75,7 @@ onBeforeUnmount(() => {
           <th>商品</th>
           <th>总金额</th>
           <th>支付方式</th>
+          <th>风控结果</th>
           <th>当前期数</th>
           <th>下次还款日</th>
           <th>下单时间</th>
@@ -82,7 +85,7 @@ onBeforeUnmount(() => {
       <tbody>
         <tr v-if="loading">
           <td
-            colspan="9"
+            colspan="10"
             style="text-align: center; color: #6b7280;"
           >
             数据加载中...
@@ -97,6 +100,11 @@ onBeforeUnmount(() => {
           <td>{{ item.product }}</td>
           <td>¥ {{ item.totalAmount }}</td>
           <td>{{ item.payType }}</td>
+          <td>
+            <span :class="item.riskStatus === 'passed' ? 'risk-pass' : 'risk-fail'">
+              {{ item.riskStatus === 'passed' ? '风控通过' : '风控未通过' }}
+            </span>
+          </td>
           <td>{{ item.currentPeriod }} / {{ item.periods }}</td>
           <td>{{ item.nextRepayDate }}</td>
           <td>{{ item.createdAt }}</td>
@@ -104,16 +112,20 @@ onBeforeUnmount(() => {
             <button
               class="btn btn-success"
               type="button"
-              :disabled="reviewingId === item.id"
+              :disabled="reviewingId === item.id || item.riskStatus !== 'passed'"
               @click="approveOrder(item)"
             >
-              {{ reviewingId === item.id ? '审核中...' : '审核通过' }}
+              {{
+                item.riskStatus !== 'passed'
+                  ? '风控未通过'
+                  : (reviewingId === item.id ? '审核中...' : '审核通过')
+              }}
             </button>
           </td>
         </tr>
         <tr v-if="!loading && reviewOrders.length === 0">
           <td
-            colspan="9"
+            colspan="10"
             style="text-align: center; color: #9ca3af;"
           >
             暂无待审核订单
@@ -140,8 +152,24 @@ onBeforeUnmount(() => {
   color: #fff;
 }
 
+.btn-refresh {
+  border-color: #2563eb;
+  background: #2563eb;
+  color: #fff;
+}
+
 .btn:disabled {
   opacity: 0.6;
   cursor: not-allowed;
+}
+
+.risk-pass {
+  color: #0f8b6f;
+  font-weight: 600;
+}
+
+.risk-fail {
+  color: #cf3d3d;
+  font-weight: 600;
 }
 </style>
