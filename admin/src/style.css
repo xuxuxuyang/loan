@@ -55,6 +55,33 @@ body {
   color: #fff;
 }
 
+.admin-sub-nav {
+  display: grid;
+  gap: 6px;
+  margin: -2px 0 4px 14px;
+  padding-left: 10px;
+  border-left: 1px solid rgba(255, 255, 255, 0.14);
+}
+
+.admin-sub-nav-item {
+  display: block;
+  color: #c7d2fe;
+  text-decoration: none;
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-size: 13px;
+  transition: background-color 0.2s;
+}
+
+.admin-sub-nav-item:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.admin-sub-nav-item.router-link-active {
+  background: rgba(37, 99, 235, 0.35);
+  color: #fff;
+}
+
 .admin-main {
   display: flex;
   flex-direction: column;

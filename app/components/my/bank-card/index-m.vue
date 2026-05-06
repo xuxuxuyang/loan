@@ -6,9 +6,8 @@ interface BankCardItem {
   id: number
   bankName: string
   cardType: string
-  cardNo: string
+  cardNoMasked: string
   owner: string
-  theme: string
 }
 
 interface AddCardForm {
@@ -18,24 +17,8 @@ interface AddCardForm {
   owner: string
 }
 
-const cards = ref<BankCardItem[]>([
-  {
-    id: 1,
-    bankName: '中国建设银行',
-    cardType: '储蓄卡',
-    cardNo: '**** **** **** 6218',
-    owner: '张**',
-    theme: 'from-[#2468f2] to-[#2e8cff]',
-  },
-  {
-    id: 2,
-    bankName: '招商银行',
-    cardType: '储蓄卡',
-    cardNo: '**** **** **** 8893',
-    owner: '张**',
-    theme: 'from-[#ff6b7f] to-[#ff8b6b]',
-  },
-])
+const { loginPhone, profile, syncFromStorage } = useMallAuth()
+const { bankCards: cards, fetchBankCards, createBankCard } = useMallMy()
 
 const dialogVisible = ref(false)
 const adding = ref(false)
@@ -67,22 +50,7 @@ function resetAddForm() {
   addForm.owner = ''
 }
 
-function maskOwnerName(name: string) {
-  const cleanName = name.trim()
-  if (!cleanName) {
-    return ''
-  }
-  if (cleanName.length === 1) {
-    return `${cleanName}*`
-  }
-  return `${cleanName[0]}${'*'.repeat(Math.min(2, cleanName.length - 1))}`
-}
-
-function maskCardNumber(rawCardNo: string) {
-  const digits = rawCardNo.replace(/\D/g, '')
-  const last4 = digits.slice(-4).padStart(4, '*')
-  return `**** **** **** ${last4}`
-}
+const currentUserAccount = computed(() => loginPhone.value || profile.value?.phone || '')
 
 async function goBack() {
   await smartNavigate('/my')
@@ -120,19 +88,42 @@ function submitAddCard() {
     return
   }
 
+  if (!currentUserAccount.value) {
+    ElMessage.warning('请先登录后再管理银行卡')
+    return
+  }
   adding.value = true
-  cards.value.unshift({
-    id: Date.now(),
+  createBankCard(currentUserAccount.value, {
     bankName,
     cardType: addForm.cardType,
-    cardNo: maskCardNumber(cardDigits),
-    owner: maskOwnerName(owner),
-    theme: pickCardTheme(cards.value.length),
+    cardNo: cardDigits,
+    owner,
+  }).then(() => {
+    closeAddDialog()
+    ElMessage.success('银行卡添加成功')
+  }).catch((error) => {
+    console.error('新增银行卡失败', error)
+    ElMessage.error('添加失败，请稍后重试')
+  }).finally(() => {
+    adding.value = false
   })
-  adding.value = false
-  closeAddDialog()
-  ElMessage.success('银行卡添加成功')
 }
+
+if (import.meta.client) {
+  void syncFromStorage().then(async () => {
+    if (currentUserAccount.value) {
+      await fetchBankCards(currentUserAccount.value)
+    }
+  })
+}
+
+watch(currentUserAccount, async (account) => {
+  if (!account) {
+    cards.value = []
+    return
+  }
+  await fetchBankCards(account)
+})
 </script>
 
 <template>
@@ -158,13 +149,13 @@ function submitAddCard() {
       v-for="item in cards"
       :key="item.id"
       class="mb-3 overflow-hidden rounded-2xl p-4 text-white shadow-[0_10px_24px_rgba(26,55,99,0.16)]"
-      :class="`bg-gradient-to-r ${item.theme}`"
+      :class="`bg-gradient-to-r ${pickCardTheme(cards.indexOf(item))}`"
     >
       <p class="mb-3 text-sm text-white/85">
         {{ item.bankName }}
       </p>
       <p class="mb-4 text-xl tracking-[0.14em]">
-        {{ item.cardNo }}
+        {{ item.cardNoMasked }}
       </p>
       <div class="flex items-center justify-between text-xs text-white/85">
         <span>{{ item.cardType }}</span>

@@ -1,23 +1,122 @@
 <script setup lang="ts">
 const route = useRoute()
 const { smartNavigate } = useCustomRouting(route)
+const { loginPhone, profile, syncFromStorage } = useMallAuth()
+const {
+  billSummary,
+  bills: billList,
+  fetchBills,
+} = useMallMy()
+const currentUserAccount = computed(() => loginPhone.value || profile.value?.phone || '')
 
-const summaryItems = [
-  { label: '本月应还', value: '￥2,480.00' },
-  { label: '可用额度', value: '￥18,600.00' },
-  { label: '账单日', value: '每月 08 日' },
-  { label: '最低还款', value: '￥248.00' },
-]
-
-const billList = [
-  { id: 1, title: '茶叶分期订单 #A20260508', amount: '-￥620.00', time: '2026-05-02 11:32', status: '待还款' },
-  { id: 2, title: '商城支付（乌龙礼盒）', amount: '-￥288.00', time: '2026-04-27 09:16', status: '已完成' },
-  { id: 3, title: '还款入账', amount: '+￥1,000.00', time: '2026-04-20 20:08', status: '已到账' },
-  { id: 4, title: '授信额度调整', amount: '+￥3,000.00', time: '2026-04-11 14:05', status: '系统调整' },
-]
+const summaryItems = computed(() => [
+  { label: '本月应还', value: `￥${billSummary.value.shouldRepay.toFixed(2)}` },
+  { label: '可用额度', value: `￥${billSummary.value.availableQuota.toFixed(2)}` },
+  { label: '账单日', value: billSummary.value.billDate },
+  { label: '最低还款', value: `￥${billSummary.value.minRepayment.toFixed(2)}` },
+])
+let syncTimer: ReturnType<typeof setInterval> | null = null
 
 async function goBack() {
   await smartNavigate('/my')
+}
+
+function displayAmount(amount: number) {
+  const abs = Math.abs(amount).toFixed(2)
+  return `${amount >= 0 ? '+' : '-'}￥${abs}`
+}
+
+function extractOrderId(title: string) {
+  const match = String(title || '').match(/#([A-Z0-9]+)/i)
+  return match?.[1] || ''
+}
+
+function extractOrderTitle(title: string) {
+  return String(title || '')
+    .replace(/\s*第\d+期\s*#[A-Z0-9]+$/i, '')
+    .replace(/\s*#[A-Z0-9]+$/i, '')
+    .trim() || '订单账单'
+}
+
+function extractPeriod(title: string) {
+  const match = String(title || '').match(/第(\d+)期/)
+  return match ? Number(match[1]) : 0
+}
+
+const groupedBills = computed(() => {
+  const groups = new Map<string, {
+    key: string
+    orderId: string
+    orderTitle: string
+    latestTime: string
+    pendingCount: number
+    records: Array<typeof billList.value[number] & { period: number }>
+  }>()
+
+  billList.value.forEach((item) => {
+    const orderId = extractOrderId(item.title)
+    const key = orderId || `bill-${item.id}`
+    const group = groups.get(key) || {
+      key,
+      orderId,
+      orderTitle: extractOrderTitle(item.title),
+      latestTime: item.time,
+      pendingCount: 0,
+      records: [],
+    }
+    group.records.push({
+      ...item,
+      period: extractPeriod(item.title),
+    })
+    if (item.status === '待还款') {
+      group.pendingCount += 1
+    }
+    if (String(item.time) > String(group.latestTime)) {
+      group.latestTime = item.time
+    }
+    groups.set(key, group)
+  })
+
+  return [...groups.values()]
+    .map(group => ({
+      ...group,
+      records: group.records.sort((a, b) => String(b.time).localeCompare(String(a.time))),
+    }))
+    .sort((a, b) => String(b.latestTime).localeCompare(String(a.latestTime)))
+})
+
+async function syncBillsOnce() {
+  if (!currentUserAccount.value) {
+    billList.value = []
+    return
+  }
+  await fetchBills(currentUserAccount.value)
+}
+
+watch(currentUserAccount, async (account) => {
+  if (!account) {
+    billList.value = []
+    return
+  }
+  await fetchBills(account)
+})
+
+if (import.meta.client) {
+  onMounted(() => {
+    void syncFromStorage().then(async () => {
+      await syncBillsOnce()
+    })
+    syncTimer = setInterval(() => {
+      void syncBillsOnce()
+    }, 3000)
+  })
+
+  onBeforeUnmount(() => {
+    if (syncTimer) {
+      clearInterval(syncTimer)
+      syncTimer = null
+    }
+  })
 }
 </script>
 
@@ -63,21 +162,41 @@ async function goBack() {
         </h2>
         <div class="space-y-3">
           <article
-            v-for="item in billList"
-            :key="item.id"
+            v-for="group in groupedBills"
+            :key="group.key"
             class="rounded-2xl bg-[#f7f8fb] px-4 py-3"
           >
-            <div class="mb-1 flex items-center justify-between">
-              <p class="text-base font-medium text-black/80">
-                {{ item.title }}
+            <div class="mb-3 flex items-center justify-between">
+              <p class="text-base font-semibold text-black/85">
+                {{ group.orderTitle }}
               </p>
-              <p class="text-base font-semibold" :class="item.amount.startsWith('+') ? 'text-[#0f8b6f]' : 'text-[#d45a33]'">
-                {{ item.amount }}
-              </p>
+              <span class="text-xs text-black/45">
+                {{ group.orderId ? `#${group.orderId}` : '未关联订单' }}
+              </span>
             </div>
-            <div class="flex items-center justify-between text-sm text-black/45">
-              <span>{{ item.time }}</span>
-              <span>{{ item.status }}</span>
+            <div class="mb-3 flex items-center justify-between text-sm text-black/45">
+              <span>分期 {{ group.records.length }} 笔</span>
+              <span>待还 {{ group.pendingCount }} 笔</span>
+            </div>
+            <div class="space-y-2">
+              <div
+                v-for="record in group.records"
+                :key="record.id"
+                class="rounded-xl bg-white/70 px-3 py-2.5"
+              >
+                <div class="mb-1 flex items-center justify-between">
+                  <p class="text-sm text-black/70">
+                    {{ record.period ? `第${record.period}期` : '账单记录' }}
+                  </p>
+                  <p class="text-base font-semibold" :class="record.amount >= 0 ? 'text-[#0f8b6f]' : 'text-[#d45a33]'">
+                    {{ displayAmount(record.amount) }}
+                  </p>
+                </div>
+                <div class="flex items-center justify-between text-sm text-black/45">
+                  <span>{{ record.time }}</span>
+                  <span>{{ record.status }}</span>
+                </div>
+              </div>
             </div>
           </article>
         </div>

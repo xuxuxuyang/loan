@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 
 interface UserItem {
   id: string
@@ -11,6 +11,7 @@ interface UserItem {
   registerAt: string
   idCardFront: string
   idCardBack: string
+  idCardHandheld: string
   creditStatus: '优秀' | '良好' | '一般' | '风险'
   riskReport: {
     creditScore: number
@@ -24,78 +25,29 @@ interface UserItem {
   }
 }
 
-const users = ref<UserItem[]>([
-  {
-    id: 'U001',
-    name: '张三',
-    phone: '13800138000',
-    orderCount: 12,
-    totalAmount: 8960,
-    locationText: '浙江省杭州市西湖区',
-    registerAt: '2026-05-03 10:12',
-    idCardFront: 'https://images.unsplash.com/photo-1554224155-8d04cb21cd6c?auto=format&fit=crop&w=800&q=80',
-    idCardBack: 'https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?auto=format&fit=crop&w=800&q=80',
-    creditStatus: '优秀',
-    riskReport: {
-      creditScore: 92,
-      riskLevel: '低风险',
-      overdueCount: 0,
-      repayRate30d: 100,
-      suggestedLimit: 50000,
-      avgInstallmentAmount: 228.4,
-      tags: ['实名一致', '稳定消费', '无逾期'],
-      summary: '用户近期还款稳定，未发现风险预警，可提高分期额度。',
-    },
-  },
-  {
-    id: 'U002',
-    name: '李四',
-    phone: '13900139000',
-    orderCount: 8,
-    totalAmount: 6420,
-    locationText: '福建省福州市鼓楼区',
-    registerAt: '2026-05-04 09:35',
-    idCardFront: 'https://images.unsplash.com/photo-1520607162513-77705c0f0d4a?auto=format&fit=crop&w=800&q=80',
-    idCardBack: 'https://images.unsplash.com/photo-1518709766631-a6a7f45921c3?auto=format&fit=crop&w=800&q=80',
-    creditStatus: '良好',
-    riskReport: {
-      creditScore: 78,
-      riskLevel: '中风险',
-      overdueCount: 1,
-      repayRate30d: 92,
-      suggestedLimit: 30000,
-      avgInstallmentAmount: 182.5,
-      tags: ['历史轻微逾期', '消费活跃'],
-      summary: '用户具备持续消费能力，存在轻微逾期记录，建议维持当前额度。',
-    },
-  },
-  {
-    id: 'U003',
-    name: '王五',
-    phone: '13700137000',
-    orderCount: 15,
-    totalAmount: 12280,
-    locationText: '云南省昆明市盘龙区',
-    registerAt: '2026-05-05 14:21',
-    idCardFront: 'https://images.unsplash.com/photo-1450101499163-c8848c66ca85?auto=format&fit=crop&w=800&q=80',
-    idCardBack: 'https://images.unsplash.com/photo-1556155092-490a1ba16284?auto=format&fit=crop&w=800&q=80',
-    creditStatus: '风险',
-    riskReport: {
-      creditScore: 56,
-      riskLevel: '高风险',
-      overdueCount: 4,
-      repayRate30d: 61,
-      suggestedLimit: 8000,
-      avgInstallmentAmount: 356.2,
-      tags: ['多次逾期', '高频分期', '还款波动'],
-      summary: '用户近期连续出现逾期，建议收紧额度并加强人工复核。',
-    },
-  },
-])
+interface ApiUserItem {
+  id: string
+  name: string
+  phone: string
+  orderCount?: number
+  totalAmount?: number
+  locationText: string
+  registerAt?: string
+  idCardFront: string
+  idCardBack: string
+  idCardHandheld: string
+  creditStatus?: UserItem['creditStatus']
+}
 
+const MALL_API_BASE = `${(import.meta.env.VITE_MALL_API_BASE || 'http://localhost:3110/api').replace(/\/$/, '')}`
+
+const users = ref<UserItem[]>([])
+const loading = ref(false)
 const keyword = ref('')
 const previewUser = ref<UserItem | null>(null)
 const editingUserId = ref<string | null>(null)
+let syncTimer: number | null = null
+
 const editForm = reactive({
   name: '',
   phone: '',
@@ -103,17 +55,89 @@ const editForm = reactive({
   creditStatus: '良好' as UserItem['creditStatus'],
 })
 
-const filteredUsers = computed(() => {
-  const current = keyword.value.trim()
-  if (!current) {
-    return users.value
+const filteredUsers = computed(() => users.value)
+
+function formatDateTime(value?: string) {
+  if (!value) return '-'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  const yyyy = date.getFullYear()
+  const mm = `${date.getMonth() + 1}`.padStart(2, '0')
+  const dd = `${date.getDate()}`.padStart(2, '0')
+  const hh = `${date.getHours()}`.padStart(2, '0')
+  const min = `${date.getMinutes()}`.padStart(2, '0')
+  return `${yyyy}-${mm}-${dd} ${hh}:${min}`
+}
+
+function buildRiskReport(user: ApiUserItem): UserItem['riskReport'] {
+  const orderCount = Number(user.orderCount || 0)
+  const totalAmount = Number(user.totalAmount || 0)
+  const creditStatus = user.creditStatus || '良好'
+  const scoreMap: Record<UserItem['creditStatus'], number> = { 优秀: 92, 良好: 78, 一般: 68, 风险: 56 }
+  const riskLevelMap: Record<UserItem['creditStatus'], UserItem['riskReport']['riskLevel']> = { 优秀: '低风险', 良好: '中风险', 一般: '中风险', 风险: '高风险' }
+  const overdueMap: Record<UserItem['creditStatus'], number> = { 优秀: 0, 良好: 1, 一般: 2, 风险: 4 }
+  const repayRateMap: Record<UserItem['creditStatus'], number> = { 优秀: 100, 良好: 92, 一般: 84, 风险: 61 }
+  const baseTags: Record<UserItem['creditStatus'], string[]> = {
+    优秀: ['实名一致', '稳定消费', '无逾期'],
+    良好: ['消费活跃', '履约正常'],
+    一般: ['消费波动', '建议持续观察'],
+    风险: ['多次逾期', '高频分期', '还款波动'],
   }
-  return users.value.filter(item =>
-    item.name.includes(current)
-    || item.phone.includes(current)
-    || item.id.includes(current),
-  )
-})
+
+  return {
+    creditScore: scoreMap[creditStatus],
+    riskLevel: riskLevelMap[creditStatus],
+    overdueCount: overdueMap[creditStatus],
+    repayRate30d: repayRateMap[creditStatus],
+    suggestedLimit: Math.max(8000, Math.round(totalAmount * 2.5) || 12000),
+    avgInstallmentAmount: orderCount > 0 ? Number((totalAmount / orderCount).toFixed(2)) : 0,
+    tags: baseTags[creditStatus],
+    summary:
+      creditStatus === '风险'
+        ? '用户近期连续出现逾期，建议收紧额度并加强人工复核。'
+        : creditStatus === '优秀'
+          ? '用户近期还款稳定，未发现风险预警，可提高分期额度。'
+          : '用户具备持续消费能力，建议结合订单履约情况动态调整额度。',
+  }
+}
+
+function mapApiUser(user: ApiUserItem): UserItem {
+  const creditStatus = user.creditStatus || '良好'
+  return {
+    id: user.id,
+    name: user.name,
+    phone: user.phone,
+    orderCount: Number(user.orderCount || 0),
+    totalAmount: Number(user.totalAmount || 0),
+    locationText: user.locationText || '-',
+    registerAt: formatDateTime(user.registerAt),
+    idCardFront: user.idCardFront || '',
+    idCardBack: user.idCardBack || '',
+    idCardHandheld: user.idCardHandheld || '',
+    creditStatus,
+    riskReport: buildRiskReport(user),
+  }
+}
+
+async function fetchUsers() {
+  loading.value = true
+  try {
+    const query = keyword.value.trim() ? `?keyword=${encodeURIComponent(keyword.value.trim())}` : ''
+    const response = await fetch(`${MALL_API_BASE}/users${query}`, { method: 'GET' })
+    if (!response.ok) {
+      throw new Error(`请求用户失败: ${response.status}`)
+    }
+    const payload = await response.json() as { data?: ApiUserItem[] }
+    const list = Array.isArray(payload.data) ? payload.data : []
+    users.value = list.map(mapApiUser)
+  }
+  catch (error) {
+    console.error('加载用户失败', error)
+  }
+  finally {
+    loading.value = false
+  }
+}
 
 function openPreview(user: UserItem) {
   previewUser.value = user
@@ -134,11 +158,10 @@ function startEdit(user: UserItem) {
   editForm.creditStatus = user.creditStatus
 }
 
-function saveEdit() {
+async function saveEdit() {
   if (!previewUser.value || editingUserId.value !== previewUser.value.id) {
     return
   }
-
   if (!editForm.name.trim() || !/^1\d{10}$/.test(editForm.phone.trim())) {
     return
   }
@@ -148,14 +171,54 @@ function saveEdit() {
     return
   }
 
-  target.name = editForm.name.trim()
-  target.phone = editForm.phone.trim()
-  target.locationText = editForm.locationText.trim()
-  target.creditStatus = editForm.creditStatus
-
-  previewUser.value = { ...target }
-  editingUserId.value = null
+  try {
+    const response = await fetch(`${MALL_API_BASE}/users/${target.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: editForm.name.trim(),
+        phone: editForm.phone.trim(),
+        locationText: editForm.locationText.trim(),
+        creditStatus: editForm.creditStatus,
+      }),
+    })
+    if (!response.ok) {
+      const payload = await response.json() as { msg?: string }
+      throw new Error(payload.msg || `更新用户失败: ${response.status}`)
+    }
+    await fetchUsers()
+    previewUser.value = users.value.find(item => item.id === target.id) || null
+    editingUserId.value = null
+  }
+  catch (error) {
+    console.error('保存用户失败', error)
+  }
 }
+
+onMounted(() => {
+  void fetchUsers()
+  syncTimer = window.setInterval(() => {
+    void fetchUsers()
+  }, 3000)
+})
+
+onBeforeUnmount(() => {
+  if (syncTimer !== null) {
+    window.clearInterval(syncTimer)
+  }
+})
+
+watch(keyword, () => {
+  void fetchUsers()
+})
+
+watch(users, () => {
+  if (!previewUser.value) return
+  const latest = users.value.find(item => item.id === previewUser.value?.id)
+  if (latest) {
+    previewUser.value = latest
+  }
+})
 
 function getStatusClass(status: UserItem['creditStatus']) {
   if (status === '优秀') return 'credit-badge badge-good'
@@ -188,6 +251,11 @@ function getStatusClass(status: UserItem['creditStatus']) {
         </tr>
       </thead>
       <tbody>
+        <tr v-if="loading">
+          <td colspan="8" style="text-align: center; color: #6b7280;">
+            数据加载中...
+          </td>
+        </tr>
         <tr
           v-for="item in filteredUsers"
           :key="item.id"
@@ -220,6 +288,11 @@ function getStatusClass(status: UserItem['creditStatus']) {
                 修改
               </button>
             </div>
+          </td>
+        </tr>
+        <tr v-if="!loading && filteredUsers.length === 0">
+          <td colspan="8" style="text-align: center; color: #9ca3af;">
+            暂无用户数据
           </td>
         </tr>
       </tbody>
@@ -318,6 +391,13 @@ function getStatusClass(status: UserItem['creditStatus']) {
           <img
             :src="previewUser.idCardBack"
             alt="身份证反面"
+          >
+        </div>
+        <div>
+          <p>手持身份证照片</p>
+          <img
+            :src="previewUser.idCardHandheld"
+            alt="手持身份证照片"
           >
         </div>
       </div>
@@ -481,7 +561,7 @@ function getStatusClass(status: UserItem['creditStatus']) {
 .card-images {
   margin-top: 14px;
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
 }
 

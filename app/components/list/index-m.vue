@@ -11,14 +11,22 @@ const emit = defineEmits<{
   'select-category': [category: MallCategoryKey]
 }>()
 
+const route = useRoute()
+const { smartNavigate } = useCustomRouting(route)
 const { ensureRegistered } = useMallAuth()
 
-async function handleCart(productName: string) {
+async function handleBuy(productId: number, productName: string) {
   const passed = await ensureRegistered()
   if (!passed) {
     return
   }
-  ElMessage.success(`已加购：${productName}`)
+  await smartNavigate({
+    path: '/order-create',
+    query: {
+      productId: String(productId),
+      productName,
+    },
+  })
 }
 </script>
 
@@ -75,7 +83,7 @@ async function handleCart(productName: string) {
             <button
               type="button"
               class="buy-btn rounded-md px-2.5 py-1 text-xs text-white"
-              @click="handleCart(item.name)"
+              @click="handleBuy(item.id, item.name)"
             >
               购买
             </button>

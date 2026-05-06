@@ -1,20 +1,15 @@
 <script setup lang="ts">
+import type { MallOrderStatus } from '~/composables/useMallOrders'
+import { formatMallOrderTime } from '~/composables/useMallOrders'
+import { normalizeMallAccount } from '~/composables/useMallAuth'
+
 const route = useRoute()
 const { smartNavigate } = useCustomRouting(route)
+const { orders, syncFromStorage, syncFromRemote } = useMallOrders()
+const { loginPhone, profile, syncFromStorage: syncAuthFromStorage } = useMallAuth()
+const products = useTeaProducts()
 
-type OrderStatus = 'reviewing' | 'shipping' | 'receiving' | 'enjoying'
-
-interface OrderItem {
-  id: string
-  name: string
-  spec: string
-  amount: string
-  time: string
-  status: OrderStatus
-  statusLabel: string
-}
-
-const statusStyleMap: Record<OrderStatus, { color: string, backgroundColor: string }> = {
+const statusStyleMap: Record<MallOrderStatus, { color: string, backgroundColor: string }> = {
   reviewing: {
     color: '#0c8a7e',
     backgroundColor: '#e9f8f4',
@@ -33,7 +28,7 @@ const statusStyleMap: Record<OrderStatus, { color: string, backgroundColor: stri
   },
 }
 
-const statusTabs: Array<{ key: 'all' | OrderStatus, label: string }> = [
+const statusTabs: Array<{ key: 'all' | MallOrderStatus, label: string }> = [
   { key: 'all', label: '全部' },
   { key: 'reviewing', label: '审核中' },
   { key: 'shipping', label: '待发货' },
@@ -41,31 +36,40 @@ const statusTabs: Array<{ key: 'all' | OrderStatus, label: string }> = [
   { key: 'enjoying', label: '享用中' },
 ]
 
-const mockOrders: OrderItem[] = [
-  { id: 'OD20260506001', name: '武夷岩茶礼盒', spec: '大红袍 250g', amount: '￥368.00', time: '2026-05-06 09:25', status: 'reviewing', statusLabel: '审核中' },
-  { id: 'OD20260504032', name: '安溪铁观音', spec: '清香型 200g', amount: '￥228.00', time: '2026-05-04 16:11', status: 'shipping', statusLabel: '待发货' },
-  { id: 'OD20260502017', name: '白毫银针', spec: '福鼎 150g', amount: '￥499.00', time: '2026-05-02 10:58', status: 'receiving', statusLabel: '待收货' },
-  { id: 'OD20260429106', name: '凤凰单丛', spec: '蜜兰香 125g', amount: '￥188.00', time: '2026-04-29 21:06', status: 'enjoying', statusLabel: '享用中' },
-  { id: 'OD20260425133', name: '龙井春茶', spec: '明前 100g', amount: '￥329.00', time: '2026-04-25 14:43', status: 'shipping', statusLabel: '待发货' },
-]
-
-const activeStatus = computed<'all' | OrderStatus>(() => {
+const activeStatus = computed<'all' | MallOrderStatus>(() => {
   const rawStatus = String(route.query.status || 'all')
-  return statusTabs.some(item => item.key === rawStatus) ? rawStatus as 'all' | OrderStatus : 'all'
+  return statusTabs.some(item => item.key === rawStatus) ? rawStatus as 'all' | MallOrderStatus : 'all'
+})
+
+const currentUserPhone = computed(() => {
+  return normalizeMallAccount(loginPhone.value || profile.value?.phone || '')
+})
+
+const userOrders = computed(() => {
+  if (!currentUserPhone.value) {
+    return []
+  }
+  return orders.value.filter(item => item.receiverPhone === currentUserPhone.value)
 })
 
 const filteredOrders = computed(() => {
   if (activeStatus.value === 'all') {
-    return mockOrders
+    return userOrders.value
   }
-  return mockOrders.filter(item => item.status === activeStatus.value)
+  return userOrders.value.filter(item => item.status === activeStatus.value)
 })
+
+if (import.meta.client) {
+  void syncAuthFromStorage()
+  syncFromStorage()
+  void syncFromRemote()
+}
 
 async function goBack() {
   await smartNavigate('/my')
 }
 
-async function changeStatus(status: 'all' | OrderStatus) {
+async function changeStatus(status: 'all' | MallOrderStatus) {
   if (status === 'all') {
     await smartNavigate('/orders')
     return
@@ -76,8 +80,53 @@ async function changeStatus(status: 'all' | OrderStatus) {
   })
 }
 
-function getStatusStyle(status: OrderStatus) {
+function getStatusStyle(status: MallOrderStatus, paid: boolean) {
+  if (status === 'reviewing' && !paid) {
+    return {
+      color: '#bd6a00',
+      backgroundColor: '#fff4e5',
+    }
+  }
   return statusStyleMap[status] || statusStyleMap.reviewing
+}
+
+function getStatusLabel(status: MallOrderStatus, paid: boolean) {
+  if (status === 'reviewing' && !paid) {
+    return '待支付'
+  }
+  const labelMap: Record<MallOrderStatus, string> = {
+    reviewing: '审核中',
+    shipping: '待发货',
+    receiving: '待收货',
+    enjoying: '享用中',
+  }
+  return labelMap[status]
+}
+
+function isGarbledText(value: string) {
+  const text = String(value || '').trim()
+  if (!text) {
+    return true
+  }
+  return text.includes('�')
+}
+
+function getFallbackProduct(productId: number) {
+  return products.value.find(item => item.id === productId)
+}
+
+function getDisplayOrderName(item: (typeof filteredOrders.value)[number]) {
+  if (!isGarbledText(item.name)) {
+    return item.name
+  }
+  return getFallbackProduct(item.productId)?.name || `商品${item.productId}`
+}
+
+function getDisplayOrderSpec(item: (typeof filteredOrders.value)[number]) {
+  if (!isGarbledText(item.spec)) {
+    return item.spec
+  }
+  return getFallbackProduct(item.productId)?.subtitle || '规格信息待更新'
 }
 </script>
 
@@ -121,29 +170,29 @@ function getStatusStyle(status: OrderStatus) {
       >
         <div class="mb-2.5 flex items-center justify-between">
           <p class="line-clamp-1 pr-2 text-[20px] font-semibold leading-[1.2] tracking-[0.01em] text-black/85">
-            {{ item.name }}
+            {{ getDisplayOrderName(item) }}
           </p>
           <span
             class="shrink-0 rounded-full px-2.5 py-0.5 text-xs font-semibold leading-5"
-            :style="getStatusStyle(item.status)"
+              :style="getStatusStyle(item.status, item.paid)"
           >
-            {{ item.statusLabel }}
+              {{ getStatusLabel(item.status, item.paid) }}
           </span>
         </div>
         <p class="mb-1 text-[15px] leading-[1.45] text-black/60">
-          规格：{{ item.spec }}
+          规格：{{ getDisplayOrderSpec(item) }}
         </p>
         <p class="text-[15px] leading-[1.45] text-black/48">
           订单号：{{ item.id }}
         </p>
         <div class="my-2.5 h-px bg-black/8" />
         <div class="flex items-center justify-between">
-          <span class="text-[16px] leading-6 tracking-[0.01em] text-black/52">{{ item.time }}</span>
+          <span class="text-[16px] leading-6 tracking-[0.01em] text-black/52">{{ formatMallOrderTime(item.createdAt) }}</span>
           <span
             class="font-semibold leading-none tracking-[0.01em]"
             style="color: #e35a2f;"
           >
-            {{ item.amount }}
+            ￥{{ item.totalAmount.toFixed(2) }}
           </span>
         </div>
       </article>

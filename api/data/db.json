@@ -1,0 +1,367 @@
+{
+  "products": [
+    {
+      "id": 1,
+      "name": "三亚海岛自由行",
+      "subtitle": "五星海景酒店，往返机票",
+      "description": "含双人机酒套餐与接送机服务，支持节假日预约，适合家庭与情侣出游。",
+      "origin": "海南三亚",
+      "price": 3980,
+      "image": "https://images.unsplash.com/photo-1507525428034-b723cf961d3e?auto=format&fit=crop&w=1400&q=80",
+      "category": "travel"
+    },
+    {
+      "id": 2,
+      "name": "云南丽江慢游套票",
+      "subtitle": "古城客栈，玉龙雪山一日游",
+      "description": "含三晚精品客栈和景区联票，行程轻松，附赠当地特色接待服务。",
+      "origin": "云南丽江",
+      "price": 3280,
+      "image": "https://images.unsplash.com/photo-1501555088652-021faa106b9b?auto=format&fit=crop&w=1400&q=80",
+      "category": "travel"
+    },
+    {
+      "id": 3,
+      "name": "日本关西深度游",
+      "subtitle": "大阪+京都+奈良，中文导览",
+      "description": "热门关西路线，覆盖经典打卡地，含境外意外险与签证代办咨询。",
+      "origin": "日本关西",
+      "price": 5680,
+      "image": "https://images.unsplash.com/photo-1492571350019-22de08371fd3?auto=format&fit=crop&w=1400&q=80",
+      "category": "travel"
+    },
+    {
+      "id": 4,
+      "name": "行书书法定制",
+      "subtitle": "名家手写，支持题字落款",
+      "description": "可定制家训、店名、赠礼祝词，宣纸装裱可选，支持视频验稿确认。",
+      "origin": "江苏苏州",
+      "price": 1280,
+      "image": "https://images.unsplash.com/photo-1455390582262-044cdead277a?auto=format&fit=crop&w=1400&q=80",
+      "category": "calligraphy"
+    },
+    {
+      "id": 5,
+      "name": "国画山水定制",
+      "subtitle": "写意山水，客厅装饰推荐",
+      "description": "根据空间尺寸定制构图，附高清电子版，支持送礼包装与署名题跋。",
+      "origin": "安徽黄山",
+      "price": 2280,
+      "image": "https://images.unsplash.com/photo-1513364776144-60967b0f800f?auto=format&fit=crop&w=1400&q=80",
+      "category": "calligraphy"
+    },
+    {
+      "id": 6,
+      "name": "篆刻印章礼盒",
+      "subtitle": "石章雕刻，商务收藏佳选",
+      "description": "提供姓名章、闲章与篆刻设计，含锦盒包装，适合商务往来与收藏。",
+      "origin": "浙江杭州",
+      "price": 980,
+      "image": "https://images.unsplash.com/photo-1518834107812-67b0b7c58434?auto=format&fit=crop&w=1400&q=80",
+      "category": "calligraphy"
+    }
+  ],
+  "orders": [
+    {
+      "id": "OD1778054951570",
+      "productId": 4,
+      "name": "行书书法定制",
+      "spec": "名家手写，支持题字落款",
+      "totalAmount": 1210,
+      "createdAt": "2026-05-06T08:09:11.570Z",
+      "status": "shipping",
+      "paid": true,
+      "payType": "installment",
+      "payChannel": "card",
+      "receiverName": "商城管理员",
+      "receiverPhone": "19900000000",
+      "receiverAddress": "广东省广州市天河区珠江新城（测试定位）",
+      "installmentPlan": [
+        {
+          "period": 1,
+          "dueDate": "2026-06-06",
+          "principal": 100.83,
+          "fee": 2.02,
+          "amount": 102.85,
+          "paid": true
+        },
+        {
+          "period": 2,
+          "dueDate": "2026-07-06",
+          "principal": 100.83,
+          "fee": 2.02,
+          "amount": 102.85,
+          "paid": false
+        },
+        {
+          "period": 3,
+          "dueDate": "2026-08-06",
+          "principal": 100.83,
+          "fee": 2.02,
+          "amount": 102.85,
+          "paid": false
+        },
+        {
+          "period": 4,
+          "dueDate": "2026-09-06",
+          "principal": 100.83,
+          "fee": 2.02,
+          "amount": 102.85,
+          "paid": false
+        },
+        {
+          "period": 5,
+          "dueDate": "2026-10-06",
+          "principal": 100.83,
+          "fee": 2.02,
+          "amount": 102.85,
+          "paid": false
+        },
+        {
+          "period": 6,
+          "dueDate": "2026-11-06",
+          "principal": 100.83,
+          "fee": 2.02,
+          "amount": 102.85,
+          "paid": false
+        },
+        {
+          "period": 7,
+          "dueDate": "2026-12-06",
+          "principal": 100.83,
+          "fee": 2.02,
+          "amount": 102.85,
+          "paid": false
+        },
+        {
+          "period": 8,
+          "dueDate": "2027-01-06",
+          "principal": 100.83,
+          "fee": 2.02,
+          "amount": 102.85,
+          "paid": false
+        },
+        {
+          "period": 9,
+          "dueDate": "2027-02-06",
+          "principal": 100.83,
+          "fee": 2.02,
+          "amount": 102.85,
+          "paid": false
+        },
+        {
+          "period": 10,
+          "dueDate": "2027-03-06",
+          "principal": 100.83,
+          "fee": 2.02,
+          "amount": 102.85,
+          "paid": false
+        },
+        {
+          "period": 11,
+          "dueDate": "2027-04-06",
+          "principal": 100.83,
+          "fee": 2.02,
+          "amount": 102.85,
+          "paid": false
+        },
+        {
+          "period": 12,
+          "dueDate": "2027-05-06",
+          "principal": 100.83,
+          "fee": 2.02,
+          "amount": 102.85,
+          "paid": false
+        }
+      ]
+    },
+    {
+      "id": "OD1778050278216",
+      "productId": 3,
+      "name": "日本关西深度游",
+      "spec": "大阪+京都+奈良，中文导览",
+      "totalAmount": 11272,
+      "createdAt": "2026-05-06T06:51:18.216Z",
+      "status": "shipping",
+      "paid": false,
+      "payType": "installment",
+      "payChannel": "card",
+      "receiverName": "商城管理员",
+      "receiverPhone": "19900000000",
+      "receiverAddress": "广东省广州市天河区珠江新城（测试定位）",
+      "installmentPlan": [
+        {
+          "period": 1,
+          "dueDate": "2026-06-06",
+          "principal": 939.33,
+          "fee": 18.79,
+          "amount": 958.12,
+          "paid": false
+        },
+        {
+          "period": 2,
+          "dueDate": "2026-07-06",
+          "principal": 939.33,
+          "fee": 18.79,
+          "amount": 958.12,
+          "paid": false
+        },
+        {
+          "period": 3,
+          "dueDate": "2026-08-06",
+          "principal": 939.33,
+          "fee": 18.79,
+          "amount": 958.12,
+          "paid": false
+        },
+        {
+          "period": 4,
+          "dueDate": "2026-09-06",
+          "principal": 939.33,
+          "fee": 18.79,
+          "amount": 958.12,
+          "paid": false
+        },
+        {
+          "period": 5,
+          "dueDate": "2026-10-06",
+          "principal": 939.33,
+          "fee": 18.79,
+          "amount": 958.12,
+          "paid": false
+        },
+        {
+          "period": 6,
+          "dueDate": "2026-11-06",
+          "principal": 939.33,
+          "fee": 18.79,
+          "amount": 958.12,
+          "paid": false
+        },
+        {
+          "period": 7,
+          "dueDate": "2026-12-06",
+          "principal": 939.33,
+          "fee": 18.79,
+          "amount": 958.12,
+          "paid": false
+        },
+        {
+          "period": 8,
+          "dueDate": "2027-01-06",
+          "principal": 939.33,
+          "fee": 18.79,
+          "amount": 958.12,
+          "paid": false
+        },
+        {
+          "period": 9,
+          "dueDate": "2027-02-06",
+          "principal": 939.33,
+          "fee": 18.79,
+          "amount": 958.12,
+          "paid": false
+        },
+        {
+          "period": 10,
+          "dueDate": "2027-03-06",
+          "principal": 939.33,
+          "fee": 18.79,
+          "amount": 958.12,
+          "paid": false
+        },
+        {
+          "period": 11,
+          "dueDate": "2027-04-06",
+          "principal": 939.33,
+          "fee": 18.79,
+          "amount": 958.12,
+          "paid": false
+        },
+        {
+          "period": 12,
+          "dueDate": "2027-05-06",
+          "principal": 939.33,
+          "fee": 18.79,
+          "amount": 958.12,
+          "paid": false
+        }
+      ]
+    }
+  ],
+  "users": [
+    {
+      "id": "U19900000000",
+      "name": "商城管理员",
+      "phone": "19900000000",
+      "idCardFront": "mock://admin/id-card-front",
+      "idCardBack": "mock://admin/id-card-back",
+      "idCardHandheld": "mock://admin/id-card-handheld",
+      "locationText": "广东省广州市天河区珠江新城（测试定位）",
+      "latitude": 23.119751,
+      "longitude": 113.327676,
+      "creditStatus": "良好",
+      "registerAt": "2026-05-01T09:00:00+08:00"
+    }
+  ],
+  "addresses": [
+    {
+      "id": 1,
+      "userPhone": "19900000000",
+      "receiver": "商城管理员",
+      "phone": "19900000000",
+      "province": "广东省",
+      "city": "广州市",
+      "district": "天河区",
+      "detail": "珠江新城花城大道88号",
+      "isDefault": true,
+      "createdAt": "2026-05-01T10:00:00+08:00"
+    }
+  ],
+  "bankCards": [
+    {
+      "id": 1,
+      "userPhone": "19900000000",
+      "bankName": "中国建设银行",
+      "cardType": "储蓄卡",
+      "cardNo": "6227001234566218",
+      "owner": "商**",
+      "createdAt": "2026-05-01T10:10:00+08:00"
+    },
+    {
+      "id": 2,
+      "userPhone": "19900000000",
+      "bankName": "招商银行",
+      "cardType": "储蓄卡",
+      "cardNo": "6225889876548893",
+      "owner": "商**",
+      "createdAt": "2026-05-01T10:20:00+08:00"
+    }
+  ],
+  "bills": [
+    {
+      "id": 1,
+      "userPhone": "19900000000",
+      "title": "茶叶分期订单 #A20260508",
+      "amount": -620,
+      "time": "2026-05-02 11:32",
+      "status": "待还款"
+    },
+    {
+      "id": 2,
+      "userPhone": "19900000000",
+      "title": "商城支付（乌龙礼盒）",
+      "amount": -288,
+      "time": "2026-04-27 09:16",
+      "status": "已完成"
+    },
+    {
+      "id": 3,
+      "userPhone": "19900000000",
+      "title": "还款入账",
+      "amount": 1000,
+      "time": "2026-04-20 20:08",
+      "status": "已到账"
+    }
+  ]
+}

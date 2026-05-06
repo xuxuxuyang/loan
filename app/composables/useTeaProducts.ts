@@ -167,8 +167,38 @@ function shuffleProducts(list: TeaProduct[]) {
   return copied
 }
 
+function resolveMallApiBase() {
+  const runtimeConfig = useRuntimeConfig()
+  return runtimeConfig.public.mallApiBase || 'http://localhost:3110/api'
+}
+
 export function useTeaProducts() {
-  return useState<TeaProduct[]>('index-tea-products', () => shuffleProducts(teaProducts))
+  const products = useState<TeaProduct[]>('index-tea-products', () => shuffleProducts(teaProducts))
+  const synced = useState<boolean>('index-tea-products-synced', () => false)
+
+  const syncFromApi = async () => {
+    if (!import.meta.client) {
+      return
+    }
+    try {
+      const response = await $fetch<{ success: boolean, data: TeaProduct[] }>(`${resolveMallApiBase()}/products`, {
+        method: 'GET',
+      })
+      if (Array.isArray(response?.data) && response.data.length > 0) {
+        products.value = response.data
+      }
+    }
+    catch (error) {
+      console.error('读取商品接口失败', error)
+    }
+  }
+
+  if (import.meta.client && !synced.value) {
+    synced.value = true
+    void syncFromApi()
+  }
+
+  return products
 }
 
 export function useMallCategories() {

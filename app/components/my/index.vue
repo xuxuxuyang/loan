@@ -1,8 +1,11 @@
 <script setup lang="ts">
+import { isAdminTestAccount } from '~/composables/useMallAuth'
+
 const products = useTeaProducts()
 const route = useRoute()
 const { smartNavigate } = useCustomRouting(route)
 const { ensureRegistered, isLoggedIn, loginPhone, profile, syncFromStorage, logout } = useMallAuth()
+const { summary, fetchSummary } = useMallMy()
 
 const orderStatus = [
   { title: '审核中', icon: '⏱️', key: 'reviewing' },
@@ -20,20 +23,6 @@ const serviceList = [
   { key: 'logout', title: '注销', icon: '✖️' },
 ]
 
-const mockSummary = {
-  orderCount: {
-    reviewing: 1,
-    shipping: 2,
-    receiving: 3,
-    enjoying: 5,
-  },
-  bankCardCount: 2,
-  billPendingAmount: 2368.5,
-  points: 1280,
-  couponCount: 6,
-  defaultAddress: '广东省广州市天河区珠江新城花城大道88号',
-}
-
 const displayName = computed(() => {
   if (!isLoggedIn.value) {
     return '登录/注册'
@@ -41,7 +30,7 @@ const displayName = computed(() => {
   if (profile.value?.name) {
     return profile.value.name
   }
-  if (loginPhone.value === 'admin') {
+  if (isAdminTestAccount(loginPhone.value)) {
     return '管理员账号'
   }
   return `用户${loginPhone.value.slice(-4)}`
@@ -51,8 +40,8 @@ const displaySubText = computed(() => {
   if (!isLoggedIn.value) {
     return '账户还款、资产信息登录后查看'
   }
-  if (loginPhone.value === 'admin') {
-    return '测试账号已登录，展示模拟完整数据'
+  if (isAdminTestAccount(loginPhone.value)) {
+    return '测试账号已登录，展示真实接口数据'
   }
   return `登录账号：${loginPhone.value}`
 })
@@ -61,25 +50,38 @@ const displayOrderStatus = computed(() => {
   return orderStatus.map(item => ({
     ...item,
     count: isLoggedIn.value
-      ? mockSummary.orderCount[item.key as keyof typeof mockSummary.orderCount]
+      ? summary.value.orderCount[item.key as keyof typeof summary.value.orderCount]
       : 0,
   }))
 })
 
 if (import.meta.client) {
   syncFromStorage()
+  if (isLoggedIn.value) {
+    void fetchSummary(loginPhone.value)
+  }
 }
+
+watch([isLoggedIn, loginPhone], async ([loggedIn, phone]) => {
+  if (!loggedIn || !phone) {
+    return
+  }
+  await fetchSummary(phone)
+})
 
 async function handleGoRegister() {
   await smartNavigate('/login')
 }
 
-async function handleBuy(productName: string) {
+async function handleBuy(productId: number) {
   const passed = await ensureRegistered()
   if (!passed) {
     return
   }
-  ElMessage.success(`下单成功：${productName}`)
+  await smartNavigate({
+    path: '/order-create',
+    query: { productId: String(productId) },
+  })
 }
 
 async function handleBankCard() {
@@ -174,7 +176,7 @@ async function handleService(key: string) {
               我的银行卡
             </p>
             <p class="mt-1 text-sm text-black/50">
-              {{ isLoggedIn ? `已绑定 ${mockSummary.bankCardCount} 张` : '登录后查看' }}
+              {{ isLoggedIn ? `已绑定 ${summary.bankCardCount} 张` : '登录后查看' }}
             </p>
           </button>
           <button
@@ -186,7 +188,7 @@ async function handleService(key: string) {
               全部账单
             </p>
             <p class="mt-1 text-sm text-black/50">
-              {{ isLoggedIn ? `待还 ¥${mockSummary.billPendingAmount}` : '登录后查看' }}
+              {{ isLoggedIn ? `待还 ¥${summary.billPendingAmount}` : '登录后查看' }}
             </p>
           </button>
         </div>
@@ -195,15 +197,15 @@ async function handleService(key: string) {
           <div class="flex items-center justify-between text-base text-black/75">
             <p>
               积分
-              <span class="ml-1 font-semibold text-[#dd667d]">{{ isLoggedIn ? mockSummary.points : '--' }}</span>
+              <span class="ml-1 font-semibold text-[#dd667d]">{{ isLoggedIn ? summary.points : '--' }}</span>
             </p>
             <p>
               优惠券
-              <span class="ml-1 font-semibold text-[#dd667d]">{{ isLoggedIn ? `${mockSummary.couponCount}张` : '--' }}</span>
+              <span class="ml-1 font-semibold text-[#dd667d]">{{ isLoggedIn ? `${summary.couponCount}张` : '--' }}</span>
             </p>
           </div>
           <p class="mt-3 line-clamp-1 text-sm text-black/55">
-            默认地址：{{ isLoggedIn ? mockSummary.defaultAddress : '登录后查看默认收货地址' }}
+            默认地址：{{ isLoggedIn ? (summary.defaultAddress || '暂未设置默认收货地址') : '登录后查看默认收货地址' }}
           </p>
         </div>
 
@@ -271,7 +273,7 @@ async function handleService(key: string) {
                 <button
                   type="button"
                   class="rounded-md bg-[var(--theme-color)] px-3 py-1.5 text-xs text-white"
-                  @click="handleBuy(item.name)"
+                  @click="handleBuy(item.id)"
                 >
                   购买
                 </button>

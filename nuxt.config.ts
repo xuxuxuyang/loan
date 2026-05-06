@@ -27,6 +27,7 @@ export default defineNuxtConfig({
   runtimeConfig: {
     public: {
       apiBase: process.env.NUXT_PUBLIC_API_BASE, // API 接口地址
+      mallApiBase: process.env.NUXT_PUBLIC_MALL_API_BASE || 'http://localhost:3110/api', // 商城业务接口地址
       // googleClientId: process.env.NUXT_GOOGLE_CLIENT_ID, // 谷歌登录 ID
     },
   },

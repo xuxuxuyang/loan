@@ -1,9 +1,23 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import * as echarts from 'echarts'
-import { useOrdersStore } from '../stores/useOrdersStore'
+import { useOrdersStore, type OrderItem } from '../stores/useOrdersStore'
 
 const { orders } = useOrdersStore()
+const todayKey = new Date().toISOString().slice(0, 10)
+
+interface InstallmentRow {
+  orderId: string
+  user: string
+  product: string
+  orderStatus: OrderItem['status']
+  period: number
+  dueDate: string
+  principal: number
+  fee: number
+  amount: number
+  repayState: '已回款' | '待回款' | '逾期待回'
+}
 
 const totalOrders = computed(() => orders.value.length)
 const totalSales = computed(() => orders.value.reduce((sum, item) => sum + item.totalAmount, 0))
@@ -65,6 +79,162 @@ const upcomingRepays = computed(() => {
     }))
     .slice(0, 5)
 })
+
+const filterKeyword = ref('')
+const filterOrderStatus = ref<'all' | OrderItem['status']>('all')
+const filterPeriod = ref<'all' | number>('all')
+const filterRepayState = ref<'all' | InstallmentRow['repayState']>('all')
+
+const allPeriods = computed(() => {
+  const set = new Set<number>()
+  orders.value.forEach((order) => {
+    order.installmentPlan.forEach((item) => set.add(item.period))
+  })
+  return [...set].sort((a, b) => a - b)
+})
+
+const installmentRows = computed<InstallmentRow[]>(() => {
+  return orders.value.flatMap(order =>
+    order.installmentPlan.map((item) => {
+      let repayState: InstallmentRow['repayState'] = '待回款'
+      if (item.paid) {
+        repayState = '已回款'
+      }
+      else if (item.dueDate < todayKey) {
+        repayState = '逾期待回'
+      }
+
+      return {
+        orderId: order.id,
+        user: order.user,
+        product: order.product,
+        orderStatus: order.status,
+        period: item.period,
+        dueDate: item.dueDate,
+        principal: item.principal,
+        fee: item.fee,
+        amount: item.amount,
+        repayState,
+      }
+    }),
+  )
+})
+
+const filteredInstallmentRows = computed(() => {
+  const keyword = filterKeyword.value.trim()
+  return installmentRows.value.filter((item) => {
+    if (keyword) {
+      const matched = item.orderId.includes(keyword)
+        || item.user.includes(keyword)
+        || item.product.includes(keyword)
+      if (!matched) {
+        return false
+      }
+    }
+
+    if (filterOrderStatus.value !== 'all' && item.orderStatus !== filterOrderStatus.value) {
+      return false
+    }
+
+    if (filterPeriod.value !== 'all' && item.period !== filterPeriod.value) {
+      return false
+    }
+
+    if (filterRepayState.value !== 'all' && item.repayState !== filterRepayState.value) {
+      return false
+    }
+
+    return true
+  })
+})
+
+const filteredInstallmentSummary = computed(() => {
+  return filteredInstallmentRows.value.reduce((acc, item) => {
+    acc.totalAmount += item.amount
+    acc.totalPrincipal += item.principal
+    acc.totalFee += item.fee
+    if (item.repayState === '已回款') {
+      acc.paidAmount += item.amount
+    }
+    else if (item.repayState === '逾期待回') {
+      acc.overdueAmount += item.amount
+    }
+    else {
+      acc.pendingAmount += item.amount
+    }
+    return acc
+  }, {
+    totalAmount: 0,
+    totalPrincipal: 0,
+    totalFee: 0,
+    paidAmount: 0,
+    pendingAmount: 0,
+    overdueAmount: 0,
+  })
+})
+
+const periodAmountRows = computed(() => {
+  const map = new Map<number, {
+    period: number
+    orderIds: Set<string>
+    installmentCount: number
+    totalPrincipal: number
+    totalFee: number
+    totalAmount: number
+    paidAmount: number
+    pendingAmount: number
+    overdueAmount: number
+  }>()
+
+  filteredInstallmentRows.value.forEach((item) => {
+    if (!map.has(item.period)) {
+      map.set(item.period, {
+        period: item.period,
+        orderIds: new Set<string>(),
+        installmentCount: 0,
+        totalPrincipal: 0,
+        totalFee: 0,
+        totalAmount: 0,
+        paidAmount: 0,
+        pendingAmount: 0,
+        overdueAmount: 0,
+      })
+    }
+    const target = map.get(item.period)
+    if (!target) return
+
+    target.orderIds.add(item.orderId)
+    target.installmentCount += 1
+    target.totalPrincipal += item.principal
+    target.totalFee += item.fee
+    target.totalAmount += item.amount
+
+    if (item.repayState === '已回款') {
+      target.paidAmount += item.amount
+    }
+    else if (item.repayState === '逾期待回') {
+      target.overdueAmount += item.amount
+    }
+    else {
+      target.pendingAmount += item.amount
+    }
+  })
+
+  return [...map.values()]
+    .sort((a, b) => a.period - b.period)
+    .map(item => ({
+      ...item,
+      orderCount: item.orderIds.size,
+      paidRate: item.totalAmount ? (item.paidAmount / item.totalAmount) * 100 : 0,
+    }))
+})
+
+function resetTableFilters() {
+  filterKeyword.value = ''
+  filterOrderStatus.value = 'all'
+  filterPeriod.value = 'all'
+  filterRepayState.value = 'all'
+}
 
 const trendChartRef = ref<HTMLElement | null>(null)
 const gaugeChartRef = ref<HTMLElement | null>(null)
@@ -388,6 +558,141 @@ watch([orders, totalSales, totalReceivable, profitRate], () => {
 
   <div class="panel mt">
     <h3 class="section-title">
+      分期金额统计表（可筛选）
+    </h3>
+    <div class="filter-grid">
+      <label>
+        关键词
+        <input
+          v-model="filterKeyword"
+          placeholder="订单号 / 用户 / 商品"
+        >
+      </label>
+      <label>
+        订单状态
+        <select v-model="filterOrderStatus">
+          <option value="all">
+            全部状态
+          </option>
+          <option value="待付款">
+            待付款
+          </option>
+          <option value="待发货">
+            待发货
+          </option>
+          <option value="待收货">
+            待收货
+          </option>
+          <option value="已完成">
+            已完成
+          </option>
+        </select>
+      </label>
+      <label>
+        期次
+        <select v-model="filterPeriod">
+          <option value="all">
+            全部期次
+          </option>
+          <option
+            v-for="period in allPeriods"
+            :key="period"
+            :value="period"
+          >
+            第{{ period }}期
+          </option>
+        </select>
+      </label>
+      <label>
+        回款状态
+        <select v-model="filterRepayState">
+          <option value="all">
+            全部
+          </option>
+          <option value="已回款">
+            已回款
+          </option>
+          <option value="待回款">
+            待回款
+          </option>
+          <option value="逾期待回">
+            逾期待回
+          </option>
+        </select>
+      </label>
+      <button
+        class="btn-reset"
+        type="button"
+        @click="resetTableFilters"
+      >
+        重置筛选
+      </button>
+    </div>
+
+    <div class="amount-cards">
+      <article class="amount-item">
+        <p>筛选后总应还金额</p>
+        <strong>¥ {{ filteredInstallmentSummary.totalAmount.toFixed(2) }}</strong>
+      </article>
+      <article class="amount-item">
+        <p>筛选后已回款金额</p>
+        <strong>¥ {{ filteredInstallmentSummary.paidAmount.toFixed(2) }}</strong>
+      </article>
+      <article class="amount-item">
+        <p>筛选后待回款金额</p>
+        <strong>¥ {{ filteredInstallmentSummary.pendingAmount.toFixed(2) }}</strong>
+      </article>
+      <article class="amount-item">
+        <p>筛选后逾期待回金额</p>
+        <strong>¥ {{ filteredInstallmentSummary.overdueAmount.toFixed(2) }}</strong>
+      </article>
+    </div>
+
+    <table class="table">
+      <thead>
+        <tr>
+          <th>期次</th>
+          <th>订单数</th>
+          <th>分期笔数</th>
+          <th>总本金</th>
+          <th>总手续费</th>
+          <th>总应还金额</th>
+          <th>已回款</th>
+          <th>待回款</th>
+          <th>逾期待回</th>
+          <th>回款率</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr
+          v-for="item in periodAmountRows"
+          :key="item.period"
+        >
+          <td>第{{ item.period }}期</td>
+          <td>{{ item.orderCount }}</td>
+          <td>{{ item.installmentCount }}</td>
+          <td>¥ {{ item.totalPrincipal.toFixed(2) }}</td>
+          <td>¥ {{ item.totalFee.toFixed(2) }}</td>
+          <td>¥ {{ item.totalAmount.toFixed(2) }}</td>
+          <td>¥ {{ item.paidAmount.toFixed(2) }}</td>
+          <td>¥ {{ item.pendingAmount.toFixed(2) }}</td>
+          <td>¥ {{ item.overdueAmount.toFixed(2) }}</td>
+          <td>{{ item.paidRate.toFixed(2) }}%</td>
+        </tr>
+        <tr v-if="!periodAmountRows.length">
+          <td
+            colspan="10"
+            class="empty-row"
+          >
+            当前筛选条件下暂无金额数据
+          </td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="panel mt">
+    <h3 class="section-title">
       即将到期还款（TOP 5）
     </h3>
     <table class="table">
@@ -466,5 +771,68 @@ watch([orders, totalSales, totalReceivable, profitRate], () => {
 
 .chart-small {
   height: 320px;
+}
+
+.filter-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.filter-grid label {
+  display: grid;
+  gap: 6px;
+  font-size: 13px;
+  color: #6b7280;
+}
+
+.filter-grid input,
+.filter-grid select {
+  height: 34px;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  padding: 0 10px;
+}
+
+.btn-reset {
+  margin-top: 22px;
+  height: 34px;
+  border-radius: 8px;
+  border: 1px solid #2563eb;
+  background: #eff6ff;
+  color: #1d4ed8;
+  cursor: pointer;
+}
+
+.amount-cards {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.amount-item {
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 10px;
+  background: #fafafa;
+}
+
+.amount-item p {
+  margin: 0;
+  color: #6b7280;
+  font-size: 13px;
+}
+
+.amount-item strong {
+  display: block;
+  margin-top: 6px;
+  font-size: 20px;
+}
+
+.empty-row {
+  text-align: center;
+  color: #9ca3af;
 }
 </style>

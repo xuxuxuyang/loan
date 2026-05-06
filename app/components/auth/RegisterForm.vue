@@ -139,12 +139,19 @@ async function handleSubmit() {
     longitude: form.value.longitude as number,
   }
 
-  register(payload)
-  ElMessage.success('注册成功')
+  try {
+    await register(payload)
+    ElMessage.success('注册成功')
 
-  const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : '/'
-  await smartNavigate(redirect.startsWith('/') ? redirect : '/')
-  submitting.value = false
+    const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : '/'
+    await smartNavigate(redirect.startsWith('/') ? redirect : '/')
+  }
+  catch (error) {
+    ElMessage.error((error as Error).message || '注册失败，请稍后重试')
+  }
+  finally {
+    submitting.value = false
+  }
 }
 
 async function goLogin() {

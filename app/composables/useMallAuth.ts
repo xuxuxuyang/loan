@@ -9,9 +9,48 @@ export interface RegisterPayload {
   longitude: number
 }
 
-const STORAGE_KEY = 'mall-register-profile'
 const COOKIE_KEY = 'mall_registered'
 const LOGIN_COOKIE_KEY = 'mall_login_phone'
+export const ADMIN_TEST_ACCOUNT_ALIAS = 'admin'
+export const ADMIN_TEST_PHONE = '19900000000'
+export const ADMIN_TEST_VERIFY_CODE = '1234'
+
+interface MallUserProfile extends RegisterPayload {
+  id: string
+  creditStatus?: '优秀' | '良好' | '一般' | '风险'
+  registerAt?: string
+  orderCount?: number
+  totalAmount?: number
+}
+
+function resolveMallApiBase() {
+  const runtimeConfig = useRuntimeConfig()
+  return runtimeConfig.public.mallApiBase || 'http://localhost:3110/api'
+}
+
+export function normalizeMallAccount(account: unknown) {
+  const value = typeof account === 'string'
+    ? account.trim()
+    : (typeof account === 'number' ? String(account) : '')
+  return value === ADMIN_TEST_ACCOUNT_ALIAS ? ADMIN_TEST_PHONE : value
+}
+
+export function isAdminTestAccount(account: string) {
+  return normalizeMallAccount(account) === ADMIN_TEST_PHONE
+}
+
+function createAdminTestProfile(): RegisterPayload {
+  return {
+    name: '商城管理员',
+    phone: ADMIN_TEST_PHONE,
+    idCardFront: 'mock://admin/id-card-front',
+    idCardBack: 'mock://admin/id-card-back',
+    idCardHandheld: 'mock://admin/id-card-handheld',
+    locationText: '广东省广州市天河区珠江新城（测试定位）',
+    latitude: 23.119751,
+    longitude: 113.327676,
+  }
+}
 
 export function useMallAuth() {
   const route = useRoute()
@@ -26,58 +65,91 @@ export function useMallAuth() {
     default: () => '',
   })
 
-  const isRegistered = useState<boolean>('mall-is-registered', () => registerCookie.value === '1')
-  const profile = useState<RegisterPayload | null>('mall-register-profile', () => null)
-  const loginPhone = useState<string>('mall-login-phone', () => loginCookie.value || '')
+  const profile = useState<MallUserProfile | null>('mall-register-profile', () => null)
+  const loginPhone = useState<string>('mall-login-phone', () => normalizeMallAccount(loginCookie.value || ''))
+  const syncing = useState<boolean>('mall-auth-syncing', () => false)
+  const isRegistered = computed(() => !!profile.value)
   const isLoggedIn = computed(() => !!loginPhone.value)
 
-  const syncFromStorage = () => {
-    if (!import.meta.client) {
+  const syncFromStorage = async () => {
+    if (!import.meta.client || syncing.value) {
+      return
+    }
+    const phone = normalizeMallAccount(loginPhone.value || loginCookie.value || '')
+    if (!phone) {
       return
     }
 
-    const raw = localStorage.getItem(STORAGE_KEY)
-    if (!raw) {
-      return
-    }
-
+    syncing.value = true
     try {
-      const parsed = JSON.parse(raw) as RegisterPayload
-      profile.value = parsed
+      const response = await $fetch<{ success: boolean, data: MallUserProfile | null }>(`${resolveMallApiBase()}/users/by-phone`, {
+        method: 'GET',
+        query: { phone },
+      })
+      profile.value = response?.data || null
+      if (profile.value) {
+        registerCookie.value = '1'
+      }
     }
     catch (error) {
-      console.error('读取注册信息失败', error)
+      console.error('读取用户信息失败', error)
+    }
+    finally {
+      syncing.value = false
     }
   }
 
-  const register = (payload: RegisterPayload) => {
-    profile.value = payload
-    isRegistered.value = true
-    registerCookie.value = '1'
-
-    if (import.meta.client) {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(payload))
+  const register = async (payload: RegisterPayload) => {
+    const normalizedPayload = {
+      ...payload,
+      phone: normalizeMallAccount(payload.phone),
     }
+    const response = await $fetch<{ success: boolean, data: MallUserProfile }>(`${resolveMallApiBase()}/auth/register`, {
+      method: 'POST',
+      body: normalizedPayload,
+    })
+    profile.value = response.data
+    registerCookie.value = '1'
+    return response.data
   }
 
   const logout = () => {
     profile.value = null
-    isRegistered.value = false
     loginPhone.value = ''
     registerCookie.value = ''
     loginCookie.value = ''
-
-    if (import.meta.client) {
-      localStorage.removeItem(STORAGE_KEY)
-    }
   }
 
-  const loginByPhone = (phone: string) => {
-    loginPhone.value = phone
-    loginCookie.value = phone
+  const loginByPhone = async (phone: string, verifyCode: string) => {
+    const normalizedPhone = normalizeMallAccount(phone)
+    const response = await $fetch<{ success: boolean, data: { token: string, user: MallUserProfile } }>(`${resolveMallApiBase()}/auth/login`, {
+      method: 'POST',
+      body: {
+        phone: normalizedPhone,
+        verifyCode,
+      },
+    })
+    loginPhone.value = normalizedPhone
+    loginCookie.value = normalizedPhone
+    profile.value = response.data.user
+    registerCookie.value = '1'
+    return response.data.user
+  }
+
+  const ensureAdminTestAccountReady = async () => {
+    if (profile.value?.phone === ADMIN_TEST_PHONE && isRegistered.value) {
+      return
+    }
+    await register(createAdminTestProfile())
   }
 
   const ensureRegistered = async (redirectPath?: string) => {
+    await syncFromStorage()
+
+    if (isAdminTestAccount(loginPhone.value)) {
+      await ensureAdminTestAccountReady()
+    }
+
     if (isRegistered.value && isLoggedIn.value) {
       return true
     }
@@ -91,7 +163,7 @@ export function useMallAuth() {
   }
 
   if (import.meta.client && !profile.value) {
-    syncFromStorage()
+    void syncFromStorage()
   }
 
   return {
@@ -103,6 +175,7 @@ export function useMallAuth() {
     loginByPhone,
     logout,
     ensureRegistered,
+    ensureAdminTestAccountReady,
     syncFromStorage,
   }
 }

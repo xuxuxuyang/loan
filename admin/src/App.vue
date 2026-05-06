@@ -7,7 +7,14 @@ const pageTitle = computed(() => String(route.meta.title || '后台管理'))
 
 const menus = [
   { label: '用户管理', path: '/users' },
-  { label: '订单管理', path: '/orders' },
+  {
+    label: '订单管理',
+    path: '/orders',
+    children: [
+      { label: '订单管理', path: '/orders' },
+      { label: '审核订单', path: '/orders/review' },
+    ],
+  },
   { label: '数据大盘', path: '/' },
 ]
 </script>
@@ -19,14 +26,30 @@ const menus = [
         琥珀商城
       </div>
       <nav class="admin-nav">
-        <RouterLink
+        <template
           v-for="item in menus"
           :key="item.path"
-          :to="item.path"
-          class="admin-nav-item"
         >
-          {{ item.label }}
-        </RouterLink>
+          <RouterLink
+            :to="item.path"
+            class="admin-nav-item"
+          >
+            {{ item.label }}
+          </RouterLink>
+          <div
+            v-if="item.children?.length"
+            class="admin-sub-nav"
+          >
+            <RouterLink
+              v-for="child in item.children"
+              :key="child.path"
+              :to="child.path"
+              class="admin-sub-nav-item"
+            >
+              {{ child.label }}
+            </RouterLink>
+          </div>
+        </template>
       </nav>
     </aside>
 

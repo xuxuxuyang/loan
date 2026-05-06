@@ -17,6 +17,8 @@ const promos = [
   { title: '限时折扣', desc: '今晚 20:00 爆款 88 折', tag: 'SALE' },
 ]
 
+const route = useRoute()
+const { smartNavigate } = useCustomRouting(route)
 const { ensureRegistered } = useMallAuth()
 
 async function handleCart(productName: string) {
@@ -27,12 +29,18 @@ async function handleCart(productName: string) {
   ElMessage.success(`已加入购物车：${productName}`)
 }
 
-async function handleBuy(productName: string) {
+async function handleBuy(productId: number, productName: string) {
   const passed = await ensureRegistered()
   if (!passed) {
     return
   }
-  ElMessage.success(`下单成功：${productName}`)
+  await smartNavigate({
+    path: '/order-create',
+    query: {
+      productId: String(productId),
+      productName,
+    },
+  })
 }
 </script>
 
@@ -124,7 +132,7 @@ async function handleBuy(productName: string) {
                 <button
                   type="button"
                   class="buy-btn rounded-lg px-4 py-2 text-sm text-white hover:opacity-90"
-                  @click="handleBuy(item.name)"
+                  @click="handleBuy(item.id, item.name)"
                 >
                   立即购买
                 </button>

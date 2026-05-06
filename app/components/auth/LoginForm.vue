@@ -1,7 +1,9 @@
 <script setup lang="ts">
+import { ADMIN_TEST_VERIFY_CODE, isAdminTestAccount, normalizeMallAccount } from '~/composables/useMallAuth'
+
 const route = useRoute()
 const { smartNavigate } = useCustomRouting(route)
-const { isRegistered, profile, syncFromStorage, loginByPhone } = useMallAuth()
+const { syncFromStorage, loginByPhone, ensureAdminTestAccountReady } = useMallAuth()
 
 const phone = ref('')
 const verifyCode = ref('')
@@ -9,8 +11,6 @@ const agree = ref(true)
 const countdown = ref(0)
 
 const phoneReg = /^1\d{10}$/
-const TEST_ACCOUNT = 'admin'
-const TEST_CODE = '1234'
 const submitting = ref(false)
 
 const codeButtonText = computed(() => {
@@ -29,8 +29,8 @@ if (import.meta.client) {
 }
 
 function validatePhone() {
-  const account = phone.value.trim()
-  if (account === TEST_ACCOUNT) {
+  const account = normalizeMallAccount(phone.value)
+  if (isAdminTestAccount(account)) {
     return true
   }
   if (!phoneReg.test(account)) {
@@ -40,17 +40,13 @@ function validatePhone() {
   return true
 }
 
-function isTestLogin() {
-  return phone.value.trim() === TEST_ACCOUNT
-}
-
 function sendCode() {
   if (!validatePhone() || countdown.value > 0) {
     return
   }
 
-  if (isTestLogin()) {
-    ElMessage.info('测试账号验证码固定为 1234')
+  if (isAdminTestAccount(phone.value)) {
+    ElMessage.info(`管理员测试账号验证码固定为 ${ADMIN_TEST_VERIFY_CODE}`)
     return
   }
 
@@ -90,37 +86,44 @@ async function submitLogin() {
     return
   }
 
-  if (isTestLogin()) {
-    if (verifyCode.value.trim() !== TEST_CODE) {
-      ElMessage.warning('测试账号验证码错误，请输入 1234')
-      return
-    }
+  const normalizedPhone = normalizeMallAccount(phone.value)
+
+  if (isAdminTestAccount(normalizedPhone)) {
     submitting.value = true
-    loginByPhone(TEST_ACCOUNT)
-    ElMessage.success('测试账号登录成功')
-    const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : '/'
-    await smartNavigate(redirect.startsWith('/') ? redirect : '/')
-    submitting.value = false
-    return
-  }
-
-  if (!isRegistered.value || !profile.value) {
-    ElMessage.warning('该手机号未注册，请先完成注册')
-    await goRegister()
-    return
-  }
-
-  if (profile.value.phone !== phone.value.trim()) {
-    ElMessage.warning('手机号与已注册信息不一致')
+    try {
+      // 管理员账号通过接口自动补齐用户数据，保证和真实链路一致。
+      await ensureAdminTestAccountReady()
+      await loginByPhone(normalizedPhone, verifyCode.value.trim())
+      ElMessage.success('管理员测试账号登录成功')
+      const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : '/'
+      await smartNavigate(redirect.startsWith('/') ? redirect : '/')
+    }
+    catch (error) {
+      ElMessage.warning((error as Error).message || `管理员测试账号验证码错误，请输入 ${ADMIN_TEST_VERIFY_CODE}`)
+    }
+    finally {
+      submitting.value = false
+    }
     return
   }
 
   submitting.value = true
-  loginByPhone(phone.value.trim())
-  ElMessage.success('登录成功')
-  const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : '/'
-  await smartNavigate(redirect.startsWith('/') ? redirect : '/')
-  submitting.value = false
+  try {
+    await loginByPhone(normalizedPhone, verifyCode.value.trim())
+    ElMessage.success('登录成功')
+    const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : '/'
+    await smartNavigate(redirect.startsWith('/') ? redirect : '/')
+  }
+  catch (error) {
+    const message = (error as Error).message || '登录失败'
+    ElMessage.warning(message)
+    if (message.includes('未注册')) {
+      await goRegister()
+    }
+  }
+  finally {
+    submitting.value = false
+  }
 }
 </script>
 

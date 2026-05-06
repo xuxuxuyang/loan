@@ -13,14 +13,19 @@ defineProps<{
   products: TeaProduct[]
 }>()
 
+const route = useRoute()
+const { smartNavigate } = useCustomRouting(route)
 const { ensureRegistered } = useMallAuth()
 
-async function handleBuy(productName: string) {
+async function handleBuy(productId: number) {
   const passed = await ensureRegistered()
   if (!passed) {
     return
   }
-  ElMessage.success(`已选购：${productName}`)
+  await smartNavigate({
+    path: '/order-create',
+    query: { productId: String(productId) },
+  })
 }
 </script>
 
@@ -67,7 +72,7 @@ async function handleBuy(productName: string) {
               <button
                 type="button"
                 class="px-4 py-2 rounded-lg bg-[var(--theme-color)] text-white text-sm hover:opacity-90"
-                @click="handleBuy(item.name)"
+                @click="handleBuy(item.id)"
               >
                 立即购买
               </button>

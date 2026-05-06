@@ -17,28 +17,14 @@ interface AddressItem {
 
 type AddressForm = Omit<AddressItem, 'id'>
 
-const addresses = ref<AddressItem[]>([
-  {
-    id: 1,
-    receiver: '张三',
-    phone: '13800138000',
-    province: '广东省',
-    city: '深圳市',
-    district: '南山区',
-    detail: '科技园科兴科学园A1栋1203',
-    isDefault: true,
-  },
-  {
-    id: 2,
-    receiver: '李四',
-    phone: '13900139000',
-    province: '广东省',
-    city: '广州市',
-    district: '天河区',
-    detail: '珠江新城花城大道88号',
-    isDefault: false,
-  },
-])
+const { loginPhone, profile, syncFromStorage } = useMallAuth()
+const {
+  addresses,
+  fetchAddresses,
+  createAddress,
+  updateAddress,
+  setDefaultAddress,
+} = useMallMy()
 
 const dialogVisible = ref(false)
 const saving = ref(false)
@@ -68,6 +54,7 @@ const form = reactive<AddressForm>({
 
 const dialogTitle = computed(() => (editingId.value ? '修改收货地址' : '新增收货地址'))
 const submitText = computed(() => (editingId.value ? '确认修改' : '确认新增'))
+const currentUserAccount = computed(() => loginPhone.value || profile.value?.phone || '')
 
 function resetForm() {
   form.receiver = ''
@@ -161,13 +148,6 @@ function validateForm() {
   return true
 }
 
-function syncDefault(targetId: number) {
-  addresses.value = addresses.value.map(item => ({
-    ...item,
-    isDefault: item.id === targetId,
-  }))
-}
-
 function saveAddress() {
   if (!validateForm()) {
     return
@@ -184,42 +164,67 @@ function saveAddress() {
     isDefault: form.isDefault,
   }
 
-  if (editingId.value) {
-    addresses.value = addresses.value.map(item =>
-      item.id === editingId.value
-        ? {
-            ...item,
-            ...payload,
-          }
-        : item,
-    )
-    if (payload.isDefault) {
-      syncDefault(editingId.value)
+  const submit = async () => {
+    if (!currentUserAccount.value) {
+      ElMessage.warning('请先登录后再管理地址')
+      return
     }
-    ElMessage.success('收货地址修改成功')
-  } else {
-    const id = Date.now()
-    addresses.value.unshift({
-      id,
-      ...payload,
-    })
-    if (payload.isDefault || addresses.value.length === 1) {
-      syncDefault(id)
+
+    if (editingId.value) {
+      await updateAddress(editingId.value, payload)
+      if (payload.isDefault) {
+        await setDefaultAddress(editingId.value)
+      }
+      ElMessage.success('收货地址修改成功')
     }
-    ElMessage.success('收货地址添加成功')
+    else {
+      await createAddress(currentUserAccount.value, payload)
+      ElMessage.success('收货地址添加成功')
+    }
+    await fetchAddresses(currentUserAccount.value)
+    closeDialog()
   }
 
-  saving.value = false
-  closeDialog()
+  submit().catch((error) => {
+    console.error('保存收货地址失败', error)
+    ElMessage.error('保存失败，请稍后重试')
+  }).finally(() => {
+    saving.value = false
+  })
 }
 
 function setAsDefault(id: number) {
-  syncDefault(id)
-  ElMessage.success('已设为默认地址')
+  if (!currentUserAccount.value) {
+    ElMessage.warning('请先登录后再管理地址')
+    return
+  }
+  setDefaultAddress(id).then(async () => {
+    await fetchAddresses(currentUserAccount.value)
+    ElMessage.success('已设为默认地址')
+  }).catch((error) => {
+    console.error('设置默认地址失败', error)
+    ElMessage.error('设置失败，请稍后重试')
+  })
 }
 
 watch(regionCodes, (codes) => {
   syncRegionNames(codes)
+})
+
+if (import.meta.client) {
+  void syncFromStorage().then(async () => {
+    if (currentUserAccount.value) {
+      await fetchAddresses(currentUserAccount.value)
+    }
+  })
+}
+
+watch(currentUserAccount, async (account) => {
+  if (!account) {
+    addresses.value = []
+    return
+  }
+  await fetchAddresses(account)
 })
 </script>
 
