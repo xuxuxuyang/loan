@@ -14,6 +14,7 @@
   --header-height: 4rem;
   --container-width: 1200px;
   --theme-color: #007162;
+  --app-font-family: "PingFang SC", "Microsoft YaHei", "Helvetica Neue", Helvetica, Arial, sans-serif;
 }
 
 /** 暗色模式 */
@@ -25,7 +26,9 @@
 body {
   background-color: var(--bg-color);
   color: var(--text-color);
-  font-family: "Playfair";
+  font-family: var(--app-font-family);
+  font-feature-settings: "lnum" 1, "tnum" 1;
+  font-variant-numeric: lining-nums tabular-nums;
   overflow-x: hidden;
 
   #__nuxt {
@@ -33,6 +36,20 @@ body {
     width: 100vw;
     min-width: 360px;
   }
+}
+
+input,
+textarea,
+select,
+button {
+  font-family: inherit;
+}
+
+.el-input__inner,
+.el-textarea__inner,
+.el-select__selected-item,
+.el-button {
+  font-family: inherit;
 }
 
 /** 布局容器 - 与 famous 一致 */

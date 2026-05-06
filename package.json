@@ -25,6 +25,7 @@
     "@nuxtjs/tailwindcss": "7.0.0-beta.0",
     "dayjs": "^1.11.13",
     "dompurify": "^3.2.5",
+    "element-china-area-data": "^6.1.0",
     "element-plus": ">=2",
     "firebase": "^11.1.0",
     "marked": "^15.0.8",

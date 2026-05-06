@@ -3,6 +3,7 @@ export interface RegisterPayload {
   phone: string
   idCardFront: string
   idCardBack: string
+  idCardHandheld: string
   locationText: string
   latitude: number
   longitude: number
@@ -77,13 +78,13 @@ export function useMallAuth() {
   }
 
   const ensureRegistered = async (redirectPath?: string) => {
-    if (isRegistered.value) {
+    if (isRegistered.value && isLoggedIn.value) {
       return true
     }
 
     const redirect = redirectPath || route.fullPath || '/'
     await smartNavigate({
-      path: '/register',
+      path: '/login',
       query: { redirect },
     })
     return false

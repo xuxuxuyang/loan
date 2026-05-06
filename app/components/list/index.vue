@@ -1,11 +1,16 @@
 <script setup lang="ts">
-import type { TeaProduct } from '~/composables/useTeaProducts'
+import type { MallCategoryItem, MallCategoryKey, TeaProduct } from '~/composables/useTeaProducts'
 
 defineProps<{
   products: TeaProduct[]
+  categories: MallCategoryItem[]
+  activeCategory: MallCategoryKey
 }>()
 
-const categories = ['全部', '绿茶', '乌龙茶', '白茶', '普洱', '礼盒']
+const emit = defineEmits<{
+  'select-category': [category: MallCategoryKey]
+}>()
+
 const promos = [
   { title: '新人福利', desc: '首单满 299 减 30', tag: 'NEW' },
   { title: '满赠专区', desc: '购买两件赠茶具礼盒', tag: 'GIFT' },
@@ -32,10 +37,10 @@ async function handleBuy(productName: string) {
 </script>
 
 <template>
-  <section class="normal-font app-wrapper bg-[#f7f7f5] py-6 md:py-8">
+  <section class="normal-font app-wrapper bg-[#f6f2f7] py-6 md:py-8">
     <div class="app-content">
-      <div class="mb-6 rounded-2xl bg-gradient-to-r from-[#0e5c4f] to-[#158072] p-5 text-white md:p-7">
-        <p class="mb-2 text-xs tracking-[0.22em] uppercase text-emerald-100">
+      <div class="hero-card mb-6 rounded-2xl p-5 text-white md:p-7">
+        <p class="mb-2 text-xs tracking-[0.22em] uppercase text-white/80">
           Tea Mall
         </p>
         <h2 class="mb-2 text-2xl font-semibold md:text-3xl">
@@ -50,9 +55,9 @@ async function handleBuy(productName: string) {
         <article
           v-for="item in promos"
           :key="item.title"
-          class="rounded-xl border border-black/10 bg-white p-4"
+          class="promo-card rounded-xl p-4"
         >
-          <p class="mb-1 text-xs font-semibold text-[var(--theme-color)]">
+          <p class="mb-1 text-xs font-semibold text-[#e7678f]">
             {{ item.tag }}
           </p>
           <h3 class="mb-1 text-base font-semibold">
@@ -66,13 +71,14 @@ async function handleBuy(productName: string) {
 
       <div class="mb-5 flex flex-wrap gap-2">
         <button
-          v-for="(item, index) in categories"
-          :key="item"
+          v-for="item in categories"
+          :key="item.key"
           type="button"
           class="rounded-full border px-4 py-2 text-sm transition"
-          :class="index === 0 ? 'border-[var(--theme-color)] bg-[var(--theme-color)] text-white' : 'border-black/10 bg-white text-black/70 hover:border-[var(--theme-color)] hover:text-[var(--theme-color)]'"
+          :class="activeCategory === item.key ? 'category-active border-transparent bg-gradient-to-r from-[#ff8ea5] to-[#ff7bb0] text-white shadow-[0_8px_16px_rgba(236,117,151,0.35)]' : 'border-[#e9d7df] bg-white text-[#5a6072] hover:border-[#f19ab1] hover:text-[#d7658d]'"
+          @click="emit('select-category', item.key)"
         >
-          {{ item }}
+          {{ item.name }}
         </button>
       </div>
 
@@ -80,7 +86,7 @@ async function handleBuy(productName: string) {
         <article
           v-for="item in products"
           :key="item.id"
-          class="overflow-hidden rounded-2xl border border-black/10 bg-white transition hover:-translate-y-1 hover:shadow-xl"
+          class="product-card overflow-hidden rounded-2xl transition hover:-translate-y-1"
         >
           <img
             :src="item.image"
@@ -106,18 +112,18 @@ async function handleBuy(productName: string) {
               {{ item.description }}
             </p>
             <div class="flex items-center justify-between">
-              <span class="text-xl font-semibold leading-6 text-[var(--theme-color)]">￥{{ item.price }}</span>
+              <span class="text-xl font-semibold leading-6 text-[#df5b80]">￥{{ item.price }}</span>
               <div class="flex items-center gap-2">
                 <button
                   type="button"
-                  class="rounded-lg border border-black/10 px-3 py-2 text-sm text-black/70 hover:border-[var(--theme-color)] hover:text-[var(--theme-color)]"
+                  class="rounded-lg border border-[#efcfdb] px-3 py-2 text-sm text-[#5f6474] hover:border-[#e88dad] hover:text-[#d85f89]"
                   @click="handleCart(item.name)"
                 >
                   加入购物车
                 </button>
                 <button
                   type="button"
-                  class="rounded-lg bg-[var(--theme-color)] px-4 py-2 text-sm text-white hover:opacity-90"
+                  class="buy-btn rounded-lg px-4 py-2 text-sm text-white hover:opacity-90"
                   @click="handleBuy(item.name)"
                 >
                   立即购买
@@ -138,6 +144,32 @@ async function handleBuy(productName: string) {
 <style scoped>
 .normal-font {
   font-family: "PingFang SC", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
+}
+
+.hero-card {
+  background: linear-gradient(135deg, #ff9eb1, #8ea8ff);
+  box-shadow: 0 12px 24px rgba(145, 133, 222, 0.25);
+}
+
+.promo-card {
+  border: 1px solid rgba(236, 194, 206, 0.55);
+  background: linear-gradient(180deg, #fff, #fff8fb);
+  box-shadow: 0 8px 16px rgba(214, 149, 172, 0.12);
+}
+
+.category-active {
+  border-color: transparent;
+}
+
+.product-card {
+  border: 1px solid rgba(236, 194, 206, 0.55);
+  background: linear-gradient(180deg, #fff, #fff8fb);
+  box-shadow: 0 10px 18px rgba(214, 149, 172, 0.14);
+}
+
+.buy-btn {
+  background: linear-gradient(135deg, #ff8fa1, #ff6f94);
+  box-shadow: 0 8px 14px rgba(232, 112, 145, 0.26);
 }
 
 section :is(p, span, button, h2, h3, h4) {

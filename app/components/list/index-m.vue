@@ -1,11 +1,15 @@
 <script setup lang="ts">
-import type { TeaProduct } from '~/composables/useTeaProducts'
+import type { MallCategoryItem, MallCategoryKey, TeaProduct } from '~/composables/useTeaProducts'
 
 defineProps<{
   products: TeaProduct[]
+  categories: MallCategoryItem[]
+  activeCategory: MallCategoryKey
 }>()
 
-const categories = ['全部', '绿茶', '乌龙', '白茶', '普洱']
+const emit = defineEmits<{
+  'select-category': [category: MallCategoryKey]
+}>()
 
 const { ensureRegistered } = useMallAuth()
 
@@ -20,27 +24,28 @@ async function handleCart(productName: string) {
 
 <template>
   <section class="normal-font px-4 pb-5 pt-4">
-    <div class="mb-4 rounded-2xl bg-gradient-to-r from-[#0e5c4f] to-[#158072] p-4 text-white">
-      <p class="mb-1 text-[11px] tracking-[0.16em] uppercase text-emerald-100">
+    <div class="hero-card mb-4 rounded-2xl p-4 text-white">
+      <p class="mb-1 text-[11px] tracking-[0.16em] uppercase text-white/80">
         Product Zone
       </p>
       <h2 class="mb-1 text-xl font-semibold">
         全部商品
       </h2>
-      <p class="text-xs text-white/80">
+      <p class="text-xs text-white/85">
         今日上新 3 款，支持礼盒定制
       </p>
     </div>
 
     <div class="mb-4 flex gap-2 overflow-x-auto pb-1">
       <button
-        v-for="(item, index) in categories"
-        :key="item"
+        v-for="item in categories"
+        :key="item.key"
         type="button"
-        class="shrink-0 rounded-full border px-3 py-1.5 text-xs"
-        :class="index === 0 ? 'border-[var(--theme-color)] bg-[var(--theme-color)] text-white' : 'border-black/10 bg-white text-black/70'"
+        class="shrink-0 rounded-full border px-3 py-1.5 text-xs transition"
+        :class="activeCategory === item.key ? 'category-active border-[#f07b98] bg-gradient-to-r from-[#ff8ea5] to-[#ff7bb0] text-white shadow-[0_6px_14px_rgba(237,116,152,0.35)]' : 'border-[#e9d7df] bg-white text-[#5a6072]'"
+        @click="emit('select-category', item.key)"
       >
-        {{ item }}
+        {{ item.name }}
       </button>
     </div>
 
@@ -48,7 +53,7 @@ async function handleCart(productName: string) {
       <article
         v-for="item in products"
         :key="item.id"
-        class="flex gap-3 rounded-xl border border-black/10 bg-white p-3"
+        class="product-card flex gap-3 rounded-xl p-3"
       >
         <img
           :src="item.image"
@@ -66,13 +71,13 @@ async function handleCart(productName: string) {
             产地：{{ item.origin }}
           </p>
           <div class="flex items-center justify-between">
-            <span class="text-base font-semibold leading-5 text-[var(--theme-color)]">￥{{ item.price }}</span>
+            <span class="text-base font-semibold leading-5 text-[#df5b80]">￥{{ item.price }}</span>
             <button
               type="button"
-              class="rounded-md bg-[var(--theme-color)] px-2.5 py-1 text-xs text-white"
+              class="buy-btn rounded-md px-2.5 py-1 text-xs text-white"
               @click="handleCart(item.name)"
             >
-              加购
+              购买
             </button>
           </div>
         </div>
@@ -84,6 +89,26 @@ async function handleCart(productName: string) {
 <style scoped>
 .normal-font {
   font-family: "PingFang SC", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
+}
+
+.hero-card {
+  background: linear-gradient(135deg, #ff9eb1, #8ea8ff);
+  box-shadow: 0 10px 22px rgba(145, 133, 222, 0.28);
+}
+
+.category-active {
+  border-color: transparent;
+}
+
+.product-card {
+  border: 1px solid rgba(238, 194, 206, 0.55);
+  background: linear-gradient(180deg, #fff, #fff8fb);
+  box-shadow: 0 8px 16px rgba(214, 149, 172, 0.12);
+}
+
+.buy-btn {
+  background: linear-gradient(135deg, #ff8fa1, #ff6f94);
+  box-shadow: 0 6px 12px rgba(232, 112, 145, 0.25);
 }
 
 section :is(p, span, button, h2, h3) {

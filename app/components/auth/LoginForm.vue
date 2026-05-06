@@ -9,6 +9,8 @@ const agree = ref(true)
 const countdown = ref(0)
 
 const phoneReg = /^1\d{10}$/
+const TEST_ACCOUNT = 'admin'
+const TEST_CODE = '1234'
 const submitting = ref(false)
 
 const codeButtonText = computed(() => {
@@ -27,15 +29,28 @@ if (import.meta.client) {
 }
 
 function validatePhone() {
-  if (!phoneReg.test(phone.value.trim())) {
+  const account = phone.value.trim()
+  if (account === TEST_ACCOUNT) {
+    return true
+  }
+  if (!phoneReg.test(account)) {
     ElMessage.warning('请输入正确的手机号')
     return false
   }
   return true
 }
 
+function isTestLogin() {
+  return phone.value.trim() === TEST_ACCOUNT
+}
+
 function sendCode() {
   if (!validatePhone() || countdown.value > 0) {
+    return
+  }
+
+  if (isTestLogin()) {
+    ElMessage.info('测试账号验证码固定为 1234')
     return
   }
 
@@ -72,6 +87,20 @@ async function submitLogin() {
   }
   if (!agree.value) {
     ElMessage.warning('请先同意用户协议和隐私政策')
+    return
+  }
+
+  if (isTestLogin()) {
+    if (verifyCode.value.trim() !== TEST_CODE) {
+      ElMessage.warning('测试账号验证码错误，请输入 1234')
+      return
+    }
+    submitting.value = true
+    loginByPhone(TEST_ACCOUNT)
+    ElMessage.success('测试账号登录成功')
+    const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : '/'
+    await smartNavigate(redirect.startsWith('/') ? redirect : '/')
+    submitting.value = false
     return
   }
 
@@ -132,6 +161,7 @@ async function submitLogin() {
             size="large"
           />
         </div>
+        
 
         <div class="flex items-center gap-2.5">
           <div class="input-shell flex-1 group">

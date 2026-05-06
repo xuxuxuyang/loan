@@ -4,22 +4,79 @@ const route = useRoute()
 const { smartNavigate } = useCustomRouting(route)
 
 const orderStatus = [
-  { title: '审核中', icon: 'tabler:clock-bolt' },
-  { title: '待发货', icon: 'tabler:clock-hour-4' },
-  { title: '待收货', icon: 'tabler:truck-delivery' },
-  { title: '享用中', icon: 'tabler:clipboard-check' },
+  { title: '审核中', icon: 'tabler:clock-bolt', key: 'reviewing' },
+  { title: '待发货', icon: 'tabler:clock-hour-4', key: 'shipping' },
+  { title: '待收货', icon: 'tabler:truck-delivery', key: 'receiving' },
+  { title: '享用中', icon: 'tabler:clipboard-check', key: 'enjoying' },
 ]
 
 const serviceList = [
-  { title: '收货地址', icon: 'tabler:map-pin' },
-  { title: '在线客服', icon: 'tabler:message-dots' },
-  { title: '常见问题', icon: 'tabler:help-circle' },
-  { title: 'App下载', icon: 'tabler:download' },
-  { title: '隐私政策', icon: 'tabler:lock' },
-  { title: '注销', icon: 'tabler:circle-x' },
+  { key: 'address', title: '收货地址', icon: 'tabler:map-pin' },
+  { key: 'service', title: '在线客服', icon: 'tabler:message-dots' },
+  { key: 'question', title: '常见问题', icon: 'tabler:help-circle' },
+  { key: 'download', title: 'App下载', icon: 'tabler:download' },
+  { key: 'privacy', title: '隐私政策', icon: 'tabler:lock' },
+  { key: 'logout', title: '注销', icon: 'tabler:circle-x' },
 ]
 
-const { ensureRegistered } = useMallAuth()
+const { ensureRegistered, isLoggedIn, loginPhone, profile, syncFromStorage, logout } = useMallAuth()
+
+const mockSummary = {
+  orderCount: {
+    reviewing: 1,
+    shipping: 2,
+    receiving: 3,
+    enjoying: 5,
+  },
+  bankCardCount: 2,
+  billPendingAmount: 2368.5,
+  points: 1280,
+  couponCount: 6,
+  defaultAddress: '广东省广州市天河区珠江新城花城大道88号',
+}
+
+const displayName = computed(() => {
+  if (!isLoggedIn.value) {
+    return '登录/注册'
+  }
+  if (profile.value?.name) {
+    return profile.value.name
+  }
+  if (loginPhone.value === 'admin') {
+    return '管理员账号'
+  }
+  return `用户${loginPhone.value.slice(-4)}`
+})
+
+const displaySubText = computed(() => {
+  if (!isLoggedIn.value) {
+    return '账户还款、资产信息登录后查看'
+  }
+  if (loginPhone.value === 'admin') {
+    return '测试账号已登录，展示模拟完整数据'
+  }
+  return `登录账号：${loginPhone.value}`
+})
+
+const displayOrderStatus = computed(() => {
+  const toneMap = {
+    reviewing: 'from-[#7f8cf6] to-[#6aa9ff]',
+    shipping: 'from-[#f6a54e] to-[#ff7f63]',
+    receiving: 'from-[#38b2ac] to-[#4fd1c5]',
+    enjoying: 'from-[#e879f9] to-[#f472b6]',
+  } as const
+  return orderStatus.map(item => ({
+    ...item,
+    count: isLoggedIn.value
+      ? mockSummary.orderCount[item.key as keyof typeof mockSummary.orderCount]
+      : 0,
+    tone: toneMap[item.key as keyof typeof toneMap],
+  }))
+})
+
+if (import.meta.client) {
+  syncFromStorage()
+}
 
 async function handleGoRegister() {
   await smartNavigate('/login')
@@ -32,68 +89,128 @@ async function handleBuy(productName: string) {
   }
   ElMessage.success(`下单成功：${productName}`)
 }
+
+async function handleBankCard() {
+  await smartNavigate('/bank-card')
+}
+
+async function handleBill() {
+  await smartNavigate('/bill')
+}
+
+async function handleOrderAll() {
+  await smartNavigate('/orders')
+}
+
+async function handleOrderStatus(status: string) {
+  await smartNavigate({
+    path: '/orders',
+    query: { status },
+  })
+}
+
+async function handleService(key: string) {
+  if (key === 'address') {
+    await smartNavigate('/address')
+    return
+  }
+  if (key === 'logout') {
+    logout()
+    ElMessage.success('已退出登录')
+    return
+  }
+  ElMessage.info('该功能开发中')
+}
 </script>
 
 <template>
   <section class="bg-[#f3f4f8] px-4 pb-5 pt-4">
-    <div class="mb-3 flex items-center gap-3">
-      <div class="flex h-14 w-14 items-center justify-center rounded-full bg-white shadow-sm">
+    <div class="profile-card mb-3 flex items-center gap-3">
+      <div class="avatar-shell flex h-14 w-14 items-center justify-center rounded-full bg-white shadow-sm">
         <Icon
           name="tabler:user-filled"
           size="2rem"
-          class="text-black/25"
+          class="text-[#e4869b]"
         />
       </div>
       <div>
         <button
+          v-if="!isLoggedIn"
           type="button"
-          class="text-[1.55rem] font-semibold leading-none text-black/80"
+          class="text-[1.55rem] font-semibold leading-none text-[#2a2f3c]"
           @click="handleGoRegister"
         >
-          登录/注册
+          {{ displayName }}
         </button>
+        <p
+          v-else
+          class="text-[1.55rem] font-semibold leading-none text-[#2a2f3c]"
+        >
+          {{ displayName }}
+        </p>
+        <p class="mt-1 text-xs text-[#4e5974]">
+          {{ displaySubText }}
+        </p>
       </div>
     </div>
 
-    <div class="relative mb-3 rounded-2xl bg-white p-4">
-      <div class="absolute right-0 top-0 rounded-bl-xl rounded-tr-2xl bg-[#fdeef1] px-3 py-1 text-[11px] text-[#e6949f]">
-        账单还款 请在登录后查看
+    <div class="order-card relative mb-3 rounded-2xl p-4">
+      <div class="absolute right-0 top-0 rounded-bl-xl rounded-tr-2xl bg-[#ffe4ea] px-3 py-1 text-[11px] text-[#e46a84]">
+        {{ isLoggedIn ? '已展示模拟账单数据' : '账单还款 请在登录后查看' }}
       </div>
       <div class="mb-4 flex items-center justify-between">
-        <h3 class="text-[1.75rem] font-semibold text-black/85">
+        <h3 class="text-[1.75rem] font-semibold text-[#2a2f3c]">
           商城订单
         </h3>
         <button
           type="button"
-          class="text-lg text-black/50"
+          class="text-lg text-[#727f96]"
+          @click="handleOrderAll"
         >
           全部 >
         </button>
       </div>
       <div class="grid grid-cols-4 gap-2 text-center">
-        <article
-          v-for="item in orderStatus"
+        <button
+          v-for="item in displayOrderStatus"
           :key="item.title"
-          class="py-1"
+          type="button"
+          class="order-status-item py-2"
+          @click="handleOrderStatus(item.key)"
         >
           <div class="mb-1 flex justify-center">
+            <span
+              class="status-icon"
+              :class="`bg-gradient-to-br ${item.tone}`"
+            >
             <Icon
               :name="item.icon"
-              size="1.6rem"
-              class="text-[#70727a]"
+              size="1.2rem"
+              class="text-white"
             />
+            </span>
           </div>
-          <p class="text-[15px] text-black/75">
+          <p class="text-[15px] text-[#48546b]">
             {{ item.title }}
           </p>
-        </article>
+          <p class="mt-0.5 text-xs font-semibold text-[#e46a7f]">
+            {{ item.count }}
+          </p>
+        </button>
       </div>
     </div>
 
     <div class="mb-3 grid grid-cols-2 gap-3 rounded-2xl bg-white p-3 text-center">
-      <article class="flex items-center justify-between rounded-xl bg-[#fff6f6] px-4 py-3">
+      <button
+        type="button"
+        class="flex items-center justify-between rounded-xl bg-[#fff6f6] px-4 py-3 text-left"
+        @click="handleBankCard"
+      >
         <p class="text-lg font-semibold text-black/80">
           我的银行卡
+        </p>
+        <p class="text-xs text-black/50">
+          {{ isLoggedIn ? `已绑定 ${mockSummary.bankCardCount} 张` : '登录后查看' }}
         </p>
         <span class="flex h-7 w-7 items-center justify-center rounded-full bg-[#ff8695] text-white">
           <Icon
@@ -101,10 +218,17 @@ async function handleBuy(productName: string) {
             size="0.9rem"
           />
         </span>
-      </article>
-      <article class="flex items-center justify-between rounded-xl bg-[#fff6f6] px-4 py-3">
+      </button>
+      <button
+        type="button"
+        class="flex items-center justify-between rounded-xl bg-[#fff6f6] px-4 py-3 text-left"
+        @click="handleBill"
+      >
         <p class="text-lg font-semibold text-black/80">
           全部账单
+        </p>
+        <p class="text-xs text-black/50">
+          {{ isLoggedIn ? `待还 ¥${mockSummary.billPendingAmount}` : '登录后查看' }}
         </p>
         <span class="flex h-7 w-7 items-center justify-center rounded-full bg-[#ff8695] text-white">
           <Icon
@@ -112,7 +236,23 @@ async function handleBuy(productName: string) {
             size="0.9rem"
           />
         </span>
-      </article>
+      </button>
+    </div>
+
+    <div class="mb-3 rounded-2xl bg-white px-4 py-3">
+      <div class="flex items-center justify-between">
+        <p class="text-sm text-black/75">
+          积分
+          <span class="ml-1 font-semibold text-[#dd667d]">{{ isLoggedIn ? mockSummary.points : '--' }}</span>
+        </p>
+        <p class="text-sm text-black/75">
+          优惠券
+          <span class="ml-1 font-semibold text-[#dd667d]">{{ isLoggedIn ? `${mockSummary.couponCount}张` : '--' }}</span>
+        </p>
+      </div>
+      <p class="mt-2 line-clamp-1 text-xs text-black/55">
+        默认地址：{{ isLoggedIn ? mockSummary.defaultAddress : '登录后查看默认收货地址' }}
+      </p>
     </div>
 
     <div class="mb-3 rounded-2xl bg-white p-4">
@@ -121,10 +261,12 @@ async function handleBuy(productName: string) {
         其他服务
       </h3>
       <div class="grid grid-cols-4 gap-3">
-        <article
+        <button
           v-for="item in serviceList"
           :key="item.title"
+          type="button"
           class="text-center"
+          @click="handleService(item.key)"
         >
           <div class="mx-auto mb-1 flex h-10 w-10 items-center justify-center rounded-lg bg-[#ff6678] text-white">
             <Icon
@@ -135,7 +277,7 @@ async function handleBuy(productName: string) {
           <p class="text-[14px] text-black/75">
             {{ item.title }}
           </p>
-        </article>
+        </button>
       </div>
     </div>
 
@@ -195,6 +337,52 @@ async function handleBuy(productName: string) {
 <style scoped>
 .normal-font {
   font-family: "PingFang SC", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
+}
+
+.profile-card {
+  padding: 14px 12px;
+  border-radius: 16px;
+  background: linear-gradient(135deg, #fff4f7, #eef6ff);
+  border: 1px solid rgba(236, 141, 164, 0.22);
+  box-shadow: 0 10px 24px rgba(120, 140, 220, 0.12);
+}
+
+.avatar-shell {
+  position: relative;
+}
+
+.avatar-shell::after {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, rgba(248, 145, 174, 0.45), rgba(126, 196, 255, 0.45));
+  z-index: -1;
+}
+
+.order-card {
+  background: linear-gradient(180deg, #ffffff, #fff8fb);
+  border: 1px solid rgba(235, 139, 167, 0.2);
+  box-shadow: 0 8px 22px rgba(222, 131, 161, 0.1);
+}
+
+.order-status-item {
+  border-radius: 12px;
+  transition: all 0.2s ease;
+}
+
+.order-status-item:active {
+  transform: scale(0.98);
+}
+
+.status-icon {
+  display: flex;
+  width: 34px;
+  height: 34px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  box-shadow: 0 6px 12px rgba(118, 132, 210, 0.25);
 }
 
 section :is(h3, p, button, span) {
