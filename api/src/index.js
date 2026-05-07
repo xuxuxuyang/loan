@@ -455,6 +455,15 @@ function ensureOrderCardPackage(order) {
   }
 }
 
+function ensureOrderShipment(order) {
+  if (order.trackingNumber === undefined || order.trackingNumber === null) {
+    order.trackingNumber = ''
+  }
+  else {
+    order.trackingNumber = String(order.trackingNumber)
+  }
+}
+
 function isOrderCardPackageEligible(order) {
   return ['shipping', 'receiving', 'enjoying'].includes(order.status)
 }
@@ -1526,6 +1535,7 @@ router.get('/orders', (ctx) => {
       return '待发货'
     }
     if (item.status === 'receiving') {
+      ensureOrderShipment(item)
       return '待收货'
     }
     return '已完成'
@@ -1534,6 +1544,7 @@ router.get('/orders', (ctx) => {
   const list = db.orders.filter((item) => {
     ensureOrderInstallmentPlan(item)
     ensureOrderCardPackage(item)
+    ensureOrderShipment(item)
     if (item.status !== 'reviewing' && !item.paid) {
       item.paid = true
     }
@@ -1586,6 +1597,7 @@ router.post('/orders', async (ctx) => {
     riskReason: '',
     riskCheckedAt: '',
     cardPackageIssued: false,
+    trackingNumber: '',
   }
   if (nextOrder.payType === 'installment') {
     const riskResult = await mockRiskCheck(nextOrder)
@@ -1694,7 +1706,52 @@ router.patch('/orders/:id/status', (ctx) => {
       return
     }
     target.status = status
+    if (status === 'reviewing') {
+      target.trackingNumber = ''
+    }
   }
+  ensureOrderCardPackage(target)
+  writeDb(db)
+  ctx.body = success(target)
+})
+
+router.patch('/orders/:id/shipment', (ctx) => {
+  if (!requireAdminPermission(ctx, [ADMIN_ROLES.SUPER], '登记快递单号')) {
+    return
+  }
+  const db = readDb()
+  const { id } = ctx.params
+  const payload = ctx.request.body || {}
+  const target = db.orders.find(item => item.id === id)
+  if (!target) {
+    fail(ctx, '订单不存在', 404)
+    return
+  }
+  ensureOrderShipment(target)
+  if (payload.trackingNumber === undefined || payload.trackingNumber === null) {
+    fail(ctx, '请传 trackingNumber（可为空字符串以清空）')
+    return
+  }
+  const trackingNumber = String(payload.trackingNumber).trim()
+  if (target.status !== 'shipping' && target.status !== 'receiving') {
+    fail(ctx, '当前订单状态不可登记快递单号')
+    return
+  }
+
+  if (!trackingNumber) {
+    const hadTracking = String(target.trackingNumber || '').trim().length > 0
+    target.trackingNumber = ''
+    if (hadTracking && target.status === 'receiving') {
+      target.status = 'shipping'
+    }
+  }
+  else {
+    if (target.status === 'shipping') {
+      target.status = 'receiving'
+    }
+    target.trackingNumber = trackingNumber
+  }
+  ensureOrderInstallmentPlan(target)
   ensureOrderCardPackage(target)
   writeDb(db)
   ctx.body = success(target)
@@ -1726,6 +1783,22 @@ router.patch('/orders/:id/card-package', (ctx) => {
   target.cardPackageIssued = payload.cardPackageIssued
   writeDb(db)
   ctx.body = success(target)
+})
+
+router.delete('/orders/:id', (ctx) => {
+  if (!requireAdminPermission(ctx, [ADMIN_ROLES.SUPER], '删除订单')) {
+    return
+  }
+  const db = readDb()
+  const { id } = ctx.params
+  const idx = db.orders.findIndex(item => item.id === id)
+  if (idx < 0) {
+    fail(ctx, '订单不存在', 404)
+    return
+  }
+  db.orders.splice(idx, 1)
+  writeDb(db)
+  ctx.body = success({ id })
 })
 
 app.use(cors())

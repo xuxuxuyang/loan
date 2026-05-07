@@ -111,46 +111,65 @@ async function copyPhone() {
     </ul>
     <ul
       v-else
-      class="space-y-2.5"
+      class="space-y-3"
     >
       <li
         v-for="item in cardPackages"
         :key="item.orderId"
-        class="flex items-center justify-between gap-2 rounded-xl border border-black/[0.06] bg-[#fbfcff] px-3 py-2.5"
-        :class="compact ? '' : 'md:px-4 md:py-3'"
+        class="flex items-center justify-between gap-3 rounded-xl border border-black/[0.06] bg-[#fbfcff] px-3 py-3 shadow-[0_1px_3px_rgba(15,23,42,0.04)]"
+        :class="compact ? '' : 'md:px-4 md:py-3.5'"
       >
-        <div class="min-w-0 flex-1">
+        <div class="min-w-0 flex-1 space-y-1">
           <p
-            class="line-clamp-1 font-medium text-black/80"
-            :class="compact ? 'text-sm' : 'text-base'"
+            class="line-clamp-2 font-semibold leading-snug text-black/85"
+            :class="compact ? 'text-[15px]' : 'text-base'"
           >
             {{ item.title }}
           </p>
           <p
-            class="mt-0.5 text-black/45"
+            class="text-black/40"
             :class="compact ? 'text-[11px]' : 'text-xs'"
           >
             单号 {{ item.orderId }} · {{ formatTime(item.createdAt) }}
-            <span class="mx-1">·</span>
-            <span :class="item.cardPackageIssued ? 'text-[#0f766e]' : 'text-[#b45309]'">
-              {{ item.cardPackageIssued ? '平台已登记发放' : '待您联系客服领取' }}
-            </span>
           </p>
           <p
-            class="mt-1 font-semibold text-[#dd667d]"
-            :class="compact ? 'text-sm' : 'text-base'"
+            class="leading-snug"
+            :class="[
+              compact ? 'text-xs' : 'text-[13px]',
+              item.cardPackageIssued ? 'font-medium text-[#0f766e]' : 'text-[#b45309]',
+            ]"
           >
-            ¥{{ item.packageAmount }} 现金礼
+            {{ item.cardPackageIssued ? '平台已登记发放' : '请联系客服领取现金礼' }}
+          </p>
+          <p
+            class="pt-0.5 font-semibold tabular-nums text-[#c0354a]"
+            :class="compact ? 'text-base' : 'text-lg'"
+          >
+            ¥{{ item.packageAmount }}
+            <span
+              class="ml-1 text-black/35"
+              :class="compact ? 'text-xs font-normal' : 'text-sm font-normal'"
+            >现金礼</span>
           </p>
         </div>
-        <button
-          type="button"
-          class="shrink-0 rounded-lg bg-gradient-to-r from-[#0b7b6e] to-[#18a08f] px-3 py-1.5 text-white"
-          :class="compact ? 'text-xs' : 'text-sm px-4 py-2'"
-          @click="openClaim(item)"
-        >
-          领取
-        </button>
+        <div class="shrink-0 self-center">
+          <button
+            v-if="!item.cardPackageIssued"
+            type="button"
+            class="rounded-xl bg-gradient-to-r from-[#0b7b6e] to-[#18a08f] px-3 py-2 font-medium text-white shadow-sm active:opacity-92"
+            :class="compact ? 'text-xs px-3.5' : 'text-sm px-4 py-2.5'"
+            @click="openClaim(item)"
+          >
+            领取
+          </button>
+          <span
+            v-else
+            class="inline-flex items-center justify-center rounded-xl border border-[#a7f3d0] bg-[#ecfdf5] font-medium text-[#0f766e]"
+            :class="compact ? 'px-3 py-2 text-xs' : 'text-sm px-4 py-2.5'"
+          >
+            已发放
+          </span>
+        </div>
       </li>
     </ul>
 

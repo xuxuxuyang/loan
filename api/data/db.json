@@ -438,7 +438,7 @@
       "spec": "1",
       "totalAmount": 8800,
       "createdAt": "2026-05-07T14:37:46.815Z",
-      "status": "shipping",
+      "status": "receiving",
       "paid": false,
       "payType": "installment",
       "installmentPeriods": 12,
@@ -449,7 +449,7 @@
       "riskStatus": "passed",
       "riskReason": "",
       "riskCheckedAt": "2026-05-07T14:37:46.947Z",
-      "cardPackageIssued": false,
+      "cardPackageIssued": true,
       "installmentPlan": [
         {
           "period": 1,
@@ -547,7 +547,8 @@
           "amount": 748,
           "paid": false
         }
-      ]
+      ],
+      "trackingNumber": "231646521213132"
     },
     {
       "id": "OD1778164644632",
@@ -827,7 +828,8 @@
           "amount": 1496,
           "paid": false
         }
-      ]
+      ],
+      "trackingNumber": ""
     },
     {
       "id": "OD1778164204796",
@@ -943,7 +945,7 @@
       "phone": "19900000001",
       "status": "active",
       "createdAt": "2026-05-01T09:00:00+08:00",
-      "updatedAt": "2026-05-07T09:32:46.865Z"
+      "updatedAt": "2026-05-07T15:16:16.085Z"
     },
     {
       "id": "A1003",

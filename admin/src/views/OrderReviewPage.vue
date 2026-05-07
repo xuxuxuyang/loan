@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { CircleCheck, CircleClose, Clock, Cpu, DataAnalysis, Document, User } from '@element-plus/icons-vue'
 import { computed, onMounted, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import type { OrderItem, OrderRiskDetail } from '../stores/useOrdersStore'
+import { getAdminSession } from '../composables/useAdminAuth'
 import { useOrdersStore } from '../stores/useOrdersStore'
 import { donePageProgress, startPageProgress } from '../utils/progress'
 
@@ -46,6 +47,7 @@ function scoreOverThreshold(detail: OrderRiskDetail): boolean {
 
 const loading = ref(false)
 const reviewingId = ref('')
+const deletingOrderId = ref('')
 const riskDialogVisible = ref(false)
 const riskDetailLoading = ref(false)
 const riskDetailError = ref('')
@@ -53,7 +55,9 @@ const selectedOrder = ref<OrderItem | null>(null)
 const selectedRiskDetail = ref<OrderRiskDetail | null>(null)
 const riskFilter = ref<'全部' | OrderItem['riskStatus']>('全部')
 const userFilter = ref('')
-const { orders, fetchOrders, updateOrderStatus, fetchOrderRiskDetail } = useOrdersStore()
+const { orders, fetchOrders, updateOrderStatus, fetchOrderRiskDetail, deleteOrder } = useOrdersStore()
+
+const canDeleteOrder = computed(() => getAdminSession()?.role === 'super_admin')
 
 function isReviewPageOrder(item: OrderItem) {
   return item.status === '待审核' || item.status === '风控未通过'
@@ -104,6 +108,42 @@ async function approveOrder(order: OrderItem) {
   finally {
     reviewingId.value = ''
     await loadReviewOrders()
+  }
+}
+
+async function handleDeleteOrder(order: OrderItem) {
+  if (!canDeleteOrder.value || deletingOrderId.value) {
+    return
+  }
+  try {
+    await ElMessageBox.confirm(
+      `确定删除订单 ${order.id}？删除后不可恢复。`,
+      '删除订单',
+      {
+        confirmButtonText: '删除',
+        cancelButtonText: '取消',
+        type: 'warning',
+      },
+    )
+  }
+  catch {
+    return
+  }
+  deletingOrderId.value = order.id
+  try {
+    await deleteOrder(order.id)
+    ElMessage.success('订单已删除')
+    if (riskDialogVisible.value && selectedOrder.value?.id === order.id) {
+      riskDialogVisible.value = false
+      onRiskDialogClosed()
+    }
+    await loadReviewOrders()
+  }
+  catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '删除订单失败，请稍后重试')
+  }
+  finally {
+    deletingOrderId.value = ''
   }
 }
 
@@ -216,18 +256,29 @@ onMounted(() => {
           <td>{{ item.nextRepayDate }}</td>
           <td>{{ item.createdAt }}</td>
           <td>
-            <button
-              :class="['btn', item.riskStatus === 'passed' ? 'btn-success' : 'btn-danger']"
-              type="button"
-              :disabled="reviewingId === item.id || item.riskStatus !== 'passed'"
-              @click="approveOrder(item)"
-            >
-              {{
-                item.riskStatus !== 'passed'
-                  ? '风控未通过'
-                  : (reviewingId === item.id ? '审核中...' : '审核通过')
-              }}
-            </button>
+            <div class="review-actions">
+              <button
+                :class="['btn', item.riskStatus === 'passed' ? 'btn-success' : 'btn-danger']"
+                type="button"
+                :disabled="reviewingId === item.id || item.riskStatus !== 'passed'"
+                @click="approveOrder(item)"
+              >
+                {{
+                  item.riskStatus !== 'passed'
+                    ? '风控未通过'
+                    : (reviewingId === item.id ? '审核中...' : '审核通过')
+                }}
+              </button>
+              <button
+                v-if="canDeleteOrder"
+                class="btn btn-outline-danger"
+                type="button"
+                :disabled="deletingOrderId === item.id || reviewingId === item.id"
+                @click="handleDeleteOrder(item)"
+              >
+                {{ deletingOrderId === item.id ? '删除中...' : '删除订单' }}
+              </button>
+            </div>
           </td>
         </tr>
         <tr v-if="!loading && reviewOrders.length === 0">
@@ -465,6 +516,23 @@ onMounted(() => {
   border-color: #dc2626;
   background: #dc2626;
   color: #fff;
+}
+
+.btn-outline-danger {
+  border-color: #dc2626;
+  background: #fff;
+  color: #dc2626;
+}
+
+.btn-outline-danger:hover:not(:disabled) {
+  background: #fef2f2;
+}
+
+.review-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
 }
 
 .btn:disabled {

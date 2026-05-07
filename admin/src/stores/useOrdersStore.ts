@@ -27,6 +27,8 @@ export interface OrderItem {
   installmentPlan: InstallmentItem[]
   /** 后台登记的卡包是否已发放（仅审核通过后的订单有意义） */
   cardPackageIssued: boolean
+  /** 快递单号；填写后订单进入运输流程（后台状态为待收货） */
+  trackingNumber: string
 }
 
 export interface RiskDetailRule {
@@ -63,6 +65,7 @@ interface MallOrderPayload {
   receiverName: string
   installmentPlan?: InstallmentItem[]
   cardPackageIssued?: boolean
+  trackingNumber?: string
 }
 
 interface RiskDetailPayload {
@@ -166,6 +169,8 @@ function mapMallOrderToAdminOrder(order: MallOrderPayload): OrderItem {
   const nextPending = safePlan.find(item => !item.paid)
   const allPaid = safePlan.every(item => item.paid)
   const riskStatus = order.riskStatus === 'failed' ? 'failed' : 'passed'
+  const tracking = String(order.trackingNumber || '').trim()
+  const status = mapMallOrderStatus(order.status, order.paid, order.payType, order.riskStatus)
 
   return {
     id: order.id,
@@ -176,13 +181,14 @@ function mapMallOrderToAdminOrder(order: MallOrderPayload): OrderItem {
     periodAmount: safePlan[0]?.amount || 0,
     currentPeriod: allPaid ? periods : (nextPending?.period || 1),
     nextRepayDate: allPaid ? '-' : (nextPending?.dueDate || '-'),
-    status: mapMallOrderStatus(order.status, order.paid, order.payType, order.riskStatus),
+    status,
     riskStatus,
     riskReason: order.riskReason || '',
     payType: order.payType === 'installment' ? '分期' : '全款',
     createdAt: formatDateTime(order.createdAt),
     installmentPlan: safePlan,
     cardPackageIssued: Boolean(order.cardPackageIssued),
+    trackingNumber: tracking,
   }
 }
 
@@ -273,6 +279,23 @@ async function updateOrderCardPackage(orderId: string, cardPackageIssued: boolea
   orders.value = orders.value.map(item => (item.id === mapped.id ? mapped : item))
 }
 
+async function updateOrderShipment(orderId: string, trackingNumber: string) {
+  const response = await fetch(`${MALL_ORDERS_ENDPOINT}/${encodeURIComponent(orderId)}/shipment`, {
+    method: 'PATCH',
+    headers: withAdminAuthHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ trackingNumber }),
+  })
+  if (!response.ok) {
+    throw new Error(`登记快递单号失败: ${response.status}`)
+  }
+  const payload = await response.json() as { success?: boolean, data?: MallOrderPayload }
+  if (!payload.data) {
+    return
+  }
+  const mapped = mapMallOrderToAdminOrder(payload.data)
+  orders.value = orders.value.map(item => (item.id === mapped.id ? mapped : item))
+}
+
 async function updateOrderStatus(orderId: string, status: MallOrderPayload['status']) {
   const response = await fetch(`${MALL_ORDERS_ENDPOINT}/${encodeURIComponent(orderId)}/status`, {
     method: 'PATCH',
@@ -343,6 +366,18 @@ function recalculateOrderFields(order: OrderItem) {
   }
 }
 
+async function deleteOrder(orderId: string) {
+  const response = await fetch(`${MALL_ORDERS_ENDPOINT}/${encodeURIComponent(orderId)}`, {
+    method: 'DELETE',
+    headers: withAdminAuthHeaders(),
+  })
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({})) as { msg?: string }
+    throw new Error(payload.msg || `删除订单失败: ${response.status}`)
+  }
+  orders.value = orders.value.filter(item => item.id !== orderId)
+}
+
 export function useOrdersStore() {
   if (!initialized.value) {
     initialized.value = true
@@ -354,8 +389,10 @@ export function useOrdersStore() {
     fetchOrders,
     recalculateOrderFields,
     updateInstallmentPaid,
+    updateOrderShipment,
     updateOrderStatus,
     updateOrderCardPackage,
     fetchOrderRiskDetail,
+    deleteOrder,
   }
 }

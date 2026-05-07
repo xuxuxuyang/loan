@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { computed, onMounted, ref, watch } from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import type { InstallmentItem, OrderItem } from '../stores/useOrdersStore'
 import { getAdminSession } from '../composables/useAdminAuth'
 import { useOrdersStore } from '../stores/useOrdersStore'
@@ -13,11 +13,18 @@ const orderDate = ref('')
 const selectedOrder = ref<OrderItem | null>(null)
 const loading = ref(false)
 const changingStatusOrderId = ref('')
+const trackingSavingId = ref('')
 const cardPackageSavingId = ref('')
-const statusDraftMap = ref<Record<string, OrderItem['status']>>({})
-const cardPackageDraftMap = ref<Record<string, boolean>>({})
-const { orders, recalculateOrderFields, fetchOrders, updateInstallmentPaid, updateOrderStatus, updateOrderCardPackage } = useOrdersStore()
+const deletingOrderId = ref('')
+const trackingDialogOpen = ref(false)
+const trackingDialogOrder = ref<OrderItem | null>(null)
+const trackingDialogInput = ref('')
+const { orders, recalculateOrderFields, fetchOrders, updateInstallmentPaid, updateOrderStatus, updateOrderShipment, updateOrderCardPackage, deleteOrder } = useOrdersStore()
 const canOperateOrders = computed(() => getAdminSession()?.role === 'super_admin')
+
+function showTrackingEditor(item: OrderItem): boolean {
+  return item.status === '待发货' || item.status === '待收货'
+}
 
 const filteredOrders = computed(() => {
   // 订单管理仅展示已通过人工审核后的订单，待审核订单统一在“审核订单”页面处理。
@@ -48,37 +55,58 @@ async function toggleRepay(order: OrderItem, period: InstallmentItem) {
   }
 }
 
-function toMallOrderStatus(value: OrderItem['status']) {
-  if (value === '待收货') return 'receiving'
-  if (value === '已完成') return 'enjoying'
-  if (value === '待发货') return 'shipping'
-  return 'reviewing'
-}
-
-function getRowStatusDraft(order: OrderItem) {
-  return statusDraftMap.value[order.id] || order.status
-}
-
-async function applyOrderStatus(order: OrderItem) {
-  if (!canOperateOrders.value) return
-  if (changingStatusOrderId.value) {
+function openTrackingDialog(order: OrderItem) {
+  if (!canOperateOrders.value || !showTrackingEditor(order)) {
     return
   }
-  const nextStatus = getRowStatusDraft(order)
-  if (nextStatus === order.status) {
+  trackingDialogOrder.value = order
+  trackingDialogInput.value = order.trackingNumber || ''
+  trackingDialogOpen.value = true
+}
+
+function onTrackingDialogClosed() {
+  trackingDialogOrder.value = null
+  trackingDialogInput.value = ''
+}
+
+async function confirmTrackingDialog() {
+  const order = trackingDialogOrder.value
+  if (!order || !canOperateOrders.value) {
+    return
+  }
+  if (trackingSavingId.value) {
+    return
+  }
+  const t = trackingDialogInput.value.trim()
+  const prev = (order.trackingNumber || '').trim()
+  if (t === prev) {
+    trackingDialogOpen.value = false
+    return
+  }
+  if (!t && !prev) {
+    trackingDialogOpen.value = false
     return
   }
 
-  changingStatusOrderId.value = order.id
+  trackingSavingId.value = order.id
   try {
-    await updateOrderStatus(order.id, toMallOrderStatus(nextStatus))
-    await loadOrders()
+    await updateOrderShipment(order.id, t)
+    if (!t) {
+      ElMessage.success('已清空快递单号')
+    }
+    else if (prev) {
+      ElMessage.success('快递单号已更新')
+    }
+    else {
+      ElMessage.success('发货成功，订单已进入待收货')
+    }
+    trackingDialogOpen.value = false
   }
-  catch (error) {
-    ElMessage.error('更新订单状态失败，请稍后重试')
+  catch {
+    ElMessage.error('保存快递单号失败，请稍后重试')
   }
   finally {
-    changingStatusOrderId.value = ''
+    trackingSavingId.value = ''
   }
 }
 
@@ -104,14 +132,78 @@ async function rollbackToReview(order: OrderItem) {
   }
 }
 
-async function applyCardPackage(order: OrderItem) {
+async function handleDeleteOrder(order: OrderItem) {
+  if (!canOperateOrders.value) {
+    return
+  }
+  if (deletingOrderId.value) {
+    return
+  }
+  try {
+    await ElMessageBox.confirm(
+      `确定删除订单 ${order.id}？删除后不可恢复。`,
+      '删除订单',
+      {
+        confirmButtonText: '删除',
+        cancelButtonText: '取消',
+        type: 'warning',
+      },
+    )
+  }
+  catch {
+    return
+  }
+  deletingOrderId.value = order.id
+  try {
+    await deleteOrder(order.id)
+    ElMessage.success('订单已删除')
+    if (selectedOrder.value?.id === order.id) {
+      closePlan()
+    }
+    await loadOrders()
+  }
+  catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '删除订单失败，请稍后重试')
+  }
+  finally {
+    deletingOrderId.value = ''
+  }
+}
+
+function cardPackageTagType(issued: boolean): 'success' | 'warning' {
+  return issued ? 'success' : 'warning'
+}
+
+function orderStatusTagType(s: OrderItem['status']): 'success' | 'warning' | 'info' | 'danger' | 'primary' {
+  if (s === '待发货') {
+    return 'warning'
+  }
+  if (s === '待收货') {
+    return 'primary'
+  }
+  if (s === '已完成') {
+    return 'success'
+  }
+  if (s === '风控未通过') {
+    return 'danger'
+  }
+  return 'info'
+}
+
+function handleCardPackageCmd(order: OrderItem, cmd: string) {
+  if (cmd !== 'issued' && cmd !== 'pending') {
+    return
+  }
+  void applyCardPackage(order, cmd === 'issued')
+}
+
+async function applyCardPackage(order: OrderItem, next: boolean) {
   if (!canOperateOrders.value) {
     return
   }
   if (cardPackageSavingId.value) {
     return
   }
-  const next = cardPackageDraftMap.value[order.id]
   if (next === order.cardPackageIssued) {
     return
   }
@@ -121,7 +213,6 @@ async function applyCardPackage(order: OrderItem) {
     ElMessage.success('卡包发放状态已更新')
   }
   catch {
-    cardPackageDraftMap.value[order.id] = order.cardPackageIssued
     ElMessage.error('更新卡包状态失败，请稍后重试')
   }
   finally {
@@ -139,12 +230,6 @@ async function loadOrders() {
       payType: payType.value,
       date: orderDate.value,
     })
-    statusDraftMap.value = Object.fromEntries(
-      orders.value.map(item => [item.id, item.status]),
-    )
-    cardPackageDraftMap.value = Object.fromEntries(
-      orders.value.map(item => [item.id, item.cardPackageIssued]),
-    )
   }
   finally {
     loading.value = false
@@ -157,6 +242,10 @@ async function refreshOrders() {
 }
 
 onMounted(() => {
+  void loadOrders()
+})
+
+watch(status, () => {
   void loadOrders()
 })
 </script>
@@ -215,10 +304,11 @@ onMounted(() => {
           <th>每期应还</th>
           <th>当前期数</th>
           <th>下次还款日</th>
-          <th>状态</th>
           <th>支付方式</th>
           <th>卡包发放</th>
           <th>下单时间</th>
+          <th>状态</th>
+          <th>快递单号</th>
           <th>操作</th>
         </tr>
       </thead>
@@ -235,53 +325,83 @@ onMounted(() => {
           <td>¥ {{ item.periodAmount }}</td>
           <td>{{ item.currentPeriod }} / {{ item.periods }}</td>
           <td>{{ item.nextRepayDate }}</td>
-          <td>{{ item.status }}</td>
           <td>{{ item.payType }}</td>
-          <td>
+          <td class="td-card-package">
             <template v-if="canOperateOrders">
-              <el-select
-                v-model="cardPackageDraftMap[item.id]"
-                class="card-package-select"
-                placeholder="卡包"
+              <el-dropdown
+                trigger="click"
                 :disabled="cardPackageSavingId === item.id"
-                @change="applyCardPackage(item)"
+                @command="(cmd: string) => handleCardPackageCmd(item, cmd)"
               >
-                <el-option
-                  label="未发放"
-                  :value="false"
-                />
-                <el-option
-                  label="已发放"
-                  :value="true"
-                />
-              </el-select>
+                <span class="card-package-dropdown-trigger">
+                  <el-tag
+                    :type="cardPackageTagType(item.cardPackageIssued)"
+                    effect="light"
+                    round
+                    size="small"
+                    class="card-package-tag"
+                  >
+                    {{ item.cardPackageIssued ? '已发放' : '未发放' }}
+                  </el-tag>
+                </span>
+                <template #dropdown>
+                  <el-dropdown-menu>
+                    <el-dropdown-item
+                      command="pending"
+                      :disabled="!item.cardPackageIssued"
+                    >
+                      未发放
+                    </el-dropdown-item>
+                    <el-dropdown-item
+                      command="issued"
+                      :disabled="item.cardPackageIssued"
+                    >
+                      已发放
+                    </el-dropdown-item>
+                  </el-dropdown-menu>
+                </template>
+              </el-dropdown>
             </template>
-            <template v-else>
+            <el-tag
+              v-else
+              :type="cardPackageTagType(item.cardPackageIssued)"
+              effect="light"
+              round
+              size="small"
+            >
               {{ item.cardPackageIssued ? '已发放' : '未发放' }}
-            </template>
+            </el-tag>
           </td>
           <td>{{ item.createdAt }}</td>
+          <td class="td-order-status">
+            <el-tag
+              :type="orderStatusTagType(item.status)"
+              effect="light"
+              round
+              size="small"
+              class="order-status-tag"
+            >
+              {{ item.status }}
+            </el-tag>
+          </td>
+          <td class="td-tracking">
+            <template v-if="canOperateOrders && showTrackingEditor(item)">
+              <button
+                type="button"
+                class="tracking-display-btn"
+                :class="{ 'is-empty': !item.trackingNumber?.trim() }"
+                :disabled="trackingSavingId === item.id"
+                @click="openTrackingDialog(item)"
+              >
+                {{ item.trackingNumber?.trim() || '填写单号' }}
+              </button>
+            </template>
+            <template v-else>
+              {{ item.trackingNumber?.trim() || '填写单号' }}
+            </template>
+          </td>
           <td class="actions-cell">
             <div class="actions">
-              <el-select
-                v-if="canOperateOrders"
-                v-model="statusDraftMap[item.id]"
-                class="status-select"
-              >
-                <el-option label="待审核" value="待审核" />
-                <el-option label="待发货" value="待发货" />
-                <el-option label="待收货" value="待收货" />
-                <el-option label="已完成" value="已完成" />
-              </el-select>
-              <button
-                v-if="canOperateOrders"
-                class="btn btn-success"
-                type="button"
-                :disabled="changingStatusOrderId === item.id"
-                @click="applyOrderStatus(item)"
-              >
-                {{ changingStatusOrderId === item.id ? '更新中...' : '更新状态' }}
-              </button>
               <button
                 class="btn btn-primary"
                 type="button"
@@ -298,11 +418,20 @@ onMounted(() => {
               >
                 {{ changingStatusOrderId === item.id ? '处理中...' : '打回审核' }}
               </button>
+              <button
+                v-if="canOperateOrders"
+                class="btn btn-danger"
+                type="button"
+                :disabled="deletingOrderId === item.id"
+                @click="handleDeleteOrder(item)"
+              >
+                {{ deletingOrderId === item.id ? '删除中...' : '删除' }}
+              </button>
             </div>
           </td>
         </tr>
         <tr v-if="!loading && filteredOrders.length === 0">
-          <td colspan="13" style="text-align: center; color: #9ca3af;">
+          <td colspan="14" style="text-align: center; color: #9ca3af;">
             暂无订单数据
           </td>
         </tr>
@@ -369,6 +498,42 @@ onMounted(() => {
       </table>
     </div>
   </div>
+
+  <el-dialog
+    v-model="trackingDialogOpen"
+    title="快递单号"
+    width="420px"
+    align-center
+    destroy-on-close
+    class="tracking-shipment-dialog"
+    body-class="tracking-shipment-dialog__body"
+    @closed="onTrackingDialogClosed"
+  >
+    <template v-if="trackingDialogOrder">
+      <p class="tracking-dialog-meta">
+        订单 {{ trackingDialogOrder.id }} ｜ {{ trackingDialogOrder.product }}
+      </p>
+      <el-input
+        v-model="trackingDialogInput"
+        placeholder="请输入快递单号"
+        clearable
+        :disabled="!!trackingSavingId"
+        @keyup.enter="confirmTrackingDialog"
+      />
+    </template>
+    <template #footer>
+      <el-button @click="trackingDialogOpen = false">
+        取消
+      </el-button>
+      <el-button
+        type="primary"
+        :loading="!!trackingSavingId"
+        @click="confirmTrackingDialog"
+      >
+        保存
+      </el-button>
+    </template>
+  </el-dialog>
 </template>
 
 <style scoped>
@@ -409,6 +574,12 @@ onMounted(() => {
   color: #fff;
 }
 
+.btn-danger {
+  border-color: #dc2626;
+  background: #dc2626;
+  color: #fff;
+}
+
 .toolbar-input {
   width: 260px;
 }
@@ -418,12 +589,73 @@ onMounted(() => {
   width: 160px;
 }
 
-.status-select {
-  width: 120px;
+.td-tracking {
+  vertical-align: middle;
+  max-width: 200px;
 }
 
-.card-package-select {
-  width: 110px;
+.tracking-display-btn {
+  display: inline-block;
+  max-width: 100%;
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  line-height: inherit;
+  color: #1e40af;
+  text-align: left;
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 3px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tracking-display-btn:hover:not(:disabled) {
+  color: #1d4ed8;
+}
+
+.tracking-display-btn.is-empty {
+  color: #94a3b8;
+}
+
+.tracking-display-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.td-order-status {
+  vertical-align: middle;
+}
+
+.order-status-tag {
+  font-weight: 600;
+}
+
+.td-card-package {
+  vertical-align: middle;
+}
+
+.card-package-dropdown-trigger {
+  display: inline-flex;
+  vertical-align: middle;
+}
+
+.card-package-tag {
+  cursor: pointer;
+  user-select: none;
+  font-weight: 600;
+  transition: filter 0.15s ease, transform 0.12s ease;
+}
+
+.card-package-tag:hover {
+  filter: brightness(0.96);
+}
+
+.card-package-tag:active {
+  transform: scale(0.98);
 }
 
 .actions {
@@ -475,5 +707,14 @@ onMounted(() => {
   margin: 0 0 12px;
   color: #4b5563;
   font-size: 14px;
+}
+</style>
+
+<style>
+/* el-dialog 内容挂到 body，与 scoped 分离 */
+.tracking-shipment-dialog__body .tracking-dialog-meta {
+  margin: 0 0 12px;
+  font-size: 13px;
+  color: #64748b;
 }
 </style>

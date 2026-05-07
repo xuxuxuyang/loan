@@ -292,7 +292,18 @@
 - **鉴权：** 接口内校验：超级管理员或审核员。
 - **传参：**
   - Path `id`：订单号。
-  - Body：`status`：如 `shipping`；审核员通常仅能推进到发货类状态。
+  - Body：`status`：如 `shipping`；审核员通常仅能推进到发货类状态。设为 `reviewing`（打回审核）时会清空快递单号。
+
+---
+
+## `PATCH /orders/:id/shipment`
+
+- **用在哪：** `admin/src/stores/useOrdersStore.ts`（`updateOrderShipment`）。
+- **鉴权：** 仅超级管理员。
+- **传参：**
+  - Path `id`：订单号。
+  - Body：**必填字段** `trackingNumber`（字符串）；**传空字符串表示清空单号**并恢复未填写展示；若原已有单号且当前为 `receiving`，会退回 `shipping`（待发货）。
+  - 非空时：订单为 `shipping` 会自动改为 `receiving`；已在 `receiving` 的订单可只改单号。
 
 ---
 
