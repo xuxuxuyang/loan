@@ -32,7 +32,7 @@ const statusTabs: Array<{ key: 'all' | MallOrderStatus, label: string }> = [
   { key: 'reviewing', label: '待审核' },
   { key: 'shipping', label: '待发货' },
   { key: 'receiving', label: '待收货' },
-  { key: 'enjoying', label: '已收货' },
+  { key: 'enjoying', label: '享用中' },
 ]
 
 const activeStatus = computed<'all' | MallOrderStatus>(() => {
@@ -115,7 +115,7 @@ function getStatusLabel(status: MallOrderStatus, paid: boolean, payType: 'instal
     reviewing: '待审核',
     shipping: '待发货',
     receiving: '待收货',
-    enjoying: '已收货',
+    enjoying: '享用中',
   }
   return labelMap[status]
 }

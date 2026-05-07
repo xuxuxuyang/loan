@@ -4,6 +4,7 @@ const {
   products,
   orders,
   users,
+  adminAccounts,
   addresses,
   bankCards,
   bills,
@@ -14,7 +15,8 @@ const DB_FILE = path.join(DB_DIR, 'db.json')
 const ADMIN_USER_ID = 'U19900000000'
 const ADMIN_PHONE = '19900000000'
 
-// TODO(db): 后续接入真实数据库时，可在此替换为仓储层实现。
+// TODO(db): 接入 MongoDB 时在单独仓储模块中使用 require('./mongo').getMongoDb() 与 COLLECTIONS；
+// 连接参数见 mongoConfig.js，勿在此处读写环境变量。
 
 function ensureDbFile() {
   if (!fs.existsSync(DB_DIR)) {
@@ -25,6 +27,7 @@ function ensureDbFile() {
       products,
       orders,
       users,
+      adminAccounts,
       addresses,
       bankCards,
       bills,
@@ -38,6 +41,7 @@ function buildSeedDb() {
     products: products.map(item => ({ ...item })),
     orders: orders.map(item => ({ ...item })),
     users: users.map(item => ({ ...item })),
+    adminAccounts: adminAccounts.map(item => ({ ...item })),
     addresses: addresses.map(item => ({ ...item })),
     bankCards: bankCards.map(item => ({ ...item })),
     bills: bills.map(item => ({ ...item })),
@@ -84,6 +88,25 @@ function dedupeUsersById(list) {
   return [...map.values()]
 }
 
+function ensureAdminAccounts(list) {
+  const normalized = Array.isArray(list) ? list : []
+  const map = new Map()
+  normalized.forEach((item) => {
+    if (!item || !item.username) {
+      return
+    }
+    if (!map.has(item.username)) {
+      map.set(item.username, item)
+    }
+  })
+  adminAccounts.forEach((seed) => {
+    if (!map.has(seed.username)) {
+      map.set(seed.username, { ...seed })
+    }
+  })
+  return [...map.values()]
+}
+
 function readDb() {
   ensureDbFile()
   const raw = fs.readFileSync(DB_FILE, 'utf-8')
@@ -93,15 +116,18 @@ function readDb() {
       products: Array.isArray(parsed.products) ? parsed.products : [],
       orders: Array.isArray(parsed.orders) ? parsed.orders : [],
       users: Array.isArray(parsed.users) ? parsed.users : [],
+      adminAccounts: Array.isArray(parsed.adminAccounts) ? parsed.adminAccounts : [],
       addresses: Array.isArray(parsed.addresses) ? parsed.addresses : addresses.map(item => ({ ...item })),
       bankCards: Array.isArray(parsed.bankCards) ? parsed.bankCards : bankCards.map(item => ({ ...item })),
       bills: Array.isArray(parsed.bills) ? parsed.bills : bills.map(item => ({ ...item })),
     }
     db.users = dedupeUsersById(ensureAdminUser(db.users))
+    db.adminAccounts = ensureAdminAccounts(db.adminAccounts)
     return {
       products: db.products,
       orders: db.orders,
       users: db.users,
+      adminAccounts: db.adminAccounts,
       addresses: db.addresses,
       bankCards: db.bankCards,
       bills: db.bills,
@@ -112,6 +138,7 @@ function readDb() {
       products: [],
       orders: [],
       users: ensureAdminUser([]),
+      adminAccounts: ensureAdminAccounts([]),
       addresses: [],
       bankCards: [],
       bills: [],

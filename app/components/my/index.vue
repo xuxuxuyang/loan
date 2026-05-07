@@ -11,7 +11,7 @@ const orderStatus = [
   { title: '审核中', icon: '⏱️', key: 'reviewing' },
   { title: '待发货', icon: '🕘', key: 'shipping' },
   { title: '待收货', icon: '🚚', key: 'receiving' },
-  { title: '已收货', icon: '📋', key: 'enjoying' },
+  { title: '享用中', icon: '📋', key: 'enjoying' },
 ]
 
 const serviceList = [

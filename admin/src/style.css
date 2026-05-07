@@ -20,16 +20,19 @@ body {
 }
 
 .admin-sidebar {
-  background: #111827;
-  color: #d1d5db;
+  background: linear-gradient(165deg, #8f8176 0%, #6b5f56 44%, #4a4039 100%);
+  color: #ebe4dc;
   padding: 20px 14px;
+  box-shadow: inset -1px 0 0 rgba(255, 248, 240, 0.06);
 }
 
 .admin-logo {
-  color: #fff;
+  color: #faf6f2;
   font-size: 18px;
   font-weight: 700;
   padding: 10px 12px 20px;
+  letter-spacing: 0.02em;
+  text-shadow: 0 1px 3px rgba(42, 32, 28, 0.35);
 }
 
 .admin-nav {
@@ -94,11 +97,45 @@ body {
   padding: 0 20px;
   display: flex;
   align-items: center;
+  justify-content: space-between;
 }
 
 .admin-header h1 {
   margin: 0;
   font-size: 20px;
+}
+
+.admin-header-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.admin-role {
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  border-radius: 999px;
+  padding: 0 10px;
+  background: #dbeafe;
+  color: #1d4ed8;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.admin-user {
+  color: #4b5563;
+  font-size: 13px;
+}
+
+.admin-logout-btn {
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  height: 28px;
+  background: #fff;
+  padding: 0 10px;
+  cursor: pointer;
+  color: #374151;
 }
 
 .admin-content {
@@ -138,12 +175,15 @@ body {
 
 .toolbar {
   display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-start;
   gap: 10px;
   margin-bottom: 12px;
 }
 
-.toolbar input,
-.toolbar select {
+.toolbar > input,
+.toolbar > select {
   height: 36px;
   border: 1px solid #d1d5db;
   border-radius: 8px;
@@ -151,8 +191,30 @@ body {
   font-size: 14px;
 }
 
-.toolbar input {
-  flex: 1;
+.toolbar > input {
+  flex: 0 0 auto;
+  width: 260px;
+  max-width: 100%;
+}
+
+.toolbar .btn.btn-refresh {
+  border-color: #16a34a;
+  background: linear-gradient(135deg, #22c55e, #16a34a);
+  color: #fff;
+  box-shadow: 0 4px 10px rgba(22, 163, 74, 0.22);
+  transition: transform 0.15s ease, box-shadow 0.15s ease, filter 0.15s ease;
+}
+
+.toolbar .btn.btn-refresh:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 16px rgba(22, 163, 74, 0.28);
+  filter: brightness(1.02);
+}
+
+.toolbar .btn.btn-refresh:disabled {
+  transform: none;
+  box-shadow: none;
+  filter: none;
 }
 
 .table {
@@ -172,4 +234,13 @@ body {
   color: #6b7280;
   font-weight: 600;
   background: #fafafa;
+}
+
+#nprogress .bar {
+  background: linear-gradient(90deg, #16a34a, #2563eb);
+  height: 3px;
+}
+
+#nprogress .peg {
+  box-shadow: 0 0 10px rgba(37, 99, 235, 0.45), 0 0 5px rgba(22, 163, 74, 0.35);
 }

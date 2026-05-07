@@ -1,4 +1,5 @@
 import { ref } from 'vue'
+import { withAdminAuthHeaders } from '../composables/useAdminApi'
 
 export interface InstallmentItem {
   period: number
@@ -26,6 +27,27 @@ export interface OrderItem {
   installmentPlan: InstallmentItem[]
 }
 
+export interface RiskDetailRule {
+  code: string
+  name: string
+  hit: boolean
+  scoreImpact: number
+  detail: string
+}
+
+export interface OrderRiskDetail {
+  orderId: string
+  riskStatus: 'passed' | 'failed'
+  decision: string
+  riskScore: number
+  threshold: number
+  checkedAt: string
+  reason: string
+  modelVersion: string
+  factors: string[]
+  rules: RiskDetailRule[]
+}
+
 interface MallOrderPayload {
   id: string
   name: string
@@ -40,6 +62,25 @@ interface MallOrderPayload {
   installmentPlan?: InstallmentItem[]
 }
 
+interface RiskDetailPayload {
+  orderId: string
+  riskStatus?: 'passed' | 'failed'
+  decision?: string
+  riskScore?: number
+  threshold?: number
+  checkedAt?: string
+  reason?: string
+  modelVersion?: string
+  factors?: string[]
+  rules?: Array<{
+    code?: string
+    name?: string
+    hit?: boolean
+    scoreImpact?: number
+    detail?: string
+  }>
+}
+
 interface OrderFilterParams {
   keyword?: string
   status?: OrderItem['status'] | '全部'
@@ -49,6 +90,7 @@ interface OrderFilterParams {
 
 const MALL_ORDERS_ENDPOINT = `${(import.meta.env.VITE_MALL_API_BASE || 'http://localhost:3110/api').replace(/\/$/, '')}/orders`
 const MALL_INSTALLMENT_PAY_ENDPOINT = `${MALL_ORDERS_ENDPOINT}/:id/installments/:period/pay`
+const MALL_ORDER_RISK_DETAIL_ENDPOINT = `${MALL_ORDERS_ENDPOINT}/:id/risk-detail`
 const orders = ref<OrderItem[]>([])
 const initialized = ref(false)
 
@@ -146,6 +188,10 @@ function installmentPayUrl(orderId: string, period: number) {
     .replace(':period', encodeURIComponent(String(period)))
 }
 
+function riskDetailUrl(orderId: string) {
+  return MALL_ORDER_RISK_DETAIL_ENDPOINT.replace(':id', encodeURIComponent(orderId))
+}
+
 function mapPayTypeToApi(payType?: OrderItem['payType'] | '全部') {
   if (!payType || payType === '全部') {
     return ''
@@ -177,7 +223,10 @@ async function fetchOrders(params: OrderFilterParams = {}) {
   if (params.date) query.set('date', params.date)
 
   const url = query.toString() ? `${MALL_ORDERS_ENDPOINT}?${query.toString()}` : MALL_ORDERS_ENDPOINT
-  const response = await fetch(url, { method: 'GET' })
+  const response = await fetch(url, {
+    method: 'GET',
+    headers: withAdminAuthHeaders(),
+  })
   if (!response.ok) {
     throw new Error(`请求订单失败: ${response.status}`)
   }
@@ -189,9 +238,7 @@ async function fetchOrders(params: OrderFilterParams = {}) {
 async function updateInstallmentPaid(orderId: string, period: number, paid: boolean) {
   const response = await fetch(installmentPayUrl(orderId, period), {
     method: 'PATCH',
-    headers: {
-      'Content-Type': 'application/json',
-    },
+    headers: withAdminAuthHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({ paid }),
   })
   if (!response.ok) {
@@ -208,9 +255,7 @@ async function updateInstallmentPaid(orderId: string, period: number, paid: bool
 async function updateOrderStatus(orderId: string, status: MallOrderPayload['status']) {
   const response = await fetch(`${MALL_ORDERS_ENDPOINT}/${encodeURIComponent(orderId)}/status`, {
     method: 'PATCH',
-    headers: {
-      'Content-Type': 'application/json',
-    },
+    headers: withAdminAuthHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({ status }),
   })
   if (!response.ok) {
@@ -222,6 +267,40 @@ async function updateOrderStatus(orderId: string, status: MallOrderPayload['stat
   }
   const mapped = mapMallOrderToAdminOrder(payload.data)
   orders.value = orders.value.map(item => (item.id === mapped.id ? mapped : item))
+}
+
+async function fetchOrderRiskDetail(orderId: string): Promise<OrderRiskDetail> {
+  const response = await fetch(riskDetailUrl(orderId), {
+    method: 'GET',
+    headers: withAdminAuthHeaders(),
+  })
+  if (!response.ok) {
+    throw new Error(`获取风控详情失败: ${response.status}`)
+  }
+  const payload = await response.json() as { success?: boolean, data?: RiskDetailPayload }
+  if (!payload.data) {
+    throw new Error('风控详情数据为空')
+  }
+  return {
+    orderId: payload.data.orderId,
+    riskStatus: payload.data.riskStatus === 'failed' ? 'failed' : 'passed',
+    decision: payload.data.decision || '通过',
+    riskScore: Number(payload.data.riskScore || 0),
+    threshold: Number(payload.data.threshold || 2200),
+    checkedAt: formatDateTime(payload.data.checkedAt || ''),
+    reason: payload.data.reason || '',
+    modelVersion: payload.data.modelVersion || 'mock-risk-v1',
+    factors: Array.isArray(payload.data.factors) ? payload.data.factors : [],
+    rules: Array.isArray(payload.data.rules)
+      ? payload.data.rules.map(rule => ({
+          code: String(rule.code || ''),
+          name: String(rule.name || ''),
+          hit: Boolean(rule.hit),
+          scoreImpact: Number(rule.scoreImpact || 0),
+          detail: String(rule.detail || ''),
+        }))
+      : [],
+  }
 }
 
 function recalculateOrderFields(order: OrderItem) {
@@ -255,5 +334,6 @@ export function useOrdersStore() {
     recalculateOrderFields,
     updateInstallmentPaid,
     updateOrderStatus,
+    fetchOrderRiskDetail,
   }
 }

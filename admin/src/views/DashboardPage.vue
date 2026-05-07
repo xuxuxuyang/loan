@@ -611,62 +611,51 @@ watch([orders, totalSales, totalReceivable, profitRate], () => {
     <div class="filter-grid">
       <label>
         关键词
-        <input
+        <el-input
           v-model="filterKeyword"
+          class="filter-input"
           placeholder="订单号 / 用户 / 商品"
-        >
+          clearable
+        />
       </label>
       <label>
         订单状态
-        <select v-model="filterOrderStatus">
-          <option value="all">
-            全部状态
-          </option>
-          <option value="待付款">
-            待付款
-          </option>
-          <option value="待发货">
-            待发货
-          </option>
-          <option value="待收货">
-            待收货
-          </option>
-          <option value="已完成">
-            已完成
-          </option>
-        </select>
+        <el-select
+          v-model="filterOrderStatus"
+          class="filter-select"
+        >
+          <el-option label="全部状态" value="all" />
+          <el-option label="待发货" value="待发货" />
+          <el-option label="待收货" value="待收货" />
+          <el-option label="已完成" value="已完成" />
+        </el-select>
       </label>
       <label>
         期次
-        <select v-model="filterPeriod">
-          <option value="all">
-            全部期次
-          </option>
-          <option
+        <el-select
+          v-model="filterPeriod"
+          class="filter-select"
+        >
+          <el-option label="全部期次" value="all" />
+          <el-option
             v-for="period in allPeriods"
             :key="period"
+            :label="`第${period}期`"
             :value="period"
-          >
-            第{{ period }}期
-          </option>
-        </select>
+          />
+        </el-select>
       </label>
       <label>
         回款状态
-        <select v-model="filterRepayState">
-          <option value="all">
-            全部
-          </option>
-          <option value="已回款">
-            已回款
-          </option>
-          <option value="待回款">
-            待回款
-          </option>
-          <option value="逾期待回">
-            逾期待回
-          </option>
-        </select>
+        <el-select
+          v-model="filterRepayState"
+          class="filter-select"
+        >
+          <el-option label="全部" value="all" />
+          <el-option label="已回款" value="已回款" />
+          <el-option label="待回款" value="待回款" />
+          <el-option label="逾期待回" value="逾期待回" />
+        </el-select>
       </label>
       <button
         class="btn-reset"
@@ -822,8 +811,9 @@ watch([orders, totalSales, totalReceivable, profitRate], () => {
 }
 
 .filter-grid {
-  display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
   gap: 10px;
   margin-bottom: 10px;
 }
@@ -833,6 +823,13 @@ watch([orders, totalSales, totalReceivable, profitRate], () => {
   gap: 6px;
   font-size: 13px;
   color: #6b7280;
+  width: 220px;
+  max-width: 100%;
+}
+
+.filter-input,
+.filter-select {
+  width: 100%;
 }
 
 .filter-grid input,
@@ -844,7 +841,6 @@ watch([orders, totalSales, totalReceivable, profitRate], () => {
 }
 
 .btn-reset {
-  margin-top: 22px;
   height: 34px;
   border-radius: 8px;
   border: 1px solid #2563eb;

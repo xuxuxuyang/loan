@@ -122,6 +122,43 @@ const users = [
     longitude: 113.327676,
     creditStatus: '良好',
     registerAt: '2026-05-01T09:00:00+08:00',
+    quota: 3000,
+  },
+]
+
+const adminAccounts = [
+  {
+    id: 'A1001',
+    username: 'admin',
+    password: '1234',
+    role: 'super_admin',
+    name: '超级管理员',
+    phone: '19900000000',
+    status: 'active',
+    createdAt: '2026-05-01T09:00:00+08:00',
+    updatedAt: '2026-05-01T09:00:00+08:00',
+  },
+  {
+    id: 'A1002',
+    username: 'reviewer',
+    password: '1234',
+    role: 'reviewer',
+    name: '审核员',
+    phone: '19900000001',
+    status: 'active',
+    createdAt: '2026-05-01T09:00:00+08:00',
+    updatedAt: '2026-05-01T09:00:00+08:00',
+  },
+  {
+    id: 'A1003',
+    username: 'service',
+    password: '1234',
+    role: 'customer_service',
+    name: '客服',
+    phone: '19900000002',
+    status: 'active',
+    createdAt: '2026-05-01T09:00:00+08:00',
+    updatedAt: '2026-05-01T09:00:00+08:00',
   },
 ]
 
@@ -192,6 +229,7 @@ module.exports = {
   products,
   orders,
   users,
+  adminAccounts,
   addresses,
   bankCards,
   bills,

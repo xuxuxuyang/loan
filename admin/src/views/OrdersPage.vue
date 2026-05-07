@@ -1,7 +1,10 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { ElMessage } from 'element-plus'
 import type { InstallmentItem, OrderItem } from '../stores/useOrdersStore'
+import { getAdminSession } from '../composables/useAdminAuth'
 import { useOrdersStore } from '../stores/useOrdersStore'
+import { donePageProgress, startPageProgress } from '../utils/progress'
 
 const keyword = ref('')
 const status = ref<'全部' | OrderItem['status']>('全部')
@@ -12,6 +15,7 @@ const loading = ref(false)
 const changingStatusOrderId = ref('')
 const statusDraftMap = ref<Record<string, OrderItem['status']>>({})
 const { orders, recalculateOrderFields, fetchOrders, updateInstallmentPaid, updateOrderStatus } = useOrdersStore()
+const canOperateOrders = computed(() => getAdminSession()?.role === 'super_admin')
 
 const filteredOrders = computed(() => {
   // 订单管理仅展示已通过人工审核后的订单，待审核订单统一在“审核订单”页面处理。
@@ -27,6 +31,7 @@ function closePlan() {
 }
 
 async function toggleRepay(order: OrderItem, period: InstallmentItem) {
+  if (!canOperateOrders.value) return
   const nextPaid = !period.paid
   const prevPaid = period.paid
   period.paid = nextPaid
@@ -37,8 +42,7 @@ async function toggleRepay(order: OrderItem, period: InstallmentItem) {
   catch (error) {
     period.paid = prevPaid
     recalculateOrderFields(order)
-    // eslint-disable-next-line no-alert
-    window.alert('更新分期状态失败，请稍后重试')
+    ElMessage.error('更新分期状态失败，请稍后重试')
   }
 }
 
@@ -54,6 +58,7 @@ function getRowStatusDraft(order: OrderItem) {
 }
 
 async function applyOrderStatus(order: OrderItem) {
+  if (!canOperateOrders.value) return
   if (changingStatusOrderId.value) {
     return
   }
@@ -68,8 +73,7 @@ async function applyOrderStatus(order: OrderItem) {
     await loadOrders()
   }
   catch (error) {
-    // eslint-disable-next-line no-alert
-    window.alert('更新订单状态失败，请稍后重试')
+    ElMessage.error('更新订单状态失败，请稍后重试')
   }
   finally {
     changingStatusOrderId.value = ''
@@ -77,6 +81,7 @@ async function applyOrderStatus(order: OrderItem) {
 }
 
 async function rollbackToReview(order: OrderItem) {
+  if (!canOperateOrders.value) return
   if (changingStatusOrderId.value) {
     return
   }
@@ -90,8 +95,7 @@ async function rollbackToReview(order: OrderItem) {
     await loadOrders()
   }
   catch (error) {
-    // eslint-disable-next-line no-alert
-    window.alert('打回审核失败，请稍后重试')
+    ElMessage.error('打回审核失败，请稍后重试')
   }
   finally {
     changingStatusOrderId.value = ''
@@ -100,6 +104,7 @@ async function rollbackToReview(order: OrderItem) {
 
 async function loadOrders() {
   loading.value = true
+  startPageProgress()
   try {
     await fetchOrders({
       keyword: keyword.value.trim(),
@@ -113,6 +118,7 @@ async function loadOrders() {
   }
   finally {
     loading.value = false
+    donePageProgress()
   }
 }
 
@@ -128,42 +134,28 @@ onMounted(() => {
 <template>
   <div class="panel">
     <div class="toolbar">
-      <input
+      <el-input
         v-model="keyword"
+        class="toolbar-input"
         placeholder="搜索订单号 / 用户 / 商品"
+        clearable
+      />
+      <el-select
+        v-model="status"
+        class="toolbar-select"
       >
-      <select v-model="status">
-        <option value="全部">
-          全部状态
-        </option>
-        <option value="待付款">
-          待付款
-        </option>
-        <option value="待发货">
-          待发货
-        </option>
-        <option value="待收货">
-          待收货
-        </option>
-        <option value="已完成">
-          已完成
-        </option>
-      </select>
-      <select v-model="payType">
-        <option value="全部">
-          全部支付方式
-        </option>
-        <option value="分期">
-          分期
-        </option>
-        <option value="全款">
-          全款
-        </option>
-      </select>
-      <input
+        <el-option label="全部状态" value="全部" />
+        <el-option label="待发货" value="待发货" />
+        <el-option label="待收货" value="待收货" />
+        <el-option label="已完成" value="已完成" />
+      </el-select>
+      <el-date-picker
         v-model="orderDate"
+        class="toolbar-date"
         type="date"
-      >
+        value-format="YYYY-MM-DD"
+        placeholder="下单日期"
+      />
       <button
         class="btn btn-secondary"
         type="button"
@@ -173,12 +165,12 @@ onMounted(() => {
         查询
       </button>
       <button
-        class="btn btn-primary"
+        class="btn btn-refresh"
         type="button"
         :disabled="loading"
         @click="refreshOrders"
       >
-        {{ loading ? '刷新中...' : '刷新' }}
+        刷新
       </button>
     </div>
 
@@ -201,13 +193,6 @@ onMounted(() => {
       </thead>
       <tbody>
         <tr
-          v-if="loading"
-        >
-          <td colspan="12" style="text-align: center; color: #6b7280;">
-            数据加载中...
-          </td>
-        </tr>
-        <tr
           v-for="item in filteredOrders"
           :key="item.id"
         >
@@ -224,37 +209,18 @@ onMounted(() => {
           <td>{{ item.createdAt }}</td>
           <td class="actions-cell">
             <div class="actions">
-              <button
-                class="btn btn-primary"
-                type="button"
-                @click="openPlan(item)"
-              >
-                查看分期
-              </button>
-              <select
+              <el-select
+                v-if="canOperateOrders"
                 v-model="statusDraftMap[item.id]"
                 class="status-select"
               >
-                <option disabled value="">
-                  选择状态
-                </option>
-                <option value="待付款">
-                  待付款
-                </option>
-                <option value="待审核">
-                  待审核
-                </option>
-                <option value="待发货">
-                  待发货
-                </option>
-                <option value="待收货">
-                  待收货
-                </option>
-                <option value="已完成">
-                  已完成
-                </option>
-              </select>
+                <el-option label="待审核" value="待审核" />
+                <el-option label="待发货" value="待发货" />
+                <el-option label="待收货" value="待收货" />
+                <el-option label="已完成" value="已完成" />
+              </el-select>
               <button
+                v-if="canOperateOrders"
                 class="btn btn-success"
                 type="button"
                 :disabled="changingStatusOrderId === item.id"
@@ -263,6 +229,14 @@ onMounted(() => {
                 {{ changingStatusOrderId === item.id ? '更新中...' : '更新状态' }}
               </button>
               <button
+                class="btn btn-primary"
+                type="button"
+                @click="openPlan(item)"
+              >
+                查看分期
+              </button>
+              <button
+                v-if="canOperateOrders"
                 class="btn btn-warning"
                 type="button"
                 :disabled="changingStatusOrderId === item.id || item.status === '待审核'"
@@ -327,6 +301,7 @@ onMounted(() => {
             <td>{{ plan.paid ? '已还款' : '待还款' }}</td>
             <td>
               <button
+                v-if="canOperateOrders"
                 class="btn"
                 :class="plan.paid ? 'btn-warning' : 'btn-success'"
                 type="button"
@@ -380,12 +355,17 @@ onMounted(() => {
   color: #fff;
 }
 
+.toolbar-input {
+  width: 260px;
+}
+
+.toolbar-select,
+.toolbar-date {
+  width: 160px;
+}
+
 .status-select {
-  height: 30px;
-  border: 1px solid #d1d5db;
-  border-radius: 6px;
-  padding: 0 8px;
-  background: #fff;
+  width: 120px;
 }
 
 .actions {

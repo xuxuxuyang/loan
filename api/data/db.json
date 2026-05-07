@@ -1,67 +1,65 @@
 {
   "products": [
     {
-      "id": 1,
-      "name": "三亚海岛自由行",
-      "subtitle": "五星海景酒店，往返机票",
-      "description": "含双人机酒套餐与接送机服务，支持节假日预约，适合家庭与情侣出游。",
-      "origin": "海南三亚",
-      "price": 3980,
-      "image": "https://images.unsplash.com/photo-1507525428034-b723cf961d3e?auto=format&fit=crop&w=1400&q=80",
-      "category": "travel"
-    },
-    {
-      "id": 2,
-      "name": "云南丽江慢游套票",
-      "subtitle": "古城客栈，玉龙雪山一日游",
-      "description": "含三晚精品客栈和景区联票，行程轻松，附赠当地特色接待服务。",
-      "origin": "云南丽江",
-      "price": 3280,
-      "image": "https://images.unsplash.com/photo-1501555088652-021faa106b9b?auto=format&fit=crop&w=1400&q=80",
-      "category": "travel"
-    },
-    {
-      "id": 3,
-      "name": "日本关西深度游",
-      "subtitle": "大阪+京都+奈良，中文导览",
-      "description": "热门关西路线，覆盖经典打卡地，含境外意外险与签证代办咨询。",
-      "origin": "日本关西",
-      "price": 5680,
-      "image": "https://images.unsplash.com/photo-1492571350019-22de08371fd3?auto=format&fit=crop&w=1400&q=80",
-      "category": "travel"
-    },
-    {
-      "id": 4,
-      "name": "行书书法定制",
-      "subtitle": "名家手写，支持题字落款",
-      "description": "可定制家训、店名、赠礼祝词，宣纸装裱可选，支持视频验稿确认。",
-      "origin": "江苏苏州",
-      "price": 1280,
-      "image": "https://images.unsplash.com/photo-1455390582262-044cdead277a?auto=format&fit=crop&w=1400&q=80",
-      "category": "calligraphy"
-    },
-    {
-      "id": 5,
-      "name": "国画山水定制",
-      "subtitle": "写意山水，客厅装饰推荐",
-      "description": "根据空间尺寸定制构图，附高清电子版，支持送礼包装与署名题跋。",
-      "origin": "安徽黄山",
-      "price": 2280,
-      "image": "https://images.unsplash.com/photo-1513364776144-60967b0f800f?auto=format&fit=crop&w=1400&q=80",
-      "category": "calligraphy"
-    },
-    {
-      "id": 6,
-      "name": "篆刻印章礼盒",
-      "subtitle": "石章雕刻，商务收藏佳选",
-      "description": "提供姓名章、闲章与篆刻设计，含锦盒包装，适合商务往来与收藏。",
-      "origin": "浙江杭州",
-      "price": 980,
-      "image": "https://images.unsplash.com/photo-1518834107812-67b0b7c58434?auto=format&fit=crop&w=1400&q=80",
-      "category": "calligraphy"
+      "id": 7,
+      "name": "测试",
+      "subtitle": "1",
+      "description": "666",
+      "origin": "2",
+      "price": 8888,
+      "image": "https://www.shutterstock.com/image-photo/luxury-jewelry-store-display-diamond-260nw-2733085405.jpg",
+      "category": "travel",
+      "onSale": true,
+      "createdAt": "2026-05-07T01:36:50.812Z",
+      "updatedAt": "2026-05-07T09:31:07.972Z"
     }
   ],
   "orders": [
+    {
+      "id": "OD1778117834259",
+      "productId": 7,
+      "name": "测试",
+      "spec": "1",
+      "totalAmount": 8800,
+      "createdAt": "2026-05-07T01:37:14.259Z",
+      "status": "reviewing",
+      "paid": false,
+      "payType": "installment",
+      "installmentPeriods": 3,
+      "payChannel": "wechat",
+      "receiverName": "商城管理员",
+      "receiverPhone": "19900000000",
+      "receiverAddress": "广东省广州市天河区珠江新城（测试定位）",
+      "riskStatus": "failed",
+      "riskReason": "风控评分未通过，请调整分期期数或更换商品后重试",
+      "riskCheckedAt": "2026-05-07T01:37:14.391Z",
+      "installmentPlan": [
+        {
+          "period": 1,
+          "dueDate": "2026-06-07",
+          "principal": 2933.33,
+          "fee": 58.67,
+          "amount": 2992,
+          "paid": false
+        },
+        {
+          "period": 2,
+          "dueDate": "2026-07-07",
+          "principal": 2933.33,
+          "fee": 58.67,
+          "amount": 2992,
+          "paid": false
+        },
+        {
+          "period": 3,
+          "dueDate": "2026-08-07",
+          "principal": 2933.33,
+          "fee": 58.67,
+          "amount": 2992,
+          "paid": false
+        }
+      ]
+    },
     {
       "id": "OD1778081954377",
       "productId": 1,
@@ -255,7 +253,7 @@
       "spec": "五星海景酒店，往返机票",
       "totalAmount": 3892,
       "createdAt": "2026-05-06T14:11:45.333Z",
-      "status": "reviewing",
+      "status": "shipping",
       "paid": false,
       "payType": "installment",
       "installmentPeriods": 3,
@@ -295,6 +293,20 @@
   ],
   "users": [
     {
+      "id": "U19900000002",
+      "name": "客服",
+      "phone": "19900000002",
+      "idCardFront": "mock://service/id-card-front",
+      "idCardBack": "mock://service/id-card-back",
+      "idCardHandheld": "mock://service/id-card-handheld",
+      "locationText": "系统管理员账号",
+      "latitude": 0,
+      "longitude": 0,
+      "creditStatus": "良好",
+      "registerAt": "2026-05-07T02:41:48.004Z",
+      "quota": 8000
+    },
+    {
       "id": "U1778081940010",
       "name": "商城管理员",
       "phone": "19900000000",
@@ -319,6 +331,41 @@
       "longitude": 113.327676,
       "creditStatus": "优秀",
       "registerAt": "2026-05-01T09:00:00+08:00"
+    }
+  ],
+  "adminAccounts": [
+    {
+      "id": "A1001",
+      "username": "admin",
+      "password": "1234",
+      "role": "super_admin",
+      "name": "超级管理员",
+      "phone": "19900000000",
+      "status": "active",
+      "createdAt": "2026-05-01T09:00:00+08:00",
+      "updatedAt": "2026-05-07T03:26:07.403Z"
+    },
+    {
+      "id": "A1002",
+      "username": "reviewer",
+      "password": "1234",
+      "role": "reviewer",
+      "name": "审核员",
+      "phone": "19900000001",
+      "status": "active",
+      "createdAt": "2026-05-01T09:00:00+08:00",
+      "updatedAt": "2026-05-07T09:32:46.865Z"
+    },
+    {
+      "id": "A1003",
+      "username": "service",
+      "password": "1234",
+      "role": "customer_service",
+      "name": "客服",
+      "phone": "19900000002",
+      "status": "active",
+      "createdAt": "2026-05-01T09:00:00+08:00",
+      "updatedAt": "2026-05-01T09:00:00+08:00"
     }
   ],
   "addresses": [

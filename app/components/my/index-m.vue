@@ -9,7 +9,7 @@ const orderStatus = [
   { title: '审核中', icon: 'tabler:clock-bolt', key: 'reviewing' },
   { title: '待发货', icon: 'tabler:clock-hour-4', key: 'shipping' },
   { title: '待收货', icon: 'tabler:truck-delivery', key: 'receiving' },
-  { title: '已收货', icon: 'tabler:clipboard-check', key: 'enjoying' },
+  { title: '享用中', icon: 'tabler:clipboard-check', key: 'enjoying' },
 ]
 
 const serviceList = [
@@ -285,7 +285,7 @@ async function handleService(key: string) {
 
     <div class="mb-4 rounded-2xl bg-white px-3 py-4 text-center normal-font">
       <p class="text-lg leading-6 text-black/65">
-        客服电话：<span class="font-semibold text-[#c06b37]">13008962100</span>
+        客服电话：<span class="font-semibold text-[#c06b37]">18968327662</span>
       </p>
       <p class="mt-1 text-lg leading-6 text-black/45">
         9:00-18:00
