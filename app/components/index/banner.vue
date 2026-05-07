@@ -10,6 +10,24 @@ defineProps<{
 const emit = defineEmits<{
   'select-category': [category: MallCategoryKey]
 }>()
+
+const route = useRoute()
+const { smartNavigate } = useCustomRouting(route)
+const { ensureRegistered } = useMallAuth()
+
+async function goToOrder(item: TeaProduct) {
+  const passed = await ensureRegistered()
+  if (!passed) {
+    return
+  }
+  await smartNavigate({
+    path: '/order-create',
+    query: {
+      productId: String(item.id),
+      productName: item.name,
+    },
+  })
+}
 </script>
 
 <template>
@@ -94,7 +112,11 @@ const emit = defineEmits<{
           <article
             v-for="item in products.slice(0, 4)"
             :key="item.id"
-            class="overflow-hidden rounded-xl bg-white"
+            role="button"
+            tabindex="0"
+            class="overflow-hidden rounded-xl bg-white cursor-pointer transition hover:shadow-md active:opacity-90"
+            @click="goToOrder(item)"
+            @keydown.enter.prevent="goToOrder(item)"
           >
             <img
               :src="item.image"

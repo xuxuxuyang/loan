@@ -1,13 +1,11 @@
 import { normalizeMallAccount } from '~/composables/useMallAuth'
+import type { MallCardPackageDTO } from '~/api/modules/mall'
 import type { MallOrderStatus } from '~/composables/useMallOrders'
 
 export interface MallMySummary {
   orderCount: Record<MallOrderStatus, number>
   bankCardCount: number
   billPendingAmount: number
-  points: number
-  couponCount: number
-  defaultAddress: string
 }
 
 export interface MallAddressItem {
@@ -75,9 +73,6 @@ function emptySummary(): MallMySummary {
     },
     bankCardCount: 0,
     billPendingAmount: 0,
-    points: 0,
-    couponCount: 0,
-    defaultAddress: '',
   }
 }
 
@@ -91,6 +86,7 @@ export function useMallMy() {
   const summary = useState<MallMySummary>('mall-my-summary', emptySummary)
   const addresses = useState<MallAddressItem[]>('mall-my-addresses', () => [])
   const bankCards = useState<MallBankCardItem[]>('mall-my-bank-cards', () => [])
+  const cardPackages = useState<MallCardPackageDTO[]>('mall-my-card-packages', () => [])
   const billSummary = useState<MallBillSummary>('mall-my-bill-summary', () => ({
     shouldRepay: 0,
     availableQuota: 0,
@@ -111,6 +107,20 @@ export function useMallMy() {
     })
     summary.value = response.data || emptySummary()
     return summary.value
+  }
+
+  const fetchCardPackages = async (account: string) => {
+    const phone = normalizeMallAccount(account)
+    if (!/^1\d{10}$/.test(phone)) {
+      cardPackages.value = []
+      return cardPackages.value
+    }
+    const response = await $fetch<{ success: boolean, data: MallCardPackageDTO[] }>(`${resolveMallApiBase()}/card-packages`, {
+      method: 'GET',
+      query: { phone },
+    })
+    cardPackages.value = Array.isArray(response?.data) ? response.data : []
+    return cardPackages.value
   }
 
   const fetchAddresses = async (account: string) => {
@@ -178,6 +188,19 @@ export function useMallMy() {
     await fetchBankCards(phone)
   }
 
+  const deleteBankCard = async (account: string, cardId: number) => {
+    const phone = normalizeMallAccount(account)
+    if (!/^1\d{10}$/.test(phone)) {
+      return
+    }
+    await $fetch(`${resolveMallApiBase()}/bank-cards/${cardId}`, {
+      method: 'DELETE',
+      query: { phone },
+    })
+    await fetchBankCards(phone)
+    await fetchSummary(phone)
+  }
+
   const fetchBills = async (account: string) => {
     const phone = normalizeMallAccount(account)
     if (!/^1\d{10}$/.test(phone)) {
@@ -211,15 +234,18 @@ export function useMallMy() {
     summary,
     addresses,
     bankCards,
+    cardPackages,
     billSummary,
     bills,
     fetchSummary,
+    fetchCardPackages,
     fetchAddresses,
     createAddress,
     updateAddress,
     setDefaultAddress,
     fetchBankCards,
     createBankCard,
+    deleteBankCard,
     fetchBills,
   }
 }

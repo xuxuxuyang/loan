@@ -9,20 +9,20 @@ const orderStatus = [
   { title: '审核中', icon: 'tabler:clock-bolt', key: 'reviewing' },
   { title: '待发货', icon: 'tabler:clock-hour-4', key: 'shipping' },
   { title: '待收货', icon: 'tabler:truck-delivery', key: 'receiving' },
-  { title: '享用中', icon: 'tabler:clipboard-check', key: 'enjoying' },
+  { title: '已完成', icon: 'tabler:clipboard-check', key: 'enjoying' },
 ]
 
 const serviceList = [
   { key: 'address', title: '收货地址', icon: 'tabler:map-pin' },
   { key: 'service', title: '在线客服', icon: 'tabler:message-dots' },
-  { key: 'question', title: '常见问题', icon: 'tabler:help-circle' },
-  { key: 'download', title: 'App下载', icon: 'tabler:download' },
+  // { key: 'question', title: '常见问题', icon: 'tabler:help-circle' },
   { key: 'privacy', title: '隐私政策', icon: 'tabler:lock' },
-  { key: 'logout', title: '注销', icon: 'tabler:circle-x' },
+  { key: 'download', title: 'App下载', icon: 'tabler:download' },
+  
 ]
 
 const { ensureRegistered, isLoggedIn, loginPhone, profile, syncFromStorage, logout } = useMallAuth()
-const { summary, fetchSummary } = useMallMy()
+const { summary, fetchSummary, cardPackages, fetchCardPackages } = useMallMy()
 
 const displayName = computed(() => {
   if (!isLoggedIn.value) {
@@ -67,33 +67,43 @@ if (import.meta.client) {
   syncFromStorage()
   if (isLoggedIn.value) {
     void fetchSummary(loginPhone.value)
+    void fetchCardPackages(loginPhone.value)
   }
 }
 
 watch([isLoggedIn, loginPhone], async ([loggedIn, phone]) => {
   if (!loggedIn || !phone) {
+    cardPackages.value = []
     return
   }
   await fetchSummary(phone)
+  await fetchCardPackages(phone)
 })
 
 async function handleGoRegister() {
   await smartNavigate('/login')
 }
 
-async function handleBuy(productId: number) {
+async function handleBuy(productId: number, productName?: string) {
   const passed = await ensureRegistered()
   if (!passed) {
     return
   }
   await smartNavigate({
     path: '/order-create',
-    query: { productId: String(productId) },
+    query: {
+      productId: String(productId),
+      ...(productName ? { productName } : {}),
+    },
   })
 }
 
 async function handleBankCard() {
   await smartNavigate('/bank-card')
+}
+
+async function handleCardPackage() {
+  await smartNavigate('/card-package')
 }
 
 async function handleBill() {
@@ -111,14 +121,14 @@ async function handleOrderStatus(status: string) {
   })
 }
 
+function handleLogout() {
+  logout()
+  ElMessage.success('已退出登录')
+}
+
 async function handleService(key: string) {
   if (key === 'address') {
     await smartNavigate('/address')
-    return
-  }
-  if (key === 'logout') {
-    logout()
-    ElMessage.success('已退出登录')
     return
   }
   ElMessage.info('该功能开发中')
@@ -127,39 +137,50 @@ async function handleService(key: string) {
 
 <template>
   <section class="bg-[#f3f4f8] px-4 pb-5 pt-4">
-    <div class="profile-card mb-3 flex items-center gap-3">
-      <div class="avatar-shell flex h-14 w-14 items-center justify-center rounded-full bg-white shadow-sm">
+    <div class="profile-card mb-3 flex items-center gap-2 sm:gap-3">
+      <div class="flex min-w-0 flex-1 items-center gap-3">
+        <div class="avatar-shell flex h-14 w-14 shrink-0 items-center justify-center rounded-full bg-white shadow-sm">
+          <Icon
+            name="tabler:user-filled"
+            size="2rem"
+            class="text-[#e4869b]"
+          />
+        </div>
+        <div class="min-w-0 flex-1">
+          <button
+            v-if="!isLoggedIn"
+            type="button"
+            class="text-left text-[1.55rem] font-semibold leading-none text-[#2a2f3c]"
+            @click="handleGoRegister"
+          >
+            {{ displayName }}
+          </button>
+          <p
+            v-else
+            class="truncate text-[1.55rem] font-semibold leading-none text-[#2a2f3c]"
+          >
+            {{ displayName }}
+          </p>
+          <p class="mt-1 line-clamp-2 text-xs text-[#4e5974]">
+            {{ displaySubText }}
+          </p>
+        </div>
+      </div>
+      <button
+        v-if="isLoggedIn"
+        type="button"
+        class="flex shrink-0 flex-col items-center justify-center gap-0.5 rounded-xl px-2.5 py-2 text-[#e46a84] transition active:scale-[0.98] hover:bg-white/60"
+        @click="handleLogout"
+      >
         <Icon
-          name="tabler:user-filled"
-          size="2rem"
-          class="text-[#e4869b]"
+          name="tabler:logout"
+          size="1.25rem"
         />
-      </div>
-      <div>
-        <button
-          v-if="!isLoggedIn"
-          type="button"
-          class="text-[1.55rem] font-semibold leading-none text-[#2a2f3c]"
-          @click="handleGoRegister"
-        >
-          {{ displayName }}
-        </button>
-        <p
-          v-else
-          class="text-[1.55rem] font-semibold leading-none text-[#2a2f3c]"
-        >
-          {{ displayName }}
-        </p>
-        <p class="mt-1 text-xs text-[#4e5974]">
-          {{ displaySubText }}
-        </p>
-      </div>
+        <span class="text-[10px] font-medium leading-none">退出</span>
+      </button>
     </div>
 
-    <div class="order-card relative mb-3 rounded-2xl p-4">
-      <div class="absolute right-0 top-0 rounded-bl-xl rounded-tr-2xl bg-[#ffe4ea] px-3 py-1 text-[11px] text-[#e46a84]">
-        {{ isLoggedIn ? '已同步接口账单数据' : '账单还款 请在登录后查看' }}
-      </div>
+    <div class="order-card mb-3 rounded-2xl p-4">
       <div class="mb-4 flex items-center justify-between">
         <h3 class="text-[1.75rem] font-semibold text-[#2a2f3c]">
           商城订单
@@ -202,59 +223,67 @@ async function handleService(key: string) {
       </div>
     </div>
 
-    <div class="mb-3 grid grid-cols-2 gap-3 rounded-2xl bg-white p-3 text-center">
+    <div class="mb-3 grid grid-cols-3 gap-2 rounded-2xl bg-white p-2.5 sm:gap-3 sm:p-3">
       <button
         type="button"
-        class="flex items-center justify-between rounded-xl bg-[#fff6f6] px-4 py-3 text-left"
+        class="flex min-h-[5rem] flex-col items-center justify-center gap-1.5 rounded-xl bg-[#fff6f6] px-1.5 py-3 text-center active:opacity-90 sm:min-h-[5.25rem] sm:py-3.5"
         @click="handleBankCard"
       >
-        <p class="text-lg font-semibold text-black/80">
-          我的银行卡
-        </p>
-        <p class="text-xs text-black/50">
+        <div class="flex items-center justify-center gap-1.5">
+          <span class="text-sm font-semibold leading-none text-black/85 sm:text-[0.95rem]">
+            银行卡
+          </span>
+          <span class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[#ff8695] text-white">
+            <Icon
+              name="tabler:credit-card"
+              size="0.95rem"
+            />
+          </span>
+        </div>
+        <p class="max-w-full px-0.5 text-center text-[11px] leading-snug text-black/50 sm:text-xs">
           {{ isLoggedIn ? `已绑定 ${summary.bankCardCount} 张` : '登录后查看' }}
         </p>
-        <span class="flex h-7 w-7 items-center justify-center rounded-full bg-[#ff8695] text-white">
-          <Icon
-            name="tabler:credit-card"
-            size="0.9rem"
-          />
-        </span>
       </button>
       <button
         type="button"
-        class="flex items-center justify-between rounded-xl bg-[#fff6f6] px-4 py-3 text-left"
+        class="flex min-h-[5rem] flex-col items-center justify-center gap-1.5 rounded-xl bg-[#fff6f6] px-1.5 py-3 text-center active:opacity-90 sm:min-h-[5.25rem] sm:py-3.5"
         @click="handleBill"
       >
-        <p class="text-lg font-semibold text-black/80">
-          全部账单
-        </p>
-        <p class="text-xs text-black/50">
+        <div class="flex items-center justify-center gap-1.5">
+          <span class="text-sm font-semibold leading-none text-black/85 sm:text-[0.95rem]">
+            账单
+          </span>
+          <span class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[#ff8695] text-white">
+            <Icon
+              name="tabler:receipt-2"
+              size="0.95rem"
+            />
+          </span>
+        </div>
+        <p class="max-w-full px-0.5 text-center text-[11px] leading-snug text-black/50 sm:text-xs">
           {{ isLoggedIn ? `待还 ¥${summary.billPendingAmount}` : '登录后查看' }}
         </p>
-        <span class="flex h-7 w-7 items-center justify-center rounded-full bg-[#ff8695] text-white">
-          <Icon
-            name="tabler:receipt-2"
-            size="0.9rem"
-          />
-        </span>
       </button>
-    </div>
-
-    <div class="mb-3 rounded-2xl bg-white px-4 py-3">
-      <div class="flex items-center justify-between">
-        <p class="text-sm text-black/75">
-          积分
-          <span class="ml-1 font-semibold text-[#dd667d]">{{ isLoggedIn ? summary.points : '--' }}</span>
+      <button
+        type="button"
+        class="flex min-h-[5rem] flex-col items-center justify-center gap-1.5 rounded-xl bg-[#fff6f6] px-1.5 py-3 text-center active:opacity-90 sm:min-h-[5.25rem] sm:py-3.5"
+        @click="handleCardPackage"
+      >
+        <div class="flex items-center justify-center gap-1.5">
+          <span class="text-sm font-semibold leading-none text-black/85 sm:text-[0.95rem]">
+            卡包
+          </span>
+          <span class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[#ff8695] text-white">
+            <Icon
+              name="tabler:gift"
+              size="0.95rem"
+            />
+          </span>
+        </div>
+        <p class="max-w-full px-0.5 text-center text-[11px] leading-snug text-black/50 sm:text-xs">
+          {{ isLoggedIn ? (cardPackages.length ? `${cardPackages.length} 个` : '暂无卡包') : '登录后查看' }}
         </p>
-        <p class="text-sm text-black/75">
-          优惠券
-          <span class="ml-1 font-semibold text-[#dd667d]">{{ isLoggedIn ? `${summary.couponCount}张` : '--' }}</span>
-        </p>
-      </div>
-      <p class="mt-2 line-clamp-1 text-xs text-black/55">
-        默认地址：{{ isLoggedIn ? (summary.defaultAddress || '暂未设置默认收货地址') : '登录后查看默认收货地址' }}
-      </p>
+      </button>
     </div>
 
     <div class="mb-3 rounded-2xl bg-white p-4">
@@ -303,12 +332,16 @@ async function handleService(key: string) {
         <article
           v-for="item in products.slice(0, 4)"
           :key="item.id"
-          class="overflow-hidden rounded-2xl bg-white"
+          role="button"
+          tabindex="0"
+          class="overflow-hidden rounded-2xl bg-white cursor-pointer transition active:scale-[0.99]"
+          @click="handleBuy(item.id, item.name)"
+          @keydown.enter.prevent="handleBuy(item.id, item.name)"
         >
           <img
             :src="item.image"
             :alt="item.name"
-            class="h-28 w-full object-cover"
+            class="h-28 w-full object-cover pointer-events-none"
           >
           <div class="p-2.5">
             <p class="line-clamp-1 text-sm font-semibold text-black/85">
@@ -321,13 +354,12 @@ async function handleService(key: string) {
               <p class="text-sm font-semibold text-[#d45a33]">
                 ￥{{ item.price }}
               </p>
-              <button
-                type="button"
-                class="rounded-md bg-[var(--theme-color)] px-2 py-1 text-[11px] text-white"
-                @click="handleBuy(item.id)"
+              <span
+                class="rounded-md bg-[var(--theme-color)] px-2 py-1 text-[11px] text-white pointer-events-none"
+                aria-hidden="true"
               >
                 购买
-              </button>
+              </span>
             </div>
           </div>
         </article>

@@ -15,7 +15,7 @@ const route = useRoute()
 const { smartNavigate } = useCustomRouting(route)
 const { ensureRegistered } = useMallAuth()
 
-async function handleBuy(productId: number, productName: string) {
+async function handleBuy(item: TeaProduct) {
   const passed = await ensureRegistered()
   if (!passed) {
     return
@@ -23,8 +23,8 @@ async function handleBuy(productId: number, productName: string) {
   await smartNavigate({
     path: '/order-create',
     query: {
-      productId: String(productId),
-      productName,
+      productId: String(item.id),
+      productName: item.name,
     },
   })
 }
@@ -61,12 +61,16 @@ async function handleBuy(productId: number, productName: string) {
       <article
         v-for="item in products"
         :key="item.id"
-        class="product-card flex gap-3 rounded-xl p-3"
+        role="button"
+        tabindex="0"
+        class="product-card flex gap-3 rounded-xl p-3 cursor-pointer transition active:scale-[0.99]"
+        @click="handleBuy(item)"
+        @keydown.enter.prevent="handleBuy(item)"
       >
         <img
           :src="item.image"
           :alt="item.name"
-          class="h-20 w-20 rounded-lg object-cover"
+          class="h-20 w-20 shrink-0 rounded-lg object-cover pointer-events-none"
         >
         <div class="min-w-0 flex-1">
           <h3 class="line-clamp-1 text-sm font-semibold">
@@ -80,13 +84,12 @@ async function handleBuy(productId: number, productName: string) {
           </p>
           <div class="flex items-center justify-between">
             <span class="text-base font-semibold leading-5 text-[#df5b80]">￥{{ item.price }}</span>
-            <button
-              type="button"
-              class="buy-btn rounded-md px-2.5 py-1 text-xs text-white"
-              @click="handleBuy(item.id, item.name)"
+            <span
+              class="buy-btn rounded-md px-2.5 py-1 text-xs text-white pointer-events-none"
+              aria-hidden="true"
             >
               购买
-            </button>
+            </span>
           </div>
         </div>
       </article>

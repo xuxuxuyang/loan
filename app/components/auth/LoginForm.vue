@@ -1,12 +1,22 @@
 <script setup lang="ts">
-import { ADMIN_TEST_VERIFY_CODE, isAdminTestAccount, normalizeMallAccount } from '~/composables/useMallAuth'
+import {
+  ADMIN_TEST_MALL_PASSWORD,
+  ADMIN_TEST_VERIFY_CODE,
+  isAdminTestAccount,
+  normalizeMallAccount,
+} from '~/composables/useMallAuth'
 
 const route = useRoute()
 const { smartNavigate } = useCustomRouting(route)
-const { syncFromStorage, loginByPhone, ensureAdminTestAccountReady } = useMallAuth()
+const { syncFromStorage, loginByPhone, loginByPassword, ensureAdminTestAccountReady } = useMallAuth()
+
+type LoginMode = 'sms' | 'password'
+const loginMode = ref<LoginMode>('sms')
 
 const phone = ref('')
 const verifyCode = ref('')
+const password = ref('')
+const showPassword = ref(false)
 const agree = ref(true)
 const countdown = ref(0)
 
@@ -18,7 +28,14 @@ const codeButtonText = computed(() => {
 })
 
 const canSubmit = computed(() => {
-  return !!phone.value.trim() && !!verifyCode.value.trim() && agree.value
+  const p = phone.value.trim()
+  if (!p || !agree.value) {
+    return false
+  }
+  if (loginMode.value === 'sms') {
+    return !!verifyCode.value.trim()
+  }
+  return password.value.trim().length >= 6
 })
 
 if (import.meta.client) {
@@ -70,6 +87,17 @@ async function goRegister() {
   })
 }
 
+function resolveSubmitError(error: unknown): string {
+  if (error && typeof error === 'object' && 'data' in error) {
+    const data = (error as { data?: { msg?: string, message?: string } }).data
+    const m = data?.msg || data?.message
+    if (m) {
+      return String(m)
+    }
+  }
+  return (error as Error)?.message || '登录失败'
+}
+
 async function submitLogin() {
   if (submitting.value) {
     return
@@ -77,9 +105,17 @@ async function submitLogin() {
   if (!validatePhone()) {
     return
   }
-  if (!verifyCode.value.trim()) {
-    ElMessage.warning('请输入验证码')
-    return
+  if (loginMode.value === 'sms') {
+    if (!verifyCode.value.trim()) {
+      ElMessage.warning('请输入验证码')
+      return
+    }
+  }
+  else {
+    if (password.value.trim().length < 6) {
+      ElMessage.warning('密码至少 6 位')
+      return
+    }
   }
   if (!agree.value) {
     ElMessage.warning('请先同意用户协议和隐私政策')
@@ -87,19 +123,23 @@ async function submitLogin() {
   }
 
   const normalizedPhone = normalizeMallAccount(phone.value)
+  const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : '/'
 
   if (isAdminTestAccount(normalizedPhone)) {
     submitting.value = true
     try {
-      // 管理员账号通过接口自动补齐用户数据，保证和真实链路一致。
       await ensureAdminTestAccountReady()
-      await loginByPhone(normalizedPhone, verifyCode.value.trim())
+      if (loginMode.value === 'sms') {
+        await loginByPhone(normalizedPhone, verifyCode.value.trim())
+      }
+      else {
+        await loginByPassword(normalizedPhone, password.value.trim())
+      }
       ElMessage.success('管理员测试账号登录成功')
-      const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : '/'
       await smartNavigate(redirect.startsWith('/') ? redirect : '/')
     }
     catch (error) {
-      ElMessage.warning((error as Error).message || `管理员测试账号验证码错误，请输入 ${ADMIN_TEST_VERIFY_CODE}`)
+      ElMessage.warning(resolveSubmitError(error) || `管理员测试账号：验证码 ${ADMIN_TEST_VERIFY_CODE}，密码 ${ADMIN_TEST_MALL_PASSWORD}`)
     }
     finally {
       submitting.value = false
@@ -109,13 +149,17 @@ async function submitLogin() {
 
   submitting.value = true
   try {
-    await loginByPhone(normalizedPhone, verifyCode.value.trim())
+    if (loginMode.value === 'sms') {
+      await loginByPhone(normalizedPhone, verifyCode.value.trim())
+    }
+    else {
+      await loginByPassword(normalizedPhone, password.value.trim())
+    }
     ElMessage.success('登录成功')
-    const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : '/'
     await smartNavigate(redirect.startsWith('/') ? redirect : '/')
   }
   catch (error) {
-    const message = (error as Error).message || '登录失败'
+    const message = resolveSubmitError(error)
     ElMessage.warning(message)
     if (message.includes('未注册')) {
       await goRegister()
@@ -148,6 +192,25 @@ async function submitLogin() {
         </div>
       </div>
 
+      <div class="mb-4 flex rounded-full border border-black/[0.06] bg-white/90 p-1 shadow-sm">
+        <button
+          type="button"
+          class="flex-1 rounded-full py-2 text-sm font-semibold transition"
+          :class="loginMode === 'sms' ? 'bg-gradient-to-r from-[#ff8594] to-[#f56a7d] text-white shadow-[0_4px_12px_rgba(235,112,137,0.35)]' : 'text-black/50'"
+          @click="loginMode = 'sms'"
+        >
+          验证码登录
+        </button>
+        <button
+          type="button"
+          class="flex-1 rounded-full py-2 text-sm font-semibold transition"
+          :class="loginMode === 'password' ? 'bg-gradient-to-r from-[#ff8594] to-[#f56a7d] text-white shadow-[0_4px_12px_rgba(235,112,137,0.35)]' : 'text-black/50'"
+          @click="loginMode = 'password'"
+        >
+          密码登录
+        </button>
+      </div>
+
       <div class="space-y-3">
         <div class="input-shell group">
           <Icon
@@ -164,32 +227,66 @@ async function submitLogin() {
             size="large"
           />
         </div>
-        
 
-        <div class="flex items-center gap-2.5">
-          <div class="input-shell flex-1 group">
+        <template v-if="loginMode === 'sms'">
+          <div class="flex items-center gap-2.5">
+            <div class="input-shell flex-1 group">
+              <Icon
+                name="tabler:shield-lock"
+                size="0.95rem"
+                class="input-icon"
+              />
+              <el-input
+                v-model="verifyCode"
+                class="login-input"
+                placeholder="请输入验证码"
+                maxlength="6"
+                size="large"
+              />
+            </div>
+            <button
+              type="button"
+              class="h-[52px] shrink-0 rounded-full bg-gradient-to-r from-[#ff8594] to-[#f56a7d] px-4 text-sm font-semibold text-white transition hover:brightness-105 disabled:opacity-70"
+              :disabled="countdown > 0"
+              @click="sendCode"
+            >
+              {{ codeButtonText }}
+            </button>
+          </div>
+        </template>
+
+        <template v-else>
+          <div class="input-shell group">
             <Icon
-              name="tabler:shield-lock"
-              size="0.95rem"
+              name="tabler:lock"
+              size="1rem"
               class="input-icon"
             />
             <el-input
-              v-model="verifyCode"
+              v-model="password"
               class="login-input"
-              placeholder="请输入验证码"
-              maxlength="6"
+              placeholder="请输入登录密码（至少 6 位）"
               size="large"
+              :type="showPassword ? 'text' : 'password'"
+              autocomplete="current-password"
+              clearable
             />
+            <button
+              type="button"
+              class="ml-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[#f08092] transition hover:bg-black/[0.04]"
+              aria-label="切换密码可见"
+              @click="showPassword = !showPassword"
+            >
+              <Icon :name="showPassword ? 'tabler:eye-off' : 'tabler:eye'" size="1.15rem" />
+            </button>
           </div>
-          <button
-            type="button"
-            class="h-[52px] shrink-0 rounded-full bg-gradient-to-r from-[#ff8594] to-[#f56a7d] px-4 text-sm font-semibold text-white transition hover:brightness-105 disabled:opacity-70"
-            :disabled="countdown > 0"
-            @click="sendCode"
+          <p
+            v-if="isAdminTestAccount(normalizeMallAccount(phone))"
+            class="text-xs leading-relaxed text-black/45"
           >
-            {{ codeButtonText }}
-          </button>
-        </div>
+            管理员测试账号默认密码为 {{ ADMIN_TEST_MALL_PASSWORD }}
+          </p>
+        </template>
       </div>
 
       <div class="mt-6 flex items-start text-sm text-black/55">
@@ -256,6 +353,7 @@ async function submitLogin() {
   padding: 0;
   background: transparent;
   box-shadow: none;
+  flex: 1;
 }
 
 .login-input:deep(.el-input__inner) {

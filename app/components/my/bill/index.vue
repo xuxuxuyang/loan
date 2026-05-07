@@ -95,7 +95,38 @@ const groupedBills = computed(() => {
     .sort((a, b) => String(b.latestTime).localeCompare(String(a.latestTime)))
 })
 
+/** 折叠时每组最多预览条数 */
+const BILL_PREVIEW_COUNT = 2
+const expandedBillGroups = ref<Record<string, boolean>>({})
+
+function isBillGroupExpanded(key: string) {
+  return !!expandedBillGroups.value[key]
+}
+
+function toggleBillGroupExpand(key: string) {
+  expandedBillGroups.value = {
+    ...expandedBillGroups.value,
+    [key]: !expandedBillGroups.value[key],
+  }
+}
+
+function recordsToPreview(group: (typeof groupedBills.value)[number]) {
+  const { records, key } = group
+  if (records.length <= BILL_PREVIEW_COUNT) {
+    return records
+  }
+  if (isBillGroupExpanded(key)) {
+    return records
+  }
+  return records.slice(0, BILL_PREVIEW_COUNT)
+}
+
+function showBillExpandControl(group: (typeof groupedBills.value)[number]) {
+  return group.records.length > BILL_PREVIEW_COUNT
+}
+
 watch(currentUserAccount, async (account) => {
+  expandedBillGroups.value = {}
   if (!account) {
     billList.value = []
     return
@@ -126,7 +157,7 @@ if (import.meta.client) {
           返回我的
         </button>
         <h1 class="text-3xl font-semibold text-black/85">
-          全部账单
+          账单
         </h1>
         <div class="w-[106px]" />
       </div>
@@ -170,7 +201,7 @@ if (import.meta.client) {
             </div>
             <div class="space-y-2">
               <div
-                v-for="record in group.records"
+                v-for="record in recordsToPreview(group)"
                 :key="record.id"
                 class="rounded-xl bg-white/70 px-3 py-2.5"
               >
@@ -196,6 +227,18 @@ if (import.meta.client) {
                   </span>
                 </div>
               </div>
+              <button
+                v-if="showBillExpandControl(group)"
+                type="button"
+                class="mt-1 flex w-full items-center justify-center gap-1 rounded-xl border border-black/[0.06] bg-white/50 py-2.5 text-sm font-medium text-[#e87b8f] transition hover:bg-white/90 active:opacity-80"
+                @click="toggleBillGroupExpand(group.key)"
+              >
+                <span>{{ isBillGroupExpanded(group.key) ? '收起明细' : `展开全部明细（${group.records.length} 笔）` }}</span>
+                <Icon
+                  :name="isBillGroupExpanded(group.key) ? 'tabler:chevron-up' : 'tabler:chevron-down'"
+                  size="1rem"
+                />
+              </button>
             </div>
           </article>
         </div>

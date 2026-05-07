@@ -33,7 +33,7 @@ const statusTabs: Array<{ key: 'all' | MallOrderStatus, label: string }> = [
   { key: 'reviewing', label: '待审核' },
   { key: 'shipping', label: '待发货' },
   { key: 'receiving', label: '待收货' },
-  { key: 'enjoying', label: '享用中' },
+  { key: 'enjoying', label: '已完成' },
 ]
 
 const activeStatus = computed<'all' | MallOrderStatus>(() => {
@@ -116,7 +116,7 @@ function getStatusLabel(status: MallOrderStatus, paid: boolean, payType: 'instal
     reviewing: '待审核',
     shipping: '待发货',
     receiving: '待收货',
-    enjoying: '享用中',
+    enjoying: '已完成',
   }
   return labelMap[status]
 }
@@ -145,6 +145,15 @@ function getDisplayOrderSpec(item: (typeof filteredOrders.value)[number]) {
     return item.spec
   }
   return getFallbackProduct(item.productId)?.subtitle || '规格信息待更新'
+}
+
+/** 与接口 isOrderCardPackageEligible 一致：待发货/待收货/已完成才展示卡包状态 */
+function isCardPackageApplicableOrder(item: { status: MallOrderStatus }) {
+  return item.status === 'shipping' || item.status === 'receiving' || item.status === 'enjoying'
+}
+
+async function goCardPackage() {
+  await smartNavigate('/card-package')
 }
 </script>
 
@@ -186,16 +195,34 @@ function getDisplayOrderSpec(item: (typeof filteredOrders.value)[number]) {
         :key="item.id"
         class="rounded-2xl bg-white px-4 py-3 shadow-[0_8px_18px_rgba(24,39,75,0.06)]"
       >
-        <div class="mb-2.5 flex items-center justify-between">
-          <p class="line-clamp-1 pr-2 text-[20px] font-semibold leading-[1.2] tracking-[0.01em] text-black/85">
+        <div class="mb-2.5 flex items-start justify-between gap-2">
+          <p class="line-clamp-1 flex-1 pr-2 text-[20px] font-semibold leading-[1.2] tracking-[0.01em] text-black/85">
             {{ getDisplayOrderName(item) }}
           </p>
-          <span
-            class="shrink-0 rounded-full px-2.5 py-0.5 text-xs font-semibold leading-5"
+          <div class="flex shrink-0 flex-col items-end gap-1">
+            <span
+              class="rounded-full px-2.5 py-0.5 text-xs font-semibold leading-5"
               :style="getStatusStyle(item.status, item.paid, item.payType, item.riskStatus)"
-          >
+            >
               {{ getStatusLabel(item.status, item.paid, item.payType, item.riskStatus) }}
-          </span>
+            </span>
+            <template v-if="isCardPackageApplicableOrder(item)">
+              <button
+                v-if="!item.cardPackageIssued"
+                type="button"
+                class="text-right text-[11px] font-medium text-[#e46a84] underline decoration-[#e46a84]/50 underline-offset-2 active:opacity-80"
+                @click="goCardPackage"
+              >
+                卡包待领取
+              </button>
+              <span
+                v-else
+                class="text-[11px] font-medium text-black/45"
+              >
+                卡片已领取
+              </span>
+            </template>
+          </div>
         </div>
         <p class="mb-1 text-[15px] leading-[1.45] text-black/60">
           规格：{{ getDisplayOrderSpec(item) }}

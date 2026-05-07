@@ -76,6 +76,7 @@ const orders = [
     receiverName: '商城管理员',
     receiverPhone: '19900000000',
     receiverAddress: '广东省广州市天河区珠江新城花城大道88号',
+    cardPackageIssued: false,
   },
   {
     id: 'OD202604280002',
@@ -91,6 +92,7 @@ const orders = [
     receiverName: '商城管理员',
     receiverPhone: '19900000000',
     receiverAddress: '广东省广州市天河区珠江新城花城大道88号',
+    cardPackageIssued: true,
   },
   {
     id: 'OD202604160003',
@@ -106,6 +108,7 @@ const orders = [
     receiverName: '商城管理员',
     receiverPhone: '19900000000',
     receiverAddress: '广东省广州市天河区珠江新城花城大道88号',
+    cardPackageIssued: false,
   },
 ]
 
@@ -123,6 +126,7 @@ const users = [
     creditStatus: '良好',
     registerAt: '2026-05-01T09:00:00+08:00',
     quota: 3000,
+    passwordHash: '51294d76482bb32367c70586dfc6d484d96550b2fe47118f38c1679a0185812f',
   },
 ]
 

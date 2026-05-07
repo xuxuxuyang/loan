@@ -7,6 +7,8 @@ export interface RegisterPayload {
   locationText: string
   latitude: number
   longitude: number
+  /** 可选，至少 6 位；与后台 `POST /auth/register` 一致 */
+  password?: string
 }
 
 const COOKIE_KEY = 'mall_registered'
@@ -14,6 +16,8 @@ const LOGIN_COOKIE_KEY = 'mall_login_phone'
 export const ADMIN_TEST_ACCOUNT_ALIAS = 'admin'
 export const ADMIN_TEST_PHONE = '19900000000'
 export const ADMIN_TEST_VERIFY_CODE = '1234'
+/** 与 API `ADMIN_TEST_MALL_PASSWORD` / Mock 种子一致，供密码登录演示 */
+export const ADMIN_TEST_MALL_PASSWORD = '123456'
 
 interface MallUserProfile extends RegisterPayload {
   id: string
@@ -136,6 +140,23 @@ export function useMallAuth() {
     return response.data.user
   }
 
+  const loginByPassword = async (phone: string, password: string) => {
+    const normalizedPhone = normalizeMallAccount(phone)
+    const response = await $fetch<{ success: boolean, data: { token: string, user: MallUserProfile } }>(`${resolveMallApiBase()}/auth/login`, {
+      method: 'POST',
+      body: {
+        phone: normalizedPhone,
+        loginType: 'password',
+        password,
+      },
+    })
+    loginPhone.value = normalizedPhone
+    loginCookie.value = normalizedPhone
+    profile.value = response.data.user
+    registerCookie.value = '1'
+    return response.data.user
+  }
+
   const ensureAdminTestAccountReady = async () => {
     if (profile.value?.phone === ADMIN_TEST_PHONE && isRegistered.value) {
       return
@@ -173,6 +194,7 @@ export function useMallAuth() {
     loginPhone,
     register,
     loginByPhone,
+    loginByPassword,
     logout,
     ensureRegistered,
     ensureAdminTestAccountReady,

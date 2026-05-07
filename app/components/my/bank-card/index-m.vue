@@ -18,10 +18,11 @@ interface AddCardForm {
 }
 
 const { loginPhone, profile, syncFromStorage } = useMallAuth()
-const { bankCards: cards, fetchBankCards, createBankCard } = useMallMy()
+const { bankCards: cards, fetchBankCards, createBankCard, deleteBankCard } = useMallMy()
 
 const dialogVisible = ref(false)
 const adding = ref(false)
+const deletingId = ref<number | null>(null)
 const addForm = reactive<AddCardForm>({
   bankName: '',
   cardType: '储蓄卡',
@@ -124,6 +125,39 @@ watch(currentUserAccount, async (account) => {
   }
   await fetchBankCards(account)
 })
+
+async function handleDeleteCard(item: BankCardItem) {
+  if (!currentUserAccount.value) {
+    ElMessage.warning('请先登录后再管理银行卡')
+    return
+  }
+  try {
+    await ElMessageBox.confirm(
+      `确定删除 ${item.bankName} 尾号 ${String(item.cardNoMasked).replace(/\s/g, '').slice(-4)} 的银行卡？`,
+      '删除银行卡',
+      {
+        confirmButtonText: '删除',
+        cancelButtonText: '取消',
+        type: 'warning',
+      },
+    )
+  }
+  catch {
+    return
+  }
+  deletingId.value = item.id
+  try {
+    await deleteBankCard(currentUserAccount.value, item.id)
+    ElMessage.success('已删除银行卡')
+  }
+  catch (error) {
+    console.error('删除银行卡失败', error)
+    ElMessage.error('删除失败，请稍后重试')
+  }
+  finally {
+    deletingId.value = null
+  }
+}
 </script>
 
 <template>
@@ -140,7 +174,7 @@ watch(currentUserAccount, async (account) => {
         />
       </button>
       <h1 class="text-xl font-semibold text-black/85">
-        我的银行卡
+        银行卡
       </h1>
       <div class="w-9" />
     </div>
@@ -148,10 +182,22 @@ watch(currentUserAccount, async (account) => {
     <article
       v-for="item in cards"
       :key="item.id"
-      class="mb-3 overflow-hidden rounded-2xl p-4 text-white shadow-[0_10px_24px_rgba(26,55,99,0.16)]"
+      class="relative mb-3 overflow-hidden rounded-2xl p-4 text-white shadow-[0_10px_24px_rgba(26,55,99,0.16)]"
       :class="`bg-gradient-to-r ${pickCardTheme(cards.indexOf(item))}`"
     >
-      <p class="mb-3 text-sm text-white/85">
+      <button
+        type="button"
+        class="absolute right-3 top-3 flex h-8 w-8 items-center justify-center rounded-full bg-white/20 text-white backdrop-blur-sm transition hover:bg-white/30 disabled:opacity-50"
+        :disabled="deletingId === item.id"
+        aria-label="删除银行卡"
+        @click.stop="handleDeleteCard(item)"
+      >
+        <Icon
+          name="tabler:trash"
+          size="1.05rem"
+        />
+      </button>
+      <p class="mb-3 pr-10 text-sm text-white/85">
         {{ item.bankName }}
       </p>
       <p class="mb-4 text-xl tracking-[0.14em]">

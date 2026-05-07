@@ -6,7 +6,7 @@ import type { OrderItem, OrderRiskDetail } from '../stores/useOrdersStore'
 import { useOrdersStore } from '../stores/useOrdersStore'
 import { donePageProgress, startPageProgress } from '../utils/progress'
 
-function splitFactorLine(line: string): { label: string; value: string } {
+function splitFactorLine(line: string): { label: string, value: string } {
   const cn = line.indexOf('：')
   const en = line.indexOf(':')
   let idx = -1
@@ -98,7 +98,7 @@ async function approveOrder(order: OrderItem) {
   try {
     await updateOrderStatus(order.id, 'shipping')
   }
-  catch (error) {
+  catch {
     ElMessage.error('审核通过失败，请稍后重试')
   }
   finally {
@@ -141,7 +141,6 @@ onMounted(() => {
 <template>
   <div class="panel">
     <div class="toolbar review-toolbar">
-     
       <el-select
         v-model="riskFilter"
         class="toolbar-select"

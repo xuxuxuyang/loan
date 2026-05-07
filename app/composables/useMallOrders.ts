@@ -19,6 +19,8 @@ export interface MallOrder {
   receiverName: string
   receiverPhone: string
   receiverAddress: string
+  /** 卡包是否已领取（仅 shipping/receiving/enjoying 等有卡包业务的订单有意义） */
+  cardPackageIssued?: boolean
 }
 
 interface CreateOrderPayload {

@@ -25,6 +25,8 @@ export interface OrderItem {
   payType: '分期' | '全款'
   createdAt: string
   installmentPlan: InstallmentItem[]
+  /** 后台登记的卡包是否已发放（仅审核通过后的订单有意义） */
+  cardPackageIssued: boolean
 }
 
 export interface RiskDetailRule {
@@ -60,6 +62,7 @@ interface MallOrderPayload {
   payType: 'installment' | 'full'
   receiverName: string
   installmentPlan?: InstallmentItem[]
+  cardPackageIssued?: boolean
 }
 
 interface RiskDetailPayload {
@@ -179,6 +182,7 @@ function mapMallOrderToAdminOrder(order: MallOrderPayload): OrderItem {
     payType: order.payType === 'installment' ? '分期' : '全款',
     createdAt: formatDateTime(order.createdAt),
     installmentPlan: safePlan,
+    cardPackageIssued: Boolean(order.cardPackageIssued),
   }
 }
 
@@ -243,6 +247,23 @@ async function updateInstallmentPaid(orderId: string, period: number, paid: bool
   })
   if (!response.ok) {
     throw new Error(`更新分期状态失败: ${response.status}`)
+  }
+  const payload = await response.json() as { success?: boolean, data?: MallOrderPayload }
+  if (!payload.data) {
+    return
+  }
+  const mapped = mapMallOrderToAdminOrder(payload.data)
+  orders.value = orders.value.map(item => (item.id === mapped.id ? mapped : item))
+}
+
+async function updateOrderCardPackage(orderId: string, cardPackageIssued: boolean) {
+  const response = await fetch(`${MALL_ORDERS_ENDPOINT}/${encodeURIComponent(orderId)}/card-package`, {
+    method: 'PATCH',
+    headers: withAdminAuthHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ cardPackageIssued }),
+  })
+  if (!response.ok) {
+    throw new Error(`更新卡包发放状态失败: ${response.status}`)
   }
   const payload = await response.json() as { success?: boolean, data?: MallOrderPayload }
   if (!payload.data) {
@@ -334,6 +355,7 @@ export function useOrdersStore() {
     recalculateOrderFields,
     updateInstallmentPaid,
     updateOrderStatus,
+    updateOrderCardPackage,
     fetchOrderRiskDetail,
   }
 }

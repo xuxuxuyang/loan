@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { CircleCheck, CircleClose, Clock, Cpu, DataAnalysis, Document, Picture, User } from '@element-plus/icons-vue'
+import { ElMessage } from 'element-plus'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { withAdminAuthHeaders } from '../composables/useAdminApi'
 import { getAdminSession } from '../composables/useAdminAuth'
@@ -72,6 +73,8 @@ const createForm = reactive({
   phone: '',
   locationText: '',
   creditStatus: '良好' as UserItem['creditStatus'],
+  /** 可选；至少 6 位才会写入商城登录密码 */
+  initialPassword: '',
 })
 
 const canManageUsers = computed(() => getAdminSession()?.role === 'super_admin')
@@ -81,6 +84,8 @@ const editForm = reactive({
   phone: '',
   locationText: '',
   creditStatus: '良好' as UserItem['creditStatus'],
+  /** 留空则不修改；填写则更新商城登录密码，至少 6 位 */
+  newPassword: '',
 })
 
 const filteredUsers = computed(() => users.value)
@@ -351,6 +356,7 @@ function startEdit(user: UserItem) {
   editForm.phone = user.phone
   editForm.locationText = user.locationText
   editForm.creditStatus = user.creditStatus
+  editForm.newPassword = ''
 }
 
 function openCreateDialog() {
@@ -360,6 +366,7 @@ function openCreateDialog() {
   createForm.phone = ''
   createForm.locationText = ''
   createForm.creditStatus = '良好'
+  createForm.initialPassword = ''
 }
 
 function closeCreateDialog() {
@@ -377,6 +384,11 @@ async function createUser() {
   if (!createForm.name.trim() || !/^1\d{10}$/.test(createForm.phone.trim())) {
     return
   }
+  const initPwd = createForm.initialPassword.trim()
+  if (initPwd.length > 0 && initPwd.length < 6) {
+    ElMessage.warning('初始登录密码至少 6 位，或留空稍后在编辑中设置')
+    return
+  }
   creating.value = true
   try {
     const response = await fetch(`${MALL_API_BASE}/users`, {
@@ -387,6 +399,7 @@ async function createUser() {
         phone: createForm.phone.trim(),
         locationText: createForm.locationText.trim(),
         creditStatus: createForm.creditStatus,
+        ...(initPwd.length >= 6 ? { initialPassword: initPwd } : {}),
       }),
     })
     if (!response.ok) {
@@ -394,10 +407,12 @@ async function createUser() {
       throw new Error(payload.msg || `新增用户失败: ${response.status}`)
     }
     createDialogVisible.value = false
+    ElMessage.success('用户已添加')
     await fetchUsers()
   }
   catch (error) {
     console.error('新增用户失败', error)
+    ElMessage.error((error as Error)?.message || '新增用户失败')
   }
   finally {
     creating.value = false
@@ -410,6 +425,11 @@ async function saveEdit() {
     return
   }
   if (!editForm.name.trim() || !/^1\d{10}$/.test(editForm.phone.trim())) {
+    return
+  }
+  const pwd = editForm.newPassword.trim()
+  if (pwd.length > 0 && pwd.length < 6) {
+    ElMessage.warning('新登录密码至少 6 位，或留空保持原密码')
     return
   }
 
@@ -427,6 +447,7 @@ async function saveEdit() {
         phone: editForm.phone.trim(),
         locationText: editForm.locationText.trim(),
         creditStatus: editForm.creditStatus,
+        ...(pwd.length >= 6 ? { newPassword: pwd } : {}),
       }),
     })
     if (!response.ok) {
@@ -434,10 +455,12 @@ async function saveEdit() {
       throw new Error(payload.msg || `更新用户失败: ${response.status}`)
     }
     await fetchUsers()
+    ElMessage.success('已保存')
     closePreview()
   }
   catch (error) {
     console.error('保存用户失败', error)
+    ElMessage.error((error as Error)?.message || '保存用户失败')
   }
 }
 
@@ -743,6 +766,18 @@ async function saveQuota() {
             <el-option label="一般" value="一般" />
             <el-option label="风险" value="风险" />
           </el-select>
+        </label>
+        <label class="full">
+          初始登录密码（可选）
+          <el-input
+            v-model="createForm.initialPassword"
+            class="form-input"
+            type="password"
+            show-password
+            clearable
+            placeholder="至少 6 位，留空则用户需验证码登录或由后台再次设置"
+            autocomplete="new-password"
+          />
         </label>
       </div>
       <div class="actions actions-right">
@@ -1062,6 +1097,18 @@ async function saveQuota() {
                 <el-option label="一般" value="一般" />
                 <el-option label="风险" value="风险" />
               </el-select>
+            </label>
+            <label class="user-preview-field user-preview-field--full">
+              <span class="user-preview-field__label">新登录密码</span>
+              <el-input
+                v-model="editForm.newPassword"
+                class="form-input"
+                type="password"
+                show-password
+                clearable
+                placeholder="留空不修改；填写至少 6 位以重置商城密码登录"
+                autocomplete="new-password"
+              />
             </label>
             <div class="user-preview-edit-readonly">
               <div class="user-preview-edit-readonly__cell">

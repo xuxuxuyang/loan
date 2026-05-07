@@ -94,12 +94,16 @@ async function handleBuy(productId: number, productName: string) {
         <article
           v-for="item in products"
           :key="item.id"
-          class="product-card overflow-hidden rounded-2xl transition hover:-translate-y-1"
+          role="button"
+          tabindex="0"
+          class="product-card overflow-hidden rounded-2xl transition hover:-translate-y-1 cursor-pointer"
+          @click="handleBuy(item.id, item.name)"
+          @keydown.enter.prevent="handleBuy(item.id, item.name)"
         >
           <img
             :src="item.image"
             :alt="item.name"
-            class="h-56 w-full object-cover"
+            class="h-56 w-full object-cover pointer-events-none"
           >
           <div class="p-5">
             <div class="mb-2 flex items-center justify-between">
@@ -125,17 +129,16 @@ async function handleBuy(productId: number, productName: string) {
                 <button
                   type="button"
                   class="rounded-lg border border-[#efcfdb] px-3 py-2 text-sm text-[#5f6474] hover:border-[#e88dad] hover:text-[#d85f89]"
-                  @click="handleCart(item.name)"
+                  @click.stop="handleCart(item.name)"
                 >
                   加入购物车
                 </button>
-                <button
-                  type="button"
-                  class="buy-btn rounded-lg px-4 py-2 text-sm text-white hover:opacity-90"
-                  @click="handleBuy(item.id, item.name)"
+                <span
+                  class="buy-btn rounded-lg px-4 py-2 text-sm text-white pointer-events-none"
+                  aria-hidden="true"
                 >
                   立即购买
-                </button>
+                </span>
               </div>
             </div>
           </div>

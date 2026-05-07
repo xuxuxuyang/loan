@@ -8,12 +8,16 @@ const Router = require('@koa/router')
 const bodyParser = require('koa-bodyparser')
 const cors = require('@koa/cors')
 const { readDb, writeDb, resetDb } = require('./store')
+const crypto = require('node:crypto')
 
 const app = new Koa()
 const router = new Router({ prefix: '/api' })
 const PORT = Number(process.env.PORT || 3110)
 const ADMIN_TEST_PHONE = '19900000000'
 const ADMIN_TEST_VERIFY_CODE = '1234'
+/** 测试管理员账号默认密码（与商城用户密码规则一致，至少6位） */
+const ADMIN_TEST_MALL_PASSWORD = '123456'
+const MALL_PASSWORD_PEPPER = 'mall-local-pepper-v1'
 const PRODUCT_CATEGORIES = new Set(['travel', 'calligraphy', 'mobile', 'jewelry'])
 const ADMIN_ROLES = {
   SUPER: 'super_admin',
@@ -22,6 +26,26 @@ const ADMIN_ROLES = {
 }
 const ADMIN_ROLE_SET = new Set(Object.values(ADMIN_ROLES))
 const DEFAULT_USER_QUOTA = 3000
+
+function hashMallUserPassword(plain) {
+  const s = String(plain || '')
+  return crypto.createHash('sha256').update(`${MALL_PASSWORD_PEPPER}:${s}`, 'utf8').digest('hex')
+}
+
+function verifyMallUserPassword(plain, hash) {
+  if (!hash || plain === undefined || plain === null) {
+    return false
+  }
+  return hashMallUserPassword(String(plain)) === String(hash)
+}
+
+function sanitizeMallUser(user) {
+  if (!user) {
+    return user
+  }
+  const { passwordHash, ...rest } = user
+  return rest
+}
 
 function normalizeUserQuota(value) {
   const n = Number(value)
@@ -425,6 +449,21 @@ function ensureOrderInstallmentPlan(order) {
   )
 }
 
+function ensureOrderCardPackage(order) {
+  if (typeof order.cardPackageIssued !== 'boolean') {
+    order.cardPackageIssued = false
+  }
+}
+
+function isOrderCardPackageEligible(order) {
+  return ['shipping', 'receiving', 'enjoying'].includes(order.status)
+}
+
+function computeOrderCardPackageAmount(order) {
+  const base = Number(order.totalAmount || 0)
+  return Number((Math.min(888, Math.max(18, base * 0.05))).toFixed(2))
+}
+
 function fail(ctx, msg, code = 400) {
   ctx.status = code
   ctx.body = { success: false, code, msg, data: null }
@@ -449,6 +488,7 @@ function createAdminProfile() {
     creditStatus: '良好',
     registerAt: new Date().toISOString(),
     quota: DEFAULT_USER_QUOTA,
+    passwordHash: hashMallUserPassword(ADMIN_TEST_MALL_PASSWORD),
   }
 }
 
@@ -468,6 +508,9 @@ function upsertUserByPhone(db, payload) {
       creditStatus: payload.creditStatus || existing.creditStatus || '良好',
       quota: normalizeUserQuota(typeof payload.quota === 'undefined' ? existing.quota : payload.quota),
     })
+    if (typeof payload.password === 'string' && payload.password.length >= 6) {
+      existing.passwordHash = hashMallUserPassword(payload.password)
+    }
     return existing
   }
 
@@ -485,6 +528,9 @@ function upsertUserByPhone(db, payload) {
     registerAt: new Date().toISOString(),
     quota: normalizeUserQuota(payload.quota),
   }
+  if (typeof payload.password === 'string' && payload.password.length >= 6) {
+    nextUser.passwordHash = hashMallUserPassword(payload.password)
+  }
   db.users.unshift(nextUser)
   return nextUser
 }
@@ -492,7 +538,7 @@ function upsertUserByPhone(db, payload) {
 function attachUserOrderStats(db, user) {
   const userOrders = db.orders.filter(item => item.receiverPhone === user.phone)
   return {
-    ...user,
+    ...sanitizeMallUser(user),
     quota: normalizeUserQuota(user.quota),
     orderCount: userOrders.length,
     totalAmount: Number(userOrders.reduce((sum, item) => sum + Number(item.totalAmount || 0), 0).toFixed(2)),
@@ -515,9 +561,7 @@ function maskCardNo(cardNo) {
 
 function calcMySummary(db, phone) {
   const userOrders = db.orders.filter(item => item.receiverPhone === phone)
-  const userAddresses = db.addresses.filter(item => item.userPhone === phone)
   const userCards = db.bankCards.filter(item => item.userPhone === phone)
-  const defaultAddress = userAddresses.find(item => item.isDefault) || userAddresses[0]
 
   const orderCount = {
     reviewing: userOrders.filter(item => item.status === 'reviewing').length,
@@ -542,11 +586,6 @@ function calcMySummary(db, phone) {
     orderCount,
     bankCardCount: userCards.length,
     billPendingAmount,
-    points: 1280 + userOrders.length * 10,
-    couponCount: Math.max(0, 6 - userOrders.length),
-    defaultAddress: defaultAddress
-      ? `${defaultAddress.province}${defaultAddress.city}${defaultAddress.district}${defaultAddress.detail}`
-      : '',
   }
 }
 
@@ -702,10 +741,14 @@ router.post('/auth/register', (ctx) => {
     fail(ctx, '姓名不能为空')
     return
   }
+  if (typeof payload.password === 'string' && payload.password.length > 0 && payload.password.length < 6) {
+    fail(ctx, '密码至少6位')
+    return
+  }
 
   const user = upsertUserByPhone(db, payload)
   writeDb(db)
-  ctx.body = success(user)
+  ctx.body = success(attachUserOrderStats(db, user))
 })
 
 router.post('/auth/login', (ctx) => {
@@ -713,12 +756,46 @@ router.post('/auth/login', (ctx) => {
   ensureAdminAccounts(db)
   const payload = ctx.request.body || {}
   const phone = normalizePhone(payload.phone)
-  const verifyCode = String(payload.verifyCode || '').trim()
+  const loginType = String(payload.loginType || 'sms').toLowerCase()
 
   if (!/^1\d{10}$/.test(phone)) {
     fail(ctx, '手机号格式不正确')
     return
   }
+
+  let user = db.users.find(item => item.phone === phone)
+  if (!user && phone === ADMIN_TEST_PHONE) {
+    user = upsertUserByPhone(db, createAdminProfile())
+    writeDb(db)
+  }
+
+  if (loginType === 'password') {
+    const password = String(payload.password || '')
+    if (password.length < 6) {
+      fail(ctx, '密码至少6位')
+      return
+    }
+    if (!user) {
+      fail(ctx, '该手机号未注册，请先完成注册', 404)
+      return
+    }
+    if (!user.passwordHash) {
+      fail(ctx, '该账号尚未设置密码，请使用验证码登录或联系管理员设置')
+      return
+    }
+    if (!verifyMallUserPassword(password, user.passwordHash)) {
+      fail(ctx, '手机号或密码错误', 401)
+      return
+    }
+    ctx.body = success({
+      token: `mock-token-${phone}`,
+      user: attachUserOrderStats(db, user),
+      adminRole: getAdminRoleByPhone(db, phone) || '',
+    })
+    return
+  }
+
+  const verifyCode = String(payload.verifyCode || '').trim()
   if (!verifyCode) {
     fail(ctx, '验证码不能为空')
     return
@@ -728,7 +805,6 @@ router.post('/auth/login', (ctx) => {
     return
   }
 
-  let user = db.users.find(item => item.phone === phone)
   if (!user && phone === ADMIN_TEST_PHONE) {
     user = upsertUserByPhone(db, createAdminProfile())
     writeDb(db)
@@ -740,7 +816,7 @@ router.post('/auth/login', (ctx) => {
 
   ctx.body = success({
     token: `mock-token-${phone}`,
-    user,
+    user: attachUserOrderStats(db, user),
     adminRole: getAdminRoleByPhone(db, phone) || '',
   })
 })
@@ -1004,6 +1080,12 @@ router.post('/users', (ctx) => {
     return
   }
 
+  const initPwd = String(payload.initialPassword || payload.password || '').trim()
+  if (initPwd.length > 0 && initPwd.length < 6) {
+    fail(ctx, '密码需至少 6 位')
+    return
+  }
+
   const now = new Date().toISOString()
   const nextUser = {
     id: `U${phone}`,
@@ -1019,6 +1101,9 @@ router.post('/users', (ctx) => {
     registerAt: now,
     quota: normalizeUserQuota(payload.quota),
   }
+  if (initPwd.length >= 6) {
+    nextUser.passwordHash = hashMallUserPassword(initPwd)
+  }
   db.users.unshift(nextUser)
   writeDb(db)
   ctx.body = success(attachUserOrderStats(db, nextUser))
@@ -1032,6 +1117,32 @@ router.get('/my/summary', (ctx) => {
     return
   }
   ctx.body = success(calcMySummary(db, phone))
+})
+
+router.get('/card-packages', (ctx) => {
+  const db = readDb()
+  const phone = getUserPhone(ctx)
+  if (!phone) {
+    fail(ctx, '手机号格式不正确')
+    return
+  }
+  const list = db.orders
+    .filter(item => item.receiverPhone === phone && isOrderCardPackageEligible(item))
+    .map((item) => {
+      ensureOrderInstallmentPlan(item)
+      ensureOrderCardPackage(item)
+      return {
+        orderId: item.id,
+        title: item.name,
+        spec: item.spec || '',
+        packageAmount: computeOrderCardPackageAmount(item),
+        cardPackageIssued: item.cardPackageIssued,
+        orderStatus: item.status,
+        createdAt: item.createdAt,
+      }
+    })
+    .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
+  ctx.body = success(list)
 })
 
 router.get('/addresses', (ctx) => {
@@ -1213,6 +1324,26 @@ router.post('/bank-cards', (ctx) => {
   })
 })
 
+router.delete('/bank-cards/:id', (ctx) => {
+  const db = readDb()
+  const phone = getUserPhone(ctx)
+  if (!phone) {
+    fail(ctx, '手机号格式不正确')
+    return
+  }
+  const { id } = ctx.params
+  const idx = db.bankCards.findIndex(
+    item => String(item.id) === String(id) && item.userPhone === phone,
+  )
+  if (idx === -1) {
+    fail(ctx, '银行卡不存在', 404)
+    return
+  }
+  db.bankCards.splice(idx, 1)
+  writeDb(db)
+  ctx.body = success({ id: Number(id) })
+})
+
 router.get('/bills', (ctx) => {
   const db = readDb()
   const phone = getUserPhone(ctx)
@@ -1338,6 +1469,16 @@ router.patch('/users/:id', (ctx) => {
     }
     target.quota = Math.round(q)
   }
+  if (typeof payload.newPassword === 'string') {
+    const pwd = payload.newPassword.trim()
+    if (pwd.length > 0) {
+      if (pwd.length < 6) {
+        fail(ctx, '密码需至少 6 位')
+        return
+      }
+      target.passwordHash = hashMallUserPassword(pwd)
+    }
+  }
 
   writeDb(db)
   ctx.body = success(attachUserOrderStats(db, target))
@@ -1392,6 +1533,7 @@ router.get('/orders', (ctx) => {
 
   const list = db.orders.filter((item) => {
     ensureOrderInstallmentPlan(item)
+    ensureOrderCardPackage(item)
     if (item.status !== 'reviewing' && !item.paid) {
       item.paid = true
     }
@@ -1443,6 +1585,7 @@ router.post('/orders', async (ctx) => {
     riskStatus: 'passed',
     riskReason: '',
     riskCheckedAt: '',
+    cardPackageIssued: false,
   }
   if (nextOrder.payType === 'installment') {
     const riskResult = await mockRiskCheck(nextOrder)
@@ -1552,6 +1695,35 @@ router.patch('/orders/:id/status', (ctx) => {
     }
     target.status = status
   }
+  ensureOrderCardPackage(target)
+  writeDb(db)
+  ctx.body = success(target)
+})
+
+router.patch('/orders/:id/card-package', (ctx) => {
+  const role = requireAdminPermission(ctx, [ADMIN_ROLES.SUPER, ADMIN_ROLES.REVIEWER], '维护卡包发放状态')
+  if (!role) {
+    return
+  }
+  const db = readDb()
+  const { id } = ctx.params
+  const payload = ctx.request.body || {}
+  const target = db.orders.find(item => item.id === id)
+  if (!target) {
+    fail(ctx, '订单不存在', 404)
+    return
+  }
+  ensureOrderInstallmentPlan(target)
+  ensureOrderCardPackage(target)
+  if (!isOrderCardPackageEligible(target)) {
+    fail(ctx, '仅审核通过后的订单可维护卡包发放状态', 400)
+    return
+  }
+  if (typeof payload.cardPackageIssued !== 'boolean') {
+    fail(ctx, 'cardPackageIssued 必须为布尔值')
+    return
+  }
+  target.cardPackageIssued = payload.cardPackageIssued
   writeDb(db)
   ctx.body = success(target)
 })

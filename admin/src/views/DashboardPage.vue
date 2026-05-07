@@ -88,7 +88,7 @@ const filterRepayState = ref<'all' | InstallmentRow['repayState']>('all')
 const allPeriods = computed(() => {
   const set = new Set<number>()
   orders.value.forEach((order) => {
-    order.installmentPlan.forEach((item) => set.add(item.period))
+    order.installmentPlan.forEach(item => set.add(item.period))
   })
   return [...set].sort((a, b) => a - b)
 })

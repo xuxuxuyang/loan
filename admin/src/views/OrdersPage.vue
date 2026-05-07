@@ -13,8 +13,10 @@ const orderDate = ref('')
 const selectedOrder = ref<OrderItem | null>(null)
 const loading = ref(false)
 const changingStatusOrderId = ref('')
+const cardPackageSavingId = ref('')
 const statusDraftMap = ref<Record<string, OrderItem['status']>>({})
-const { orders, recalculateOrderFields, fetchOrders, updateInstallmentPaid, updateOrderStatus } = useOrdersStore()
+const cardPackageDraftMap = ref<Record<string, boolean>>({})
+const { orders, recalculateOrderFields, fetchOrders, updateInstallmentPaid, updateOrderStatus, updateOrderCardPackage } = useOrdersStore()
 const canOperateOrders = computed(() => getAdminSession()?.role === 'super_admin')
 
 const filteredOrders = computed(() => {
@@ -102,6 +104,31 @@ async function rollbackToReview(order: OrderItem) {
   }
 }
 
+async function applyCardPackage(order: OrderItem) {
+  if (!canOperateOrders.value) {
+    return
+  }
+  if (cardPackageSavingId.value) {
+    return
+  }
+  const next = cardPackageDraftMap.value[order.id]
+  if (next === order.cardPackageIssued) {
+    return
+  }
+  cardPackageSavingId.value = order.id
+  try {
+    await updateOrderCardPackage(order.id, next)
+    ElMessage.success('卡包发放状态已更新')
+  }
+  catch {
+    cardPackageDraftMap.value[order.id] = order.cardPackageIssued
+    ElMessage.error('更新卡包状态失败，请稍后重试')
+  }
+  finally {
+    cardPackageSavingId.value = ''
+  }
+}
+
 async function loadOrders() {
   loading.value = true
   startPageProgress()
@@ -114,6 +141,9 @@ async function loadOrders() {
     })
     statusDraftMap.value = Object.fromEntries(
       orders.value.map(item => [item.id, item.status]),
+    )
+    cardPackageDraftMap.value = Object.fromEntries(
+      orders.value.map(item => [item.id, item.cardPackageIssued]),
     )
   }
   finally {
@@ -187,6 +217,7 @@ onMounted(() => {
           <th>下次还款日</th>
           <th>状态</th>
           <th>支付方式</th>
+          <th>卡包发放</th>
           <th>下单时间</th>
           <th>操作</th>
         </tr>
@@ -206,6 +237,29 @@ onMounted(() => {
           <td>{{ item.nextRepayDate }}</td>
           <td>{{ item.status }}</td>
           <td>{{ item.payType }}</td>
+          <td>
+            <template v-if="canOperateOrders">
+              <el-select
+                v-model="cardPackageDraftMap[item.id]"
+                class="card-package-select"
+                placeholder="卡包"
+                :disabled="cardPackageSavingId === item.id"
+                @change="applyCardPackage(item)"
+              >
+                <el-option
+                  label="未发放"
+                  :value="false"
+                />
+                <el-option
+                  label="已发放"
+                  :value="true"
+                />
+              </el-select>
+            </template>
+            <template v-else>
+              {{ item.cardPackageIssued ? '已发放' : '未发放' }}
+            </template>
+          </td>
           <td>{{ item.createdAt }}</td>
           <td class="actions-cell">
             <div class="actions">
@@ -248,7 +302,7 @@ onMounted(() => {
           </td>
         </tr>
         <tr v-if="!loading && filteredOrders.length === 0">
-          <td colspan="12" style="text-align: center; color: #9ca3af;">
+          <td colspan="13" style="text-align: center; color: #9ca3af;">
             暂无订单数据
           </td>
         </tr>
@@ -366,6 +420,10 @@ onMounted(() => {
 
 .status-select {
   width: 120px;
+}
+
+.card-package-select {
+  width: 110px;
 }
 
 .actions {

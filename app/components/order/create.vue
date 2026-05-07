@@ -109,17 +109,7 @@ async function submitOrder() {
 <template>
   <section class="bg-[#f3f4f8] pb-20 pt-4">
     <div class="mx-auto w-full max-w-[980px] px-4">
-      <div class="mb-4 rounded-2xl bg-white p-4 shadow-[0_8px_18px_rgba(24,39,75,0.05)]">
-        <p class="mb-2 text-xs tracking-[0.18em] text-black/45">
-          ORDER CONFIRM
-        </p>
-        <h1 class="text-2xl font-semibold text-black/85">
-          下单详情
-        </h1>
-        <p class="mt-1 text-sm text-black/55">
-          分期订单提交后进入审核中，审核通过后进入待发货。
-        </p>
-      </div>
+      
 
       <div
         v-if="selectedProduct"
@@ -208,14 +198,6 @@ async function submitOrder() {
           <p class="flex items-center justify-between">
             <span>商品总额</span>
             <span>￥{{ itemAmount.toFixed(2) }}</span>
-          </p>
-          <p class="flex items-center justify-between">
-            <span>运费</span>
-            <span>{{ shippingFee === 0 ? '免运费' : `￥${shippingFee.toFixed(2)}` }}</span>
-          </p>
-          <p class="flex items-center justify-between">
-            <span>优惠</span>
-            <span>-￥{{ discountAmount.toFixed(2) }}</span>
           </p>
         </div>
         <div class="my-3 h-px bg-black/8" />

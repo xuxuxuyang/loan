@@ -3,36 +3,851 @@
     {
       "id": 7,
       "name": "测试",
-      "subtitle": "1",
-      "description": "666",
-      "origin": "2",
-      "price": 8888,
-      "image": "https://www.shutterstock.com/image-photo/luxury-jewelry-store-display-diamond-260nw-2733085405.jpg",
+      "subtitle": "可调团期·演示商品",
+      "description": "与历史订单关联的演示商品，支持分期下单，详情请咨询客服。",
+      "origin": "昆明",
+      "price": 11111,
+      "image": "https://images.unsplash.com/photo-1506929562872-bb421503ef21?w=800&q=80",
       "category": "travel",
       "onSale": true,
-      "createdAt": "2026-05-07T01:36:50.812Z",
-      "updatedAt": "2026-05-07T09:31:07.972Z"
+      "createdAt": "2026-05-07T14:45:52.755Z",
+      "updatedAt": "2026-05-07T14:45:52.755Z"
+    },
+    {
+      "id": 8,
+      "name": "三亚亚特兰蒂斯4日自由行",
+      "subtitle": "五星海景+乐园套票",
+      "description": "含接送机与双早，可升级水族馆晚餐。",
+      "origin": "海南三亚",
+      "price": 8999,
+      "image": "https://images.unsplash.com/photo-1469854523086-cc02fe5d8800?w=800&q=80",
+      "category": "travel",
+      "onSale": true,
+      "createdAt": "2026-05-07T14:45:52.755Z",
+      "updatedAt": "2026-05-07T14:45:52.755Z"
+    },
+    {
+      "id": 9,
+      "name": "西藏拉萨林芝桃花季7日",
+      "subtitle": "供氧酒店+摄影师",
+      "description": "海拔友好行程，布宫大昭寺预约协助。",
+      "origin": "西藏拉萨",
+      "price": 12800,
+      "image": "https://images.unsplash.com/photo-1523906834658-6e24ef2386f9?w=800&q=80",
+      "category": "travel",
+      "onSale": true,
+      "createdAt": "2026-05-07T14:45:52.755Z",
+      "updatedAt": "2026-05-07T14:45:52.755Z"
+    },
+    {
+      "id": 10,
+      "name": "京都奈良古都6日深度游",
+      "subtitle": "双温泉旅宿体验",
+      "description": "清水寺、伏见稻荷、鹿公园一日游串线。",
+      "origin": "日本关西",
+      "price": 16800,
+      "image": "https://images.unsplash.com/photo-1530789253388-582c481c54b0?w=800&q=80",
+      "category": "travel",
+      "onSale": true,
+      "createdAt": "2026-05-07T14:45:52.755Z",
+      "updatedAt": "2026-05-07T14:45:52.755Z"
+    },
+    {
+      "id": 11,
+      "name": "欧洲法瑞意经典12日",
+      "subtitle": "中文领队+签证指导",
+      "description": "巴黎卢浮宫、因特拉肯、威尼斯水城。",
+      "origin": "欧洲多国",
+      "price": 28800,
+      "image": "https://images.unsplash.com/photo-1526772662000-3f88f10405ff?w=800&q=80",
+      "category": "travel",
+      "onSale": true,
+      "createdAt": "2026-05-07T14:45:52.755Z",
+      "updatedAt": "2026-05-07T14:45:52.755Z"
+    },
+    {
+      "id": 12,
+      "name": "泸沽湖环湖骑行5日",
+      "subtitle": "轻奢湖景民宿",
+      "description": "猪槽船看日出，摩梭家访可选。",
+      "origin": "云南丽江",
+      "price": 4599,
+      "image": "https://images.unsplash.com/photo-1488646953014-85cb44e25828?w=800&q=80",
+      "category": "travel",
+      "onSale": true,
+      "createdAt": "2026-05-07T14:45:52.755Z",
+      "updatedAt": "2026-05-07T14:45:52.755Z"
+    },
+    {
+      "id": 13,
+      "name": "呼伦贝尔草原房车6日",
+      "subtitle": "亲子篝火那达慕",
+      "description": "莫日格勒河航拍，星空露营档期满减。",
+      "origin": "内蒙古呼伦贝尔",
+      "price": 7299,
+      "image": "https://images.unsplash.com/photo-1506929562872-bb421503ef21?w=800&q=80",
+      "category": "travel",
+      "onSale": true,
+      "createdAt": "2026-05-07T14:45:52.755Z",
+      "updatedAt": "2026-05-07T14:45:52.755Z"
+    },
+    {
+      "id": 14,
+      "name": "成都熊猫基地九寨沟6日",
+      "subtitle": "纯玩无购物",
+      "description": "牟尼沟、川主寺休整，赠氧气瓶。",
+      "origin": "四川成都",
+      "price": 5699,
+      "image": "https://images.unsplash.com/photo-1469854523086-cc02fe5d8800?w=800&q=80",
+      "category": "travel",
+      "onSale": true,
+      "createdAt": "2026-05-07T14:45:52.755Z",
+      "updatedAt": "2026-05-07T14:45:52.755Z"
+    },
+    {
+      "id": 15,
+      "name": "桂林阳朔漓江竹筏3日",
+      "subtitle": "印象刘三姐A席",
+      "description": "遇龙河手撑筏，骑行动线自由组合。",
+      "origin": "广西桂林",
+      "price": 3299,
+      "image": "https://images.unsplash.com/photo-1523906834658-6e24ef2386f9?w=800&q=80",
+      "category": "travel",
+      "onSale": true,
+      "createdAt": "2026-05-07T14:45:52.755Z",
+      "updatedAt": "2026-05-07T14:45:52.755Z"
+    },
+    {
+      "id": 16,
+      "name": "名家手写座右铭实木装裱",
+      "subtitle": "50×70cm 胡桃木框",
+      "description": "可按指定文案书写，工期约7个工作日。",
+      "origin": "浙江杭州",
+      "price": 1299,
+      "image": "https://images.unsplash.com/photo-1541961017774-22349e4a1262?w=800&q=80",
+      "category": "calligraphy",
+      "onSale": true,
+      "createdAt": "2026-05-07T14:45:52.755Z",
+      "updatedAt": "2026-05-07T14:45:52.755Z"
+    },
+    {
+      "id": 17,
+      "name": "工笔花鸟双联挂画",
+      "subtitle": "宣纸托裱 礼盒装",
+      "description": "适合客厅书房，附收藏证书电子版。",
+      "origin": "安徽宣城",
+      "price": 899,
+      "image": "https://images.unsplash.com/photo-1513364776144-60967b0f800f?w=800&q=80",
+      "category": "calligraphy",
+      "onSale": true,
+      "createdAt": "2026-05-07T14:45:52.755Z",
+      "updatedAt": "2026-05-07T14:45:52.755Z"
+    },
+    {
+      "id": 18,
+      "name": "企业LOGO书法定制",
+      "subtitle": "拉丝不锈钢画框",
+      "description": "大红洒金底或素雅底二选一，可开专票。",
+      "origin": "福建福州",
+      "price": 1999,
+      "image": "https://images.unsplash.com/photo-1518998053901-5348d3961a04?w=800&q=80",
+      "category": "calligraphy",
+      "onSale": true,
+      "createdAt": "2026-05-07T14:45:52.755Z",
+      "updatedAt": "2026-05-07T14:45:52.755Z"
+    },
+    {
+      "id": 19,
+      "name": "宝宝百天手足印字画",
+      "subtitle": "平安喜乐套装",
+      "description": "金粉印油环保认证，上门拓印指导视频。",
+      "origin": "广东深圳",
+      "price": 899,
+      "image": "https://images.unsplash.com/photo-1452860606245-08befc0ff44b?w=800&q=80",
+      "category": "calligraphy",
+      "onSale": true,
+      "createdAt": "2026-05-07T14:45:52.755Z",
+      "updatedAt": "2026-05-07T14:45:52.755Z"
+    },
+    {
+      "id": 20,
+      "name": "青绿山水横批",
+      "subtitle": "客厅大尺寸 手绘",
+      "description": "画师视频验稿一次，周期约15天。",
+      "origin": "江西景德镇",
+      "price": 3599,
+      "image": "https://images.unsplash.com/photo-1579783902614-a3fb3927b6a5?w=800&q=80",
+      "category": "calligraphy",
+      "onSale": true,
+      "createdAt": "2026-05-07T14:45:52.755Z",
+      "updatedAt": "2026-05-07T14:45:52.755Z"
+    },
+    {
+      "id": 21,
+      "name": "婚书红纸金墨装裱",
+      "subtitle": "龙凤洒金底",
+      "description": "按双方生辰八字排版，附锦盒。",
+      "origin": "江苏苏州",
+      "price": 699,
+      "image": "https://images.unsplash.com/photo-1541961017774-22349e4a1262?w=800&q=80",
+      "category": "calligraphy",
+      "onSale": true,
+      "createdAt": "2026-05-07T14:45:52.755Z",
+      "updatedAt": "2026-05-07T14:45:52.755Z"
+    },
+    {
+      "id": 22,
+      "name": "油画人像定制",
+      "subtitle": "60×80cm 布面油画",
+      "description": "提供照片即可，写实风格可调薄厚油彩。",
+      "origin": "上海",
+      "price": 4599,
+      "image": "https://images.unsplash.com/photo-1513364776144-60967b0f800f?w=800&q=80",
+      "category": "calligraphy",
+      "onSale": true,
+      "createdAt": "2026-05-07T14:45:52.755Z",
+      "updatedAt": "2026-05-07T14:45:52.755Z"
+    },
+    {
+      "id": 23,
+      "name": "春联福字礼盒",
+      "subtitle": "万年红宣纸套组",
+      "description": "可定制门头尺寸，全国冷链发货。",
+      "origin": "北京",
+      "price": 299,
+      "image": "https://images.unsplash.com/photo-1518998053901-5348d3961a04?w=800&q=80",
+      "category": "calligraphy",
+      "onSale": true,
+      "createdAt": "2026-05-07T14:45:52.755Z",
+      "updatedAt": "2026-05-07T14:45:52.755Z"
+    },
+    {
+      "id": 24,
+      "name": "影像旗舰轻曲屏手机",
+      "subtitle": "16+512G 晨曦金",
+      "description": "大底主摄+潜望长焦，支持分期免息。",
+      "origin": "广东东莞",
+      "price": 5499,
+      "image": "https://images.unsplash.com/photo-1511707171634-5f897ff02aa9?w=800&q=80",
+      "category": "mobile",
+      "onSale": true,
+      "createdAt": "2026-05-07T14:45:52.755Z",
+      "updatedAt": "2026-05-07T14:45:52.755Z"
+    },
+    {
+      "id": 25,
+      "name": "电竞性能手机",
+      "subtitle": "16+512G RGB灯效",
+      "description": "被动散热加强，高触控采样率。",
+      "origin": "广东深圳",
+      "price": 3799,
+      "image": "https://images.unsplash.com/photo-1592899677977-9c10ca588bbd?w=800&q=80",
+      "category": "mobile",
+      "onSale": true,
+      "createdAt": "2026-05-07T14:45:52.755Z",
+      "updatedAt": "2026-05-07T14:45:52.755Z"
+    },
+    {
+      "id": 26,
+      "name": "横向折叠屏手机",
+      "subtitle": "12+512G 商务黑",
+      "description": "内屏柔性材料，赠官方保护壳。",
+      "origin": "韩国首尔",
+      "price": 8999,
+      "image": "https://images.unsplash.com/photo-1610945415295-d9bbf067e59c?w=800&q=80",
+      "category": "mobile",
+      "onSale": true,
+      "createdAt": "2026-05-07T14:45:52.755Z",
+      "updatedAt": "2026-05-07T14:45:52.755Z"
+    },
+    {
+      "id": 27,
+      "name": "入门长续航手机",
+      "subtitle": "8+128G 大电池",
+      "description": "适合长辈与学生，系统极简模式。",
+      "origin": "浙江杭州",
+      "price": 999,
+      "image": "https://images.unsplash.com/photo-1556656793-08538906a9f8?w=800&q=80",
+      "category": "mobile",
+      "onSale": true,
+      "createdAt": "2026-05-07T14:45:52.755Z",
+      "updatedAt": "2026-05-07T14:45:52.755Z"
+    },
+    {
+      "id": 28,
+      "name": "真无线降噪耳机",
+      "subtitle": "三代 空间音频",
+      "description": "多设备无缝切换，配套硅胶耳塞3套。",
+      "origin": "美国加州",
+      "price": 899,
+      "image": "https://images.unsplash.com/photo-1606220945770-b5b6c2c55bf1?w=800&q=80",
+      "category": "mobile",
+      "onSale": true,
+      "createdAt": "2026-05-07T14:45:52.755Z",
+      "updatedAt": "2026-05-07T14:45:52.755Z"
+    },
+    {
+      "id": 29,
+      "name": "65W 氮化镓三口快充",
+      "subtitle": "笔记本书桌通用",
+      "description": "过温保护，可折叠插脚。",
+      "origin": "广东中山",
+      "price": 149,
+      "image": "https://images.unsplash.com/photo-1587825140708-dfaf72ae4b04?w=800&q=80",
+      "category": "mobile",
+      "onSale": true,
+      "createdAt": "2026-05-07T14:45:52.755Z",
+      "updatedAt": "2026-05-07T14:45:52.755Z"
+    },
+    {
+      "id": 30,
+      "name": "磁吸无线充电宝",
+      "subtitle": "5000mAh 超薄",
+      "description": "兼容主流磁吸手机壳，出差便携。",
+      "origin": "江苏昆山",
+      "price": 199,
+      "image": "https://images.unsplash.com/photo-1511707171634-5f897ff02aa9?w=800&q=80",
+      "category": "mobile",
+      "onSale": true,
+      "createdAt": "2026-05-07T14:45:52.755Z",
+      "updatedAt": "2026-05-07T14:45:52.755Z"
+    },
+    {
+      "id": 31,
+      "name": "智能手表运动款",
+      "subtitle": "血氧心率监测",
+      "description": "独立GPS轨迹，游泳级防水。",
+      "origin": "北京",
+      "price": 1199,
+      "image": "https://images.unsplash.com/photo-1592899677977-9c10ca588bbd?w=800&q=80",
+      "category": "mobile",
+      "onSale": true,
+      "createdAt": "2026-05-07T14:45:52.755Z",
+      "updatedAt": "2026-05-07T14:45:52.755Z"
+    },
+    {
+      "id": 32,
+      "name": "足金999福字转运珠手链",
+      "subtitle": "约2.1g 可调节绳",
+      "description": "支持专柜验金，附质保证书。",
+      "origin": "广东深圳",
+      "price": 1299,
+      "image": "https://images.unsplash.com/photo-1515562141207-7a88fb7ce338?w=800&q=80",
+      "category": "jewelry",
+      "onSale": true,
+      "createdAt": "2026-05-07T14:45:52.755Z",
+      "updatedAt": "2026-05-07T14:45:52.755Z"
+    },
+    {
+      "id": 33,
+      "name": "18K金钻石六爪婚戒",
+      "subtitle": "30分H色 SI",
+      "description": "GIA电子版可选，免费改圈一次。",
+      "origin": "上海",
+      "price": 8800,
+      "image": "https://images.unsplash.com/photo-1605100804763-247f67b3557e?w=800&q=80",
+      "category": "jewelry",
+      "onSale": true,
+      "createdAt": "2026-05-07T14:45:52.755Z",
+      "updatedAt": "2026-05-07T14:45:52.755Z"
+    },
+    {
+      "id": 34,
+      "name": "古法金素圈手镯",
+      "subtitle": "足金约18g",
+      "description": "磨砂仿古工艺，内壁可刻字。",
+      "origin": "山东招远",
+      "price": 10800,
+      "image": "https://images.unsplash.com/photo-1599643478518-a784e5dc4c8f?w=800&q=80",
+      "category": "jewelry",
+      "onSale": true,
+      "createdAt": "2026-05-07T14:45:52.755Z",
+      "updatedAt": "2026-05-07T14:45:52.755Z"
+    },
+    {
+      "id": 35,
+      "name": "和田玉平安扣吊坠",
+      "subtitle": "925银细链",
+      "description": "青白料油润度中上，配送证书。",
+      "origin": "新疆和田",
+      "price": 699,
+      "image": "https://images.unsplash.com/photo-1611591437281-460bfbe1220a?w=800&q=80",
+      "category": "jewelry",
+      "onSale": true,
+      "createdAt": "2026-05-07T14:45:52.755Z",
+      "updatedAt": "2026-05-07T14:45:52.755Z"
+    },
+    {
+      "id": 36,
+      "name": "淡水珍珠项链",
+      "subtitle": "7-8mm 近圆",
+      "description": "925银扣，母亲节礼盒装。",
+      "origin": "浙江诸暨",
+      "price": 899,
+      "image": "https://images.unsplash.com/photo-1515562141207-7a88fb7ce338?w=800&q=80",
+      "category": "jewelry",
+      "onSale": true,
+      "createdAt": "2026-05-07T14:45:52.755Z",
+      "updatedAt": "2026-05-07T14:45:52.755Z"
+    },
+    {
+      "id": 37,
+      "name": "18K玫瑰金四叶草手链",
+      "subtitle": "贝母拼镶",
+      "description": "日常通勤百搭，全国联保清洗。",
+      "origin": "意大利米兰",
+      "price": 2299,
+      "image": "https://images.unsplash.com/photo-1605100804763-247f67b3557e?w=800&q=80",
+      "category": "jewelry",
+      "onSale": true,
+      "createdAt": "2026-05-07T14:45:52.755Z",
+      "updatedAt": "2026-05-07T14:45:52.755Z"
+    },
+    {
+      "id": 38,
+      "name": "宝宝足金长命锁",
+      "subtitle": "约3g 拉丝工艺",
+      "description": "红绳婴儿套装，满月礼优选。",
+      "origin": "河南洛阳",
+      "price": 1899,
+      "image": "https://images.unsplash.com/photo-1599643478518-a784e5dc4c8f?w=800&q=80",
+      "category": "jewelry",
+      "onSale": true,
+      "createdAt": "2026-05-07T14:45:52.755Z",
+      "updatedAt": "2026-05-07T14:45:52.755Z"
+    },
+    {
+      "id": 39,
+      "name": "PT950铂金对戒",
+      "subtitle": "简约拉丝款",
+      "description": "可免费刻字，终身整形一次。",
+      "origin": "日本横滨",
+      "price": 5200,
+      "image": "https://images.unsplash.com/photo-1611591437281-460bfbe1220a?w=800&q=80",
+      "category": "jewelry",
+      "onSale": true,
+      "createdAt": "2026-05-07T14:45:52.755Z",
+      "updatedAt": "2026-05-07T14:45:52.755Z"
     }
   ],
   "orders": [
     {
-      "id": "OD1778117834259",
+      "id": "OD1778164666815",
       "productId": 7,
       "name": "测试",
       "spec": "1",
       "totalAmount": 8800,
-      "createdAt": "2026-05-07T01:37:14.259Z",
+      "createdAt": "2026-05-07T14:37:46.815Z",
+      "status": "shipping",
+      "paid": false,
+      "payType": "installment",
+      "installmentPeriods": 12,
+      "payChannel": "wechat",
+      "receiverName": "管理",
+      "receiverPhone": "18888888888",
+      "receiverAddress": "广东省广州市天河区珠江新城（测试定位）",
+      "riskStatus": "passed",
+      "riskReason": "",
+      "riskCheckedAt": "2026-05-07T14:37:46.947Z",
+      "cardPackageIssued": false,
+      "installmentPlan": [
+        {
+          "period": 1,
+          "dueDate": "2026-06-07",
+          "principal": 733.33,
+          "fee": 14.67,
+          "amount": 748,
+          "paid": false
+        },
+        {
+          "period": 2,
+          "dueDate": "2026-07-07",
+          "principal": 733.33,
+          "fee": 14.67,
+          "amount": 748,
+          "paid": false
+        },
+        {
+          "period": 3,
+          "dueDate": "2026-08-07",
+          "principal": 733.33,
+          "fee": 14.67,
+          "amount": 748,
+          "paid": false
+        },
+        {
+          "period": 4,
+          "dueDate": "2026-09-07",
+          "principal": 733.33,
+          "fee": 14.67,
+          "amount": 748,
+          "paid": false
+        },
+        {
+          "period": 5,
+          "dueDate": "2026-10-07",
+          "principal": 733.33,
+          "fee": 14.67,
+          "amount": 748,
+          "paid": false
+        },
+        {
+          "period": 6,
+          "dueDate": "2026-11-07",
+          "principal": 733.33,
+          "fee": 14.67,
+          "amount": 748,
+          "paid": false
+        },
+        {
+          "period": 7,
+          "dueDate": "2026-12-07",
+          "principal": 733.33,
+          "fee": 14.67,
+          "amount": 748,
+          "paid": false
+        },
+        {
+          "period": 8,
+          "dueDate": "2027-01-07",
+          "principal": 733.33,
+          "fee": 14.67,
+          "amount": 748,
+          "paid": false
+        },
+        {
+          "period": 9,
+          "dueDate": "2027-02-07",
+          "principal": 733.33,
+          "fee": 14.67,
+          "amount": 748,
+          "paid": false
+        },
+        {
+          "period": 10,
+          "dueDate": "2027-03-07",
+          "principal": 733.33,
+          "fee": 14.67,
+          "amount": 748,
+          "paid": false
+        },
+        {
+          "period": 11,
+          "dueDate": "2027-04-07",
+          "principal": 733.33,
+          "fee": 14.67,
+          "amount": 748,
+          "paid": false
+        },
+        {
+          "period": 12,
+          "dueDate": "2027-05-07",
+          "principal": 733.33,
+          "fee": 14.67,
+          "amount": 748,
+          "paid": false
+        }
+      ]
+    },
+    {
+      "id": "OD1778164644632",
+      "productId": 7,
+      "name": "测试",
+      "spec": "1",
+      "totalAmount": 35464,
+      "createdAt": "2026-05-07T14:37:24.632Z",
+      "status": "reviewing",
+      "paid": false,
+      "payType": "installment",
+      "installmentPeriods": 12,
+      "payChannel": "wechat",
+      "receiverName": "管理",
+      "receiverPhone": "18888888888",
+      "receiverAddress": "广东省广州市天河区珠江新城（测试定位）",
+      "riskStatus": "failed",
+      "riskReason": "风控评分未通过，请调整分期期数或更换商品后重试",
+      "riskCheckedAt": "2026-05-07T14:37:24.756Z",
+      "cardPackageIssued": false,
+      "installmentPlan": [
+        {
+          "period": 1,
+          "dueDate": "2026-06-07",
+          "principal": 2955.33,
+          "fee": 59.11,
+          "amount": 3014.44,
+          "paid": false
+        },
+        {
+          "period": 2,
+          "dueDate": "2026-07-07",
+          "principal": 2955.33,
+          "fee": 59.11,
+          "amount": 3014.44,
+          "paid": false
+        },
+        {
+          "period": 3,
+          "dueDate": "2026-08-07",
+          "principal": 2955.33,
+          "fee": 59.11,
+          "amount": 3014.44,
+          "paid": false
+        },
+        {
+          "period": 4,
+          "dueDate": "2026-09-07",
+          "principal": 2955.33,
+          "fee": 59.11,
+          "amount": 3014.44,
+          "paid": false
+        },
+        {
+          "period": 5,
+          "dueDate": "2026-10-07",
+          "principal": 2955.33,
+          "fee": 59.11,
+          "amount": 3014.44,
+          "paid": false
+        },
+        {
+          "period": 6,
+          "dueDate": "2026-11-07",
+          "principal": 2955.33,
+          "fee": 59.11,
+          "amount": 3014.44,
+          "paid": false
+        },
+        {
+          "period": 7,
+          "dueDate": "2026-12-07",
+          "principal": 2955.33,
+          "fee": 59.11,
+          "amount": 3014.44,
+          "paid": false
+        },
+        {
+          "period": 8,
+          "dueDate": "2027-01-07",
+          "principal": 2955.33,
+          "fee": 59.11,
+          "amount": 3014.44,
+          "paid": false
+        },
+        {
+          "period": 9,
+          "dueDate": "2027-02-07",
+          "principal": 2955.33,
+          "fee": 59.11,
+          "amount": 3014.44,
+          "paid": false
+        },
+        {
+          "period": 10,
+          "dueDate": "2027-03-07",
+          "principal": 2955.33,
+          "fee": 59.11,
+          "amount": 3014.44,
+          "paid": false
+        },
+        {
+          "period": 11,
+          "dueDate": "2027-04-07",
+          "principal": 2955.33,
+          "fee": 59.11,
+          "amount": 3014.44,
+          "paid": false
+        },
+        {
+          "period": 12,
+          "dueDate": "2027-05-07",
+          "principal": 2955.33,
+          "fee": 59.11,
+          "amount": 3014.44,
+          "paid": false
+        }
+      ]
+    },
+    {
+      "id": "OD1778164635063",
+      "productId": 7,
+      "name": "测试",
+      "spec": "1",
+      "totalAmount": 26576,
+      "createdAt": "2026-05-07T14:37:15.063Z",
       "status": "reviewing",
       "paid": false,
       "payType": "installment",
       "installmentPeriods": 3,
       "payChannel": "wechat",
-      "receiverName": "商城管理员",
-      "receiverPhone": "19900000000",
+      "receiverName": "管理",
+      "receiverPhone": "18888888888",
       "receiverAddress": "广东省广州市天河区珠江新城（测试定位）",
       "riskStatus": "failed",
       "riskReason": "风控评分未通过，请调整分期期数或更换商品后重试",
-      "riskCheckedAt": "2026-05-07T01:37:14.391Z",
+      "riskCheckedAt": "2026-05-07T14:37:15.184Z",
+      "cardPackageIssued": false,
+      "installmentPlan": [
+        {
+          "period": 1,
+          "dueDate": "2026-06-07",
+          "principal": 8858.67,
+          "fee": 177.17,
+          "amount": 9035.84,
+          "paid": false
+        },
+        {
+          "period": 2,
+          "dueDate": "2026-07-07",
+          "principal": 8858.67,
+          "fee": 177.17,
+          "amount": 9035.84,
+          "paid": false
+        },
+        {
+          "period": 3,
+          "dueDate": "2026-08-07",
+          "principal": 8858.67,
+          "fee": 177.17,
+          "amount": 9035.84,
+          "paid": false
+        }
+      ]
+    },
+    {
+      "id": "OD1778164622941",
+      "productId": 7,
+      "name": "测试",
+      "spec": "1",
+      "totalAmount": 17688,
+      "createdAt": "2026-05-07T14:37:02.941Z",
+      "status": "reviewing",
+      "paid": false,
+      "payType": "installment",
+      "installmentPeriods": 3,
+      "payChannel": "wechat",
+      "receiverName": "管理",
+      "receiverPhone": "18888888888",
+      "receiverAddress": "广东省广州市天河区珠江新城（测试定位）",
+      "riskStatus": "failed",
+      "riskReason": "风控评分未通过，请调整分期期数或更换商品后重试",
+      "riskCheckedAt": "2026-05-07T14:37:03.073Z",
+      "cardPackageIssued": false,
+      "installmentPlan": [
+        {
+          "period": 1,
+          "dueDate": "2026-06-07",
+          "principal": 5896,
+          "fee": 117.92,
+          "amount": 6013.92,
+          "paid": false
+        },
+        {
+          "period": 2,
+          "dueDate": "2026-07-07",
+          "principal": 5896,
+          "fee": 117.92,
+          "amount": 6013.92,
+          "paid": false
+        },
+        {
+          "period": 3,
+          "dueDate": "2026-08-07",
+          "principal": 5896,
+          "fee": 117.92,
+          "amount": 6013.92,
+          "paid": false
+        }
+      ]
+    },
+    {
+      "id": "OD1778164214944",
+      "productId": 7,
+      "name": "测试",
+      "spec": "1",
+      "totalAmount": 8800,
+      "createdAt": "2026-05-07T14:30:14.945Z",
+      "status": "shipping",
+      "paid": false,
+      "payType": "installment",
+      "installmentPeriods": 6,
+      "payChannel": "wechat",
+      "receiverName": "管理",
+      "receiverPhone": "18888888888",
+      "receiverAddress": "广东省广州市天河区珠江新城（测试定位）",
+      "riskStatus": "passed",
+      "riskReason": "",
+      "riskCheckedAt": "2026-05-07T14:30:15.076Z",
+      "cardPackageIssued": false,
+      "installmentPlan": [
+        {
+          "period": 1,
+          "dueDate": "2026-06-07",
+          "principal": 1466.67,
+          "fee": 29.33,
+          "amount": 1496,
+          "paid": true
+        },
+        {
+          "period": 2,
+          "dueDate": "2026-07-07",
+          "principal": 1466.67,
+          "fee": 29.33,
+          "amount": 1496,
+          "paid": true
+        },
+        {
+          "period": 3,
+          "dueDate": "2026-08-07",
+          "principal": 1466.67,
+          "fee": 29.33,
+          "amount": 1496,
+          "paid": true
+        },
+        {
+          "period": 4,
+          "dueDate": "2026-09-07",
+          "principal": 1466.67,
+          "fee": 29.33,
+          "amount": 1496,
+          "paid": false
+        },
+        {
+          "period": 5,
+          "dueDate": "2026-10-07",
+          "principal": 1466.67,
+          "fee": 29.33,
+          "amount": 1496,
+          "paid": false
+        },
+        {
+          "period": 6,
+          "dueDate": "2026-11-07",
+          "principal": 1466.67,
+          "fee": 29.33,
+          "amount": 1496,
+          "paid": false
+        }
+      ]
+    },
+    {
+      "id": "OD1778164204796",
+      "productId": 7,
+      "name": "测试",
+      "spec": "1",
+      "totalAmount": 8800,
+      "createdAt": "2026-05-07T14:30:04.796Z",
+      "status": "reviewing",
+      "paid": false,
+      "payType": "installment",
+      "installmentPeriods": 3,
+      "payChannel": "wechat",
+      "receiverName": "管理",
+      "receiverPhone": "18888888888",
+      "receiverAddress": "广东省广州市天河区珠江新城（测试定位）",
+      "riskStatus": "failed",
+      "riskReason": "风控评分未通过，请调整分期期数或更换商品后重试",
+      "riskCheckedAt": "2026-05-07T14:30:04.928Z",
+      "cardPackageIssued": false,
       "installmentPlan": [
         {
           "period": 1,
@@ -59,243 +874,13 @@
           "paid": false
         }
       ]
-    },
-    {
-      "id": "OD1778081954377",
-      "productId": 1,
-      "name": "三亚海岛自由行",
-      "spec": "五星海景酒店，往返机票",
-      "totalAmount": 15832,
-      "createdAt": "2026-05-06T15:39:14.377Z",
-      "status": "reviewing",
-      "paid": false,
-      "payType": "installment",
-      "installmentPeriods": 12,
-      "payChannel": "wechat",
-      "receiverName": "商城管理员",
-      "receiverPhone": "19900000000",
-      "receiverAddress": "广东省广州市天河区珠江新城（测试定位）",
-      "riskStatus": "passed",
-      "riskReason": "",
-      "riskCheckedAt": "2026-05-06T15:39:14.499Z",
-      "installmentPlan": [
-        {
-          "period": 1,
-          "dueDate": "2026-06-06",
-          "principal": 1319.33,
-          "fee": 26.39,
-          "amount": 1345.72,
-          "paid": false
-        },
-        {
-          "period": 2,
-          "dueDate": "2026-07-06",
-          "principal": 1319.33,
-          "fee": 26.39,
-          "amount": 1345.72,
-          "paid": false
-        },
-        {
-          "period": 3,
-          "dueDate": "2026-08-06",
-          "principal": 1319.33,
-          "fee": 26.39,
-          "amount": 1345.72,
-          "paid": false
-        },
-        {
-          "period": 4,
-          "dueDate": "2026-09-06",
-          "principal": 1319.33,
-          "fee": 26.39,
-          "amount": 1345.72,
-          "paid": false
-        },
-        {
-          "period": 5,
-          "dueDate": "2026-10-06",
-          "principal": 1319.33,
-          "fee": 26.39,
-          "amount": 1345.72,
-          "paid": false
-        },
-        {
-          "period": 6,
-          "dueDate": "2026-11-06",
-          "principal": 1319.33,
-          "fee": 26.39,
-          "amount": 1345.72,
-          "paid": false
-        },
-        {
-          "period": 7,
-          "dueDate": "2026-12-06",
-          "principal": 1319.33,
-          "fee": 26.39,
-          "amount": 1345.72,
-          "paid": false
-        },
-        {
-          "period": 8,
-          "dueDate": "2027-01-06",
-          "principal": 1319.33,
-          "fee": 26.39,
-          "amount": 1345.72,
-          "paid": false
-        },
-        {
-          "period": 9,
-          "dueDate": "2027-02-06",
-          "principal": 1319.33,
-          "fee": 26.39,
-          "amount": 1345.72,
-          "paid": false
-        },
-        {
-          "period": 10,
-          "dueDate": "2027-03-06",
-          "principal": 1319.33,
-          "fee": 26.39,
-          "amount": 1345.72,
-          "paid": false
-        },
-        {
-          "period": 11,
-          "dueDate": "2027-04-06",
-          "principal": 1319.33,
-          "fee": 26.39,
-          "amount": 1345.72,
-          "paid": false
-        },
-        {
-          "period": 12,
-          "dueDate": "2027-05-06",
-          "principal": 1319.33,
-          "fee": 26.39,
-          "amount": 1345.72,
-          "paid": false
-        }
-      ]
-    },
-    {
-      "id": "OD1778077469981",
-      "productId": 3,
-      "name": "日本关西深度游",
-      "spec": "大阪+京都+奈良，中文导览",
-      "totalAmount": 5592,
-      "createdAt": "2026-05-06T14:24:29.981Z",
-      "status": "reviewing",
-      "paid": false,
-      "payType": "installment",
-      "installmentPeriods": 6,
-      "payChannel": "wechat",
-      "receiverName": "商城管理员",
-      "receiverPhone": "19900000000",
-      "receiverAddress": "广东省广州市天河区珠江新城（测试定位）",
-      "riskStatus": "passed",
-      "riskReason": "",
-      "riskCheckedAt": "2026-05-06T14:24:30.115Z",
-      "installmentPlan": [
-        {
-          "period": 1,
-          "dueDate": "2026-06-06",
-          "principal": 932,
-          "fee": 18.64,
-          "amount": 950.64,
-          "paid": false
-        },
-        {
-          "period": 2,
-          "dueDate": "2026-07-06",
-          "principal": 932,
-          "fee": 18.64,
-          "amount": 950.64,
-          "paid": false
-        },
-        {
-          "period": 3,
-          "dueDate": "2026-08-06",
-          "principal": 932,
-          "fee": 18.64,
-          "amount": 950.64,
-          "paid": false
-        },
-        {
-          "period": 4,
-          "dueDate": "2026-09-06",
-          "principal": 932,
-          "fee": 18.64,
-          "amount": 950.64,
-          "paid": false
-        },
-        {
-          "period": 5,
-          "dueDate": "2026-10-06",
-          "principal": 932,
-          "fee": 18.64,
-          "amount": 950.64,
-          "paid": false
-        },
-        {
-          "period": 6,
-          "dueDate": "2026-11-06",
-          "principal": 932,
-          "fee": 18.64,
-          "amount": 950.64,
-          "paid": false
-        }
-      ]
-    },
-    {
-      "id": "OD1778076705333",
-      "productId": 1,
-      "name": "三亚海岛自由行",
-      "spec": "五星海景酒店，往返机票",
-      "totalAmount": 3892,
-      "createdAt": "2026-05-06T14:11:45.333Z",
-      "status": "shipping",
-      "paid": false,
-      "payType": "installment",
-      "installmentPeriods": 3,
-      "payChannel": "wechat",
-      "receiverName": "商城管理员",
-      "receiverPhone": "19900000000",
-      "receiverAddress": "广东省广州市天河区珠江新城（测试定位）",
-      "installmentPlan": [
-        {
-          "period": 1,
-          "dueDate": "2026-06-06",
-          "principal": 1297.33,
-          "fee": 25.95,
-          "amount": 1323.28,
-          "paid": false
-        },
-        {
-          "period": 2,
-          "dueDate": "2026-07-06",
-          "principal": 1297.33,
-          "fee": 25.95,
-          "amount": 1323.28,
-          "paid": false
-        },
-        {
-          "period": 3,
-          "dueDate": "2026-08-06",
-          "principal": 1297.33,
-          "fee": 25.95,
-          "amount": 1323.28,
-          "paid": false
-        }
-      ],
-      "riskStatus": "passed",
-      "riskReason": ""
     }
   ],
   "users": [
     {
       "id": "U19900000002",
-      "name": "客服",
-      "phone": "19900000002",
+      "name": "用户1",
+      "phone": "15111111111",
       "idCardFront": "mock://service/id-card-front",
       "idCardBack": "mock://service/id-card-back",
       "idCardHandheld": "mock://service/id-card-handheld",
@@ -304,12 +889,13 @@
       "longitude": 0,
       "creditStatus": "良好",
       "registerAt": "2026-05-07T02:41:48.004Z",
-      "quota": 8000
+      "quota": 8000,
+      "passwordHash": "665ebb055992a8f5c522ffeb4c60ab3ff992e4af559fccb41807d557b5f50a15"
     },
     {
       "id": "U1778081940010",
-      "name": "商城管理员",
-      "phone": "19900000000",
+      "name": "用户2",
+      "phone": "15122222222",
       "idCardFront": "mock://admin/id-card-front",
       "idCardBack": "mock://admin/id-card-back",
       "idCardHandheld": "mock://admin/id-card-handheld",
@@ -317,11 +903,13 @@
       "latitude": 23.119751,
       "longitude": 113.327676,
       "creditStatus": "良好",
-      "registerAt": "2026-05-06T15:39:00.010Z"
+      "registerAt": "2026-05-06T15:39:00.010Z",
+      "quota": 3000,
+      "passwordHash": "d78f8c088f84fd541b20b0023f048d287dd263a174e398c4bb4463fd62745e48"
     },
     {
       "id": "U19900000000",
-      "name": "管理测试",
+      "name": "管理",
       "phone": "18888888888",
       "idCardFront": "mock://admin/id-card-front",
       "idCardBack": "mock://admin/id-card-back",
@@ -330,7 +918,8 @@
       "latitude": 23.119751,
       "longitude": 113.327676,
       "creditStatus": "优秀",
-      "registerAt": "2026-05-01T09:00:00+08:00"
+      "registerAt": "2026-05-01T09:00:00+08:00",
+      "passwordHash": "ee99af53d364f72a6228a40c0d2762ac090e8108f113fc75316c2051260d5bab"
     }
   ],
   "adminAccounts": [
@@ -370,19 +959,40 @@
   ],
   "addresses": [
     {
+      "id": 1778164402766,
+      "userPhone": "18888888888",
+      "receiver": "徐先生",
+      "phone": "15180545617",
+      "province": "江西省",
+      "city": "南昌市",
+      "district": "青山湖区",
+      "detail": "梦时代7号楼",
+      "isDefault": true,
+      "createdAt": "2026-05-07T14:33:22.766Z"
+    },
+    {
       "id": 1,
       "userPhone": "19900000000",
       "receiver": "商城管理员",
       "phone": "19900000000",
       "province": "广东省",
       "city": "广州市",
-      "district": "天河区",
-      "detail": "珠江新城花城大道88号",
+      "district": "花都区",
+      "detail": "测试地址",
       "isDefault": true,
       "createdAt": "2026-05-01T10:00:00+08:00"
     }
   ],
   "bankCards": [
+    {
+      "id": 1778164352665,
+      "userPhone": "18888888888",
+      "bankName": "中国工商银行",
+      "cardType": "储蓄卡",
+      "cardNo": "6215581508004726995",
+      "owner": "测试",
+      "createdAt": "2026-05-07T14:32:32.665Z"
+    },
     {
       "id": 1,
       "userPhone": "19900000000",

@@ -9,14 +9,14 @@ const route = useRoute()
 const { smartNavigate } = useCustomRouting(route)
 const { ensureRegistered } = useMallAuth()
 
-async function handleBuy(productId: number) {
+async function handleBuy(item: TeaProduct) {
   const passed = await ensureRegistered()
   if (!passed) {
     return
   }
   await smartNavigate({
     path: '/order-create',
-    query: { productId: String(productId) },
+    query: { productId: String(item.id), productName: item.name },
   })
 }
 </script>
@@ -34,12 +34,16 @@ async function handleBuy(productId: number) {
       <article
         v-for="item in products"
         :key="item.id"
-        class="overflow-hidden rounded-xl border border-black/10 bg-white"
+        role="button"
+        tabindex="0"
+        class="overflow-hidden rounded-xl border border-black/10 bg-white cursor-pointer transition active:scale-[0.99]"
+        @click="handleBuy(item)"
+        @keydown.enter.prevent="handleBuy(item)"
       >
         <img
           :src="item.image"
           :alt="item.name"
-          class="h-28 w-full object-cover"
+          class="h-28 w-full object-cover pointer-events-none"
         >
         <div class="p-3">
           <h4 class="line-clamp-1 text-sm font-semibold">
@@ -50,13 +54,12 @@ async function handleBuy(productId: number) {
           </p>
           <div class="flex items-center justify-between">
             <span class="text-sm font-semibold leading-5 text-[var(--theme-color)]">￥{{ item.price }}</span>
-            <button
-              type="button"
-              class="rounded-md bg-[var(--theme-color)] px-2.5 py-1 text-xs text-white"
-              @click="handleBuy(item.id)"
+            <span
+              class="rounded-md bg-[var(--theme-color)] px-2.5 py-1 text-xs text-white pointer-events-none"
+              aria-hidden="true"
             >
               购买
-            </button>
+            </span>
           </div>
         </div>
       </article>
