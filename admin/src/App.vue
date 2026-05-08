@@ -47,12 +47,12 @@ const allMenus: MenuEntry[] = [
     roles: ['super_admin', 'reviewer', 'customer_service'],
     children: [
       {
-        label: '订单管理',
+        label: '已审核订单',
         path: '/orders',
         icon: List,
         roles: ['super_admin', 'reviewer', 'customer_service'],
       },
-      { label: '审核订单', path: '/orders/review', icon: CircleCheck, roles: ['super_admin', 'reviewer'] },
+      { label: '未审核订单', path: '/orders/review', icon: CircleCheck, roles: ['super_admin', 'reviewer'] },
     ],
   },
   { label: '数据大盘', path: '/', icon: DataAnalysis, roles: ['super_admin', 'reviewer', 'customer_service'] },

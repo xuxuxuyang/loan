@@ -170,8 +170,8 @@ async function handleDeleteOrder(order: OrderItem) {
   }
 }
 
-function cardPackageTagType(issued: boolean): 'success' | 'warning' {
-  return issued ? 'success' : 'warning'
+function cardPackageTagType(issued: boolean): 'success' | 'info' {
+  return issued ? 'success' : 'info'
 }
 
 function orderStatusTagType(s: OrderItem['status']): 'success' | 'warning' | 'info' | 'danger' | 'primary' {
@@ -305,10 +305,10 @@ watch(status, () => {
           <th>当前期数</th>
           <th>下次还款日</th>
           <th>支付方式</th>
-          <th>卡包发放</th>
           <th>下单时间</th>
-          <th>状态</th>
+          <th>订单状态</th>
           <th>快递单号</th>
+          <th>卡包发放</th>
           <th>操作</th>
         </tr>
       </thead>
@@ -326,6 +326,34 @@ watch(status, () => {
           <td>{{ item.currentPeriod }} / {{ item.periods }}</td>
           <td>{{ item.nextRepayDate }}</td>
           <td>{{ item.payType }}</td>
+          <td>{{ item.createdAt }}</td>
+          <td class="td-order-status">
+            <el-tag
+              :type="orderStatusTagType(item.status)"
+              effect="light"
+              round
+              size="small"
+              class="order-status-tag"
+            >
+              {{ item.status }}
+            </el-tag>
+          </td>
+          <td class="td-tracking">
+            <template v-if="canOperateOrders && showTrackingEditor(item)">
+              <button
+                type="button"
+                class="tracking-display-btn"
+                :class="{ 'is-empty': !item.trackingNumber?.trim() }"
+                :disabled="trackingSavingId === item.id"
+                @click="openTrackingDialog(item)"
+              >
+                {{ item.trackingNumber?.trim() || '填写单号' }}
+              </button>
+            </template>
+            <template v-else>
+              {{ item.trackingNumber?.trim() || '填写单号' }}
+            </template>
+          </td>
           <td class="td-card-package">
             <template v-if="canOperateOrders">
               <el-dropdown
@@ -368,37 +396,10 @@ watch(status, () => {
               effect="light"
               round
               size="small"
+              class="card-package-tag"
             >
               {{ item.cardPackageIssued ? '已发放' : '未发放' }}
             </el-tag>
-          </td>
-          <td>{{ item.createdAt }}</td>
-          <td class="td-order-status">
-            <el-tag
-              :type="orderStatusTagType(item.status)"
-              effect="light"
-              round
-              size="small"
-              class="order-status-tag"
-            >
-              {{ item.status }}
-            </el-tag>
-          </td>
-          <td class="td-tracking">
-            <template v-if="canOperateOrders && showTrackingEditor(item)">
-              <button
-                type="button"
-                class="tracking-display-btn"
-                :class="{ 'is-empty': !item.trackingNumber?.trim() }"
-                :disabled="trackingSavingId === item.id"
-                @click="openTrackingDialog(item)"
-              >
-                {{ item.trackingNumber?.trim() || '填写单号' }}
-              </button>
-            </template>
-            <template v-else>
-              {{ item.trackingNumber?.trim() || '填写单号' }}
-            </template>
           </td>
           <td class="actions-cell">
             <div class="actions">
@@ -630,12 +631,44 @@ watch(status, () => {
   vertical-align: middle;
 }
 
+/* 订单状态：与卡包列区分色（待发货保留琥珀色） */
+.td-order-status :deep(.el-tag--warning) {
+  --el-tag-bg-color: #fffbeb;
+  --el-tag-border-color: #fbbf24;
+  --el-tag-text-color: #b45309;
+}
+
+.td-order-status :deep(.el-tag--primary) {
+  --el-tag-bg-color: #eff6ff;
+  --el-tag-border-color: #93c5fd;
+  --el-tag-text-color: #1d4ed8;
+}
+
+.td-order-status :deep(.el-tag--success) {
+  --el-tag-bg-color: #ecfdf5;
+  --el-tag-border-color: #6ee7b7;
+  --el-tag-text-color: #047857;
+}
+
 .order-status-tag {
   font-weight: 600;
 }
 
 .td-card-package {
   vertical-align: middle;
+}
+
+/* 卡包发放：冷色紫灰系，避免与订单「待发货」黄色气泡混淆 */
+.td-card-package :deep(.el-tag--info) {
+  --el-tag-bg-color: #f5f3ff;
+  --el-tag-border-color: #c4b5fd;
+  --el-tag-text-color: #5b21b6;
+}
+
+.td-card-package :deep(.el-tag--success) {
+  --el-tag-bg-color: #ecfdf5;
+  --el-tag-border-color: #6ee7b7;
+  --el-tag-text-color: #047857;
 }
 
 .card-package-dropdown-trigger {

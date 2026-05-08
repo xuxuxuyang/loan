@@ -6,7 +6,9 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "dev": "nodemon --watch src --ext js,json src/index.js",
-    "start": "node src/index.js"
+    "start": "node src/index.js",
+    "import:mongo-local": "node scripts/import-local-to-mongo.js",
+    "mongo:fresh": "node scripts/mongo-bootstrap-only.js"
   },
   "keywords": [],
   "author": "",

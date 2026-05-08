@@ -362,7 +362,8 @@ function recalculateOrderFields(order: OrderItem) {
     order.nextRepayDate = nextPending.dueDate
   }
   if (order.status === '已完成') {
-    order.status = '待收货'
+    const tn = (order.trackingNumber || '').trim()
+    order.status = tn ? '待收货' : '待发货'
   }
 }
 

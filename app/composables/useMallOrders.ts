@@ -21,6 +21,8 @@ export interface MallOrder {
   receiverAddress: string
   /** 卡包是否已领取（仅 shipping/receiving/enjoying 等有卡包业务的订单有意义） */
   cardPackageIssued?: boolean
+  /** 快递运单号（后台登记后有值；shipping 填单后接口通常会改为 receiving） */
+  trackingNumber?: string
 }
 
 interface CreateOrderPayload {
@@ -67,6 +69,69 @@ export function formatMallOrderTime(createdAt: string) {
     hour12: false,
   })
   return formatter.format(date).replace(/\//g, '-')
+}
+
+export function normalizeOrderTrackingNumber(value: unknown): string {
+  return String(value ?? '').trim()
+}
+
+/** 有待展示运单号且处于发货后流程的订单（含待发货但已录单号的边界情况） */
+export function orderHasShippedTracking(order: MallOrder): boolean {
+  const tn = normalizeOrderTrackingNumber(order.trackingNumber)
+  if (!tn) {
+    return false
+  }
+  return order.status === 'shipping' || order.status === 'receiving' || order.status === 'enjoying'
+}
+
+export interface SimulatedLogisticsNode {
+  timeLabel: string
+  text: string
+}
+
+/** 基于运单号与订单状态生成的示例物流轨迹，后续可整体替换为快递查询 API 结果 */
+export function getSimulatedLogisticsTrace(order: MallOrder): SimulatedLogisticsNode[] {
+  if (!orderHasShippedTracking(order)) {
+    return []
+  }
+  const tn = normalizeOrderTrackingNumber(order.trackingNumber)
+  const created = new Date(order.createdAt)
+  if (Number.isNaN(created.getTime())) {
+    return [{ timeLabel: '', text: '物流信息暂不可用' }]
+  }
+
+  const carriers = ['顺丰速运', '中通快递', '圆通速递', '韵达快递'] as const
+  let h = 0
+  for (let i = 0; i < tn.length; i++) {
+    h = (h * 31 + tn.charCodeAt(i)) | 0
+  }
+  const carrier = carriers[Math.abs(h) % carriers.length]
+
+  const pad = (n: number) => String(n).padStart(2, '0')
+  const fmt = (d: Date) =>
+    `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+
+  const addHours = (ms: number, hours: number) => new Date(ms + hours * 3600000)
+
+  const base = created.getTime()
+  const t0 = addHours(base, 1)
+  const t1 = addHours(base, 8)
+  const t2 = addHours(base, 28)
+  const t3 = addHours(base, order.status === 'enjoying' ? 52 : 40)
+
+  const nodes: SimulatedLogisticsNode[] = [
+    { timeLabel: fmt(t0), text: `【${carrier}】快递员已揽收，包裹运输中（运单号 ${tn}）` },
+    { timeLabel: fmt(t1), text: '包裹已离开发货地分拨中心，正发往目的城市' },
+    { timeLabel: fmt(t2), text: '包裹已到达收件城市分拨中心，等待安排派送' },
+  ]
+  if (order.status === 'enjoying') {
+    nodes.push({ timeLabel: fmt(t3), text: '快件已签收，感谢您的支持与信任' })
+  }
+  else {
+    nodes.push({ timeLabel: fmt(t3), text: '包裹正在派送中，请保持手机畅通以便派件员与您联系' })
+  }
+
+  return [...nodes].reverse()
 }
 
 export function useMallOrders() {

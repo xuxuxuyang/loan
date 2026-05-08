@@ -86,15 +86,24 @@ async function fetchAccounts() {
       method: 'GET',
       headers: withAdminAuthHeaders(),
     })
-    const payload = await response.json() as { msg?: string, data?: AdminAccountItem[] }
-    if (!response.ok) {
-      throw new Error(payload.msg || `加载账号失败: ${response.status}`)
+    const payload = await response.json() as {
+      success?: boolean
+      msg?: string
+      data?: AdminAccountItem[]
+    }
+    if (!response.ok || payload.success === false) {
+      const msg = payload.msg || `加载账号失败 (${response.status})`
+      if (response.status === 401 || response.status === 403) {
+        throw new Error(`${msg} — 请退出后使用超级管理员（xuyang）重新登录`)
+      }
+      throw new Error(msg)
     }
     accounts.value = Array.isArray(payload.data) ? payload.data : []
   }
   catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '加载账号失败'
     accounts.value = []
+    ElMessage.error(errorMessage.value)
   }
   finally {
     loading.value = false
@@ -374,7 +383,7 @@ onMounted(() => {
               <button
                 class="btn btn-warning"
                 type="button"
-                :disabled="item.username === 'admin'"
+                :disabled="item.username === 'xuyang'"
                 @click="switchStatus(item)"
               >
                 {{ item.status === 'active' ? '禁用' : '启用' }}
@@ -382,7 +391,7 @@ onMounted(() => {
               <button
                 class="btn btn-role-edit"
                 type="button"
-                :disabled="item.username === 'admin'"
+                :disabled="item.username === 'xuyang'"
                 @click="openRoleModal(item)"
               >
                 修改角色
@@ -390,7 +399,7 @@ onMounted(() => {
               <button
                 class="btn btn-primary"
                 type="button"
-                :disabled="item.username === 'admin'"
+                :disabled="item.username === 'xuyang'"
                 @click="openPasswordModal(item)"
               >
                 修改密码
@@ -399,7 +408,7 @@ onMounted(() => {
                 <button
                   class="btn btn-danger"
                   type="button"
-                  :disabled="Boolean(deletingId) && deletingId !== item.id || item.username === 'admin'"
+                  :disabled="Boolean(deletingId) && deletingId !== item.id || item.username === 'xuyang'"
                   @click="toggleDeleteConfirm(item.id)"
                 >
                   {{ deletingId === item.id ? '删除中...' : '删除' }}
@@ -437,7 +446,8 @@ onMounted(() => {
             colspan="7"
             style="text-align: center; color: #9ca3af;"
           >
-            暂无后台账号
+            暂无后台账号。本页<strong>仅限超级管理员</strong>访问；请先检查是否误用客服/审核员账号登录。<br>
+            「数据库重置」后请<strong>退出登录</strong>，再用 <strong>xuyang</strong> 登录；并确认 mall-api（默认 3110）已连通。
           </td>
         </tr>
       </tbody>

@@ -1,6 +1,12 @@
 <script setup lang="ts">
+import { watch } from 'vue'
 import type { MallOrderStatus } from '~/composables/useMallOrders'
-import { formatMallOrderTime } from '~/composables/useMallOrders'
+import {
+  formatMallOrderTime,
+  getSimulatedLogisticsTrace,
+  normalizeOrderTrackingNumber,
+  orderHasShippedTracking,
+} from '~/composables/useMallOrders'
 import { normalizeMallAccount } from '~/composables/useMallAuth'
 
 const route = useRoute()
@@ -61,8 +67,17 @@ const filteredOrders = computed(() => {
 if (import.meta.client) {
   void syncAuthFromStorage()
   syncFromStorage()
-  void syncFromRemote()
 }
+
+watch(
+  () => String(route.query.status ?? 'all'),
+  () => {
+    if (import.meta.client) {
+      void syncFromRemote()
+    }
+  },
+  { immediate: true },
+)
 
 async function goBack() {
   await smartNavigate('/my')
@@ -71,12 +86,14 @@ async function goBack() {
 async function changeStatus(status: 'all' | MallOrderStatus) {
   if (status === 'all') {
     await smartNavigate('/orders')
-    return
   }
-  await smartNavigate({
-    path: '/orders',
-    query: { status },
-  })
+  else {
+    await smartNavigate({
+      path: '/orders',
+      query: { status },
+    })
+  }
+  await syncFromRemote()
 }
 
 function getStatusStyle(status: MallOrderStatus, paid: boolean, payType: 'installment' | 'full', riskStatus?: 'passed' | 'failed') {
@@ -126,6 +143,20 @@ function isCardPackageApplicableOrder(item: { status: MallOrderStatus }) {
 
 async function goCardPackage() {
   await smartNavigate('/card-package')
+}
+
+async function copyTrackingNumber(no: string | undefined) {
+  const text = normalizeOrderTrackingNumber(no)
+  if (!text) {
+    return
+  }
+  try {
+    await navigator.clipboard.writeText(text)
+    ElMessage.success('快递单号已复制')
+  }
+  catch {
+    ElMessage.info(`请手动复制单号：${text}`)
+  }
 }
 </script>
 
@@ -193,7 +224,7 @@ async function goCardPackage() {
                   v-else
                   class="text-sm text-black/45"
                 >
-                  卡片已领取
+                  卡包已领取
                 </span>
               </template>
             </div>
@@ -204,6 +235,46 @@ async function goCardPackage() {
           <p class="text-lg leading-[1.45] text-black/48">
             订单号：{{ item.id }}
           </p>
+          <div
+            v-if="orderHasShippedTracking(item)"
+            class="mt-4 rounded-xl bg-[#f7f8fb] px-4 py-3.5"
+          >
+            <div class="mb-2 flex flex-wrap items-start justify-between gap-3">
+              <p class="min-w-0 flex-1 text-base leading-[1.5] text-black/70">
+                <span class="text-black/45">快递单号</span>
+                <br>
+                <span class="font-mono text-lg font-semibold text-black/85">{{ normalizeOrderTrackingNumber(item.trackingNumber) }}</span>
+              </p>
+              <button
+                type="button"
+                class="rounded-lg bg-white px-3 py-1.5 text-sm font-medium text-[var(--theme-color)] shadow-sm hover:opacity-90"
+                @click="copyTrackingNumber(item.trackingNumber)"
+              >
+                复制单号
+              </button>
+            </div>
+            <p class="mb-3 text-sm leading-snug text-black/38">
+              下列物流为模拟轨迹，正式环境将对接快递查询接口
+            </p>
+            <ul class="relative border-l-2 border-[var(--theme-color)]/25 pl-4">
+              <li
+                v-for="(node, idx) in getSimulatedLogisticsTrace(item)"
+                :key="`${item.id}-log-${idx}`"
+                class="relative pb-4 pl-1 last:pb-0"
+              >
+                <span
+                  class="absolute -left-[7px] top-2 h-2.5 w-2.5 rounded-full bg-[var(--theme-color)] ring-2 ring-[#f7f8fb]"
+                  aria-hidden="true"
+                />
+                <p class="text-sm text-black/40">
+                  {{ node.timeLabel }}
+                </p>
+                <p class="mt-1 text-base leading-snug text-black/72">
+                  {{ node.text }}
+                </p>
+              </li>
+            </ul>
+          </div>
           <div class="my-3 h-px bg-black/8" />
           <div class="flex items-center justify-between">
             <span class="text-[26px] leading-8 tracking-[0.01em] text-black/52">{{ formatMallOrderTime(item.createdAt) }}</span>

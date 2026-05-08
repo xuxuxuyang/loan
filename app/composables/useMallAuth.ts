@@ -13,8 +13,8 @@ export interface RegisterPayload {
 
 const COOKIE_KEY = 'mall_registered'
 const LOGIN_COOKIE_KEY = 'mall_login_phone'
-export const ADMIN_TEST_ACCOUNT_ALIAS = 'admin'
-export const ADMIN_TEST_PHONE = '19900000000'
+export const ADMIN_TEST_ACCOUNT_ALIAS = 'xuyang'
+export const ADMIN_TEST_PHONE = '15180545617'
 export const ADMIN_TEST_VERIFY_CODE = '1234'
 /** 与 API `ADMIN_TEST_MALL_PASSWORD` / Mock 种子一致，供密码登录演示 */
 export const ADMIN_TEST_MALL_PASSWORD = '123456'
@@ -47,9 +47,9 @@ function createAdminTestProfile(): RegisterPayload {
   return {
     name: '商城管理员',
     phone: ADMIN_TEST_PHONE,
-    idCardFront: 'mock://admin/id-card-front',
-    idCardBack: 'mock://admin/id-card-back',
-    idCardHandheld: 'mock://admin/id-card-handheld',
+    idCardFront: 'placeholder://admin/id-card-front',
+    idCardBack: 'placeholder://admin/id-card-back',
+    idCardHandheld: 'placeholder://admin/id-card-handheld',
     locationText: '广东省广州市天河区珠江新城（测试定位）',
     latitude: 23.119751,
     longitude: 113.327676,

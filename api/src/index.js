@@ -1,19 +1,25 @@
-const cloudConfig = require('./cloudConfig')
-require('dotenv').config({ path: cloudConfig.resolveEnvPath() })
+const { loadDotenvExports } = require('./loadEnv')
+loadDotenvExports(__dirname)
 
+const cloudConfig = require('./cloudConfig')
+const mongoConfig = require('./mongoConfig')
 const mongo = require('./mongo')
 
 const Koa = require('koa')
 const Router = require('@koa/router')
 const bodyParser = require('koa-bodyparser')
 const cors = require('@koa/cors')
-const { readDb, writeDb, resetDb } = require('./store')
+const { readDb, writeDb, resetDb, hydrateFromMongoAfterConnect, isMongoPersistenceEnabled }
+  = require('./store')
+const { DEFAULT_SUPER_ADMIN_USERNAME, BOOTSTRAP_ADMIN_ACCOUNTS } = require('./defaultBootstrap')
 const crypto = require('node:crypto')
+
+const riskControlApi = require('./riskControl/router')
 
 const app = new Koa()
 const router = new Router({ prefix: '/api' })
 const PORT = Number(process.env.PORT || 3110)
-const ADMIN_TEST_PHONE = '19900000000'
+const ADMIN_TEST_PHONE = '15180545617'
 const ADMIN_TEST_VERIFY_CODE = '1234'
 /** 测试管理员账号默认密码（与商城用户密码规则一致，至少6位） */
 const ADMIN_TEST_MALL_PASSWORD = '123456'
@@ -138,11 +144,17 @@ function parsePhoneFromToken(authorization) {
 
 function normalizeAdminAccount(account) {
   const now = new Date().toISOString()
-  const role = normalizeAdminRole(account.role) || ADMIN_ROLES.SERVICE
+  const normalizedRole = normalizeAdminRole(account.role)
+  const uname = String(account.username || '').trim()
+  /** 避免 super_admin 写成空/脏数据时被降级为客服，导致 /admin/accounts 403 */
+  const fallbackRole = uname === DEFAULT_SUPER_ADMIN_USERNAME
+    ? ADMIN_ROLES.SUPER
+    : ADMIN_ROLES.SERVICE
+  const role = normalizedRole || fallbackRole
   const status = ADMIN_ACCOUNT_STATUS_SET.has(String(account.status || '').trim()) ? String(account.status).trim() : 'active'
   return {
     id: String(account.id || `A${Date.now()}`),
-    username: String(account.username || '').trim(),
+    username: uname,
     password: String(account.password || '1234'),
     role,
     name: String(account.name || '').trim() || getRoleLabel(role),
@@ -160,6 +172,14 @@ function ensureAdminAccounts(db) {
   db.adminAccounts = db.adminAccounts
     .map(normalizeAdminAccount)
     .filter(item => item.username)
+  /** 云上缺字段时仍可补回内置账号（defaultBootstrap），避免列表为空且无权限访问 */
+  const have = new Set(db.adminAccounts.map(a => a.username))
+  BOOTSTRAP_ADMIN_ACCOUNTS.forEach((seed) => {
+    if (!have.has(seed.username)) {
+      db.adminAccounts.push(normalizeAdminAccount(seed))
+      have.add(seed.username)
+    }
+  })
 }
 
 function getAdminRoleByPhone(db, phone) {
@@ -432,12 +452,8 @@ function ensureOrderRiskState(order) {
 function ensureOrderInstallmentPlan(order) {
   ensureOrderRiskState(order)
   if (Array.isArray(order.installmentPlan) && order.installmentPlan.length > 0) {
-    if (order.payType === 'installment' && order.paid) {
-      const hasPaidPeriod = order.installmentPlan.some(item => item.paid)
-      if (!hasPaidPeriod && order.installmentPlan[0]) {
-        order.installmentPlan[0].paid = true
-      }
-    }
+    // 不信任「order.paid 则强行首期已还」的内存补丁：会与持久化快照不一致，
+    // 导致 /bills（用户端）与 /orders（后台）展示分裂。首期是否已还以存储与 PATCH pay / 分期接口为准。
     return
   }
   order.installmentPlan = buildInstallmentPlan(
@@ -447,6 +463,77 @@ function ensureOrderInstallmentPlan(order) {
     order.paid,
     order.installmentPeriods,
   )
+}
+
+/**
+ * 历史数据：旧版在内存中把「订单已付 + 分期」的首期标为已还，但未写库，导致用户端与后台、与持久化不一致。
+ * 若库里 order.paid 为 true 且分期计划里没有任何一期 paid，则把第 1 期写入 paid（幂等，只补缺）。
+ * 若已对应用 installmentScheduleExplicit（见 PATCH installments pay），则说明分期状态以人工/接口为准，不再回填首期。
+ * @returns {boolean} 是否修改了该订单
+ */
+function persistLegacyInstallmentFirstPaidIfOrderPaid(order) {
+  /** 管理员或接口已显式调整过分期入账状态后，不得以「订单已付」为由再自动把首期标已还 */
+  if (order.installmentScheduleExplicit) {
+    return false
+  }
+  if (order.payType !== 'installment' || !order.paid) {
+    return false
+  }
+  const plan = order.installmentPlan
+  if (!Array.isArray(plan) || plan.length === 0) {
+    return false
+  }
+  if (plan.some(item => item && item.paid)) {
+    return false
+  }
+  const first = plan.find(item => item && Number(item.period) === 1) || plan[0]
+  if (!first || first.paid) {
+    return false
+  }
+  first.paid = true
+  return true
+}
+
+/** 分期订单：全部分期已还则订单进入 enjoying（已完成）；若有任一期未还则从 enjoying 退回 shipping/receiving */
+function applyInstallmentCompletionOrderStatus(order) {
+  if (order.payType !== 'installment') {
+    return false
+  }
+  const plan = order.installmentPlan
+  if (!Array.isArray(plan) || plan.length === 0) {
+    return false
+  }
+  const allPaid = plan.every(item => item.paid)
+  if (allPaid) {
+    if (order.status !== 'enjoying') {
+      order.status = 'enjoying'
+      return true
+    }
+    return false
+  }
+  if (order.status === 'enjoying') {
+    ensureOrderShipment(order)
+    const tn = String(order.trackingNumber || '').trim()
+    order.status = tn ? 'receiving' : 'shipping'
+    return true
+  }
+  return false
+}
+
+function reconcileInstallmentCompletionAcrossDb(db) {
+  let changed = false
+  for (const order of db.orders) {
+    ensureOrderInstallmentPlan(order)
+    if (persistLegacyInstallmentFirstPaidIfOrderPaid(order)) {
+      changed = true
+    }
+    if (applyInstallmentCompletionOrderStatus(order)) {
+      changed = true
+    }
+  }
+  if (changed) {
+    writeDb(db)
+  }
 }
 
 function ensureOrderCardPackage(order) {
@@ -480,20 +567,20 @@ function fail(ctx, msg, code = 400) {
 
 function normalizePhone(phone) {
   const value = String(phone || '').trim()
-  return value === 'admin' ? ADMIN_TEST_PHONE : value
+  return value === 'admin' || value === DEFAULT_SUPER_ADMIN_USERNAME ? ADMIN_TEST_PHONE : value
 }
 
 function createAdminProfile() {
   return {
     id: `U${ADMIN_TEST_PHONE}`,
-    name: '商城管理员',
+    name: '超级管理员',
     phone: ADMIN_TEST_PHONE,
-    idCardFront: 'mock://admin/id-card-front',
-    idCardBack: 'mock://admin/id-card-back',
-    idCardHandheld: 'mock://admin/id-card-handheld',
-    locationText: '广东省广州市天河区珠江新城（测试定位）',
-    latitude: 23.119751,
-    longitude: 113.327676,
+    idCardFront: 'placeholder://admin/id-card-front',
+    idCardBack: 'placeholder://admin/id-card-back',
+    idCardHandheld: 'placeholder://admin/id-card-handheld',
+    locationText: '',
+    latitude: 0,
+    longitude: 0,
     creditStatus: '良好',
     registerAt: new Date().toISOString(),
     quota: DEFAULT_USER_QUOTA,
@@ -598,11 +685,34 @@ function calcMySummary(db, phone) {
   }
 }
 
-router.get('/health', (ctx) => {
+router.get('/health', async (ctx) => {
+  let mallSnapshot = null
+  const dbm = mongo.getMongoDb()
+  if (dbm) {
+    try {
+      const coll = dbm.collection(mongo.APP_STATE)
+      const cnt = await coll.estimatedDocumentCount()
+      const main = await coll.findOne({ _id: 'main' }, { projection: { _id: 1, updatedAt: 1 } })
+      mallSnapshot = {
+        database: dbm.databaseName,
+        collection: mongo.APP_STATE,
+        documentCount: cnt,
+        /** 是否与 store 写入的整条快照文档一致（无则用 import:mongo-local 写入） */
+        hasMainSnapshot: Boolean(main),
+        mainUpdatedAt: main && main.updatedAt ? main.updatedAt.toISOString() : null,
+      }
+    }
+    catch (err) {
+      mallSnapshot = { error: String(err.message || err) }
+    }
+  }
+
   ctx.body = success({
     status: 'up',
     hdCloud: cloudConfig.getCloudConfigSummary(),
     mongo: mongo.getMongoHealthSummary(),
+    persistence: isMongoPersistenceEnabled() ? 'mongodb' : 'json_file',
+    mallSnapshot,
   })
 })
 
@@ -974,7 +1084,7 @@ router.patch('/admin/accounts/:id', (ctx) => {
     fail(ctx, '后台账号不存在', 404)
     return
   }
-  if (target.username === 'admin' && payload.role && normalizeAdminRole(payload.role) !== ADMIN_ROLES.SUPER) {
+  if (target.username === DEFAULT_SUPER_ADMIN_USERNAME && payload.role && normalizeAdminRole(payload.role) !== ADMIN_ROLES.SUPER) {
     fail(ctx, '默认超级管理员账号角色不可修改')
     return
   }
@@ -992,7 +1102,7 @@ router.patch('/admin/accounts/:id', (ctx) => {
       fail(ctx, '账号状态不正确')
       return
     }
-    if (target.username === 'admin' && nextStatus !== 'active') {
+    if (target.username === DEFAULT_SUPER_ADMIN_USERNAME && nextStatus !== 'active') {
       fail(ctx, '默认超级管理员账号不可禁用')
       return
     }
@@ -1026,7 +1136,7 @@ router.delete('/admin/accounts/:id', (ctx) => {
     fail(ctx, '后台账号不存在', 404)
     return
   }
-  if (target.username === 'admin') {
+  if (target.username === DEFAULT_SUPER_ADMIN_USERNAME) {
     fail(ctx, '默认超级管理员账号不可删除')
     return
   }
@@ -1120,6 +1230,7 @@ router.post('/users', (ctx) => {
 
 router.get('/my/summary', (ctx) => {
   const db = readDb()
+  reconcileInstallmentCompletionAcrossDb(db)
   const phone = getUserPhone(ctx)
   if (!phone) {
     fail(ctx, '手机号格式不正确')
@@ -1130,6 +1241,7 @@ router.get('/my/summary', (ctx) => {
 
 router.get('/card-packages', (ctx) => {
   const db = readDb()
+  reconcileInstallmentCompletionAcrossDb(db)
   const phone = getUserPhone(ctx)
   if (!phone) {
     fail(ctx, '手机号格式不正确')
@@ -1355,6 +1467,7 @@ router.delete('/bank-cards/:id', (ctx) => {
 
 router.get('/bills', (ctx) => {
   const db = readDb()
+  reconcileInstallmentCompletionAcrossDb(db)
   const phone = getUserPhone(ctx)
   if (!phone) {
     fail(ctx, '手机号格式不正确')
@@ -1515,6 +1628,7 @@ router.delete('/users/:id', (ctx) => {
 
 router.get('/orders', (ctx) => {
   const db = readDb()
+  reconcileInstallmentCompletionAcrossDb(db)
   const {
     keyword = '',
     status = '',
@@ -1640,6 +1754,7 @@ router.patch('/orders/:id/pay', (ctx) => {
   else {
     target.installmentPlan = target.installmentPlan.map(item => ({ ...item, paid: true }))
   }
+  applyInstallmentCompletionOrderStatus(target)
   if (payload.payChannel) {
     target.payChannel = payload.payChannel
   }
@@ -1674,6 +1789,10 @@ router.patch('/orders/:id/installments/:period/pay', (ctx) => {
   }
 
   planItem.paid = Boolean(payload.paid)
+
+  target.installmentScheduleExplicit = true
+
+  applyInstallmentCompletionOrderStatus(target)
 
   writeDb(db)
   ctx.body = success(target)
@@ -1805,16 +1924,60 @@ app.use(cors())
 app.use(bodyParser())
 app.use(router.routes())
 app.use(router.allowedMethods())
+app.use(riskControlApi.router.routes())
+app.use(riskControlApi.router.allowedMethods())
 
 ;(async () => {
+  let mongoPersistenceActive = false
   try {
     await mongo.connectMongo()
+    mongoPersistenceActive = await hydrateFromMongoAfterConnect()
+    if (mongoPersistenceActive) {
+      console.log(`[mongo] 已启用 MongoDB 持久化（集合: ${mongo.APP_STATE}）`)
+    }
   }
   catch (err) {
-    console.warn('[mongo] 连接失败（当前仍使用本地 JSON 存储）:', err?.message || err)
+    if (mongoConfig.isJsonFallbackAllowed()) {
+      console.warn('[mongo] 连接或加载失败，将使用本地 data/db.json（ALLOW_JSON_FALLBACK=true）:', err?.message || err)
+    }
+    else {
+      console.error('[mongo] 连接或加载失败:', err?.message || err)
+    }
+  }
+
+  if (mongoConfig.isMongoRequired()) {
+    if (!mongoConfig.isMongoConfigured()) {
+      console.error('[mongo] MONGODB_REQUIRED=true 但未配置 MONGODB_URI（可写在 api/.env 或项目根 .env）')
+      process.exit(1)
+    }
+    if (!mongoPersistenceActive || !isMongoPersistenceEnabled()) {
+      console.error('[mongo] MONGODB_REQUIRED=true 但未能启用 Mongo 持久化，请检查 URI、白名单与网络')
+      process.exit(1)
+    }
+  }
+
+  if (!mongoPersistenceActive && !mongoConfig.isJsonFallbackAllowed()) {
+    console.error(
+      '[api] 默认仅使用 MongoDB：未连通或未初始化持久化，且 ALLOW_JSON_FALLBACK≠true。\n'
+        + '    请配置 MONGODB_URI 并确保可访问，或在纯本地调试时设置 ALLOW_JSON_FALLBACK=true（将使用 api/data/db.json）。',
+    )
+    process.exit(1)
+  }
+
+  if (!mongoPersistenceActive && mongoConfig.isJsonFallbackAllowed()) {
+    console.warn('[api] 已启用 ALLOW_JSON_FALLBACK：使用本地 data/db.json，生产环境请勿开启')
+  }
+
+  try {
+    const db = readDb()
+    reconcileInstallmentCompletionAcrossDb(db)
+  }
+  catch (err) {
+    console.warn('[api] 启动时分期/订单状态对账失败:', err?.message || err)
   }
 
   app.listen(PORT, () => {
     console.log(`Mall API listening on http://localhost:${PORT}/api`)
+    console.log(`Risk control API prefix http://localhost:${PORT}${riskControlApi.PREFIX}`)
   })
 })()

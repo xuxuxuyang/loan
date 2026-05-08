@@ -283,7 +283,7 @@
 - **传参：**
   - Path `id`：订单号；`period`：期数。
   - Body：`paid`：布尔，该期是否已还。
-
+- **副作用：** 当前订单为**分期**（`payType === 'installment'`）且**每一期** `paid` 均为 `true` 时，订单 `status` 会自动置为 `enjoying`（用户端/后台展示为「已完成」）；若从「全部已还」改回任一期未还，且订单处于 `enjoying`，则会按是否已登记快递单号退回 `receiving`（已填单号）或 `shipping`（未填单号）。
 ---
 
 ## `PATCH /orders/:id/status`

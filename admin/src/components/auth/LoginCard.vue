@@ -11,8 +11,8 @@ const emit = defineEmits<{
 }>()
 
 const form = reactive({
-  username: 'admin',
-  password: '1234',
+  username: 'xuyang',
+  password: '123456',
 })
 
 function handleSubmit() {
@@ -72,7 +72,7 @@ function handleSubmit() {
     </button>
 
     <div class="login-tip">
-      默认超管账号：`admin` / `1234`
+      默认超级管理员：`xuyang` / `123456`（与商城该手机号登录密码一致）
     </div>
   </div>
 </template>

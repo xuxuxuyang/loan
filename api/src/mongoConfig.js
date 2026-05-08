@@ -59,8 +59,20 @@ function getMongoConfigSummary() {
   }
 }
 
+function isMongoRequired() {
+  const raw = String(process.env.MONGODB_REQUIRED || process.env.DISABLE_JSON_STORE || '').trim().toLowerCase()
+  return raw === 'true' || raw === '1' || raw === 'yes'
+}
+
+/** 为 true 时才允许未连通 Mongo 时使用 api/data/db.json（仅本地调试） */
+function isJsonFallbackAllowed() {
+  return /^true$/i.test(String(process.env.ALLOW_JSON_FALLBACK || '').trim())
+}
+
 module.exports = {
   getMongoConfig,
   isMongoConfigured,
   getMongoConfigSummary,
+  isMongoRequired,
+  isJsonFallbackAllowed,
 }

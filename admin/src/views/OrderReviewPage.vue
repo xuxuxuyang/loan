@@ -222,7 +222,6 @@ onMounted(() => {
           <th>用户</th>
           <th>商品</th>
           <th>总金额</th>
-          <th>支付方式</th>
           <th>风控结果</th>
           <th>当前期数</th>
           <th>下次还款日</th>
@@ -239,7 +238,6 @@ onMounted(() => {
           <td>{{ item.user }}</td>
           <td>{{ item.product }}</td>
           <td>¥ {{ item.totalAmount }}</td>
-          <td>{{ item.payType }}</td>
           <td class="td-risk-result">
             <el-tag
               :type="item.riskStatus === 'passed' ? 'success' : 'danger'"
@@ -283,7 +281,7 @@ onMounted(() => {
         </tr>
         <tr v-if="!loading && reviewOrders.length === 0">
           <td
-            colspan="10"
+            colspan="9"
             style="text-align: center; color: #9ca3af;"
           >
             {{ reviewOrdersBase.length === 0 ? '暂无待审核订单' : '暂无符合筛选条件的订单' }}

@@ -12,6 +12,9 @@ const COLLECTIONS = {
   bills: 'bills',
 }
 
+/** 商城整库快照（对接 db.json 结构），与分项集合二选一使用；当前 store 使用该集合 */
+const APP_STATE = 'appState'
+
 let client = null
 let connectPromise = null
 let lastConnectError = null
@@ -106,6 +109,7 @@ function getMongoHealthSummary() {
 
 module.exports = {
   COLLECTIONS,
+  APP_STATE,
   connectMongo,
   getMongoClient,
   getMongoDb,
