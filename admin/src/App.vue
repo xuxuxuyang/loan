@@ -39,7 +39,16 @@ const isLoginPage = computed(() => route.name === 'login')
 const allMenus: MenuEntry[] = [
   { label: '用户管理', path: '/users', icon: User, roles: ['super_admin', 'reviewer', 'customer_service'] },
   { label: '账号管理', path: '/accounts', icon: Avatar, roles: ['super_admin'] },
-  { label: '产品管理', path: '/products', icon: Goods, roles: ['super_admin'] },
+  {
+    label: '产品管理',
+    path: '/products/mall',
+    icon: Goods,
+    roles: ['super_admin'],
+    children: [
+      { label: '商城产品', path: '/products/mall', icon: Goods },
+      { label: '分期产品', path: '/products/installment', icon: Goods },
+    ],
+  },
   {
     label: '订单管理',
     path: '/orders',
@@ -73,12 +82,22 @@ const menus = computed(() => {
 
 /** 进入订单相关路由时展开子菜单；离开订单模块时重建菜单避免 default-openeds 不响应的问题 */
 const sideMenuKey = computed(() =>
-  route.path.startsWith('/orders') ? 'admin-nav-orders' : 'admin-nav-default',
+  route.path.startsWith('/orders')
+    ? 'admin-nav-orders'
+    : route.path.startsWith('/products')
+      ? 'admin-nav-products'
+      : 'admin-nav-default',
 )
 
-const defaultOpenedSubmenus = computed(() =>
-  route.path.startsWith('/orders') ? ['sub-/orders'] : [],
-)
+const defaultOpenedSubmenus = computed(() => {
+  if (route.path.startsWith('/orders')) {
+    return ['sub-/orders']
+  }
+  if (route.path.startsWith('/products')) {
+    return ['sub-/products/mall']
+  }
+  return []
+})
 
 function submenuIndex(item: MenuEntry) {
   return `sub-${item.path}`

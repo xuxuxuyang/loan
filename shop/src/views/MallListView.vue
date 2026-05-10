@@ -3,10 +3,10 @@ import AppTabbar from '~/components/App/AppTabbar.vue'
 import ListIndex from '~/components/list/index.vue'
 import ListIndexM from '~/components/list/index-m.vue'
 import type { MallCategoryKey } from '~/composables/useTeaProducts'
-import { useMallCategories, isMallCategoryKey, useTeaProducts } from '~/composables/useTeaProducts'
+import { useMallCategories, isMallCategoryKey, useMallShowcaseProducts } from '~/composables/useTeaProducts'
 
 const device = useDevice()
-const products = useTeaProducts()
+const products = useMallShowcaseProducts()
 const route = useRoute()
 const categories = useMallCategories()
 const selectedCategory = ref<MallCategoryKey>('all')
@@ -34,6 +34,7 @@ function handleSelectCategory(category: MallCategoryKey) {
       :products="filteredProducts"
       :categories="categories"
       :active-category="selectedCategory"
+      display-only
       @select-category="handleSelectCategory"
     />
     <ListIndex
@@ -41,6 +42,7 @@ function handleSelectCategory(category: MallCategoryKey) {
       :products="filteredProducts"
       :categories="categories"
       :active-category="selectedCategory"
+      display-only
       @select-category="handleSelectCategory"
     />
     <AppTabbar />

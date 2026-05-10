@@ -3,8 +3,12 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { InstallmentItem, OrderItem } from '../stores/useOrdersStore'
 import { getAdminSession } from '../composables/useAdminAuth'
+import { withAdminAuthHeaders } from '../composables/useAdminApi'
 import { useOrdersStore } from '../stores/useOrdersStore'
+import UserRiskDetailDialog, { type UserItem } from '../components/UserRiskDetailDialog.vue'
 import { donePageProgress, startPageProgress } from '../utils/progress'
+
+const MALL_API_BASE = `${(import.meta.env.VITE_MALL_API_BASE || 'http://localhost:3110/api').replace(/\/$/, '')}`
 
 const keyword = ref('')
 const status = ref<'全部' | OrderItem['status']>('全部')
@@ -19,8 +23,61 @@ const deletingOrderId = ref('')
 const trackingDialogOpen = ref(false)
 const trackingDialogOrder = ref<OrderItem | null>(null)
 const trackingDialogInput = ref('')
+const userRiskDialogVisible = ref(false)
+const riskDialogUserId = ref<string | null>(null)
+const resolvingRiskUserOrderId = ref<string | null>(null)
 const { orders, recalculateOrderFields, fetchOrders, updateInstallmentPaid, updateOrderStatus, updateOrderShipment, updateOrderCardPackage, deleteOrder } = useOrdersStore()
 const canOperateOrders = computed(() => getAdminSession()?.role === 'super_admin')
+
+function normalizePhone(raw: string): string {
+  return String(raw || '').replace(/\D/g, '')
+}
+
+watch(userRiskDialogVisible, (open) => {
+  if (!open)
+    riskDialogUserId.value = null
+})
+
+function onRiskDialogUserUpdated(_user: UserItem) {
+  void loadOrders().catch(() => {})
+}
+
+async function openUserRiskFromOrder(order: OrderItem) {
+  const digits = normalizePhone(order.receiverPhone || '')
+  if (digits.length !== 11) {
+    ElMessage.error('订单无有效收货手机号，无法打开用户风控档案')
+    return
+  }
+  if (resolvingRiskUserOrderId.value) {
+    return
+  }
+  resolvingRiskUserOrderId.value = order.id
+  try {
+    const url = `${MALL_API_BASE}/users/by-phone?phone=${encodeURIComponent(digits)}`
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: withAdminAuthHeaders(),
+    })
+    if (!response.ok) {
+      throw new Error(`查询用户失败: ${response.status}`)
+    }
+    const payload = await response.json() as { data?: { id?: string } | null }
+    const user = payload.data
+    const id = user && typeof user.id === 'string' ? user.id : ''
+    if (!id) {
+      ElMessage.error('未找到与该手机号关联的商城用户')
+      return
+    }
+    riskDialogUserId.value = id
+    userRiskDialogVisible.value = true
+  }
+  catch (e) {
+    ElMessage.error(e instanceof Error ? e.message : '查询用户失败')
+  }
+  finally {
+    resolvingRiskUserOrderId.value = null
+  }
+}
 
 function showTrackingEditor(item: OrderItem): boolean {
   return item.status === '待发货' || item.status === '待收货'
@@ -301,7 +358,7 @@ watch(status, () => {
           <th>商品</th>
           <th>总金额</th>
           <th>分期期数</th>
-          <th>每期应还</th>
+          <th>本期应还</th>
           <th>当前期数</th>
           <th>下次还款日</th>
           <th>支付方式</th>
@@ -318,7 +375,19 @@ watch(status, () => {
           :key="item.id"
         >
           <td>{{ item.id }}</td>
-          <td>{{ item.user }}</td>
+          <td class="td-user-risk">
+            <el-tag
+              type="info"
+              effect="light"
+              round
+              size="small"
+              class="order-user-risk-tag"
+              :disabled="resolvingRiskUserOrderId === item.id"
+              @click="openUserRiskFromOrder(item)"
+            >
+              {{ item.user }}
+            </el-tag>
+          </td>
           <td>{{ item.product }}</td>
           <td>¥ {{ item.totalAmount }}</td>
           <td>{{ item.periods }} 期</td>
@@ -457,7 +526,16 @@ watch(status, () => {
         </button>
       </div>
       <p class="modal-summary">
-        用户：{{ selectedOrder.user }} ｜ 商品：{{ selectedOrder.product }} ｜ 总金额：¥ {{ selectedOrder.totalAmount }}
+        <span>用户：{{ selectedOrder.user }}</span>
+        <button
+          type="button"
+          class="btn btn-link-risk"
+          :disabled="!!resolvingRiskUserOrderId"
+          @click="openUserRiskFromOrder(selectedOrder)"
+        >
+          查看风控档案
+        </button>
+        <span> ｜ 商品：{{ selectedOrder.product }} ｜ 总金额：¥ {{ selectedOrder.totalAmount }}</span>
       </p>
 
       <table class="table">
@@ -535,6 +613,12 @@ watch(status, () => {
       </el-button>
     </template>
   </el-dialog>
+
+  <UserRiskDetailDialog
+    v-model="userRiskDialogVisible"
+    :user-id="riskDialogUserId"
+    @user-updated="onRiskDialogUserUpdated"
+  />
 </template>
 
 <style scoped>
@@ -579,6 +663,44 @@ watch(status, () => {
   border-color: #dc2626;
   background: #dc2626;
   color: #fff;
+}
+
+.btn-link-risk {
+  margin-left: 6px;
+  padding: 0 8px;
+  height: 28px;
+  border: none;
+  background: transparent;
+  color: #2563eb;
+  cursor: pointer;
+  font-size: 13px;
+  text-decoration: underline;
+  vertical-align: baseline;
+}
+
+.btn-link-risk:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.td-user-risk {
+  vertical-align: middle;
+}
+
+.order-user-risk-tag {
+  cursor: pointer;
+  user-select: none;
+  font-weight: 600;
+  max-width: 220px;
+  transition: filter 0.15s ease, transform 0.12s ease;
+}
+
+.order-user-risk-tag:hover:not(.is-disabled) {
+  filter: brightness(0.96);
+}
+
+.order-user-risk-tag:active:not(.is-disabled) {
+  transform: scale(0.98);
 }
 
 .toolbar-input {

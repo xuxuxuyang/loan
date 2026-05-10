@@ -13,6 +13,8 @@ export interface InstallmentItem {
 export interface OrderItem {
   id: string
   user: string
+  /** 收货人手机号；用于关联商城用户并打开与用户页一致的风控档案 */
+  receiverPhone: string
   product: string
   totalAmount: number
   periods: number
@@ -37,6 +39,12 @@ export interface RiskDetailRule {
   hit: boolean
   scoreImpact: number
   detail: string
+  /** 用户风控弹窗：对应 `riskControlSnapshot.fourteenRows` 槽位，便于单接口重查 */
+  slotKey?: string
+  rowState?: 'ok' | 'fail' | 'skipped'
+  httpStatus?: number | null
+  skippedReason?: string
+  error?: string
 }
 
 export interface OrderRiskDetail {
@@ -50,6 +58,11 @@ export interface OrderRiskDetail {
   modelVersion: string
   factors: string[]
   rules: RiskDetailRule[]
+  /** 用户风控弹窗：十四项中已实测条数 */
+  testedSlotCount?: number
+  okSlotCount?: number
+  failSlotCount?: number
+  skippedSlotCount?: number
 }
 
 interface MallOrderPayload {
@@ -63,6 +76,7 @@ interface MallOrderPayload {
   paid: boolean
   payType: 'installment' | 'full'
   receiverName: string
+  receiverPhone?: string
   installmentPlan?: InstallmentItem[]
   cardPackageIssued?: boolean
   trackingNumber?: string
@@ -78,6 +92,10 @@ interface RiskDetailPayload {
   reason?: string
   modelVersion?: string
   factors?: string[]
+  testedSlotCount?: number
+  okSlotCount?: number
+  failSlotCount?: number
+  skippedSlotCount?: number
   rules?: Array<{
     code?: string
     name?: string
@@ -153,7 +171,7 @@ function normalizeInstallmentPlan(payload: MallOrderPayload) {
 }
 
 function mapMallOrderToAdminOrder(order: MallOrderPayload): OrderItem {
-  const fallbackPeriods = order.payType === 'installment' ? 12 : 1
+  const fallbackPeriods = order.payType === 'installment' ? 1 : 1
   const installmentPlan = normalizeInstallmentPlan(order)
   const safePlan = installmentPlan.length > 0
     ? installmentPlan
@@ -168,6 +186,9 @@ function mapMallOrderToAdminOrder(order: MallOrderPayload): OrderItem {
   const periods = safePlan.length || fallbackPeriods
   const nextPending = safePlan.find(item => !item.paid)
   const allPaid = safePlan.every(item => item.paid)
+  const periodAmount = Number(
+    ((nextPending || safePlan[0])?.amount ?? 0).toFixed(2),
+  )
   const riskStatus = order.riskStatus === 'failed' ? 'failed' : 'passed'
   const tracking = String(order.trackingNumber || '').trim()
   const status = mapMallOrderStatus(order.status, order.paid, order.payType, order.riskStatus)
@@ -175,10 +196,11 @@ function mapMallOrderToAdminOrder(order: MallOrderPayload): OrderItem {
   return {
     id: order.id,
     user: order.receiverName || '商城用户',
+    receiverPhone: String(order.receiverPhone || '').trim(),
     product: order.name,
     totalAmount: Number(order.totalAmount.toFixed(2)),
     periods,
-    periodAmount: safePlan[0]?.amount || 0,
+    periodAmount,
     currentPeriod: allPaid ? periods : (nextPending?.period || 1),
     nextRepayDate: allPaid ? '-' : (nextPending?.dueDate || '-'),
     status,
@@ -335,6 +357,10 @@ async function fetchOrderRiskDetail(orderId: string): Promise<OrderRiskDetail> {
     reason: payload.data.reason || '',
     modelVersion: payload.data.modelVersion || 'mock-risk-v1',
     factors: Array.isArray(payload.data.factors) ? payload.data.factors : [],
+    testedSlotCount: payload.data.testedSlotCount != null ? Number(payload.data.testedSlotCount) : undefined,
+    okSlotCount: payload.data.okSlotCount != null ? Number(payload.data.okSlotCount) : undefined,
+    failSlotCount: payload.data.failSlotCount != null ? Number(payload.data.failSlotCount) : undefined,
+    skippedSlotCount: payload.data.skippedSlotCount != null ? Number(payload.data.skippedSlotCount) : undefined,
     rules: Array.isArray(payload.data.rules)
       ? payload.data.rules.map(rule => ({
           code: String(rule.code || ''),

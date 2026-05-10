@@ -1,11 +1,15 @@
 <script setup lang="ts">
 import type { MallCategoryItem, MallCategoryKey, TeaProduct } from '~/composables/useTeaProducts'
 
-defineProps<{
-  products: TeaProduct[]
-  categories: MallCategoryItem[]
-  activeCategory: MallCategoryKey
-}>()
+const props = withDefaults(
+  defineProps<{
+    products: TeaProduct[]
+    categories: MallCategoryItem[]
+    activeCategory: MallCategoryKey
+    displayOnly?: boolean
+  }>(),
+  { displayOnly: false },
+)
 
 const emit = defineEmits<{
   'select-category': [category: MallCategoryKey]
@@ -16,6 +20,10 @@ const { smartNavigate } = useCustomRouting(route)
 const { ensureRegistered } = useMallAuth()
 
 async function handleBuy(item: TeaProduct) {
+  if (props.displayOnly) {
+    ElMessage.info('该商品仅供展示，请前往分期专区页面选购')
+    return
+  }
   const passed = await ensureRegistered()
   if (!passed) {
     return
@@ -88,7 +96,7 @@ async function handleBuy(item: TeaProduct) {
               class="buy-btn rounded-md px-2.5 py-1 text-xs text-white pointer-events-none"
               aria-hidden="true"
             >
-              购买
+              {{ props.displayOnly ? '展示' : '购买' }}
             </span>
           </div>
         </div>

@@ -1,37 +1,33 @@
 <script setup lang="ts">
-import { CircleCheck, CircleClose, Clock, Cpu, DataAnalysis, Document, Picture, User } from '@element-plus/icons-vue'
+import { Picture } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { withAdminAuthHeaders } from '../composables/useAdminApi'
 import { getAdminSession } from '../composables/useAdminAuth'
-import type { OrderRiskDetail, RiskDetailRule } from '../stores/useOrdersStore'
+import UserRiskDetailDialog, { type UserItem, type UserRiskSnapshot } from '../components/UserRiskDetailDialog.vue'
 import { donePageProgress, startPageProgress } from '../utils/progress'
 
 const DEFAULT_USER_QUOTA = 3000
 
-interface UserItem {
-  id: string
-  name: string
-  phone: string
-  quota: number
-  orderCount: number
-  totalAmount: number
-  locationText: string
-  registerAt: string
-  idCardFront: string
-  idCardBack: string
-  idCardHandheld: string
-  creditStatus: '优秀' | '良好' | '一般' | '风险'
-  riskReport: {
-    creditScore: number
-    riskLevel: '低风险' | '中风险' | '高风险'
-    overdueCount: number
-    repayRate30d: number
-    suggestedLimit: number
-    avgInstallmentAmount: number
-    tags: string[]
-    summary: string
-  }
+/** 与商城注册、后端校验一致的 18 位身份证号格式（扩展表单校验时可复用） */
+const CN_ID_CARD_RE = /^[1-9]\d{5}(18|19|20)\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])\d{3}[\dX]$/
+
+interface MallUserRiskPreview {
+  creditScore: number
+  riskLevel: '低风险' | '中风险' | '高风险'
+  overdueCount: number
+  repayRate30d: number
+  suggestedLimit: number
+  avgInstallmentAmount: number
+  tags: string[]
+  summary: string
+}
+
+/** 列表与预览：档案字段 + 管理端模拟信誉摘要；`riskControlSnapshot` 来自库内用户档案 */
+type ListedUser = UserItem & {
+  riskReport: MallUserRiskPreview
+  riskControlSnapshot?: UserRiskSnapshot | null
+  riskUpstreamConfigured?: boolean
 }
 
 interface ApiUserItem {
@@ -47,30 +43,33 @@ interface ApiUserItem {
   idCardBack: string
   idCardHandheld: string
   creditStatus?: UserItem['creditStatus']
+  idNumber?: string
+  riskControlSnapshot?: UserRiskSnapshot | null
+  riskUpstreamConfigured?: boolean
 }
 
 const MALL_API_BASE = `${(import.meta.env.VITE_MALL_API_BASE || 'http://localhost:3110/api').replace(/\/$/, '')}`
 
-const users = ref<UserItem[]>([])
+const users = ref<ListedUser[]>([])
 const loading = ref(false)
 const deletingId = ref('')
 const pendingDeleteId = ref('')
 const creating = ref(false)
 const quotaDialogVisible = ref(false)
 const quotaSaving = ref(false)
-const quotaTarget = ref<UserItem | null>(null)
+const quotaTarget = ref<ListedUser | null>(null)
 const quotaInput = ref('')
 const createDialogVisible = ref(false)
 const keyword = ref('')
-const previewUser = ref<UserItem | null>(null)
+const previewUser = ref<ListedUser | null>(null)
 const editingUserId = ref<string | null>(null)
 const userRiskDialogVisible = ref(false)
-const selectedUserForRisk = ref<UserItem | null>(null)
-const displayedUserRiskDetail = ref<OrderRiskDetail | null>(null)
+const riskDialogUserId = ref<string | null>(null)
 
 const createForm = reactive({
   name: '',
   phone: '',
+  idNumber: '',
   locationText: '',
   creditStatus: '良好' as UserItem['creditStatus'],
   /** 可选；至少 6 位才会写入商城登录密码 */
@@ -82,6 +81,7 @@ const canManageUsers = computed(() => getAdminSession()?.role === 'super_admin')
 const editForm = reactive({
   name: '',
   phone: '',
+  idNumber: '',
   locationText: '',
   creditStatus: '良好' as UserItem['creditStatus'],
   /** 留空则不修改；填写则更新商城登录密码，至少 6 位 */
@@ -102,47 +102,6 @@ function formatDateTime(value?: string) {
   return `${yyyy}-${mm}-${dd} ${hh}:${min}`
 }
 
-function splitFactorLine(line: string): { label: string; value: string } {
-  const cn = line.indexOf('：')
-  const en = line.indexOf(':')
-  let idx = -1
-  if (cn >= 0 && en >= 0) {
-    idx = Math.min(cn, en)
-  }
-  else {
-    idx = cn >= 0 ? cn : en
-  }
-  if (idx === -1) {
-    return { label: line, value: '' }
-  }
-  return {
-    label: line.slice(0, idx).trim(),
-    value: line.slice(idx + 1).trim(),
-  }
-}
-
-function decisionTagType(decision: string): 'success' | 'danger' | 'warning' | 'info' {
-  if (/拒绝|未通过|失败|驳回/i.test(decision)) {
-    return 'danger'
-  }
-  if (/有条件通过/i.test(decision)) {
-    return 'warning'
-  }
-  if (/通过|同意|放行|批准/i.test(decision)) {
-    return 'success'
-  }
-  return 'info'
-}
-
-function scoreProgressPercent(detail: OrderRiskDetail): number {
-  const t = detail.threshold || 1
-  return Math.min(100, Math.round((detail.riskScore / t) * 100))
-}
-
-function scoreOverThreshold(detail: OrderRiskDetail): boolean {
-  return detail.riskScore >= detail.threshold
-}
-
 function creditStatusTagType(status: UserItem['creditStatus']): 'success' | 'warning' | 'info' | 'danger' {
   if (status === '优秀') return 'success'
   if (status === '良好') return 'info'
@@ -150,120 +109,39 @@ function creditStatusTagType(status: UserItem['creditStatus']): 'success' | 'war
   return 'danger'
 }
 
-function buildUserCreditRiskRules(user: UserItem): RiskDetailRule[] {
-  const s = user.creditStatus
-  return [
-    {
-      code: 'UCR-01',
-      name: '实名与证件一致性',
-      hit: s === '风险',
-      scoreImpact: 10,
-      detail: s === '风险' ? '存在证件信息异常或历史争议记录。' : '证件核验通过，无异常命中。',
-    },
-    {
-      code: 'UCR-02',
-      name: '逾期与还款表现',
-      hit: s === '风险' || s === '一般',
-      scoreImpact: 14,
-      detail:
-        s === '风险'
-          ? '近端存在多次逾期或还款波动较大。'
-          : s === '一般'
-            ? '偶有波动，建议持续观察后续履约。'
-            : '还款记录稳定，未发现异常。',
-    },
-    {
-      code: 'UCR-03',
-      name: '消费与负债综合评估',
-      hit: s === '风险',
-      scoreImpact: 12,
-      detail:
-        s === '风险'
-          ? '多头分期或负债率偏高，建议收紧授信。'
-          : '消费能力、订单履约与授信匹配度正常。',
-    },
-    {
-      code: 'UCR-04',
-      name: '黑名单与司法核查',
-      hit: s === '风险',
-      scoreImpact: 20,
-      detail: s === '风险' ? '命中高风险关注项，建议人工复核。' : '未命中司法公示及黑名单规则。',
-    },
-  ]
-}
-
-function buildUserCreditRiskDetail(user: UserItem): OrderRiskDetail {
-  const { riskReport, creditStatus } = user
-  const passed = creditStatus !== '风险'
-  const riskScoreMap: Record<UserItem['creditStatus'], number> = {
-    优秀: 34,
-    良好: 46,
-    一般: 61,
-    风险: 86,
-  }
-  const threshold = 72
-  const riskScore = riskScoreMap[creditStatus]
-  const decisionMap: Record<UserItem['creditStatus'], string> = {
-    优秀: '授信通过',
-    良好: '授信通过',
-    一般: '有条件通过',
-    风险: '拒绝授信',
-  }
-  let reason = ''
-  if (!passed) {
-    reason = riskReport.summary
-  }
-  else if (creditStatus === '一般') {
-    reason = '建议持续关注还款行为，必要时动态调整授信与分期策略。'
-  }
-  const factors = [
-    `信用评分：${riskReport.creditScore}`,
-    `风险等级：${riskReport.riskLevel}`,
-    `历史逾期次数：${riskReport.overdueCount}`,
-    `近30日还款率：${riskReport.repayRate30d}%`,
-    `建议授信额度：¥${riskReport.suggestedLimit}`,
-    `平均分期金额：¥${riskReport.avgInstallmentAmount}`,
-    `平台当前额度：¥${user.quota}`,
-    `累计消费金额：¥${user.totalAmount}`,
-    `历史订单数：${user.orderCount}`,
-    `信誉标签：${riskReport.tags.join('、')}`,
-  ]
-  return {
-    orderId: user.id,
-    riskStatus: passed ? 'passed' : 'failed',
-    decision: decisionMap[creditStatus],
-    riskScore,
-    threshold,
-    checkedAt: formatDateTime(new Date().toISOString()),
-    reason,
-    modelVersion: 'mall-user-risk-v2.3',
-    factors,
-    rules: buildUserCreditRiskRules(user),
-  }
-}
-
-function openUserRiskDetail(user: UserItem) {
-  selectedUserForRisk.value = user
-  displayedUserRiskDetail.value = buildUserCreditRiskDetail(user)
+function openUserRiskDetail(user: ListedUser) {
+  riskDialogUserId.value = user.id
   userRiskDialogVisible.value = true
 }
 
-function onUserRiskDialogClosed() {
-  selectedUserForRisk.value = null
-  displayedUserRiskDetail.value = null
+function onRiskDialogUserUpdated(mapped: UserItem) {
+  const idx = users.value.findIndex(u => u.id === mapped.id)
+  if (idx >= 0) {
+    const prev = users.value[idx]
+    users.value[idx] = {
+      ...prev,
+      ...mapped,
+      riskReport: prev.riskReport,
+    }
+  }
 }
+
+watch(userRiskDialogVisible, (open) => {
+  if (!open)
+    riskDialogUserId.value = null
+})
 
 function isMockImgSrc(src: string) {
   const s = String(src || '').trim()
   return !s || s.startsWith('mock://')
 }
 
-function buildRiskReport(user: ApiUserItem): UserItem['riskReport'] {
+function buildRiskReport(user: ApiUserItem): MallUserRiskPreview {
   const orderCount = Number(user.orderCount || 0)
   const totalAmount = Number(user.totalAmount || 0)
   const creditStatus = user.creditStatus || '良好'
   const scoreMap: Record<UserItem['creditStatus'], number> = { 优秀: 92, 良好: 78, 一般: 68, 风险: 56 }
-  const riskLevelMap: Record<UserItem['creditStatus'], UserItem['riskReport']['riskLevel']> = { 优秀: '低风险', 良好: '中风险', 一般: '中风险', 风险: '高风险' }
+  const riskLevelMap: Record<UserItem['creditStatus'], MallUserRiskPreview['riskLevel']> = { 优秀: '低风险', 良好: '中风险', 一般: '中风险', 风险: '高风险' }
   const overdueMap: Record<UserItem['creditStatus'], number> = { 优秀: 0, 良好: 1, 一般: 2, 风险: 4 }
   const repayRateMap: Record<UserItem['creditStatus'], number> = { 优秀: 100, 良好: 92, 一般: 84, 风险: 61 }
   const baseTags: Record<UserItem['creditStatus'], string[]> = {
@@ -290,7 +168,7 @@ function buildRiskReport(user: ApiUserItem): UserItem['riskReport'] {
   }
 }
 
-function mapApiUser(user: ApiUserItem): UserItem {
+function mapApiUser(user: ApiUserItem): ListedUser {
   const creditStatus = user.creditStatus || '良好'
   const quotaRaw = user.quota
   const quota = Number.isFinite(Number(quotaRaw)) && Number(quotaRaw) >= 0
@@ -308,8 +186,15 @@ function mapApiUser(user: ApiUserItem): UserItem {
     idCardFront: user.idCardFront || '',
     idCardBack: user.idCardBack || '',
     idCardHandheld: user.idCardHandheld || '',
+    idNumber: typeof user.idNumber === 'string' && user.idNumber.trim()
+      ? (CN_ID_CARD_RE.test(user.idNumber.trim().toUpperCase())
+          ? user.idNumber.trim().toUpperCase()
+          : undefined)
+      : undefined,
     creditStatus,
     riskReport: buildRiskReport(user),
+    riskControlSnapshot: user.riskControlSnapshot ?? undefined,
+    riskUpstreamConfigured: user.riskUpstreamConfigured,
   }
 }
 
@@ -338,7 +223,7 @@ async function fetchUsers() {
   }
 }
 
-function openPreview(user: UserItem) {
+function openPreview(user: ListedUser) {
   previewUser.value = user
   editingUserId.value = null
 }
@@ -348,12 +233,13 @@ function closePreview() {
   editingUserId.value = null
 }
 
-function startEdit(user: UserItem) {
+function startEdit(user: ListedUser) {
   if (!canManageUsers.value) return
   previewUser.value = user
   editingUserId.value = user.id
   editForm.name = user.name
   editForm.phone = user.phone
+  editForm.idNumber = user.idNumber || ''
   editForm.locationText = user.locationText
   editForm.creditStatus = user.creditStatus
   editForm.newPassword = ''
@@ -364,6 +250,7 @@ function openCreateDialog() {
   createDialogVisible.value = true
   createForm.name = ''
   createForm.phone = ''
+  createForm.idNumber = ''
   createForm.locationText = ''
   createForm.creditStatus = '良好'
   createForm.initialPassword = ''
@@ -389,6 +276,11 @@ async function createUser() {
     ElMessage.warning('初始登录密码至少 6 位，或留空稍后在编辑中设置')
     return
   }
+  const idRawCreate = createForm.idNumber.trim().toUpperCase()
+  if (idRawCreate.length > 0 && !CN_ID_CARD_RE.test(idRawCreate)) {
+    ElMessage.warning('身份证号码需为 18 位合法格式，或留空')
+    return
+  }
   creating.value = true
   try {
     const response = await fetch(`${MALL_API_BASE}/users`, {
@@ -399,6 +291,7 @@ async function createUser() {
         phone: createForm.phone.trim(),
         locationText: createForm.locationText.trim(),
         creditStatus: createForm.creditStatus,
+        ...(idRawCreate ? { idNumber: idRawCreate } : {}),
         ...(initPwd.length >= 6 ? { initialPassword: initPwd } : {}),
       }),
     })
@@ -432,6 +325,11 @@ async function saveEdit() {
     ElMessage.warning('新登录密码至少 6 位，或留空保持原密码')
     return
   }
+  const idRaw = editForm.idNumber.trim().toUpperCase()
+  if (idRaw.length > 0 && !CN_ID_CARD_RE.test(idRaw)) {
+    ElMessage.warning('身份证号码需为 18 位合法格式，或留空可清空档案中的号码')
+    return
+  }
 
   const target = users.value.find(item => item.id === previewUser.value?.id)
   if (!target) {
@@ -447,6 +345,7 @@ async function saveEdit() {
         phone: editForm.phone.trim(),
         locationText: editForm.locationText.trim(),
         creditStatus: editForm.creditStatus,
+        idNumber: idRaw,
         ...(pwd.length >= 6 ? { newPassword: pwd } : {}),
       }),
     })
@@ -476,7 +375,7 @@ function cancelDelete() {
   pendingDeleteId.value = ''
 }
 
-async function confirmDelete(user: UserItem) {
+async function confirmDelete(user: ListedUser) {
   if (!canManageUsers.value) return
   if (deletingId.value) {
     return
@@ -529,7 +428,7 @@ function getStatusClass(status: UserItem['creditStatus']) {
   return 'credit-badge badge-risk'
 }
 
-function openQuotaDialog(user: UserItem) {
+function openQuotaDialog(user: ListedUser) {
   if (!canManageUsers.value) return
   quotaTarget.value = user
   quotaInput.value = `${user.quota}`
@@ -748,6 +647,16 @@ async function saveQuota() {
           />
         </label>
         <label class="full">
+          身份证号码（可选）
+          <el-input
+            v-model="createForm.idNumber"
+            class="form-input"
+            maxlength="18"
+            clearable
+            placeholder="18 位大陆身份证号，风控 B 类接口必填；可留空"
+          />
+        </label>
+        <label class="full">
           注册定位
           <el-input
             v-model="createForm.locationText"
@@ -836,192 +745,11 @@ async function saveQuota() {
     </div>
   </div>
 
-  <el-dialog
+  <UserRiskDetailDialog
     v-model="userRiskDialogVisible"
-    width="640px"
-    append-to-body
-    align-center
-    class="risk-detail-dialog"
-    destroy-on-close
-    @closed="onUserRiskDialogClosed"
-  >
-    <template #header>
-      <div class="risk-detail-dialog__title">
-        <span class="risk-detail-dialog__title-icon">
-          <el-icon><DataAnalysis /></el-icon>
-        </span>
-        <span class="risk-detail-dialog__title-text">风控详情</span>
-      </div>
-    </template>
-
-    <div
-      v-if="displayedUserRiskDetail && selectedUserForRisk"
-      class="risk-detail-body"
-    >
-      <div class="risk-hero">
-        <div class="risk-hero__main">
-          <span class="risk-hero__label">决策结果</span>
-          <el-tag
-            :type="decisionTagType(displayedUserRiskDetail.decision)"
-            effect="dark"
-            round
-            size="large"
-          >
-            {{ displayedUserRiskDetail.decision }}
-          </el-tag>
-          <el-tag
-            v-if="displayedUserRiskDetail.riskStatus === 'passed'"
-            class="risk-hero__status"
-            type="success"
-            effect="plain"
-            round
-          >
-            风控通过
-          </el-tag>
-          <el-tag
-            v-else
-            class="risk-hero__status"
-            type="danger"
-            effect="plain"
-            round
-          >
-            风控未通过
-          </el-tag>
-        </div>
-        <div class="risk-score-panel">
-          <div class="risk-score-panel__head">
-            <span class="risk-score-panel__label">评分相对阈值</span>
-            <span
-              class="risk-score-panel__nums"
-              :class="{ 'risk-score-panel__nums--over': scoreOverThreshold(displayedUserRiskDetail) }"
-            >
-              {{ displayedUserRiskDetail.riskScore }}
-              <span class="risk-score-panel__sep">/</span>
-              {{ displayedUserRiskDetail.threshold }}
-            </span>
-          </div>
-          <el-progress
-            :percentage="scoreProgressPercent(displayedUserRiskDetail)"
-            :status="scoreOverThreshold(displayedUserRiskDetail) ? 'exception' : 'success'"
-            :stroke-width="10"
-            striped
-          />
-          <p class="risk-score-panel__hint">
-            {{
-              scoreOverThreshold(displayedUserRiskDetail)
-                ? '已超过阈值，将被风控拦截'
-                : '当前评分尚未超过阈值'
-            }}
-          </p>
-        </div>
-      </div>
-
-      <el-descriptions
-        :column="2"
-        border
-        size="small"
-        class="risk-desc-table"
-      >
-        <el-descriptions-item>
-          <template #label>
-            <span class="risk-desc-label"><el-icon><Document /></el-icon>用户编号</span>
-          </template>
-          {{ displayedUserRiskDetail.orderId }}
-        </el-descriptions-item>
-        <el-descriptions-item>
-          <template #label>
-            <span class="risk-desc-label"><el-icon><User /></el-icon>用户</span>
-          </template>
-          {{ selectedUserForRisk.name }}（{{ selectedUserForRisk.phone }}）
-        </el-descriptions-item>
-        <el-descriptions-item>
-          <template #label>
-            <span class="risk-desc-label"><el-icon><Cpu /></el-icon>模型版本</span>
-          </template>
-          {{ displayedUserRiskDetail.modelVersion }}
-        </el-descriptions-item>
-        <el-descriptions-item>
-          <template #label>
-            <span class="risk-desc-label"><el-icon><Clock /></el-icon>检查时间</span>
-          </template>
-          {{ displayedUserRiskDetail.checkedAt }}
-        </el-descriptions-item>
-      </el-descriptions>
-
-      <el-alert
-        v-if="displayedUserRiskDetail.reason"
-        class="risk-reason-alert"
-        :type="displayedUserRiskDetail.riskStatus === 'failed' ? 'error' : 'warning'"
-        :closable="false"
-        show-icon
-      >
-        <template #title>
-          风控说明
-        </template>
-        {{ displayedUserRiskDetail.reason }}
-      </el-alert>
-
-      <section class="risk-block">
-        <h4 class="risk-block__title">
-          <span class="risk-block__title-bar" />
-          风险因子
-        </h4>
-        <div class="risk-factor-grid">
-          <div
-            v-for="(factor, idx) in displayedUserRiskDetail.factors"
-            :key="`${displayedUserRiskDetail.orderId}-f-${idx}`"
-            class="risk-factor-cell"
-          >
-            <span class="risk-factor-cell__label">{{ splitFactorLine(factor).label }}</span>
-            <span class="risk-factor-cell__value">{{ splitFactorLine(factor).value || factor }}</span>
-          </div>
-        </div>
-      </section>
-
-      <section class="risk-block">
-        <h4 class="risk-block__title">
-          <span class="risk-block__title-bar" />
-          规则命中
-        </h4>
-        <div class="risk-rules-grid">
-          <div
-            v-for="rule in displayedUserRiskDetail.rules"
-            :key="rule.code"
-            class="risk-rule-card"
-            :data-hit="rule.hit ? '1' : '0'"
-          >
-            <div class="risk-rule-card__top">
-              <span class="risk-rule-card__icon">
-                <el-icon v-if="rule.hit">
-                  <CircleClose />
-                </el-icon>
-                <el-icon v-else>
-                  <CircleCheck />
-                </el-icon>
-              </span>
-              <div class="risk-rule-card__titles">
-                <div class="risk-rule-card__name">
-                  {{ rule.name }}
-                  <span class="risk-rule-card__code">{{ rule.code }}</span>
-                </div>
-              </div>
-              <el-tag
-                :type="rule.hit ? 'danger' : 'success'"
-                effect="plain"
-                round
-                size="small"
-              >
-                {{ rule.hit ? `命中 +${rule.scoreImpact}` : '未命中' }}
-              </el-tag>
-            </div>
-            <p class="risk-rule-card__detail">
-              {{ rule.detail }}
-            </p>
-          </div>
-        </div>
-      </section>
-    </div>
-  </el-dialog>
+    :user-id="riskDialogUserId"
+    @user-updated="onRiskDialogUserUpdated"
+  />
 
   <div
     v-if="previewUser"
@@ -1076,6 +804,16 @@ async function saveQuota() {
                 v-model="editForm.phone"
                 class="form-input"
                 clearable
+              />
+            </label>
+            <label class="user-preview-field user-preview-field--full">
+              <span class="user-preview-field__label">身份证号码</span>
+              <el-input
+                v-model="editForm.idNumber"
+                class="form-input user-preview-id-number-input"
+                maxlength="18"
+                clearable
+                placeholder="18 位大陆身份证号，留空可清空档案中的号码"
               />
             </label>
             <label class="user-preview-field user-preview-field--full">
@@ -1134,6 +872,16 @@ async function saveQuota() {
               </el-descriptions-item>
               <el-descriptions-item label="手机号">
                 {{ previewUser.phone }}
+              </el-descriptions-item>
+              <el-descriptions-item label="身份证号码">
+                <span
+                  v-if="previewUser.idNumber"
+                  class="user-preview-id-number"
+                >{{ previewUser.idNumber }}</span>
+                <span
+                  v-else
+                  class="user-preview-meta__muted"
+                >未填写</span>
               </el-descriptions-item>
               <el-descriptions-item
                 label="注册定位"
@@ -1963,279 +1711,5 @@ async function saveQuota() {
 
 .credit-status-tag:active {
   transform: scale(0.98);
-}
-
-.risk-detail-body {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.risk-hero {
-  display: grid;
-  gap: 14px;
-  padding: 14px 16px;
-  border-radius: 12px;
-  background: linear-gradient(135deg, #f8fafc 0%, #eef2ff 48%, #faf5ff 100%);
-  border: 1px solid rgba(99, 102, 241, 0.18);
-}
-
-.risk-hero__main {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 10px 12px;
-}
-
-.risk-hero__label {
-  font-size: 13px;
-  color: #64748b;
-  font-weight: 500;
-}
-
-.risk-hero__status {
-  margin-left: 4px;
-}
-
-.risk-score-panel {
-  padding-top: 4px;
-}
-
-.risk-score-panel__head {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 8px;
-}
-
-.risk-score-panel__label {
-  font-size: 13px;
-  color: #475569;
-  font-weight: 500;
-}
-
-.risk-score-panel__nums {
-  font-family: ui-monospace, 'Cascadia Mono', 'Segoe UI Mono', monospace;
-  font-size: 15px;
-  font-weight: 700;
-  color: #0f766e;
-}
-
-.risk-score-panel__nums--over {
-  color: #b91c1c;
-}
-
-.risk-score-panel__sep {
-  font-weight: 600;
-  opacity: 0.55;
-  margin: 0 2px;
-}
-
-.risk-score-panel__hint {
-  margin: 8px 0 0;
-  font-size: 12px;
-  color: #64748b;
-  line-height: 1.45;
-}
-
-.risk-desc-table {
-  border-radius: 10px;
-  overflow: hidden;
-}
-
-.risk-desc-label {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.risk-desc-label .el-icon {
-  font-size: 14px;
-  color: #64748b;
-}
-
-.risk-reason-alert {
-  border-radius: 10px;
-}
-
-.risk-block__title {
-  margin: 0 0 10px;
-  font-size: 14px;
-  font-weight: 700;
-  color: #1e293b;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.risk-block__title-bar {
-  width: 4px;
-  height: 14px;
-  border-radius: 2px;
-  background: linear-gradient(180deg, #6366f1, #8b5cf6);
-}
-
-.risk-factor-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
-}
-
-@media (max-width: 520px) {
-  .risk-factor-grid {
-    grid-template-columns: 1fr;
-  }
-}
-
-.risk-factor-cell {
-  padding: 10px 12px;
-  border-radius: 10px;
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.risk-factor-cell__label {
-  font-size: 12px;
-  color: #64748b;
-  font-weight: 500;
-}
-
-.risk-factor-cell__value {
-  font-size: 14px;
-  color: #0f172a;
-  font-weight: 600;
-}
-
-.risk-rules-grid {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.risk-rule-card {
-  border-radius: 12px;
-  padding: 12px 14px;
-  background: #fff;
-  border: 1px solid #e2e8f0;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
-  border-left: 4px solid #94a3b8;
-  transition: box-shadow 0.15s ease;
-}
-
-.risk-rule-card[data-hit='1'] {
-  border-left-color: #ef4444;
-  background: linear-gradient(90deg, rgba(254, 226, 226, 0.35) 0%, #fff 28%);
-}
-
-.risk-rule-card[data-hit='0'] {
-  border-left-color: #10b981;
-  background: linear-gradient(90deg, rgba(209, 250, 229, 0.35) 0%, #fff 28%);
-}
-
-.risk-rule-card:hover {
-  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.07);
-}
-
-.risk-rule-card__top {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-}
-
-.risk-rule-card__icon {
-  flex-shrink: 0;
-  width: 32px;
-  height: 32px;
-  border-radius: 8px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 18px;
-}
-
-.risk-rule-card[data-hit='1'] .risk-rule-card__icon {
-  background: rgba(239, 68, 68, 0.12);
-  color: #dc2626;
-}
-
-.risk-rule-card[data-hit='0'] .risk-rule-card__icon {
-  background: rgba(16, 185, 129, 0.12);
-  color: #059669;
-}
-
-.risk-rule-card__titles {
-  flex: 1;
-  min-width: 0;
-}
-
-.risk-rule-card__name {
-  font-size: 14px;
-  font-weight: 700;
-  color: #1e293b;
-  line-height: 1.35;
-}
-
-.risk-rule-card__code {
-  margin-left: 8px;
-  font-size: 12px;
-  font-weight: 600;
-  color: #64748b;
-  font-family: ui-monospace, monospace;
-}
-
-.risk-rule-card__detail {
-  margin: 10px 0 0 42px;
-  font-size: 13px;
-  color: #475569;
-  line-height: 1.5;
-}
-</style>
-
-<style>
-/* append-to-body 风控弹窗（与 OrderReviewPage 一致） */
-.risk-detail-dialog.el-dialog {
-  border-radius: 14px;
-  overflow: hidden;
-}
-
-.risk-detail-dialog .el-dialog__header {
-  padding: 16px 20px 14px;
-  margin-right: 0;
-  border-bottom: 1px solid var(--el-border-color-lighter);
-}
-
-.risk-detail-dialog .el-dialog__body {
-  padding: 18px 20px 22px;
-  max-height: min(72vh, 720px);
-  overflow-y: auto;
-}
-
-.risk-detail-dialog__title {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.risk-detail-dialog__title-icon {
-  width: 36px;
-  height: 36px;
-  border-radius: 10px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: linear-gradient(135deg, #6366f1, #8b5cf6);
-  color: #fff;
-  font-size: 18px;
-}
-
-.risk-detail-dialog__title-text {
-  font-size: 17px;
-  font-weight: 700;
-  color: #1e293b;
-  letter-spacing: 0.02em;
 }
 </style>

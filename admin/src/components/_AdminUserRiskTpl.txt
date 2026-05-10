@@ -1,0 +1,460 @@
+    <div
+      v-if="r.riskDialogBootLoading"
+      class="user-risk-state user-risk-state--muted"
+    >
+      <el-icon class="user-risk-state__spin is-loading">
+        <DataAnalysis />
+      </el-icon>
+      <span>正在加载用户风控档案…</span>
+    </div>
+
+    <div
+      v-else-if="r.userRiskError"
+      class="user-risk-state user-risk-state--error"
+    >
+      <p>{{ r.userRiskError }}</p>
+      <el-button
+        type="primary"
+        link
+        @click="r.retryUserRiskCheck"
+      >
+        重试
+      </el-button>
+    </div>
+
+    <div
+      v-else-if="r.displayedUserRiskDetail && r.selectedUserForRisk && r.userRiskSnapshot"
+      class="risk-detail-body"
+    >
+      <el-alert
+        v-if="r.fullRiskCheckLoading"
+        type="info"
+        :closable="false"
+        show-icon
+        class="user-risk-full-check-banner"
+      >
+        正在依次调用 8 项可测风控接口并写入档案（另有 6 项按策略不请求），请稍候…
+      </el-alert>
+      <div
+        class="risk-hero risk-hero--real"
+        :class="r.riskOpenPlatformHeroToneClass(r.displayedUserRiskDetail)"
+      >
+        <div class="risk-hero__main risk-hero__main--stack">
+          <span class="risk-hero__label">开放平台接口实测</span>
+          <el-tag
+            :type="r.riskOpenPlatformTagType(r.displayedUserRiskDetail)"
+            effect="dark"
+            round
+            size="large"
+            class="risk-hero__decision-tag"
+          >
+            {{ r.displayedUserRiskDetail.decision }}
+          </el-tag>
+        </div>
+        <div
+          v-if="r.displayedUserRiskDetail.testedSlotCount != null"
+          class="risk-real-chips"
+        >
+          <el-tag
+            type="info"
+            effect="plain"
+            round
+          >
+            已测 {{ r.displayedUserRiskDetail.testedSlotCount }} / 14
+          </el-tag>
+          <el-tag
+            type="success"
+            effect="plain"
+            round
+          >
+            成功 {{ r.displayedUserRiskDetail.okSlotCount }}
+          </el-tag>
+          <el-tag
+            v-if="(r.displayedUserRiskDetail.failSlotCount ?? 0) > 0"
+            type="danger"
+            effect="plain"
+            round
+          >
+            失败 {{ r.displayedUserRiskDetail.failSlotCount }}
+          </el-tag>
+          <el-tag
+            type="info"
+            effect="plain"
+            round
+          >
+            跳过 {{ r.displayedUserRiskDetail.skippedSlotCount }}
+          </el-tag>
+        </div>
+        <div
+          v-if="(r.displayedUserRiskDetail.testedSlotCount ?? 0) > 0"
+          class="risk-success-rate"
+        >
+          <span class="risk-success-rate__label">已测项成功率</span>
+          <el-progress
+            :percentage="r.displayedUserRiskDetail.riskScore"
+            :status="r.riskTestedProgressStatus(r.displayedUserRiskDetail)"
+            :stroke-width="10"
+            striped
+          />
+        </div>
+      </div>
+
+      <el-descriptions
+        :column="2"
+        border
+        size="small"
+        class="risk-desc-table"
+      >
+        <el-descriptions-item>
+          <template #label>
+            <span class="risk-desc-label"><el-icon><Document /></el-icon>用户编号</span>
+          </template>
+          {{ r.displayedUserRiskDetail.orderId }}
+        </el-descriptions-item>
+        <el-descriptions-item>
+          <template #label>
+            <span class="risk-desc-label"><el-icon><User /></el-icon>用户</span>
+          </template>
+          {{ r.selectedUserForRisk.name }}（{{ r.selectedUserForRisk.phone }}）
+        </el-descriptions-item>
+        <el-descriptions-item>
+          <template #label>
+            <span class="risk-desc-label"><el-icon><Cpu /></el-icon>模型版本</span>
+          </template>
+          {{ r.displayedUserRiskDetail.modelVersion }}
+        </el-descriptions-item>
+        <el-descriptions-item>
+          <template #label>
+            <span class="risk-desc-label"><el-icon><Clock /></el-icon>检查时间</span>
+          </template>
+          {{ r.displayedUserRiskDetail.checkedAt }}
+        </el-descriptions-item>
+      </el-descriptions>
+
+      <el-alert
+        v-if="String(r.userRiskSnapshot.summaryMessage || '').trim()"
+        class="risk-reason-alert"
+        :type="r.displayedUserRiskDetail.riskStatus === 'failed' ? 'error' : 'warning'"
+        :closable="false"
+        show-icon
+      >
+        <template #title>
+          后端汇总说明
+        </template>
+        {{ r.userRiskSnapshot.summaryMessage }}
+      </el-alert>
+
+      <el-alert
+        v-else-if="String(r.displayedUserRiskDetail.reason || '').trim()"
+        class="risk-reason-alert"
+        type="info"
+        :closable="false"
+        show-icon
+      >
+        <template #title>
+          提示
+        </template>
+        {{ r.displayedUserRiskDetail.reason }}
+      </el-alert>
+
+      <el-alert
+        v-if="!r.userRiskSnapshot.configured"
+        type="warning"
+        :closable="false"
+        show-icon
+        class="user-risk-config-hint"
+      >
+        当前<strong>未配置</strong>风控上游（<code>RISK_UPSTREAM_*</code>）。手动查询与全量核查均无法请求真实开放平台；请先配置环境变量并重启 API。
+      </el-alert>
+
+      <el-collapse
+        v-model="r.userRiskSectionCollapse"
+        class="user-risk-section-collapse"
+      >
+        <el-collapse-item
+          title="用户档案（后台字段，非开放平台返回）"
+          name="profile"
+        >
+          <div class="risk-factor-grid">
+            <div
+              v-for="(factor, idx) in r.displayedUserRiskDetail.factors"
+              :key="`${r.displayedUserRiskDetail.orderId}-f-${idx}`"
+              class="risk-factor-cell"
+            >
+              <span class="risk-factor-cell__label">{{ r.splitFactorLine(factor).label }}</span>
+              <span class="risk-factor-cell__value">{{ r.splitFactorLine(factor).value || factor }}</span>
+            </div>
+          </div>
+        </el-collapse-item>
+
+        <el-collapse-item name="fourteen">
+          <template #title>
+            <span class="user-risk-collapse-title">
+              十四项风控结果（按 A/B/C，档案快照）
+              <el-tag
+                type="info"
+                effect="plain"
+                round
+                size="small"
+                class="user-risk-collapse-title__tag"
+              >
+                可折叠明细
+              </el-tag>
+            </span>
+          </template>
+          <p class="user-risk-fourteen-hint">
+            与后端文档 <code>RISK_FOURTEEN_SLOTS.md</code> 分类一致。请先展开某一类，再展开单条接口查看摘要；「手动查询」与下方「规则命中」共用档案快照（<strong>C 类与人脸认证</strong>在管理端固定「跳过」展示，不提供手动查询）。点击下方「全量风控核查」时，后端<strong>仅实际调用 8 项</strong>可测接口，另有 <strong>6 项</strong>按策略不请求，快照中仍显示为「跳过」。
+          </p>
+          <el-collapse
+            v-model="r.fourteenCategoryAccordion"
+            accordion
+            class="user-risk-category-collapse"
+          >
+            <el-collapse-item
+              v-for="cat in r.fourteenRowsByCategory"
+              :key="cat.id"
+              :name="cat.id"
+            >
+              <template #title>
+                <span class="user-risk-category-collapse-title">
+                  <b class="user-risk-category-collapse-title__badge">{{ cat.id }}</b>
+                  {{ cat.title }}
+                  <el-tag
+                    size="small"
+                    type="info"
+                    effect="plain"
+                    round
+                  >
+                    {{ cat.items.length }} 项
+                  </el-tag>
+                </span>
+              </template>
+              <p class="user-risk-slot-category__subtitle user-risk-slot-category__subtitle--nested">
+                {{ cat.subtitle }}
+              </p>
+              <div class="user-risk-fourteen-list">
+                <details
+                  v-for="item in cat.items"
+                  :key="`${item.row.slotKey}-${item.globalIdx}`"
+                  class="user-risk-api-card user-risk-api-card--fold"
+                >
+                  <summary class="user-risk-api-card__summary">
+                    <span class="user-risk-api-card__summary-left">
+                      <span class="user-risk-api-card__chev" aria-hidden="true">▸</span>
+                      <span class="user-risk-api-card__title">{{ item.globalIdx }}. {{ item.row.productLabel }}</span>
+                    </span>
+                    <span
+                      class="user-risk-api-card__summary-right"
+                      @click.stop
+                    >
+                      <el-tag
+                        v-if="item.row.state === 'ok'"
+                        type="success"
+                        effect="plain"
+                        round
+                        size="small"
+                      >
+                        成功
+                      </el-tag>
+                      <el-tag
+                        v-else-if="item.row.state === 'fail'"
+                        type="danger"
+                        effect="plain"
+                        round
+                        size="small"
+                      >
+                        失败
+                      </el-tag>
+                      <el-tag
+                        v-else
+                        type="info"
+                        effect="plain"
+                        round
+                        size="small"
+                      >
+                        跳过
+                      </el-tag>
+                      <span
+                        v-if="item.row.httpStatus != null"
+                        class="user-risk-api-card__http"
+                      >HTTP {{ item.row.httpStatus }}</span>
+                      <el-button
+                        v-if="r.riskSlotManualQueryEnabled(item.row.slotKey)"
+                        type="primary"
+                        size="small"
+                        plain
+                        class="user-risk-api-card__btn"
+                        :loading="r.manualRiskSlotLoading === item.row.slotKey"
+                        :disabled="(r.manualRiskSlotLoading !== null && r.manualRiskSlotLoading !== item.row.slotKey) || r.fullRiskCheckLoading || !r.userRiskSnapshot.configured"
+                        @click.stop="r.invokeManualRiskSlot(item.row)"
+                      >
+                        手动查询
+                      </el-button>
+                    </span>
+                  </summary>
+                  <div class="user-risk-api-card__fold-body">
+                    <p
+                      v-if="item.row.state === 'skipped' && item.row.skippedReason"
+                      class="user-risk-api-card__skip"
+                    >
+                      {{ item.row.skippedReason }}
+                    </p>
+                    <p
+                      v-if="item.row.error"
+                      class="user-risk-api-card__err"
+                    >
+                      {{ item.row.error }}
+                    </p>
+                    <div
+                      v-if="item.row.state !== 'skipped' && item.facts.length > 0"
+                      class="user-risk-api-card__facts"
+                    >
+                      <div
+                        v-for="(fl, fli) in item.facts"
+                        :key="fli"
+                        class="user-risk-fact-row"
+                      >
+                        <span class="user-risk-fact-row__label">{{ fl.label }}</span>
+                        <span
+                          class="user-risk-fact-row__value"
+                          :class="{ 'user-risk-fact-row__value--emphasis': fl.emphasis }"
+                        >{{ fl.value }}</span>
+                      </div>
+                    </div>
+                    <p
+                      v-else-if="item.row.state !== 'skipped' && item.row.rawResponse != null && item.facts.length === 0"
+                      class="user-risk-api-card__hint-soft"
+                    >
+                      暂无业务摘要，请展开「原始数据」或由技术人员核对。
+                    </p>
+                    <details
+                      v-if="item.row.rawResponse != null && (item.row.state !== 'skipped' || r.riskSlotShowsRawWhenSkipped(item.row.slotKey))"
+                      class="user-risk-raw-details"
+                    >
+                      <summary class="user-risk-raw-details__summary">原始数据（仅供技术核对）</summary>
+                      <pre class="user-risk-json user-risk-json--nested">{{ r.formatRiskJson(item.row.rawResponse) }}</pre>
+                    </details>
+                  </div>
+                </details>
+              </div>
+            </el-collapse-item>
+          </el-collapse>
+        </el-collapse-item>
+
+        <el-collapse-item name="rules">
+          <template #title>
+            <span class="user-risk-collapse-title">
+              规则命中（按接口汇总，与档案快照一致）
+              <el-tag
+                type="info"
+                effect="plain"
+                round
+                size="small"
+                class="user-risk-collapse-title__tag"
+              >
+                {{ r.displayedUserRiskDetail.rules.length }} 条
+              </el-tag>
+            </span>
+          </template>
+          <p class="user-risk-rules-hint">
+            每条对应一项开放平台槽位已写入库的摘要；展开后可查看详情、原始 JSON；支持手动查询的槽位可刷新并回写档案（<strong>C 类与人脸认证</strong>除外）。
+          </p>
+          <el-collapse
+            v-model="r.rulesInnerCollapse"
+            class="user-risk-rules-inner-collapse"
+          >
+            <el-collapse-item
+              v-for="rule in r.displayedUserRiskDetail.rules"
+              :key="rule.code"
+              :name="rule.code"
+            >
+              <template #title>
+                <div
+                  class="risk-rule-collapse-title-row"
+                  :class="{ 'risk-rule-collapse-title-row--bad': rule.hit }"
+                >
+                  <span class="risk-rule-collapse-title-row__icon">
+                    <el-icon v-if="rule.hit">
+                      <CircleClose />
+                    </el-icon>
+                    <el-icon v-else>
+                      <CircleCheck />
+                    </el-icon>
+                  </span>
+                  <span class="risk-rule-collapse-title-row__text">
+                    {{ rule.name }}
+                    <span class="risk-rule-collapse-title-row__code">{{ rule.code }}</span>
+                    <span
+                      v-if="rule.slotKey"
+                      class="risk-rule-collapse-title-row__slot"
+                    >{{ rule.slotKey }}</span>
+                  </span>
+                  <el-tag
+                    :type="r.ruleStatusTagType(rule)"
+                    effect="plain"
+                    round
+                    size="small"
+                  >
+                    {{ r.ruleStatusLabel(rule) }}
+                  </el-tag>
+                  <span
+                    v-if="rule.httpStatus != null"
+                    class="risk-rule-collapse-title-row__http"
+                  >HTTP {{ rule.httpStatus }}</span>
+                  <el-button
+                    v-if="rule.slotKey && r.riskSlotManualQueryEnabled(rule.slotKey)"
+                    type="primary"
+                    size="small"
+                    plain
+                    class="risk-rule-collapse-title-row__btn"
+                    :loading="r.manualRiskSlotLoading === rule.slotKey"
+                    :disabled="(r.manualRiskSlotLoading !== null && r.manualRiskSlotLoading !== rule.slotKey) || r.fullRiskCheckLoading || !r.userRiskSnapshot.configured"
+                    @click.stop="<<r.invokeManualRiskSlotFromRule>>(rule)"
+                  >
+                    手动查询
+                  </el-button>
+                </div>
+              </template>
+              <div class="risk-rule-collapse-body">
+                <p class="risk-rule-card__detail risk-rule-card__detail--open">
+                  {{ rule.detail }}
+                </p>
+                <p
+                  v-if="rule.error"
+                  class="user-risk-api-card__err"
+                >
+                  {{ rule.error }}
+                </p>
+                <details
+                  v-if="r.ruleSlotRawResponse(rule) != null && (rule.rowState !== 'skipped' || (rule.slotKey && r.riskSlotShowsRawWhenSkipped(rule.slotKey)))"
+                  class="user-risk-raw-details"
+                >
+                  <summary class="user-risk-raw-details__summary">原始数据（接口返回，仅供技术核对）</summary>
+                  <pre class="user-risk-json user-risk-json--nested">{{ r.formatRiskJson(r.ruleSlotRawResponse(rule)) }}</pre>
+                </details>
+              </div>
+            </el-collapse-item>
+          </el-collapse>
+        </el-collapse-item>
+      </el-collapse>
+    </div>
+
+    <div class="user-risk-dialog-footer">
+        <p class="user-risk-dialog-footer__hint">
+          「全量风控核查」将<strong>仅实际请求 8 项</strong>开放平台接口（A 类运营商相关 3 项 + B 类实名包内除人脸外 5 项）；<strong>人脸认证、身份证 OCR、短信、物流、电子合同共 6 项不发起请求</strong>（与下列「跳过」一致）。日常可在「十四项」或「规则命中」内对支持项点击「手动查询」。
+        </p>
+        <div class="user-risk-dialog-footer__actions">
+          <el-button @click="emit('close')">
+            关闭
+          </el-button>
+          <el-button
+            type="warning"
+            plain
+            :loading="r.fullRiskCheckLoading"
+            :disabled="r.riskDialogBootLoading || r.manualRiskSlotLoading !== null || !r.userRiskSnapshot?.configured"
+            @click="r.runFullUserRiskCheck"
+          >
+            全量风控核查
+          </el-button>
+        </div>
+    </div>

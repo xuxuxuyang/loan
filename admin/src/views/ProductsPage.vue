@@ -1,8 +1,12 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { withAdminAuthHeaders } from '../composables/useAdminApi'
 import { donePageProgress, startPageProgress } from '../utils/progress'
+
+import { useRoute } from 'vue-router'
+
+type SalesMode = 'mall' | 'installment'
 
 type ProductCategory = 'travel' | 'calligraphy' | 'mobile' | 'jewelry'
 
@@ -15,6 +19,7 @@ interface ProductItem {
   price: number
   image: string
   category: ProductCategory
+  salesMode: SalesMode
   onSale: boolean
   createdAt?: string
   updatedAt?: string
@@ -34,10 +39,22 @@ interface ProductPayload {
   image: string
   category: ProductCategory
   onSale: boolean
+  salesMode: SalesMode
 }
 
 const MALL_API_BASE = `${(import.meta.env.VITE_MALL_API_BASE || 'http://localhost:3110/api').replace(/\/$/, '')}`
 const PRODUCTS_ENDPOINT = `${MALL_API_BASE}/products`
+
+const route = useRoute()
+const salesMode = computed<SalesMode>(() =>
+  route.path.includes('installment') ? 'installment' : 'mall',
+)
+
+const channelHint = computed(() =>
+  salesMode.value === 'mall'
+    ? '商城展示（前台首页「商城精选」仅展示，不支持下单）'
+    : '分期产品（前台「分期专区」先享后付，可下单）',
+)
 
 const products = ref<ProductItem[]>([])
 const loading = ref(false)
@@ -66,6 +83,7 @@ const form = reactive<ProductPayload>({
   image: '',
   category: 'travel',
   onSale: true,
+  salesMode: 'mall',
 })
 
 const categoryLabelMap = computed(() => {
@@ -75,7 +93,7 @@ const categoryLabelMap = computed(() => {
 const filteredProducts = computed(() => {
   const searchKey = keyword.value.trim()
   return products.value.filter((item) => {
-    if (categoryFilter.value !== 'all' && item.category !== categoryFilter.value) {
+    if (salesMode.value === 'mall' && categoryFilter.value !== 'all' && item.category !== categoryFilter.value) {
       return false
     }
     if (saleFilter.value === 'on' && !item.onSale) {
@@ -104,6 +122,7 @@ function normalizeProduct(item: Partial<ProductItem>): ProductItem {
     price: Number(item.price || 0),
     image: String(item.image || ''),
     category,
+    salesMode: item.salesMode === 'mall' ? 'mall' : 'installment',
     onSale: typeof item.onSale === 'boolean' ? item.onSale : true,
     createdAt: item.createdAt || '',
     updatedAt: item.updatedAt || '',
@@ -119,6 +138,7 @@ function resetForm() {
   form.image = ''
   form.category = 'travel'
   form.onSale = true
+  form.salesMode = salesMode.value
 }
 
 function openCreate() {
@@ -137,6 +157,7 @@ function openEdit(item: ProductItem) {
   form.image = item.image
   form.category = item.category
   form.onSale = item.onSale
+  form.salesMode = item.salesMode
   showEditor.value = true
 }
 
@@ -168,6 +189,7 @@ function buildPayload(): ProductPayload {
     price: Number(form.price),
     category: form.category,
     onSale: form.onSale,
+    salesMode: salesMode.value,
   }
 }
 
@@ -189,6 +211,7 @@ async function fetchProducts() {
   try {
     const query = new URLSearchParams()
     query.set('includeAll', '1')
+    query.set('salesMode', salesMode.value)
     const response = await fetch(`${PRODUCTS_ENDPOINT}?${query.toString()}`, {
       method: 'GET',
       headers: withAdminAuthHeaders(),
@@ -299,6 +322,11 @@ async function removeProduct(item: ProductItem) {
 onMounted(() => {
   void fetchProducts()
 })
+
+watch(salesMode, () => {
+  categoryFilter.value = 'all'
+  void fetchProducts()
+})
 </script>
 
 <template>
@@ -311,6 +339,7 @@ onMounted(() => {
         clearable
       />
       <el-select
+        v-if="salesMode === 'mall'"
         v-model="categoryFilter"
         class="pretty-select toolbar-select"
         popper-class="admin-select-popper"
@@ -361,13 +390,17 @@ onMounted(() => {
       </button>
     </div>
 
+    <p class="channel-hint">
+      {{ channelHint }}
+    </p>
+
     <table class="table">
       <thead>
         <tr>
           <th>ID</th>
           <th>商品图</th>
           <th>商品信息</th>
-          <th>分类</th>
+          <th>{{ salesMode === 'installment' ? '专区' : '分类' }}</th>
           <th>价格</th>
           <th>状态</th>
           <th>更新时间</th>
@@ -398,7 +431,7 @@ onMounted(() => {
               产地：{{ item.origin }}
             </p>
           </td>
-          <td>{{ categoryLabelMap[item.category] }}</td>
+          <td>{{ salesMode === 'installment' ? '先享后付' : categoryLabelMap[item.category] }}</td>
           <td>¥ {{ item.price.toFixed(2) }}</td>
           <td>
             <span :class="item.onSale ? 'badge badge-on' : 'badge badge-off'">
@@ -505,7 +538,7 @@ onMounted(() => {
             clearable
           />
         </label>
-        <label>
+        <label v-if="salesMode === 'mall'">
           商品分类
           <el-select
             v-model="form.category"
@@ -519,6 +552,14 @@ onMounted(() => {
               :value="item.value"
             />
           </el-select>
+        </label>
+        <label v-else>
+          前台专区
+          <el-input
+            class="form-input"
+            :model-value="'先享后付（与前台「分期专区」一致）'"
+            disabled
+          />
         </label>
         <label>
           产地
@@ -650,6 +691,13 @@ onMounted(() => {
 
 .toolbar-select {
   width: 148px;
+}
+
+.channel-hint {
+  margin: 0 0 14px;
+  font-size: 13px;
+  color: #64748b;
+  line-height: 1.5;
 }
 
 .pretty-select {

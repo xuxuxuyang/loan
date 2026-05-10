@@ -1,12 +1,16 @@
 import { nextTick } from 'vue'
 import { createRouter, createWebHistory } from 'vue-router'
-import { ensureMallProductsLoaded } from '../composables/useTeaProducts'
+import {
+  ensureMallProductsLoaded,
+  ensureMallShowcaseProductsLoaded,
+} from '../composables/useTeaProducts'
 
 /** 商城 SPA：与原 Nuxt 页面等价的 tab + 登录/下单/个人信息子场景 */
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
   routes: [
     { path: '/', name: 'index', component: () => import('../views/MallHomeView.vue') },
+    { path: '/installment', name: 'installment', component: () => import('../views/MallInstallmentView.vue') },
     { path: '/list', name: 'list', component: () => import('../views/MallListView.vue') },
     { path: '/my', name: 'my', component: () => import('../views/MallMyView.vue') },
     { path: '/login', name: 'login', component: () => import('../views/MallLoginView.vue') },
@@ -27,11 +31,16 @@ router.afterEach((to) => {
   if (import.meta.env.SSR) {
     return
   }
-  if (to.name !== 'index' && to.name !== 'list') {
+  if (to.name !== 'index' && to.name !== 'list' && to.name !== 'installment') {
     return
   }
   nextTick(() => {
-    void ensureMallProductsLoaded()
+    if (to.name === 'installment') {
+      void ensureMallProductsLoaded()
+    }
+    else {
+      void ensureMallShowcaseProductsLoaded()
+    }
   })
 })
 

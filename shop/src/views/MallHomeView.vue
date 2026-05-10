@@ -5,11 +5,16 @@ import IndexBannerM from '~/components/index/banner-m.vue'
 import IndexList from '~/components/index/list.vue'
 import IndexListM from '~/components/index/list-m.vue'
 import type { MallCategoryKey } from '~/composables/useTeaProducts'
-import { useMallCategories, isMallCategoryKey, useTeaProducts } from '~/composables/useTeaProducts'
+import {
+  useMallCategories,
+  isMallCategoryKey,
+  useMallShowcaseProducts,
+  ensureMallShowcaseProductsLoaded,
+} from '~/composables/useTeaProducts'
 
 const device = useDevice()
 const route = useRoute()
-const products = useTeaProducts()
+const mallProducts = useMallShowcaseProducts()
 const categories = useMallCategories().filter(item => item.key !== 'all')
 const selectedCategory = ref<MallCategoryKey>('travel')
 
@@ -17,10 +22,14 @@ if (typeof route.query.category === 'string' && isMallCategoryKey(route.query.ca
   selectedCategory.value = route.query.category
 }
 
-/** 当前选中类目若无商品但总列表有商品，退回第一个有货的类目（与默认 travel 对上） */
+if (!import.meta.env.SSR) {
+  void ensureMallShowcaseProductsLoaded()
+}
+
 watch(
-  products,
-  (list) => {
+  mallProducts,
+  () => {
+    const list = mallProducts.value
     if (list.length === 0) {
       return
     }
@@ -36,15 +45,23 @@ watch(
   { immediate: true },
 )
 
-const filteredProducts = computed(() => {
-  return products.value.filter(item => item.category === selectedCategory.value)
-})
+const filteredMall = computed(() =>
+  mallProducts.value.filter(item => item.category === selectedCategory.value),
+)
 
 function handleSelectCategory(category: MallCategoryKey) {
   if (category === 'all') {
     return
   }
   selectedCategory.value = category
+}
+
+function scrollToAnchor(id: string) {
+  if (import.meta.env.SSR) {
+    return
+  }
+  const el = document.getElementById(id)
+  el?.scrollIntoView({ behavior: 'smooth', block: 'start' })
 }
 </script>
 
@@ -55,27 +72,33 @@ function handleSelectCategory(category: MallCategoryKey) {
   >
     <IndexBannerM
       v-if="device.isMobile"
-      :products="filteredProducts"
+      :preview-products="filteredMall"
       :categories="categories"
       :active-category="selectedCategory"
       @select-category="handleSelectCategory"
+      @go-mall-zone="scrollToAnchor('mall-showcase')"
     />
     <IndexBanner
       v-else
-      :products="filteredProducts"
+      :preview-products="filteredMall"
       :categories="categories"
       :active-category="selectedCategory"
       @select-category="handleSelectCategory"
+      @go-mall-zone="scrollToAnchor('mall-showcase')"
     />
 
-    <IndexListM
-      v-if="device.isMobile"
-      :products="filteredProducts"
-    />
-    <IndexList
-      v-else
-      :products="filteredProducts"
-    />
+    <section id="mall-showcase">
+      <IndexListM
+        v-if="device.isMobile"
+        :products="filteredMall"
+        display-only
+      />
+      <IndexList
+        v-else
+        :products="filteredMall"
+        display-only
+      />
+    </section>
     <AppTabbar />
   </div>
 </template>

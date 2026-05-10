@@ -39,6 +39,7 @@ function ensureDbFile() {
 
 function buildEmptyRaw() {
   return {
+    _meta: {},
     products: [],
     orders: [],
     users: [],
@@ -98,6 +99,9 @@ function ensureAdminAccounts(list) {
 
 /** 与读 db.json / Mongo 快照后相同的归一化逻辑（缺省字段为空数组，不注入商品等模拟数据） */
 function shapeDbFromParsed(parsed) {
+  const meta = (parsed && typeof parsed._meta === 'object' && parsed._meta !== null && !Array.isArray(parsed._meta))
+    ? { ...parsed._meta }
+    : {}
   const db = {
     products: Array.isArray(parsed.products) ? parsed.products : [],
     orders: Array.isArray(parsed.orders) ? parsed.orders : [],
@@ -110,6 +114,7 @@ function shapeDbFromParsed(parsed) {
   db.users = dedupeUsersById(ensureAdminUser(db.users))
   db.adminAccounts = ensureAdminAccounts(db.adminAccounts)
   return {
+    _meta: meta,
     products: db.products,
     orders: db.orders,
     users: db.users,
@@ -134,6 +139,7 @@ function readDbFromFile() {
 
 function clonePayloadForMongo(db) {
   const payload = {
+    _meta: db._meta && typeof db._meta === 'object' ? db._meta : {},
     products: db.products,
     orders: db.orders,
     users: db.users,

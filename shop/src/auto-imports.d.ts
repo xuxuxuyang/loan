@@ -7,20 +7,25 @@
 export {}
 declare global {
   const $fetch: typeof import('@/spa-shim').$fetch
-  const ADMIN_TEST_ACCOUNT_ALIAS: typeof import('./composables/useMallAuth').ADMIN_TEST_ACCOUNT_ALIAS
-  const ADMIN_TEST_MALL_PASSWORD: typeof import('./composables/useMallAuth').ADMIN_TEST_MALL_PASSWORD
-  const ADMIN_TEST_PHONE: typeof import('./composables/useMallAuth').ADMIN_TEST_PHONE
-  const ADMIN_TEST_VERIFY_CODE: typeof import('./composables/useMallAuth').ADMIN_TEST_VERIFY_CODE
   const EffectScope: typeof import('vue').EffectScope
+  const ElLoading: typeof import('element-plus/es').ElLoading
   const ElMessage: typeof import('element-plus/es').ElMessage
+  const ElMessageBox: typeof import('element-plus/es').ElMessageBox
+  const MALL_DEFAULT_CREDIT_QUOTA: typeof import('./composables/mallCreditQuota').MALL_DEFAULT_CREDIT_QUOTA
+  const computeMallCreditOrderPrincipal: typeof import('./composables/mallCreditQuota').computeMallCreditOrderPrincipal
+  const computeMallInstallmentRepayTotal: typeof import('./composables/mallCreditQuota').computeMallInstallmentRepayTotal
   const computed: typeof import('vue').computed
+  const consumeAddressPageReturnNavigation: typeof import('./composables/useMallMy').consumeAddressPageReturnNavigation
   const createApp: typeof import('vue').createApp
   const customRef: typeof import('vue').customRef
   const defineAsyncComponent: typeof import('vue').defineAsyncComponent
   const defineComponent: typeof import('vue').defineComponent
   const effectScope: typeof import('vue').effectScope
   const ensureMallProductsLoaded: typeof import('./composables/useTeaProducts').ensureMallProductsLoaded
+  const ensureMallShowcaseProductsLoaded: typeof import('./composables/useTeaProducts').ensureMallShowcaseProductsLoaded
+  const ensureShopHomeProductsLoaded: typeof import('./composables/useTeaProducts').ensureShopHomeProductsLoaded
   const formatBillAmount: typeof import('./composables/useMallMy').formatBillAmount
+  const formatMallAddressLine: typeof import('./composables/useMallMy').formatMallAddressLine
   const formatMallOrderTime: typeof import('./composables/useMallOrders').formatMallOrderTime
   const getCurrentInstance: typeof import('vue').getCurrentInstance
   const getCurrentScope: typeof import('vue').getCurrentScope
@@ -28,8 +33,9 @@ declare global {
   const getSimulatedLogisticsTrace: typeof import('./composables/useMallOrders').getSimulatedLogisticsTrace
   const h: typeof import('vue').h
   const inject: typeof import('vue').inject
-  const isAdminTestAccount: typeof import('./composables/useMallAuth').isAdminTestAccount
+  const isAddressPickForOrderRoute: typeof import('./composables/useMallMy').isAddressPickForOrderRoute
   const isMallCategoryKey: typeof import('./composables/useTeaProducts').isMallCategoryKey
+  const isProductWithinMallCredit: typeof import('./composables/mallCreditQuota').isProductWithinMallCredit
   const isProxy: typeof import('vue').isProxy
   const isReactive: typeof import('vue').isReactive
   const isReadonly: typeof import('vue').isReadonly
@@ -55,12 +61,14 @@ declare global {
   const onUnmounted: typeof import('vue').onUnmounted
   const onUpdated: typeof import('vue').onUpdated
   const onWatcherCleanup: typeof import('vue').onWatcherCleanup
+  const orderCreateProductIdFromAddressRoute: typeof import('./composables/useMallMy').orderCreateProductIdFromAddressRoute
   const orderHasShippedTracking: typeof import('./composables/useMallOrders').orderHasShippedTracking
   const provide: typeof import('vue').provide
   const reactive: typeof import('vue').reactive
   const readonly: typeof import('vue').readonly
   const ref: typeof import('vue').ref
   const resolveComponent: typeof import('vue').resolveComponent
+  const resolveMallCreditQuota: typeof import('./composables/mallCreditQuota').resolveMallCreditQuota
   const shallowReactive: typeof import('vue').shallowReactive
   const shallowReadonly: typeof import('vue').shallowReadonly
   const shallowRef: typeof import('vue').shallowRef
@@ -83,6 +91,7 @@ declare global {
   const useMallCategories: typeof import('./composables/useTeaProducts').useMallCategories
   const useMallMy: typeof import('./composables/useMallMy').useMallMy
   const useMallOrders: typeof import('./composables/useMallOrders').useMallOrders
+  const useMallShowcaseProducts: typeof import('./composables/useTeaProducts').useMallShowcaseProducts
   const useModel: typeof import('vue').useModel
   const useRoute: typeof import('vue-router').useRoute
   const useRouter: typeof import('vue-router').useRouter
@@ -111,7 +120,7 @@ declare global {
   export type { MallOrderStatus, MallPayType, MallPayChannel, MallOrder, SimulatedLogisticsNode } from './composables/useMallOrders'
   import('./composables/useMallOrders')
   // @ts-ignore
-  export type { TeaProduct, MallCategoryKey, MallCategoryItem } from './composables/useTeaProducts'
+  export type { ProductSalesMode, TeaProduct, MallCategoryKey, MallCategoryItem } from './composables/useTeaProducts'
   import('./composables/useTeaProducts')
 }
 
@@ -121,20 +130,23 @@ declare module 'vue' {
   interface GlobalComponents {}
   interface ComponentCustomProperties {
     readonly $fetch: UnwrapRef<typeof import('@/spa-shim')['$fetch']>
-    readonly ADMIN_TEST_ACCOUNT_ALIAS: UnwrapRef<typeof import('./composables/useMallAuth')['ADMIN_TEST_ACCOUNT_ALIAS']>
-    readonly ADMIN_TEST_MALL_PASSWORD: UnwrapRef<typeof import('./composables/useMallAuth')['ADMIN_TEST_MALL_PASSWORD']>
-    readonly ADMIN_TEST_PHONE: UnwrapRef<typeof import('./composables/useMallAuth')['ADMIN_TEST_PHONE']>
-    readonly ADMIN_TEST_VERIFY_CODE: UnwrapRef<typeof import('./composables/useMallAuth')['ADMIN_TEST_VERIFY_CODE']>
     readonly EffectScope: UnwrapRef<typeof import('vue')['EffectScope']>
     readonly ElMessage: UnwrapRef<typeof import('element-plus/es')['ElMessage']>
+    readonly MALL_DEFAULT_CREDIT_QUOTA: UnwrapRef<typeof import('./composables/mallCreditQuota')['MALL_DEFAULT_CREDIT_QUOTA']>
+    readonly computeMallCreditOrderPrincipal: UnwrapRef<typeof import('./composables/mallCreditQuota')['computeMallCreditOrderPrincipal']>
+    readonly computeMallInstallmentRepayTotal: UnwrapRef<typeof import('./composables/mallCreditQuota')['computeMallInstallmentRepayTotal']>
     readonly computed: UnwrapRef<typeof import('vue')['computed']>
+    readonly consumeAddressPageReturnNavigation: UnwrapRef<typeof import('./composables/useMallMy')['consumeAddressPageReturnNavigation']>
     readonly createApp: UnwrapRef<typeof import('vue')['createApp']>
     readonly customRef: UnwrapRef<typeof import('vue')['customRef']>
     readonly defineAsyncComponent: UnwrapRef<typeof import('vue')['defineAsyncComponent']>
     readonly defineComponent: UnwrapRef<typeof import('vue')['defineComponent']>
     readonly effectScope: UnwrapRef<typeof import('vue')['effectScope']>
     readonly ensureMallProductsLoaded: UnwrapRef<typeof import('./composables/useTeaProducts')['ensureMallProductsLoaded']>
+    readonly ensureMallShowcaseProductsLoaded: UnwrapRef<typeof import('./composables/useTeaProducts')['ensureMallShowcaseProductsLoaded']>
+    readonly ensureShopHomeProductsLoaded: UnwrapRef<typeof import('./composables/useTeaProducts')['ensureShopHomeProductsLoaded']>
     readonly formatBillAmount: UnwrapRef<typeof import('./composables/useMallMy')['formatBillAmount']>
+    readonly formatMallAddressLine: UnwrapRef<typeof import('./composables/useMallMy')['formatMallAddressLine']>
     readonly formatMallOrderTime: UnwrapRef<typeof import('./composables/useMallOrders')['formatMallOrderTime']>
     readonly getCurrentInstance: UnwrapRef<typeof import('vue')['getCurrentInstance']>
     readonly getCurrentScope: UnwrapRef<typeof import('vue')['getCurrentScope']>
@@ -142,8 +154,9 @@ declare module 'vue' {
     readonly getSimulatedLogisticsTrace: UnwrapRef<typeof import('./composables/useMallOrders')['getSimulatedLogisticsTrace']>
     readonly h: UnwrapRef<typeof import('vue')['h']>
     readonly inject: UnwrapRef<typeof import('vue')['inject']>
-    readonly isAdminTestAccount: UnwrapRef<typeof import('./composables/useMallAuth')['isAdminTestAccount']>
+    readonly isAddressPickForOrderRoute: UnwrapRef<typeof import('./composables/useMallMy')['isAddressPickForOrderRoute']>
     readonly isMallCategoryKey: UnwrapRef<typeof import('./composables/useTeaProducts')['isMallCategoryKey']>
+    readonly isProductWithinMallCredit: UnwrapRef<typeof import('./composables/mallCreditQuota')['isProductWithinMallCredit']>
     readonly isProxy: UnwrapRef<typeof import('vue')['isProxy']>
     readonly isReactive: UnwrapRef<typeof import('vue')['isReactive']>
     readonly isReadonly: UnwrapRef<typeof import('vue')['isReadonly']>
@@ -169,12 +182,14 @@ declare module 'vue' {
     readonly onUnmounted: UnwrapRef<typeof import('vue')['onUnmounted']>
     readonly onUpdated: UnwrapRef<typeof import('vue')['onUpdated']>
     readonly onWatcherCleanup: UnwrapRef<typeof import('vue')['onWatcherCleanup']>
+    readonly orderCreateProductIdFromAddressRoute: UnwrapRef<typeof import('./composables/useMallMy')['orderCreateProductIdFromAddressRoute']>
     readonly orderHasShippedTracking: UnwrapRef<typeof import('./composables/useMallOrders')['orderHasShippedTracking']>
     readonly provide: UnwrapRef<typeof import('vue')['provide']>
     readonly reactive: UnwrapRef<typeof import('vue')['reactive']>
     readonly readonly: UnwrapRef<typeof import('vue')['readonly']>
     readonly ref: UnwrapRef<typeof import('vue')['ref']>
     readonly resolveComponent: UnwrapRef<typeof import('vue')['resolveComponent']>
+    readonly resolveMallCreditQuota: UnwrapRef<typeof import('./composables/mallCreditQuota')['resolveMallCreditQuota']>
     readonly shallowReactive: UnwrapRef<typeof import('vue')['shallowReactive']>
     readonly shallowReadonly: UnwrapRef<typeof import('vue')['shallowReadonly']>
     readonly shallowRef: UnwrapRef<typeof import('vue')['shallowRef']>
@@ -197,6 +212,7 @@ declare module 'vue' {
     readonly useMallCategories: UnwrapRef<typeof import('./composables/useTeaProducts')['useMallCategories']>
     readonly useMallMy: UnwrapRef<typeof import('./composables/useMallMy')['useMallMy']>
     readonly useMallOrders: UnwrapRef<typeof import('./composables/useMallOrders')['useMallOrders']>
+    readonly useMallShowcaseProducts: UnwrapRef<typeof import('./composables/useTeaProducts')['useMallShowcaseProducts']>
     readonly useModel: UnwrapRef<typeof import('vue')['useModel']>
     readonly useRoute: UnwrapRef<typeof import('vue-router')['useRoute']>
     readonly useRouter: UnwrapRef<typeof import('vue-router')['useRouter']>

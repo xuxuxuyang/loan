@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { codeToText, regionData } from 'element-china-area-data'
+import { consumeAddressPageReturnNavigation, isAddressPickForOrderRoute, orderCreateProductIdFromAddressRoute, useMallMy } from '~/composables/useMallMy'
 
 const route = useRoute()
 const { smartNavigate } = useCustomRouting(route)
@@ -48,6 +49,7 @@ const form = reactive<AddressForm>({
   isDefault: false,
 })
 
+const isPickForOrder = computed(() => isAddressPickForOrderRoute(route))
 const dialogTitle = computed(() => (editingId.value ? '修改收货地址' : '新增收货地址'))
 const submitText = computed(() => (editingId.value ? '确认修改' : '确认新增'))
 const currentUserAccount = computed(() => loginPhone.value || profile.value?.phone || '')
@@ -115,7 +117,41 @@ function syncRegionNames() {
 }
 
 async function goBack() {
+  if (isPickForOrder.value) {
+    const pid = orderCreateProductIdFromAddressRoute(route)
+    await smartNavigate({
+      path: '/order-create',
+      query: pid ? { productId: pid } : {},
+    })
+    return
+  }
   await smartNavigate('/my')
+}
+
+async function selectAddressForOrder(item: AddressItem) {
+  if (!isPickForOrder.value) {
+    return
+  }
+  const pid = orderCreateProductIdFromAddressRoute(route)
+  await smartNavigate({
+    path: '/order-create',
+    query: {
+      ...(pid ? { productId: pid } : {}),
+      addressId: String(item.id),
+    },
+  })
+}
+
+function handleAddressArticleClick(item: AddressItem) {
+  if (isPickForOrder.value) {
+    void selectAddressForOrder(item)
+  }
+}
+
+function handleAddressArticleEnter(item: AddressItem) {
+  if (isPickForOrder.value) {
+    void selectAddressForOrder(item)
+  }
 }
 
 function openAddDialog() {
@@ -190,7 +226,11 @@ function saveAddress() {
       ElMessage.success('收货地址添加成功')
     }
     await fetchAddresses(currentUserAccount.value)
+    const back = consumeAddressPageReturnNavigation(route)
     closeDialog()
+    if (back) {
+      await smartNavigate(back)
+    }
   }
 
   submit().catch((error) => {
@@ -265,15 +305,26 @@ watch(currentUserAccount, async (account) => {
         />
       </button>
       <h1 class="text-xl font-semibold text-black/85">
-        收货地址
+        {{ isPickForOrder ? '选择收货地址' : '收货地址' }}
       </h1>
       <div class="w-9" />
     </div>
+    <p
+      v-if="isPickForOrder"
+      class="mb-3 rounded-xl bg-[#eefcf8] px-3 py-2 text-center text-xs text-black/60"
+    >
+      请点击一条地址用于当前订单；「修改」「设为默认」不会切换订单地址
+    </p>
 
     <article
       v-for="item in addresses"
       :key="item.id"
       class="mb-3 rounded-2xl bg-white p-4 shadow-[0_10px_24px_rgba(26,55,99,0.08)]"
+      :class="isPickForOrder ? 'cursor-pointer active:scale-[0.99]' : ''"
+      :role="isPickForOrder ? 'button' : undefined"
+      :tabindex="isPickForOrder ? 0 : undefined"
+      @click="handleAddressArticleClick(item)"
+      @keydown.enter.prevent="handleAddressArticleEnter(item)"
     >
       <div class="mb-3 flex items-start justify-between gap-2">
         <div>
@@ -292,7 +343,10 @@ watch(currentUserAccount, async (account) => {
           默认
         </span>
       </div>
-      <div class="flex items-center justify-end gap-2.5">
+      <div
+        class="flex items-center justify-end gap-2.5"
+        @click.stop
+      >
         <button
           v-if="!item.isDefault"
           type="button"
@@ -314,7 +368,7 @@ watch(currentUserAccount, async (account) => {
     <button
       type="button"
       class="flex w-full items-center justify-center gap-2 rounded-2xl border border-dashed border-black/18 bg-white py-3 text-sm text-black/65"
-      @click="openAddDialog"
+      @click.stop="openAddDialog"
     >
       <Icon
         name="tabler:plus"

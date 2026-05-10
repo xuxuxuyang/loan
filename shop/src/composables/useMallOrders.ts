@@ -30,14 +30,22 @@ interface CreateOrderPayload {
   name: string
   spec: string
   totalAmount: number
+  /** 购买数量；分期订单服务端应还总额与商品小计一致 */
+  quantity?: number
   status: MallOrderStatus
   paid: boolean
   payType: MallPayType
-  installmentPeriods?: 3 | 6 | 12
+  installmentPeriods?: number
   payChannel: MallPayChannel
   receiverName: string
   receiverPhone: string
   receiverAddress: string
+  /** 信誉初审用：身份证号（与 API 订单 body 一致） */
+  idNumber?: string
+  idCardFront?: string
+  idCardBack?: string
+  /** 分期：已在浏览器侧完成 7 步风控 wave，下单时由服务端核销，避免重复调上游 */
+  installmentRiskWaveId?: string
 }
 
 const ORDER_STORAGE_KEY = 'mall-orders'
@@ -45,7 +53,7 @@ const ORDER_REMOTE_PATH = '/orders'
 
 function resolveMallApiBase() {
   const runtimeConfig = useRuntimeConfig()
-  return runtimeConfig.public.mallApiBase || 'http://localhost:3110/api'
+  return runtimeConfig.public.mallApiBase || '/api'
 }
 
 function saveOrdersToStorage(orders: MallOrder[]) {

@@ -60,7 +60,7 @@ export interface MallBillSummary {
 
 function resolveMallApiBase() {
   const runtimeConfig = useRuntimeConfig()
-  return runtimeConfig.public.mallApiBase || 'http://localhost:3110/api'
+  return runtimeConfig.public.mallApiBase || '/api'
 }
 
 function emptySummary(): MallMySummary {
@@ -80,6 +80,36 @@ export function formatBillAmount(amount: number) {
   const value = Number(amount || 0)
   const abs = Math.abs(value).toFixed(2)
   return `${value >= 0 ? '+' : '-'}￥${abs}`
+}
+
+/** 省市区 + 详细地址，用于下单展示 */
+export function formatMallAddressLine(item: MallAddressItem) {
+  return `${item.province || ''}${item.city || ''}${item.district || ''}${item.detail || ''}`.trim()
+}
+
+/**
+ * 地址页保存成功后跳转回下单（URL query：return=/order-create&productId=商品id）
+ */
+export function consumeAddressPageReturnNavigation(route: { query: Record<string, unknown> }): { path: string, query: Record<string, string> } | null {
+  if (String(route.query.return || '') !== '/order-create') {
+    return null
+  }
+  const pid = route.query.productId
+  const query: Record<string, string> = {}
+  if (typeof pid === 'string' && /^\d+$/.test(pid.trim())) {
+    query.productId = pid.trim()
+  }
+  return { path: '/order-create', query }
+}
+
+/** 从下单页进入地址列表点选收货地址（与 return=/order-create 同时使用） */
+export function isAddressPickForOrderRoute(route: { query: Record<string, unknown> }) {
+  return String(route.query.pick || '') === '1' && String(route.query.return || '') === '/order-create'
+}
+
+export function orderCreateProductIdFromAddressRoute(route: { query: Record<string, unknown> }): string {
+  const pid = route.query.productId
+  return typeof pid === 'string' && /^\d+$/.test(pid.trim()) ? pid.trim() : ''
 }
 
 export function useMallMy() {

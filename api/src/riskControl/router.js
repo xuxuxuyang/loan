@@ -1046,8 +1046,11 @@ router.post('/v1/cl-sms-notify', verifyRiskSignature, async (ctx) => {
   await forwardClSmsNotify(ctx)
 })
 
+const { runCreditPreliminaryReview } = require('./preliminaryReview')
+
 module.exports = {
   router,
   verifyRiskSignature,
   PREFIX,
+  runCreditPreliminaryReview,
 }

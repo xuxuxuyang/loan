@@ -1,27 +1,29 @@
 export interface RegisterPayload {
   name: string
   phone: string
+  /** 二代身份证号；注册提交时必填，写入库供风控使用 */
+  idNumber?: string
   idCardFront: string
   idCardBack: string
-  idCardHandheld: string
-  locationText: string
-  latitude: number
-  longitude: number
+  /** 可选；未传时后端存空串 */
+  idCardHandheld?: string
+  locationText?: string
+  latitude?: number
+  longitude?: number
   /** 可选，至少 6 位；与后台 `POST /auth/register` 一致 */
   password?: string
 }
 
 const COOKIE_KEY = 'mall_registered'
 const LOGIN_COOKIE_KEY = 'mall_login_phone'
-export const ADMIN_TEST_ACCOUNT_ALIAS = 'xuyang'
-export const ADMIN_TEST_PHONE = '15180545617'
-export const ADMIN_TEST_VERIFY_CODE = '1234'
-/** 与 API `ADMIN_TEST_MALL_PASSWORD` / Mock 种子一致，供密码登录演示 */
-export const ADMIN_TEST_MALL_PASSWORD = '123456'
 
 interface MallUserProfile extends RegisterPayload {
   id: string
+  /** 实名身份证号（若后端已存储则用于信誉初审） */
+  idNumber?: string
   creditStatus?: '优秀' | '良好' | '一般' | '风险'
+  /** 授信额度（元）：可下单「商品总额」上限；注册默认见后端 `DEFAULT_USER_QUOTA` */
+  quota?: number
   registerAt?: string
   orderCount?: number
   totalAmount?: number
@@ -29,31 +31,29 @@ interface MallUserProfile extends RegisterPayload {
 
 function resolveMallApiBase() {
   const runtimeConfig = useRuntimeConfig()
-  return runtimeConfig.public.mallApiBase || 'http://localhost:3110/api'
+  return runtimeConfig.public.mallApiBase || '/api'
 }
 
+/** 登录账号一律按手机号字符串规范化（不再映射别名） */
 export function normalizeMallAccount(account: unknown) {
-  const value = typeof account === 'string'
+  return typeof account === 'string'
     ? account.trim()
     : (typeof account === 'number' ? String(account) : '')
-  return value === ADMIN_TEST_ACCOUNT_ALIAS ? ADMIN_TEST_PHONE : value
 }
 
-export function isAdminTestAccount(account: string) {
-  return normalizeMallAccount(account) === ADMIN_TEST_PHONE
-}
-
-function createAdminTestProfile(): RegisterPayload {
-  return {
-    name: '商城管理员',
-    phone: ADMIN_TEST_PHONE,
-    idCardFront: 'placeholder://admin/id-card-front',
-    idCardBack: 'placeholder://admin/id-card-back',
-    idCardHandheld: 'placeholder://admin/id-card-handheld',
-    locationText: '广东省广州市天河区珠江新城（测试定位）',
-    latitude: 23.119751,
-    longitude: 113.327676,
+/** 解析注册接口等业务返回的 fail 文案（$fetch / ofetch 错误体） */
+function readRegisterApiErrorMessage(err: unknown): string {
+  if (err && typeof err === 'object') {
+    const o = err as { data?: { msg?: string }, message?: string }
+    const fromBody = typeof o.data?.msg === 'string' ? o.data.msg.trim() : ''
+    if (fromBody) {
+      return fromBody
+    }
+    if (typeof o.message === 'string' && o.message.trim()) {
+      return o.message.trim()
+    }
   }
+  return '注册失败，请稍后重试'
 }
 
 export function useMallAuth() {
@@ -108,13 +108,22 @@ export function useMallAuth() {
       ...payload,
       phone: normalizeMallAccount(payload.phone),
     }
-    const response = await $fetch<{ success: boolean, data: MallUserProfile }>(`${resolveMallApiBase()}/auth/register`, {
-      method: 'POST',
-      body: normalizedPayload,
-    })
-    profile.value = response.data
-    registerCookie.value = '1'
-    return response.data
+    try {
+      const response = await $fetch<{ success: boolean, data: MallUserProfile }>(`${resolveMallApiBase()}/auth/register`, {
+        method: 'POST',
+        body: normalizedPayload,
+      })
+      profile.value = response.data
+      registerCookie.value = '1'
+      /** 注册成功即视为已登录（与登录接口一致写入会话） */
+      loginPhone.value = normalizedPayload.phone
+      loginCookie.value = normalizedPayload.phone
+      return response.data
+    }
+    catch (err: unknown) {
+      const msg = readRegisterApiErrorMessage(err)
+      throw new Error(msg)
+    }
   }
 
   const logout = () => {
@@ -157,19 +166,8 @@ export function useMallAuth() {
     return response.data.user
   }
 
-  const ensureAdminTestAccountReady = async () => {
-    if (profile.value?.phone === ADMIN_TEST_PHONE && isRegistered.value) {
-      return
-    }
-    await register(createAdminTestProfile())
-  }
-
   const ensureRegistered = async (redirectPath?: string) => {
     await syncFromStorage()
-
-    if (isAdminTestAccount(loginPhone.value)) {
-      await ensureAdminTestAccountReady()
-    }
 
     if (isRegistered.value && isLoggedIn.value) {
       return true
@@ -197,7 +195,6 @@ export function useMallAuth() {
     loginByPassword,
     logout,
     ensureRegistered,
-    ensureAdminTestAccountReady,
     syncFromStorage,
   }
 }

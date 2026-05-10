@@ -1,6 +1,4 @@
 <script setup lang="ts">
-import { isAdminTestAccount } from '~/composables/useMallAuth'
-
 const products = useTeaProducts()
 const route = useRoute()
 const { smartNavigate } = useCustomRouting(route)
@@ -21,7 +19,7 @@ const serviceList = [
   
 ]
 
-const { ensureRegistered, isLoggedIn, loginPhone, profile, syncFromStorage, logout } = useMallAuth()
+const { isLoggedIn, loginPhone, profile, syncFromStorage, logout } = useMallAuth()
 const { summary, fetchSummary, cardPackages, fetchCardPackages } = useMallMy()
 
 const displayName = computed(() => {
@@ -31,18 +29,12 @@ const displayName = computed(() => {
   if (profile.value?.name) {
     return profile.value.name
   }
-  if (isAdminTestAccount(loginPhone.value)) {
-    return '管理员账号'
-  }
   return `用户${loginPhone.value.slice(-4)}`
 })
 
 const displaySubText = computed(() => {
   if (!isLoggedIn.value) {
     return '账户还款、资产信息登录后查看'
-  }
-  if (isAdminTestAccount(loginPhone.value)) {
-    return '测试账号已登录，展示真实接口数据'
   }
   return `登录账号：${loginPhone.value}`
 })
@@ -84,18 +76,10 @@ async function handleGoRegister() {
   await smartNavigate('/login')
 }
 
-async function handleBuy(productId: number, productName?: string) {
-  const passed = await ensureRegistered()
-  if (!passed) {
-    return
-  }
-  await smartNavigate({
-    path: '/order-create',
-    query: {
-      productId: String(productId),
-      ...(productName ? { productName } : {}),
-    },
-  })
+function formatRecommendSubtitle(text: string) {
+  return text
+    .replace(/分期可下单/g, '仅供浏览')
+    .replace(/可下单/g, '仅供浏览')
 }
 
 async function handleBankCard() {
@@ -327,39 +311,35 @@ async function handleService(key: string) {
           推荐商品
         </h3>
         <div class="mx-auto mt-1 h-1 w-16 rounded-full bg-[#79d2c7]" />
+        <p class="mx-auto mt-2 max-w-[280px] text-xs leading-relaxed text-black/45">
+          仅供浏览；下单请前往首页「先享后付」专区
+        </p>
       </div>
       <div class="grid grid-cols-2 gap-3">
         <article
           v-for="item in products.slice(0, 4)"
           :key="item.id"
-          role="button"
-          tabindex="0"
-          class="overflow-hidden rounded-2xl bg-white cursor-pointer transition active:scale-[0.99]"
-          @click="handleBuy(item.id, item.name)"
-          @keydown.enter.prevent="handleBuy(item.id, item.name)"
+          class="overflow-hidden rounded-2xl bg-white"
         >
           <img
             :src="item.image"
             :alt="item.name"
-            class="h-28 w-full object-cover pointer-events-none"
+            class="h-28 w-full object-cover"
           >
           <div class="p-2.5">
             <p class="line-clamp-1 text-sm font-semibold text-black/85">
               {{ item.name }}
             </p>
             <p class="mt-1 text-xs text-black/55">
-              {{ item.subtitle }}
+              {{ formatRecommendSubtitle(item.subtitle) }}
             </p>
-            <div class="mt-2 flex items-center justify-between">
+            <div class="mt-2 flex items-center justify-between gap-2">
               <p class="text-sm font-semibold text-[#d45a33]">
                 ￥{{ item.price }}
               </p>
               <span
-                class="rounded-md bg-[var(--theme-color)] px-2 py-1 text-[11px] text-white pointer-events-none"
-                aria-hidden="true"
-              >
-                购买
-              </span>
+                class="shrink-0 rounded-md bg-black/6 px-2 py-1 text-[11px] font-medium text-black/45"
+              >仅展示</span>
             </div>
           </div>
         </article>

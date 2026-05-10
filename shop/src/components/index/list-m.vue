@@ -1,15 +1,23 @@
 <script setup lang="ts">
 import type { TeaProduct } from '~/composables/useTeaProducts'
 
-defineProps<{
-  products: TeaProduct[]
-}>()
+const props = withDefaults(
+  defineProps<{
+    products: TeaProduct[]
+    displayOnly?: boolean
+  }>(),
+  { displayOnly: false },
+)
 
 const route = useRoute()
 const { smartNavigate } = useCustomRouting(route)
 const { ensureRegistered } = useMallAuth()
 
 async function handleBuy(item: TeaProduct) {
+  if (props.displayOnly) {
+    ElMessage.info('该商品仅供展示，请前往分期专区页面选购可下单商品')
+    return
+  }
   const passed = await ensureRegistered()
   if (!passed) {
     return
@@ -25,7 +33,7 @@ async function handleBuy(item: TeaProduct) {
   <section class="normal-font px-4 pb-5 pt-4">
     <div class="mb-4 text-center">
       <h3 class="text-2xl font-semibold text-black/85">
-        推荐
+        {{ props.displayOnly ? '商城展示' : '推荐' }}
       </h3>
       <div class="mx-auto mt-1 h-1 w-16 rounded-full bg-[#79d2c7]" />
     </div>
@@ -58,7 +66,7 @@ async function handleBuy(item: TeaProduct) {
               class="rounded-md bg-[var(--theme-color)] px-2.5 py-1 text-xs text-white pointer-events-none"
               aria-hidden="true"
             >
-              购买
+              {{ props.displayOnly ? '展示' : '购买' }}
             </span>
           </div>
         </div>

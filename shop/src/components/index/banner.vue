@@ -2,30 +2,28 @@
 import type { MallCategoryItem, MallCategoryKey, TeaProduct } from '~/composables/useTeaProducts'
 
 defineProps<{
-  products: TeaProduct[]
+  /** 商城仅展示商品，用于「精选好物」预览 */
+  previewProducts: TeaProduct[]
   categories: MallCategoryItem[]
   activeCategory: MallCategoryKey
 }>()
 
 const emit = defineEmits<{
   'select-category': [category: MallCategoryKey]
+  'go-mall-zone': []
 }>()
 
 const route = useRoute()
 const { smartNavigate } = useCustomRouting(route)
-const { ensureRegistered } = useMallAuth()
 
-async function goToOrder(item: TeaProduct) {
-  const passed = await ensureRegistered()
-  if (!passed) {
-    return
-  }
-  await smartNavigate({
-    path: '/order-create',
-    query: {
-      productId: String(item.id),
-      productName: item.name,
-    },
+function goToInstallmentPage() {
+  void smartNavigate('/installment')
+}
+
+function openMallListFor(item: TeaProduct) {
+  void smartNavigate({
+    path: '/list',
+    query: { category: item.category },
   })
 }
 </script>
@@ -55,7 +53,13 @@ async function goToOrder(item: TeaProduct) {
           <span class="tag-pill rounded-full px-3 py-1 text-xs text-white">灵活分期 轻松购物</span>
         </div>
         <div class="grid grid-cols-2 gap-4">
-          <article class="quick-entry quick-entry-mall rounded-2xl p-5">
+          <article
+            role="button"
+            tabindex="0"
+            class="quick-entry quick-entry-mall rounded-2xl p-5 cursor-pointer"
+            @click="emit('go-mall-zone')"
+            @keydown.enter.prevent="emit('go-mall-zone')"
+          >
             <p class="mb-2 text-lg font-semibold text-[#444]">
               商城专区
             </p>
@@ -66,7 +70,13 @@ async function goToOrder(item: TeaProduct) {
               />
             </div>
           </article>
-          <article class="quick-entry quick-entry-installment rounded-2xl p-5">
+          <article
+            role="button"
+            tabindex="0"
+            class="quick-entry quick-entry-installment rounded-2xl p-5 cursor-pointer"
+            @click="goToInstallmentPage"
+            @keydown.enter.prevent="goToInstallmentPage"
+          >
             <p class="mb-2 text-lg font-semibold text-[#444]">
               分期专区
             </p>
@@ -110,13 +120,13 @@ async function goToOrder(item: TeaProduct) {
         </div>
         <div class="grid grid-cols-4 gap-3">
           <article
-            v-for="item in products.slice(0, 4)"
+            v-for="item in previewProducts.slice(0, 4)"
             :key="item.id"
             role="button"
             tabindex="0"
             class="overflow-hidden rounded-xl bg-white cursor-pointer transition hover:shadow-md active:opacity-90"
-            @click="goToOrder(item)"
-            @keydown.enter.prevent="goToOrder(item)"
+            @click="openMallListFor(item)"
+            @keydown.enter.prevent="openMallListFor(item)"
           >
             <img
               :src="item.image"

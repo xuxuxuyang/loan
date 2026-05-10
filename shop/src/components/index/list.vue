@@ -9,15 +9,24 @@ interface TeaProduct {
   price: number
 }
 
-defineProps<{
-  products: TeaProduct[]
-}>()
+const props = withDefaults(
+  defineProps<{
+    products: TeaProduct[]
+    /** 仅展示，不可跳转下单 */
+    displayOnly?: boolean
+  }>(),
+  { displayOnly: false },
+)
 
 const route = useRoute()
 const { smartNavigate } = useCustomRouting(route)
 const { ensureRegistered } = useMallAuth()
 
 async function handleBuy(item: TeaProduct) {
+  if (props.displayOnly) {
+    ElMessage.info('该商品仅供展示，请前往分期专区页面选购可下单商品')
+    return
+  }
   const passed = await ensureRegistered()
   if (!passed) {
     return
@@ -38,7 +47,7 @@ async function handleBuy(item: TeaProduct) {
             Tea Mall
           </p>
           <h3 class="text-2xl font-semibold">
-            高端茶叶精选
+            {{ props.displayOnly ? '商城精选 · 展示专区' : '高端茶叶精选' }}
           </h3>
         </div>
       </div>
@@ -77,7 +86,7 @@ async function handleBuy(item: TeaProduct) {
                 class="px-4 py-2 rounded-lg bg-[var(--theme-color)] text-white text-sm pointer-events-none"
                 aria-hidden="true"
               >
-                立即购买
+                {{ props.displayOnly ? '仅展示' : '立即购买' }}
               </span>
             </div>
           </div>

@@ -4,12 +4,9 @@ import type { UploadProps } from 'element-plus'
 interface RegisterFormModel {
   name: string
   phone: string
+  idNumber: string
   idCardFront: string
   idCardBack: string
-  idCardHandheld: string
-  locationText: string
-  latitude: number | null
-  longitude: number | null
 }
 
 const route = useRoute()
@@ -17,23 +14,23 @@ const { smartNavigate } = useCustomRouting(route)
 const { register } = useMallAuth()
 
 const submitting = ref(false)
-const locating = ref(false)
 const form = ref<RegisterFormModel>({
   name: '',
   phone: '',
+  idNumber: '',
   idCardFront: '',
   idCardBack: '',
-  idCardHandheld: '',
-  locationText: '',
-  latitude: null,
-  longitude: null,
 })
 
-const uploadTips = '请上传清晰证件照片，仅用于实名核验'
+const uploadTips = '请上传清晰证件正反面；将自动压缩后上传，仅用于实名核验'
 
 if (!import.meta.env.SSR && typeof route.query.phone === 'string') {
   form.value.phone = route.query.phone
 }
+
+/** 证件照：限制长边、转 JPEG，避免 base64 撑爆请求体（413） */
+const ID_CARD_IMAGE_MAX_EDGE = 1280
+const ID_CARD_JPEG_QUALITY = 0.82
 
 function readFileAsDataUrl(file: File) {
   return new Promise<string>((resolve, reject) => {
@@ -44,12 +41,80 @@ function readFileAsDataUrl(file: File) {
   })
 }
 
+function drawToJpegDataUrl(source: CanvasImageSource, sw: number, sh: number, quality: number): string {
+  const scale = Math.min(1, ID_CARD_IMAGE_MAX_EDGE / Math.max(sw, sh))
+  const cw = Math.max(1, Math.round(sw * scale))
+  const ch = Math.max(1, Math.round(sh * scale))
+  const canvas = document.createElement('canvas')
+  canvas.width = cw
+  canvas.height = ch
+  const ctx = canvas.getContext('2d')
+  if (!ctx) {
+    throw new Error('canvas')
+  }
+  ctx.drawImage(source, 0, 0, sw, sh, 0, 0, cw, ch)
+  return canvas.toDataURL('image/jpeg', quality)
+}
+
+async function compressImageFileToJpegDataUrl(file: File): Promise<string> {
+  if (import.meta.env.SSR) {
+    return readFileAsDataUrl(file)
+  }
+  if (typeof createImageBitmap === 'function') {
+    try {
+      const bitmap = await createImageBitmap(file)
+      try {
+        return drawToJpegDataUrl(bitmap, bitmap.width, bitmap.height, ID_CARD_JPEG_QUALITY)
+      }
+      finally {
+        bitmap.close()
+      }
+    }
+    catch {
+      // HEIC 等可能失败，走 Image 解码
+    }
+  }
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file)
+    const img = new Image()
+    img.onload = () => {
+      URL.revokeObjectURL(url)
+      try {
+        resolve(drawToJpegDataUrl(img, img.naturalWidth, img.naturalHeight, ID_CARD_JPEG_QUALITY))
+      }
+      catch (e) {
+        reject(e)
+      }
+    }
+    img.onerror = () => {
+      URL.revokeObjectURL(url)
+      reject(new Error('图片无法解析，请换 JPG/PNG 格式重试'))
+    }
+    img.src = url
+  })
+}
+
+async function processIdCardUpload(file: File): Promise<string> {
+  try {
+    return await compressImageFileToJpegDataUrl(file)
+  }
+  catch (e) {
+    console.warn('[RegisterForm] compress failed, use original', e)
+    return readFileAsDataUrl(file)
+  }
+}
+
 const onFrontUpload: UploadProps['onChange'] = async (uploadFile) => {
   const rawFile = uploadFile.raw
   if (!rawFile) {
     return
   }
-  form.value.idCardFront = await readFileAsDataUrl(rawFile)
+  try {
+    form.value.idCardFront = await processIdCardUpload(rawFile)
+  }
+  catch {
+    ElMessage.error('正面照片处理失败，请重选图片')
+  }
 }
 
 const onBackUpload: UploadProps['onChange'] = async (uploadFile) => {
@@ -57,18 +122,16 @@ const onBackUpload: UploadProps['onChange'] = async (uploadFile) => {
   if (!rawFile) {
     return
   }
-  form.value.idCardBack = await readFileAsDataUrl(rawFile)
-}
-
-const onHandheldUpload: UploadProps['onChange'] = async (uploadFile) => {
-  const rawFile = uploadFile.raw
-  if (!rawFile) {
-    return
+  try {
+    form.value.idCardBack = await processIdCardUpload(rawFile)
   }
-  form.value.idCardHandheld = await readFileAsDataUrl(rawFile)
+  catch {
+    ElMessage.error('反面照片处理失败，请重选图片')
+  }
 }
 
 const phoneReg = /^1\d{10}$/
+const idCardReg = /^[1-9]\d{5}(18|19|20)\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])\d{3}[\dXx]$/
 
 function validateForm() {
   if (!form.value.name.trim()) {
@@ -79,6 +142,15 @@ function validateForm() {
     ElMessage.warning('请输入正确的手机号')
     return false
   }
+  const idUpper = form.value.idNumber.trim().toUpperCase()
+  if (!idUpper) {
+    ElMessage.warning('请填写身份证号码')
+    return false
+  }
+  if (!idCardReg.test(idUpper)) {
+    ElMessage.warning('身份证号码格式不正确')
+    return false
+  }
   if (!form.value.idCardFront) {
     ElMessage.warning('请上传身份证正面')
     return false
@@ -87,39 +159,7 @@ function validateForm() {
     ElMessage.warning('请上传身份证反面')
     return false
   }
-  if (!form.value.idCardHandheld) {
-    ElMessage.warning('请上传手持身份证照片')
-    return false
-  }
-  if (!form.value.locationText || form.value.latitude === null || form.value.longitude === null) {
-    ElMessage.warning('请先获取当前位置')
-    return false
-  }
   return true
-}
-
-function requestLocation() {
-  if (import.meta.env.SSR || !navigator.geolocation) {
-    ElMessage.error('当前设备不支持定位')
-    return
-  }
-
-  locating.value = true
-  navigator.geolocation.getCurrentPosition(
-    (position) => {
-      const { latitude, longitude } = position.coords
-      form.value.latitude = latitude
-      form.value.longitude = longitude
-      form.value.locationText = `纬度 ${latitude.toFixed(6)}，经度 ${longitude.toFixed(6)}`
-      locating.value = false
-      ElMessage.success('定位成功')
-    },
-    () => {
-      locating.value = false
-      ElMessage.error('定位失败，请确认定位权限已开启')
-    },
-    { enableHighAccuracy: true, timeout: 12000 },
-  )
 }
 
 async function handleSubmit() {
@@ -131,23 +171,30 @@ async function handleSubmit() {
   const payload = {
     name: form.value.name.trim(),
     phone: form.value.phone.trim(),
+    idNumber: form.value.idNumber.trim().toUpperCase(),
     idCardFront: form.value.idCardFront,
     idCardBack: form.value.idCardBack,
-    idCardHandheld: form.value.idCardHandheld,
-    locationText: form.value.locationText,
-    latitude: form.value.latitude as number,
-    longitude: form.value.longitude as number,
   }
 
   try {
     await register(payload)
     ElMessage.success('注册成功')
 
-    const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : '/'
-    await smartNavigate(redirect.startsWith('/') ? redirect : '/')
+    const raw = typeof route.query.redirect === 'string' ? route.query.redirect.trim() : ''
+    const redirect = raw.startsWith('/') ? raw : '/my'
+    await smartNavigate(redirect)
   }
   catch (error) {
-    ElMessage.error((error as Error).message || '注册失败，请稍后重试')
+    const text = (error as Error).message || '注册失败，请稍后重试'
+    if (text.includes('已注册')) {
+      ElMessage.warning(text)
+    }
+    else if (text.includes('413') || text.toLowerCase().includes('entity too large')) {
+      ElMessage.error('提交数据过大，请重新选择较小的照片或稍后重试（若仍失败请联系管理员放宽网关限制）')
+    }
+    else {
+      ElMessage.error(text)
+    }
   }
   finally {
     submitting.value = false
@@ -159,7 +206,7 @@ async function goLogin() {
     path: '/login',
     query: {
       phone: form.value.phone.trim(),
-      redirect: typeof route.query.redirect === 'string' ? route.query.redirect : '/',
+      redirect: typeof route.query.redirect === 'string' ? route.query.redirect : '/my',
     },
   })
 }
@@ -215,24 +262,37 @@ async function goLogin() {
               size="large"
             />
           </div>
+
+          <div>
+            <p class="mb-2 text-sm font-medium text-black/75">
+              身份证号码
+            </p>
+            <el-input
+              v-model="form.idNumber"
+              placeholder="18位二代身份证号"
+              maxlength="18"
+              clearable
+              size="large"
+            />
+          </div>
         </div>
 
         <div class="my-4 h-px bg-black/8" />
 
         <div>
-          <div class="mb-1 flex items-center justify-between">
+          <div class="mb-1 flex items-center justify-center gap-2">
             <p class="text-sm font-medium text-black/75">
               身份证上传
             </p>
             <span class="text-xs text-black/45">实名核验</span>
           </div>
-          <p class="mb-3 text-xs text-black/45">
+          <p class="mb-3 text-center text-xs text-black/45">
             {{ uploadTips }}
           </p>
 
-          <div class="grid grid-cols-3 gap-2.5">
+          <div class="mx-auto grid w-full max-w-[300px] grid-cols-2 gap-3">
             <el-upload
-              class="w-full"
+              class="id-upload-slot w-full"
               :show-file-list="false"
               :auto-upload="false"
               accept="image/*"
@@ -240,17 +300,17 @@ async function goLogin() {
             >
               <button
                 type="button"
-                class="w-full overflow-hidden rounded-xl border border-dashed border-black/20 bg-[#fafafa]"
+                class="relative block h-24 w-full overflow-hidden rounded-xl border border-dashed border-black/20 bg-[#fafafa] text-left"
               >
                 <img
                   v-if="form.idCardFront"
                   :src="form.idCardFront"
                   alt="身份证正面"
-                  class="h-20 w-full object-cover"
+                  class="absolute inset-0 h-full w-full object-cover"
                 >
                 <div
                   v-else
-                  class="flex h-20 items-center justify-center px-1 text-[11px] text-black/60"
+                  class="relative flex h-24 w-full items-center justify-center px-2 text-xs text-black/60"
                 >
                   上传身份证正面
                 </div>
@@ -258,7 +318,7 @@ async function goLogin() {
             </el-upload>
 
             <el-upload
-              class="w-full"
+              class="id-upload-slot w-full"
               :show-file-list="false"
               :auto-upload="false"
               accept="image/*"
@@ -266,85 +326,29 @@ async function goLogin() {
             >
               <button
                 type="button"
-                class="w-full overflow-hidden rounded-xl border border-dashed border-black/20 bg-[#fafafa]"
+                class="relative block h-24 w-full overflow-hidden rounded-xl border border-dashed border-black/20 bg-[#fafafa] text-left"
               >
                 <img
                   v-if="form.idCardBack"
                   :src="form.idCardBack"
                   alt="身份证反面"
-                  class="h-20 w-full object-cover"
+                  class="absolute inset-0 h-full w-full object-cover"
                 >
                 <div
                   v-else
-                  class="flex h-20 items-center justify-center px-1 text-[11px] text-black/60"
+                  class="relative flex h-24 w-full items-center justify-center px-2 text-xs text-black/60"
                 >
                   上传身份证反面
                 </div>
               </button>
             </el-upload>
-
-            <el-upload
-              class="w-full"
-              :show-file-list="false"
-              :auto-upload="false"
-              accept="image/*"
-              @change="onHandheldUpload"
-            >
-              <button
-                type="button"
-                class="w-full overflow-hidden rounded-xl border border-dashed border-black/20 bg-[#fafafa]"
-              >
-                <img
-                  v-if="form.idCardHandheld"
-                  :src="form.idCardHandheld"
-                  alt="手持身份证照片"
-                  class="h-20 w-full object-cover"
-                >
-                <div
-                  v-else
-                  class="flex h-20 items-center justify-center px-1 text-[11px] text-black/60"
-                >
-                  上传手持身份证照片
-                </div>
-              </button>
-            </el-upload>
           </div>
-        </div>
-
-        <div class="my-4 h-px bg-black/8" />
-
-        <div>
-          <div class="mb-2 flex items-center justify-between">
-            <p class="text-sm font-medium text-black/75">
-              当前定位
-            </p>
-            <span
-              class="text-xs"
-              :class="form.locationText ? 'text-[var(--theme-color)]' : 'text-black/45'"
-            >
-              {{ form.locationText ? '已获取定位' : '未获取定位' }}
-            </span>
-          </div>
-          <el-input
-            :model-value="form.locationText"
-            readonly
-            placeholder="请点击下方按钮获取定位"
-            size="large"
-          />
-          <button
-            type="button"
-            class="mt-3 w-full rounded-xl bg-[#edf2f5] py-2.5 text-sm text-black/70"
-            :disabled="locating"
-            @click="requestLocation"
-          >
-            {{ locating ? '定位中...' : '获取定位' }}
-          </button>
         </div>
       </div>
 
       <button
         type="button"
-        class="mt-6 w-full rounded-xl bg-[var(--theme-color)] py-3.5 text-sm font-semibold text-white shadow-[0_8px_18px_rgba(0,113,98,0.25)]"
+        class="mt-6 w-full rounded-full bg-gradient-to-r from-[#ff8292] to-[#f06b81] py-3.5 text-base font-semibold text-white shadow-[0_10px_22px_rgba(235,112,137,0.28)] transition hover:brightness-105 disabled:opacity-60"
         :disabled="submitting"
         @click="handleSubmit"
       >
@@ -353,3 +357,11 @@ async function goLogin() {
     </div>
   </section>
 </template>
+
+<style scoped>
+/* el-upload 默认 inline，占不满格宽；拉满与占位同宽 */
+.id-upload-slot :deep(.el-upload) {
+  display: block;
+  width: 100%;
+}
+</style>

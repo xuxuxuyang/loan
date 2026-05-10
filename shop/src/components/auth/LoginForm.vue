@@ -1,14 +1,9 @@
 <script setup lang="ts">
-import {
-  ADMIN_TEST_MALL_PASSWORD,
-  ADMIN_TEST_VERIFY_CODE,
-  isAdminTestAccount,
-  normalizeMallAccount,
-} from '~/composables/useMallAuth'
+import { normalizeMallAccount } from '~/composables/useMallAuth'
 
 const route = useRoute()
 const { smartNavigate } = useCustomRouting(route)
-const { syncFromStorage, loginByPhone, loginByPassword, ensureAdminTestAccountReady } = useMallAuth()
+const { syncFromStorage, loginByPhone, loginByPassword } = useMallAuth()
 
 type LoginMode = 'sms' | 'password'
 const loginMode = ref<LoginMode>('sms')
@@ -47,9 +42,6 @@ if (!import.meta.env.SSR) {
 
 function validatePhone() {
   const account = normalizeMallAccount(phone.value)
-  if (isAdminTestAccount(account)) {
-    return true
-  }
   if (!phoneReg.test(account)) {
     ElMessage.warning('请输入正确的手机号')
     return false
@@ -62,12 +54,7 @@ function sendCode() {
     return
   }
 
-  if (isAdminTestAccount(phone.value)) {
-    ElMessage.info(`管理员测试账号验证码固定为 ${ADMIN_TEST_VERIFY_CODE}`)
-    return
-  }
-
-  ElMessage.success('验证码已发送（演示）')
+  ElMessage.success('验证码已发送（演示环境：任意非空验证码均可登录已注册用户）')
   countdown.value = 60
   const timer = window.setInterval(() => {
     countdown.value -= 1
@@ -81,7 +68,7 @@ async function goRegister() {
   await smartNavigate({
     path: '/register',
     query: {
-      redirect: typeof route.query.redirect === 'string' ? route.query.redirect : '/',
+      redirect: typeof route.query.redirect === 'string' ? route.query.redirect : '/my',
       phone: phone.value.trim(),
     },
   })
@@ -123,29 +110,8 @@ async function submitLogin() {
   }
 
   const normalizedPhone = normalizeMallAccount(phone.value)
-  const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : '/'
-
-  if (isAdminTestAccount(normalizedPhone)) {
-    submitting.value = true
-    try {
-      await ensureAdminTestAccountReady()
-      if (loginMode.value === 'sms') {
-        await loginByPhone(normalizedPhone, verifyCode.value.trim())
-      }
-      else {
-        await loginByPassword(normalizedPhone, password.value.trim())
-      }
-      ElMessage.success('管理员测试账号登录成功')
-      await smartNavigate(redirect.startsWith('/') ? redirect : '/')
-    }
-    catch (error) {
-      ElMessage.warning(resolveSubmitError(error) || `管理员测试账号：验证码 ${ADMIN_TEST_VERIFY_CODE}，密码 ${ADMIN_TEST_MALL_PASSWORD}`)
-    }
-    finally {
-      submitting.value = false
-    }
-    return
-  }
+  const rawRedirect = typeof route.query.redirect === 'string' ? route.query.redirect.trim() : ''
+  const redirect = rawRedirect.startsWith('/') ? rawRedirect : '/my'
 
   submitting.value = true
   try {
@@ -156,7 +122,7 @@ async function submitLogin() {
       await loginByPassword(normalizedPhone, password.value.trim())
     }
     ElMessage.success('登录成功')
-    await smartNavigate(redirect.startsWith('/') ? redirect : '/')
+    await smartNavigate(redirect)
   }
   catch (error) {
     const message = resolveSubmitError(error)
@@ -280,12 +246,6 @@ async function submitLogin() {
               <Icon :name="showPassword ? 'tabler:eye-off' : 'tabler:eye'" size="1.15rem" />
             </button>
           </div>
-          <p
-            v-if="isAdminTestAccount(normalizeMallAccount(phone))"
-            class="text-xs leading-relaxed text-black/45"
-          >
-            管理员测试账号默认密码为 {{ ADMIN_TEST_MALL_PASSWORD }}
-          </p>
         </template>
       </div>
 
@@ -318,7 +278,7 @@ async function submitLogin() {
 
       <button
         type="button"
-        class="mt-4 w-full text-center text-[15px] text-black/45"
+        class="mt-4 w-full text-center text-[15px] font-semibold text-[#e84d7a] underline decoration-2 underline-offset-[6px] decoration-[#f5a3b5] transition hover:text-[#d43d6a] hover:decoration-[#e84d7a] active:opacity-90"
         @click="goRegister"
       >
         没有账号？去完成注册
@@ -358,7 +318,8 @@ async function submitLogin() {
 
 .login-input:deep(.el-input__inner) {
   height: 1.95rem;
-  font-size: 0.98rem;
+  /* ≥16px：防止移动端聚焦时系统强制缩放（见全局 main.scss H5 规则） */
+  font-size: max(16px, 0.98rem);
   color: rgba(20, 20, 20, 0.82);
 }
 

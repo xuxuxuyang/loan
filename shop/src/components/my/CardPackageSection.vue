@@ -107,7 +107,7 @@ async function copyPhone() {
       class="py-4 text-center text-black/45"
       :class="compact ? 'text-sm' : 'text-base'"
     >
-      暂无卡包；审核通过后，每笔订单会在这里单独展示一个卡包
+     暂无卡包
     </ul>
     <ul
       v-else

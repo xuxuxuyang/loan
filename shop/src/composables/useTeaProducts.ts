@@ -1,3 +1,5 @@
+export type ProductSalesMode = 'mall' | 'installment'
+
 export interface TeaProduct {
   id: number
   name: string
@@ -7,6 +9,8 @@ export interface TeaProduct {
   price: number
   image: string
   category: MallCategoryKey
+  /** mall=仅展示；installment=可下单 */
+  salesMode: ProductSalesMode
   onSale?: boolean
   createdAt?: string
   updatedAt?: string
@@ -20,9 +24,9 @@ export interface MallCategoryItem {
   icon: string
 }
 
-const STATE_PRODUCTS = 'index-tea-products'
-/** 已成功完成一次远端 GET 并成功解析 `{ success, data }`（data 可为空数组）；失败永远不置 true，便于登录后进首页仍可重拉 */
-const STATE_FETCH_OK = 'index-tea-products-fetch-ok'
+const STATE_INSTALLMENT = 'index-tea-products-installment'
+const STATE_MALL = 'index-tea-products-mall'
+const STATE_FETCH_OK_PREFIX = 'index-tea-products-fetch-ok-'
 
 const mallCategories: MallCategoryItem[] = [
   { key: 'all', name: '全部', icon: 'tabler:apps' },
@@ -34,12 +38,13 @@ const mallCategories: MallCategoryItem[] = [
 
 function resolveMallApiBase() {
   const runtimeConfig = useRuntimeConfig()
-  return runtimeConfig.public.mallApiBase || 'http://localhost:3110/api'
+  return runtimeConfig.public.mallApiBase || '/api'
 }
 
 function normalizeApiProduct(product: Partial<TeaProduct>): TeaProduct {
   const category = String(product.category || '')
   const resolvedCategory = isMallCategoryKey(category) ? category : 'travel'
+  const sm = String(product.salesMode || 'installment').trim() === 'mall' ? 'mall' : 'installment'
   return {
     id: Number(product.id || 0),
     name: String(product.name || ''),
@@ -49,68 +54,104 @@ function normalizeApiProduct(product: Partial<TeaProduct>): TeaProduct {
     price: Number(product.price || 0),
     image: String(product.image || ''),
     category: resolvedCategory,
+    salesMode: sm,
     onSale: typeof product.onSale === 'boolean' ? product.onSale : true,
     createdAt: product.createdAt || '',
     updatedAt: product.updatedAt || '',
   }
 }
 
-/** 合并并发拉取（多组件 / 路由守卫共用同一 Promise） */
-let productsLoadInFlight: Promise<void> | null = null
-
-function buildProductsUrl(base: string) {
+function buildProductsUrl(base: string, salesMode: ProductSalesMode) {
   const b = base.replace(/\/$/, '')
-  return `${b}/products`
+  return `${b}/products?salesMode=${salesMode}`
 }
 
-function getProductsRefs() {
-  const products = useState<TeaProduct[]>(STATE_PRODUCTS, () => [])
-  const fetchOk = useState<boolean>(STATE_FETCH_OK, () => false)
+let installmentLoadInFlight: Promise<void> | null = null
+let mallLoadInFlight: Promise<void> | null = null
+
+function getInstallmentRefs() {
+  const products = useState<TeaProduct[]>(STATE_INSTALLMENT, () => [])
+  const fetchOk = useState<boolean>(`${STATE_FETCH_OK_PREFIX}installment`, () => false)
   return { products, fetchOk }
 }
 
-/**
- * 显式请求 `/products`（可在路由钩子调用）。不会因「finally 误判完成」锁住导致永不请求 Network。
- */
+function getMallRefs() {
+  const products = useState<TeaProduct[]>(STATE_MALL, () => [])
+  const fetchOk = useState<boolean>(`${STATE_FETCH_OK_PREFIX}mall`, () => false)
+  return { products, fetchOk }
+}
+
+/** 可下单商品（分期专区） */
 export async function ensureMallProductsLoaded(): Promise<void> {
   if (import.meta.env.SSR) {
     return Promise.resolve()
   }
-
-  const { products, fetchOk } = getProductsRefs()
+  const { products, fetchOk } = getInstallmentRefs()
   if (fetchOk.value) {
     return Promise.resolve()
   }
-
-  if (!productsLoadInFlight) {
-    productsLoadInFlight = (async () => {
+  if (!installmentLoadInFlight) {
+    installmentLoadInFlight = (async () => {
       let logUrl = ''
       try {
         const base = resolveMallApiBase()
-        logUrl = buildProductsUrl(base)
-        const response = await $fetch<{ success: boolean, data: TeaProduct[] }>(logUrl, {
-          method: 'GET',
-        })
+        logUrl = buildProductsUrl(base, 'installment')
+        const response = await $fetch<{ success: boolean, data: TeaProduct[] }>(logUrl, { method: 'GET' })
         products.value = Array.isArray(response?.data) ? response.data.map(normalizeApiProduct) : []
         fetchOk.value = true
       }
       catch (error) {
-        console.error('[商城] 拉取商品失败，请确认 mall-api 已启动且 Vite 代理 / VITE_MALL_API_BASE 正确', logUrl || resolveMallApiBase(), error)
-        /** 不写 fetchOk，下次进首页仍可重试 */
+        console.error('[商城] 拉取分期商品失败', logUrl || resolveMallApiBase(), error)
         products.value = []
       }
       finally {
-        productsLoadInFlight = null
+        installmentLoadInFlight = null
       }
     })()
   }
+  return installmentLoadInFlight
+}
 
-  return productsLoadInFlight
+/** 仅展示商品（商城专区） */
+export async function ensureMallShowcaseProductsLoaded(): Promise<void> {
+  if (import.meta.env.SSR) {
+    return Promise.resolve()
+  }
+  const { products, fetchOk } = getMallRefs()
+  if (fetchOk.value) {
+    return Promise.resolve()
+  }
+  if (!mallLoadInFlight) {
+    mallLoadInFlight = (async () => {
+      let logUrl = ''
+      try {
+        const base = resolveMallApiBase()
+        logUrl = buildProductsUrl(base, 'mall')
+        const response = await $fetch<{ success: boolean, data: TeaProduct[] }>(logUrl, { method: 'GET' })
+        products.value = Array.isArray(response?.data) ? response.data.map(normalizeApiProduct) : []
+        fetchOk.value = true
+      }
+      catch (error) {
+        console.error('[商城] 拉取展示商品失败', logUrl || resolveMallApiBase(), error)
+        products.value = []
+      }
+      finally {
+        mallLoadInFlight = null
+      }
+    })()
+  }
+  return mallLoadInFlight
+}
+
+export async function ensureShopHomeProductsLoaded(): Promise<void> {
+  await Promise.all([
+    ensureMallProductsLoaded(),
+    ensureMallShowcaseProductsLoaded(),
+  ])
 }
 
 export function useTeaProducts() {
-  getProductsRefs()
-
+  getInstallmentRefs()
   if (!import.meta.env.SSR) {
     const vm = getCurrentInstance()
     if (vm) {
@@ -124,8 +165,25 @@ export function useTeaProducts() {
       })
     }
   }
+  return useState<TeaProduct[]>(STATE_INSTALLMENT, () => [])
+}
 
-  return useState<TeaProduct[]>(STATE_PRODUCTS, () => [])
+export function useMallShowcaseProducts() {
+  getMallRefs()
+  if (!import.meta.env.SSR) {
+    const vm = getCurrentInstance()
+    if (vm) {
+      onMounted(() => {
+        void ensureMallShowcaseProductsLoaded()
+      })
+    }
+    else {
+      queueMicrotask(() => {
+        void ensureMallShowcaseProductsLoaded()
+      })
+    }
+  }
+  return useState<TeaProduct[]>(STATE_MALL, () => [])
 }
 
 export function useMallCategories() {

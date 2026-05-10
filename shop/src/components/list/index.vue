@@ -1,11 +1,15 @@
 <script setup lang="ts">
 import type { MallCategoryItem, MallCategoryKey, TeaProduct } from '~/composables/useTeaProducts'
 
-defineProps<{
-  products: TeaProduct[]
-  categories: MallCategoryItem[]
-  activeCategory: MallCategoryKey
-}>()
+const props = withDefaults(
+  defineProps<{
+    products: TeaProduct[]
+    categories: MallCategoryItem[]
+    activeCategory: MallCategoryKey
+    displayOnly?: boolean
+  }>(),
+  { displayOnly: false },
+)
 
 const emit = defineEmits<{
   'select-category': [category: MallCategoryKey]
@@ -30,6 +34,10 @@ async function handleCart(productName: string) {
 }
 
 async function handleBuy(productId: number, productName: string) {
+  if (props.displayOnly) {
+    ElMessage.info('该商品仅供展示，请前往分期专区页面选购可下单商品')
+    return
+  }
   const passed = await ensureRegistered()
   if (!passed) {
     return
@@ -126,19 +134,26 @@ async function handleBuy(productId: number, productName: string) {
             <div class="flex items-center justify-between">
               <span class="text-xl font-semibold leading-6 text-[#df5b80]">￥{{ item.price }}</span>
               <div class="flex items-center gap-2">
-                <button
-                  type="button"
-                  class="rounded-lg border border-[#efcfdb] px-3 py-2 text-sm text-[#5f6474] hover:border-[#e88dad] hover:text-[#d85f89]"
-                  @click.stop="handleCart(item.name)"
-                >
-                  加入购物车
-                </button>
-                <span
-                  class="buy-btn rounded-lg px-4 py-2 text-sm text-white pointer-events-none"
-                  aria-hidden="true"
-                >
-                  立即购买
-                </span>
+                <template v-if="props.displayOnly">
+                  <span class="rounded-lg bg-black/[0.06] px-4 py-2 text-sm text-black/50 pointer-events-none">
+                    仅展示
+                  </span>
+                </template>
+                <template v-else>
+                  <button
+                    type="button"
+                    class="rounded-lg border border-[#efcfdb] px-3 py-2 text-sm text-[#5f6474] hover:border-[#e88dad] hover:text-[#d85f89]"
+                    @click.stop="handleCart(item.name)"
+                  >
+                    加入购物车
+                  </button>
+                  <span
+                    class="buy-btn rounded-lg px-4 py-2 text-sm text-white pointer-events-none"
+                    aria-hidden="true"
+                  >
+                    立即购买
+                  </span>
+                </template>
               </div>
             </div>
           </div>

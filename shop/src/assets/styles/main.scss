@@ -52,6 +52,17 @@ button {
   font-family: inherit;
 }
 
+/**
+ * H5：避免 iOS Safari 在聚焦输入框时自动放大页面（要求输入框计算字号 ≥16px）。
+ * 同时减轻放大后视口变宽导致的横向滚动。
+ */
+@media screen and (max-width: 768px) {
+  .el-input__inner,
+  .el-textarea__inner {
+    font-size: 16px;
+  }
+}
+
 /** 布局容器 - 与 famous 一致 */
 .default-layout {
   width: 100%;

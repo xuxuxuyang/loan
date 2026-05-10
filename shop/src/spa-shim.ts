@@ -37,10 +37,13 @@ export function useCookie<T extends string>(
 }
 
 export function useRuntimeConfig() {
-  /** 本地 dev 默认走同源 `/api`，由 Vite proxy 转到 mall-api（见 vite.config）；生产请配 VITE_MALL_API_BASE */
-  const mallApiBase
-    = import.meta.env.VITE_MALL_API_BASE
-      || (import.meta.env.DEV ? '/api' : 'http://localhost:3110/api')
+  /**
+   * 未设置 VITE_MALL_API_BASE 时一律走同源 `/api`：
+   * - 开发：由 Vite proxy 转到本机 mall-api（见 vite.config）
+   * - 生产：由 Nginx 反代到本机 Node（手机访问时不能用 localhost）
+   * 仅当 API 与站点不同域时，才在构建时设置 VITE_MALL_API_BASE
+   */
+  const mallApiBase = import.meta.env.VITE_MALL_API_BASE || '/api'
   return {
     public: {
       mallApiBase,

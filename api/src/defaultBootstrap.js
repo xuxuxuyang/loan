@@ -1,11 +1,11 @@
 /**
  * 空库 / 重置时的唯一内置超级管理员（无其它后台账号；无模拟商品/订单）。
- * 前台商城测试账号与同手机号、密码哈希一致（见 LoginCard / useMallAuth）。
+ * 商城用户 `BOOTSTRAP_ADMIN_USER` 与同手机号，密码哈希由 pepper + 明文密码生成。
  */
 const DEFAULT_SUPER_ADMIN_USERNAME = 'xuyang'
 const DEFAULT_SUPER_ADMIN_PHONE = '15180545617'
 
-/** 后台登录 plaintext；商城密码登录同 `ADMIN_TEST_MALL_PASSWORD`（默认 123456） */
+/** 后台登录明文密码（开发/演示默认；生产请修改） */
 const DEFAULT_SUPER_ADMIN_BACKOFFICE_PASSWORD = '123456'
 
 const BOOTSTRAP_ADMIN_USER = {
@@ -21,7 +21,7 @@ const BOOTSTRAP_ADMIN_USER = {
   creditStatus: '良好',
   registerAt: new Date().toISOString(),
   quota: 3000,
-  /** sha256(pepper + ":" + ADMIN_TEST_MALL_PASSWORD)，默认密码 123456 */
+  /** 与 API mall pepper + DEFAULT_SUPER_ADMIN_BACKOFFICE_PASSWORD 生成的哈希一致（默认明文 123456） */
   passwordHash: '51294d76482bb32367c70586dfc6d484d96550b2fe47118f38c1679a0185812f',
 }
 

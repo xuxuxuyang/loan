@@ -58,7 +58,7 @@
 ## `POST /v1/probe-c-enc`
 
 - **用在哪：** 探针 C-md5；服务端转发上游 `POST /api/risk.V5/probeCEnc`（路径大小写与上游一致，可由 `RISK_UPSTREAM_PROBE_C_ENC_PATH` 覆盖）。
-- **鉴权 / 传参：** 与 `/v1/court-detail-pro` 相同；**`data`：** `idNumber`、`userName`、`phoneNumber` 必填。开放平台示例中为三项 **MD5 小写 32 位**，由调用方按对方规则自行计算；网关只验签并转发，不代为哈希。
+- **鉴权 / 传参：** 与 `/v1/court-detail-pro` 相同；**`data`：** `idNumber`、`userName`、`phoneNumber` 必填。开放平台 **`probeCEnc`** 约定三项须为 **32 位小写 MD5**；本服务在转发上游前会对 **明文三要素自动做 MD5**（若某字段已是 32 位 hex 则不再二次哈希）。直连华东云自行对接时需按其文档自行哈希。
 - **返回备注：** 透传上游 JSON（如顶层含 `request_id`，`data` 内含 `result_code`、`acc_exc`、`currently_overdue` 等）；字段含义以开放平台为准。
 - **常见错误：** 同上。
 
@@ -67,9 +67,10 @@
 ## `POST /v1/radar-v4-enc`
 
 - **用在哪：** 全景雷达 v4-MD5；服务端转发上游 `POST /api/risk.V5/radarV4Enc`（可由 `RISK_UPSTREAM_RADAR_V4_ENC_PATH` 覆盖）。
-- **鉴权 / 传参：** 与 `/v1/probe-c-enc` 相同（三项一般为 **MD5 小写 32 位**，调用方自行计算）。
+- **鉴权 / 传参：** 与 `/v1/probe-c-enc` 相同（三项明文传入即可，**服务端转发上游前自动转为 MD5**，规则同探针）。
 - **返回备注：** 透传上游 JSON（如顶层 `request_id`，`data` 下 `apply_report_detail`、`behavior_report_detail`、`current_report_detail` 及 `A2216*`、`B2217*`、`C2218*` 等编码字段）；逐项含义以开放平台「全景雷达」说明为准，此处不抄表。
 - **常见错误：** 同上。
+- **管理端摘要（本仓库）：** 管理后台按开放平台文档将 `apply_report_detail`、`behavior_report_detail`、`current_report_detail` 中的编码转为**中文指标名**分段展示（申请与查询、借贷与还款、授信与机构），便于非技术角色审阅；字段表见 `admin/src/utils/radarV4ReputationFacts.ts` 内 `RADAR_V4_MANAGER_LABELS`。
 
 ---
 

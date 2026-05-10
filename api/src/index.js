@@ -15,23 +15,39 @@ const { DEFAULT_SUPER_ADMIN_USERNAME, BOOTSTRAP_ADMIN_ACCOUNTS } = require('./de
 const crypto = require('node:crypto')
 
 const riskControlApi = require('./riskControl/router')
+const {
+  runCreditPreliminaryReview,
+  normalizeFourteenProductRows,
+  runSingleRiskSlot,
+  isRiskUpstreamConfigured,
+} = require('./riskControl/preliminaryReview')
+const {
+  runOrderSubmitUpstreamRiskPack,
+  runOrderSubmitSingleRiskStep,
+  ORDER_INSTALLMENT_RISK_STEP_LABELS,
+} = require('./riskControl/upstreamClient')
+const {
+  createWave: createInstallmentRiskWave,
+  getWave: getInstallmentRiskWave,
+  recordStepResult: recordInstallmentRiskWaveStep,
+  consumeForOrder: consumeInstallmentRiskWaveForOrder,
+} = require('./riskControl/installmentRiskWave')
 
 const app = new Koa()
 const router = new Router({ prefix: '/api' })
 const PORT = Number(process.env.PORT || 3110)
-const ADMIN_TEST_PHONE = '15180545617'
-const ADMIN_TEST_VERIFY_CODE = '1234'
-/** 测试管理员账号默认密码（与商城用户密码规则一致，至少6位） */
-const ADMIN_TEST_MALL_PASSWORD = '123456'
 const MALL_PASSWORD_PEPPER = 'mall-local-pepper-v1'
 const PRODUCT_CATEGORIES = new Set(['travel', 'calligraphy', 'mobile', 'jewelry'])
+/** mall=仅展示；installment=可下单（分期商城） */
+const PRODUCT_SALES_MODES = new Set(['mall', 'installment'])
 const ADMIN_ROLES = {
   SUPER: 'super_admin',
   REVIEWER: 'reviewer',
   SERVICE: 'customer_service',
 }
 const ADMIN_ROLE_SET = new Set(Object.values(ADMIN_ROLES))
-const DEFAULT_USER_QUOTA = 3000
+/** 商城用户注册及未填写额度时的默认分期可用额度（元） */
+const DEFAULT_USER_QUOTA = 2750
 
 function hashMallUserPassword(plain) {
   const s = String(plain || '')
@@ -97,6 +113,15 @@ function addMonths(iso, months) {
     return ''
   }
   date.setMonth(date.getMonth() + months)
+  return formatDate(date.toISOString())
+}
+
+function addDays(iso, days) {
+  const date = new Date(iso)
+  if (Number.isNaN(date.getTime())) {
+    return ''
+  }
+  date.setDate(date.getDate() + Number(days || 0))
   return formatDate(date.toISOString())
 }
 
@@ -254,6 +279,8 @@ function requireAdminPermission(ctx, allowedRoles, actionLabel) {
 
 function normalizeProductRecord(product) {
   const now = new Date().toISOString()
+  const rawMode = String(product.salesMode || '').trim()
+  const salesMode = PRODUCT_SALES_MODES.has(rawMode) ? rawMode : 'installment'
   return {
     id: Number(product.id),
     name: String(product.name || '').trim(),
@@ -265,6 +292,7 @@ function normalizeProductRecord(product) {
     category: PRODUCT_CATEGORIES.has(String(product.category || '').trim())
       ? String(product.category).trim()
       : 'travel',
+    salesMode,
     onSale: typeof product.onSale === 'boolean' ? product.onSale : true,
     createdAt: product.createdAt || now,
     updatedAt: product.updatedAt || product.createdAt || now,
@@ -303,6 +331,14 @@ function parseProductPayload(payload, { partial = false } = {}) {
     next.onSale = normalizeBoolean(payload.onSale, true)
   }
 
+  if (payload.salesMode !== undefined) {
+    const sm = String(payload.salesMode || '').trim()
+    if (!PRODUCT_SALES_MODES.has(sm)) {
+      return { error: '销售渠道必须为 mall（商城展示）或 installment（分期可下单）' }
+    }
+    next.salesMode = sm
+  }
+
   if (!partial) {
     const requiredText = ['name', 'subtitle', 'description', 'origin', 'image']
     const missing = requiredText.find(field => !next[field])
@@ -318,34 +354,110 @@ function parseProductPayload(payload, { partial = false } = {}) {
     if (next.onSale === undefined) {
       next.onSale = true
     }
+    if (next.salesMode === undefined) {
+      next.salesMode = 'installment'
+    }
   }
 
   return { data: next }
+}
+
+/**
+ * 商品列表完全以持久化层（Mongo / db.json）为准，不再注入或改写模拟目录。
+ * 仅修正历史数据中非法的 salesMode，避免接口报错。
+ */
+function ensureProductCatalog(db) {
+  if (!Array.isArray(db.products)) {
+    db.products = []
+  }
+  let changed = false
+  for (const p of db.products) {
+    const prev = String(p.salesMode || '').trim()
+    if (!PRODUCT_SALES_MODES.has(prev)) {
+      p.salesMode = 'installment'
+      changed = true
+    }
+  }
+  if (changed) {
+    writeDb(db)
+  }
+}
+
+/**
+ * 分期下单 7 步风控单条 → 管理端十四项 `fourteenRows` 中的对应槽位（与 `runOrderSubmitSingleRiskStep` 的 key 一致）
+ * @param {Record<string, unknown>} s
+ */
+function riskProductRowFromOrderSubmitRiskStep(s) {
+  const slotKey = String(s.key || s.slotKey || '').trim()
+  const productLabel = String(
+    s.label || ORDER_INSTALLMENT_RISK_STEP_LABELS[slotKey] || slotKey,
+  )
+  if (s.skipped) {
+    return {
+      slotKey,
+      productLabel,
+      state: 'skipped',
+      skippedReason: String(s.reason || ''),
+      httpStatus: s.httpStatus != null ? Number(s.httpStatus) : undefined,
+      rawResponse: s.response ?? null,
+    }
+  }
+  const ok = s.ok === true
+  return {
+    slotKey,
+    productLabel,
+    state: ok ? 'ok' : 'fail',
+    httpStatus: s.httpStatus != null ? Number(s.httpStatus) : undefined,
+    error: ok ? undefined : String(s.error || ''),
+    rawResponse: s.response ?? null,
+  }
+}
+
+/**
+ * 将本次下单已执行的接口结果合并进商城用户 `riskControlSnapshot`，供管理端风控弹窗与列表复用。
+ */
+function mergeInstallmentOrderRiskStepsIntoUserSnapshot(user, stepsRaw, checkedAtIso) {
+  if (!user || !Array.isArray(stepsRaw) || stepsRaw.length === 0) {
+    return
+  }
+  const prev = user.riskControlSnapshot && typeof user.riskControlSnapshot === 'object'
+    ? { ...user.riskControlSnapshot }
+    : {}
+  let fourteenRows = Array.isArray(prev.fourteenRows) ? [...prev.fourteenRows] : null
+  if (!fourteenRows || fourteenRows.length !== 14) {
+    fourteenRows = normalizeFourteenProductRows([])
+  }
+  const byKey = new Map(fourteenRows.map((r, i) => [r.slotKey, i]))
+  for (const raw of stepsRaw) {
+    const row = riskProductRowFromOrderSubmitRiskStep(raw)
+    if (!row.slotKey)
+      continue
+    const i = byKey.get(row.slotKey)
+    if (i === undefined)
+      continue
+    fourteenRows[i] = row
+  }
+  const anyFail = fourteenRows.some(r => r.state === 'fail')
+  user.riskControlSnapshot = {
+    ...prev,
+    fourteenRows,
+    configured: isRiskUpstreamConfigured(),
+    simulated: false,
+    passed: !anyFail,
+    checkedAt: checkedAtIso || new Date().toISOString(),
+    summaryMessage: typeof prev.summaryMessage === 'string' ? prev.summaryMessage : '',
+    userId: user.id,
+  }
 }
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
 
-async function mockRiskCheck({ totalAmount, installmentPeriods, receiverPhone }) {
-  // 模拟风控接口调用耗时。
-  await sleep(120)
-  const base = Number(totalAmount || 0)
-  const periods = Number(installmentPeriods || 12)
-  const phoneTail = Number(String(receiverPhone || '').slice(-2) || '0')
-  const score = Math.round(base / Math.max(1, periods)) + phoneTail
-  const passed = score <= 2200
-  return {
-    status: passed ? 'passed' : 'failed',
-    reason: passed ? '' : '风控评分未通过，请调整分期期数或更换商品后重试',
-    checkedAt: new Date().toISOString(),
-  }
-}
-
 function buildOrderRiskDetail(order) {
   ensureOrderRiskState(order)
   const totalAmount = Number(order.totalAmount || 0)
-  const periods = Number(order.installmentPeriods || (Array.isArray(order.installmentPlan) ? order.installmentPlan.length : 12) || 12)
+  const periods = Number(order.installmentPeriods || (Array.isArray(order.installmentPlan) ? order.installmentPlan.length : 1) || 1)
   const phoneTail = Number(String(order.receiverPhone || '').slice(-2) || '0')
   const baseScore = Math.round(totalAmount / Math.max(1, periods)) + phoneTail
   const riskScore = order.riskStatus === 'failed'
@@ -355,7 +467,7 @@ function buildOrderRiskDetail(order) {
   const checkedAt = order.riskCheckedAt || order.createdAt || new Date().toISOString()
   const decision = order.riskStatus === 'failed' ? '拒绝' : '通过'
   const reason = order.riskStatus === 'failed'
-    ? (order.riskReason || '风险评分超阈值，建议降低订单金额或调整分期期数')
+    ? (order.riskReason || '风险评分超阈值，建议降低订单金额或稍后重试')
     : '订单风险在可接受范围内'
 
   const rules = [
@@ -369,9 +481,11 @@ function buildOrderRiskDetail(order) {
     {
       code: 'R002',
       name: '分期期数风险',
-      hit: periods >= 12,
-      scoreImpact: periods >= 12 ? 120 : 0,
-      detail: `分期期数 ${periods} 期，期数越长违约不确定性越高`,
+      hit: periods > 1,
+      scoreImpact: periods > 1 ? 120 : 0,
+      detail: periods > 1
+        ? `分期期数 ${periods} 期，期数越长违约不确定性越高`
+        : '当前为单期还款，无多期展期风险',
     },
     {
       code: 'R003',
@@ -389,6 +503,12 @@ function buildOrderRiskDetail(order) {
     `手机号尾号：${String(order.receiverPhone || '').slice(-2) || '--'}`,
   ]
 
+  /** 与后台「用户风控」卡片口径一致：订单详情接口当前为简化摘要，十四槽位未在此接口实测时展示为未测/跳过 */
+  const testedSlotCount = 0
+  const okSlotCount = 0
+  const failSlotCount = 0
+  const skippedSlotCount = 14
+
   return {
     orderId: order.id,
     riskStatus: order.riskStatus,
@@ -400,6 +520,10 @@ function buildOrderRiskDetail(order) {
     modelVersion: 'mock-risk-v1',
     factors,
     rules,
+    testedSlotCount,
+    okSlotCount,
+    failSlotCount,
+    skippedSlotCount,
   }
 }
 
@@ -416,23 +540,16 @@ function buildInstallmentPlan(totalAmount, payType, createdAt, paid, installment
     }]
   }
 
-  const periods = [3, 6, 12].includes(Number(installmentPeriods))
-    ? Number(installmentPeriods)
-    : 12
-  const feeRate = 0.02
-  const principalPerPeriod = Number((parsedAmount / periods).toFixed(2))
-  const feePerPeriod = Number((parsedAmount * feeRate / periods).toFixed(2))
-  return Array.from({ length: periods }, (_, index) => {
-    const period = index + 1
-    return {
-      period,
-      dueDate: addMonths(createdAt, period),
-      principal: principalPerPeriod,
-      fee: feePerPeriod,
-      amount: Number((principalPerPeriod + feePerPeriod).toFixed(2)),
-      paid: Boolean(paid) && period === 1,
-    }
-  })
+  /** 仅支持单期：应还总额=订单 totalAmount（与商品小计一致），还款日为下单后第 10 天 */
+  const principal = Number(parsedAmount.toFixed(2))
+  return [{
+    period: 1,
+    dueDate: addDays(createdAt, 10),
+    principal,
+    fee: 0,
+    amount: principal,
+    paid: Boolean(paid),
+  }]
 }
 
 function ensureOrderRiskState(order) {
@@ -520,8 +637,66 @@ function applyInstallmentCompletionOrderStatus(order) {
   return false
 }
 
+/**
+ * 旧版曾把分期订单 totalAmount 写成「商品小计 × 1.35」。与当前规则（totalAmount=商品小计）不一致。
+ * 若当前 total 与 sub×1.35 在容差内匹配，则回写 totalAmount=sub 并重建 installmentPlan（保留首期是否已还）。
+ * 在 GET /orders 等读库路径上幂等执行，单次 writeDb 与 reconcileInstallmentCompletionAcrossDb 合并。
+ * @returns {boolean} 是否修改了任意订单
+ */
+function reconcileLegacyInstallmentTotalAmountFrom135(db) {
+  const products = Array.isArray(db.products) ? db.products : []
+  const productsById = new Map()
+  for (const p of products) {
+    const row = normalizeProductRecord(p)
+    productsById.set(String(row.id), row)
+  }
+  let changed = false
+  for (const order of db.orders || []) {
+    if (order.payType !== 'installment') {
+      continue
+    }
+    const pid = String(order.productId || '').trim()
+    if (!pid) {
+      continue
+    }
+    const product = productsById.get(pid)
+    if (!product || !Number.isFinite(Number(product.price))) {
+      continue
+    }
+    const qty = Math.max(1, Number(order.quantity) || 1)
+    const sub = Number((Number(product.price) * qty).toFixed(2))
+    if (!(sub > 0)) {
+      continue
+    }
+    const total = Number(order.totalAmount)
+    if (!Number.isFinite(total)) {
+      continue
+    }
+    const inflated = Number((sub * 1.35).toFixed(2))
+    const tolerance = Math.max(0.15, Math.abs(inflated) * 0.0005)
+    if (Math.abs(total - inflated) > tolerance) {
+      continue
+    }
+    const prevPaid = Boolean(order.paid)
+      || (Array.isArray(order.installmentPlan) && order.installmentPlan.some(item => item && item.paid))
+    order.totalAmount = sub
+    order.installmentPlan = buildInstallmentPlan(
+      sub,
+      'installment',
+      order.createdAt,
+      prevPaid,
+      order.installmentPeriods,
+    )
+    changed = true
+  }
+  return changed
+}
+
 function reconcileInstallmentCompletionAcrossDb(db) {
   let changed = false
+  if (reconcileLegacyInstallmentTotalAmountFrom135(db)) {
+    changed = true
+  }
   for (const order of db.orders) {
     ensureOrderInstallmentPlan(order)
     if (persistLegacyInstallmentFirstPaidIfOrderPaid(order)) {
@@ -566,50 +741,37 @@ function fail(ctx, msg, code = 400) {
 }
 
 function normalizePhone(phone) {
-  const value = String(phone || '').trim()
-  return value === 'admin' || value === DEFAULT_SUPER_ADMIN_USERNAME ? ADMIN_TEST_PHONE : value
+  return String(phone || '').trim()
 }
 
-function createAdminProfile() {
+/**
+ * 管理端单项/全量风控：合并请求体与库内 users 记录。
+ * 前端在打开档案后会把当前展示的三要素写入 body，避免仅用旧库字段导致缺参。
+ */
+function mergeAdminRiskCallParams(target, body = {}) {
+  const userName = String(
+    body.userName != null && String(body.userName).trim() !== ''
+      ? body.userName
+      : (target.name || ''),
+  ).trim()
+  const phoneRaw = body.phoneNumber != null && String(body.phoneNumber).trim() !== ''
+    ? body.phoneNumber
+    : (target.phone || '')
+  const phoneNumber = normalizePhone(phoneRaw)
+  const idFromBody = typeof body.idNumber === 'string' ? body.idNumber.trim() : ''
+  const idNumber = String(idFromBody || target.idNumber || '').trim()
   return {
-    id: `U${ADMIN_TEST_PHONE}`,
-    name: '超级管理员',
-    phone: ADMIN_TEST_PHONE,
-    idCardFront: 'placeholder://admin/id-card-front',
-    idCardBack: 'placeholder://admin/id-card-back',
-    idCardHandheld: 'placeholder://admin/id-card-handheld',
-    locationText: '',
-    latitude: 0,
-    longitude: 0,
-    creditStatus: '良好',
-    registerAt: new Date().toISOString(),
-    quota: DEFAULT_USER_QUOTA,
-    passwordHash: hashMallUserPassword(ADMIN_TEST_MALL_PASSWORD),
+    userName,
+    phoneNumber,
+    idNumber,
+    idCardFront: String(target.idCardFront || ''),
+    idCardBack: String(target.idCardBack || ''),
+    totalAmount: Number(target.totalAmount || 0),
   }
 }
 
-function upsertUserByPhone(db, payload) {
+function createMallUserFromRegisterPayload(db, payload) {
   const phone = normalizePhone(payload.phone)
-  const existing = db.users.find(item => item.phone === phone)
-  if (existing) {
-    Object.assign(existing, {
-      name: payload.name || existing.name,
-      phone,
-      idCardFront: payload.idCardFront || existing.idCardFront,
-      idCardBack: payload.idCardBack || existing.idCardBack,
-      idCardHandheld: payload.idCardHandheld || existing.idCardHandheld,
-      locationText: payload.locationText || existing.locationText,
-      latitude: typeof payload.latitude === 'number' ? payload.latitude : existing.latitude,
-      longitude: typeof payload.longitude === 'number' ? payload.longitude : existing.longitude,
-      creditStatus: payload.creditStatus || existing.creditStatus || '良好',
-      quota: normalizeUserQuota(typeof payload.quota === 'undefined' ? existing.quota : payload.quota),
-    })
-    if (typeof payload.password === 'string' && payload.password.length >= 6) {
-      existing.passwordHash = hashMallUserPassword(payload.password)
-    }
-    return existing
-  }
-
   const nextUser = {
     id: `U${Date.now()}`,
     name: payload.name || '商城用户',
@@ -623,6 +785,9 @@ function upsertUserByPhone(db, payload) {
     creditStatus: payload.creditStatus || '良好',
     registerAt: new Date().toISOString(),
     quota: normalizeUserQuota(payload.quota),
+  }
+  if (typeof payload.idNumber === 'string' && payload.idNumber.trim()) {
+    nextUser.idNumber = payload.idNumber.trim()
   }
   if (typeof payload.password === 'string' && payload.password.length >= 6) {
     nextUser.passwordHash = hashMallUserPassword(payload.password)
@@ -638,6 +803,8 @@ function attachUserOrderStats(db, user) {
     quota: normalizeUserQuota(user.quota),
     orderCount: userOrders.length,
     totalAmount: Number(userOrders.reduce((sum, item) => sum + Number(item.totalAmount || 0), 0).toFixed(2)),
+    /** 管理端列表与弹窗种子：与 GET /users/:id 的 riskView.upstreamConfigured 一致 */
+    riskUpstreamConfigured: isRiskUpstreamConfigured(),
   }
 }
 
@@ -685,6 +852,113 @@ function calcMySummary(db, phone) {
   }
 }
 
+/** 将 Nominatim address 拼成尽量完整的中文地址（省市区镇 + 街道/村/路/门牌等） */
+function formatDetailedCnAddressFromNominatim(addr) {
+  if (!addr || typeof addr !== 'object') {
+    return ''
+  }
+  /** 行政区：自上而下；同一字符串只出现一次 */
+  const adminKeys = [
+    'state',
+    'region',
+    'city',
+    'county',
+    'city_district',
+    'district',
+    'town',
+  ]
+  /** 细化：乡镇以下到道路门牌 */
+  const detailKeys = [
+    'village',
+    'suburb',
+    'neighbourhood',
+    'quarter',
+    'road',
+    'pedestrian',
+    'house_number',
+  ]
+  const seen = new Set()
+  const collect = (keys) => {
+    const parts = []
+    for (const key of keys) {
+      const raw = addr[key]
+      const t = typeof raw === 'string' ? raw.trim() : ''
+      if (!t || seen.has(t)) {
+        continue
+      }
+      seen.add(t)
+      parts.push(t)
+    }
+    return parts
+  }
+  const adminParts = collect(adminKeys)
+  const detailParts = collect(detailKeys)
+  const merged = [...adminParts, ...detailParts].join('')
+  if (merged) {
+    const postcode = typeof addr.postcode === 'string' ? addr.postcode.trim() : ''
+    if (postcode && !merged.includes(postcode)) {
+      return `${merged}（邮编 ${postcode}）`
+    }
+    return merged
+  }
+  return ''
+}
+
+router.get('/geocode/reverse', async (ctx) => {
+  const lat = Number(ctx.query.lat)
+  const lng = Number(ctx.query.lng ?? ctx.query.lon)
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+    fail(ctx, '请提供有效的 lat、lng')
+    return
+  }
+  if (lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+    fail(ctx, '经纬度超出范围')
+    return
+  }
+  try {
+    const url = new URL('https://nominatim.openstreetmap.org/reverse')
+    url.searchParams.set('format', 'jsonv2')
+    url.searchParams.set('lat', String(lat))
+    url.searchParams.set('lon', String(lng))
+    url.searchParams.set('accept-language', 'zh-CN')
+    /** zoom 越高细节越多：18 接近道路/建筑级 */
+    url.searchParams.set('zoom', '18')
+    const res = await fetch(url.toString(), {
+      headers: {
+        Accept: 'application/json',
+        'User-Agent': 'tea-mall-registration/1.0 (dev)',
+      },
+    })
+    if (!res.ok) {
+      fail(ctx, `逆地理服务暂不可用（HTTP ${res.status}）`, 502)
+      return
+    }
+    const json = await res.json()
+    const addr = json && json.address ? json.address : {}
+    let formatted = formatDetailedCnAddressFromNominatim(addr)
+    const displayName = typeof json.display_name === 'string' ? json.display_name.trim() : ''
+    const displayPretty = displayName ? displayName.replace(/\s*,\s*/g, ' · ') : ''
+    if (!formatted) {
+      formatted = displayPretty || `纬度 ${lat.toFixed(6)}，经度 ${lng.toFixed(6)}`
+    }
+    else if (formatted.length < 16 && displayPretty.length > formatted.length + 10) {
+      /** 仅有省市区而 OSM 有更完整的中文描述时，采用更长的一条 */
+      formatted = displayPretty
+    }
+    ctx.body = success({
+      formatted,
+      latitude: lat,
+      longitude: lng,
+      displayName,
+      address: addr,
+    })
+  }
+  catch (err) {
+    console.error('[geocode/reverse]', err)
+    fail(ctx, '逆地理解析失败', 502)
+  }
+})
+
 router.get('/health', async (ctx) => {
   let mallSnapshot = null
   const dbm = mongo.getMongoDb()
@@ -721,6 +995,7 @@ router.post('/admin/reset-data', (ctx) => {
     return
   }
   const db = resetDb()
+  ensureProductCatalog(db)
   ctx.body = success({
     products: db.products.length,
     orders: db.orders.length,
@@ -735,13 +1010,20 @@ router.get('/products', (ctx) => {
     category = '',
     keyword = '',
     includeAll = '',
+    salesMode: salesModeQ = '',
   } = ctx.query
   const categoryKey = String(category || '').trim()
   const searchKey = String(keyword || '').trim()
   const showAll = includeAll === '1'
+  const salesMode = String(salesModeQ || ctx.query.zone || '').trim()
   const list = db.products
     .map(normalizeProductRecord)
     .filter((item) => {
+      if (salesMode === 'mall' || salesMode === 'installment') {
+        if (item.salesMode !== salesMode) {
+          return false
+        }
+      }
       if (!showAll && !item.onSale) {
         return false
       }
@@ -860,12 +1142,30 @@ router.post('/auth/register', (ctx) => {
     fail(ctx, '姓名不能为空')
     return
   }
+
+  const idNumberRaw = String(payload.idNumber || '').trim().toUpperCase()
+  if (!idNumberRaw) {
+    fail(ctx, '身份证号不能为空')
+    return
+  }
+  if (!/^[1-9]\d{5}(18|19|20)\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])\d{3}[\dX]$/.test(idNumberRaw)) {
+    fail(ctx, '身份证号格式不正确')
+    return
+  }
+  payload.idNumber = idNumberRaw
+
   if (typeof payload.password === 'string' && payload.password.length > 0 && payload.password.length < 6) {
     fail(ctx, '密码至少6位')
     return
   }
 
-  const user = upsertUserByPhone(db, payload)
+  const existing = db.users.find(item => item.phone === phone)
+  if (existing) {
+    fail(ctx, '该手机号已注册，请直接登录', 409)
+    return
+  }
+
+  const user = createMallUserFromRegisterPayload(db, payload)
   writeDb(db)
   ctx.body = success(attachUserOrderStats(db, user))
 })
@@ -883,10 +1183,6 @@ router.post('/auth/login', (ctx) => {
   }
 
   let user = db.users.find(item => item.phone === phone)
-  if (!user && phone === ADMIN_TEST_PHONE) {
-    user = upsertUserByPhone(db, createAdminProfile())
-    writeDb(db)
-  }
 
   if (loginType === 'password') {
     const password = String(payload.password || '')
@@ -918,15 +1214,6 @@ router.post('/auth/login', (ctx) => {
   if (!verifyCode) {
     fail(ctx, '验证码不能为空')
     return
-  }
-  if (phone === ADMIN_TEST_PHONE && verifyCode !== ADMIN_TEST_VERIFY_CODE) {
-    fail(ctx, `管理员测试账号验证码错误，请输入 ${ADMIN_TEST_VERIFY_CODE}`)
-    return
-  }
-
-  if (!user && phone === ADMIN_TEST_PHONE) {
-    user = upsertUserByPhone(db, createAdminProfile())
-    writeDb(db)
   }
   if (!user) {
     fail(ctx, '该手机号未注册，请先完成注册', 404)
@@ -1168,6 +1455,213 @@ router.get('/users/by-phone', (ctx) => {
   ctx.body = success(user ? attachUserOrderStats(db, user) : null)
 })
 
+/** 分期下单：创建浏览器可分步调用的风控会话（后续 7 步由 /wave/:id/step/:key 完成） */
+router.post('/mall/installment-risk/wave', (ctx) => {
+  const body = ctx.request.body || {}
+  try {
+    const data = createInstallmentRiskWave({
+      userName: body.userName,
+      phoneNumber: body.phoneNumber,
+      idNumber: body.idNumber,
+    })
+    ctx.body = success(data)
+  }
+  catch (err) {
+    const code = err && err.statusCode ? Number(err.statusCode) : 400
+    fail(ctx, err && err.message ? String(err.message) : '创建风控会话失败', Number.isFinite(code) ? code : 400)
+  }
+})
+
+router.post('/mall/installment-risk/wave/:waveId/step/:stepKey', async (ctx) => {
+  const waveId = String(ctx.params.waveId || '').trim()
+  const stepKey = decodeURIComponent(String(ctx.params.stepKey || '').trim())
+  let wave
+  try {
+    wave = getInstallmentRiskWave(waveId)
+  }
+  catch (err) {
+    const code = err && err.statusCode ? Number(err.statusCode) : 400
+    fail(ctx, err && err.message ? String(err.message) : '风控会话无效', Number.isFinite(code) ? code : 400)
+    return
+  }
+  const label = ORDER_INSTALLMENT_RISK_STEP_LABELS[stepKey] || stepKey
+  try {
+    const result = await runOrderSubmitSingleRiskStep(stepKey, {
+      userName: wave.userName,
+      phoneNumber: wave.phoneNumber,
+      idNumber: wave.idNumber,
+    })
+    recordInstallmentRiskWaveStep(waveId, stepKey, result.step)
+    ctx.body = success({ ok: result.ok, step: result.step })
+  }
+  catch (err) {
+    console.error('[mall-installment-risk-step]', err)
+    const step = {
+      key: stepKey,
+      label,
+      ok: false,
+      error: err && err.message ? String(err.message) : '风控步骤调用异常',
+    }
+    try {
+      recordInstallmentRiskWaveStep(waveId, stepKey, step)
+    }
+    catch (recErr) {
+      console.error('[mall-installment-risk-step-record]', recErr)
+    }
+    ctx.body = success({ ok: false, step })
+  }
+})
+
+/** 管理端：用户详情 + 风控档案占位（打开弹窗时不自动跑全量接口） */
+router.get('/users/:id', (ctx) => {
+  if (!requireAdminPermission(ctx, [ADMIN_ROLES.SUPER, ADMIN_ROLES.REVIEWER, ADMIN_ROLES.SERVICE], '查看用户详情')) {
+    return
+  }
+  const db = readDb()
+  const { id } = ctx.params
+  const target = db.users.find(item => item.id === id)
+  if (!target) {
+    fail(ctx, '用户不存在', 404)
+    return
+  }
+  const snap = target.riskControlSnapshot && typeof target.riskControlSnapshot === 'object'
+    ? target.riskControlSnapshot
+    : null
+  ctx.body = success({
+    user: attachUserOrderStats(db, target),
+    riskView: {
+      snapshot: snap,
+      templateRows: normalizeFourteenProductRows([]),
+      upstreamConfigured: isRiskUpstreamConfigured(),
+    },
+  })
+})
+
+/** 管理端：手动调用单条风控产品（按次计费） */
+router.post('/users/:id/risk-slot/:slotKey', async (ctx) => {
+  if (!requireAdminPermission(ctx, [ADMIN_ROLES.SUPER, ADMIN_ROLES.REVIEWER, ADMIN_ROLES.SERVICE], '用户风控核查')) {
+    return
+  }
+  const db = readDb()
+  const { id } = ctx.params
+  const slotKey = decodeURIComponent(String(ctx.params.slotKey || '').trim())
+  const target = db.users.find(item => item.id === id)
+  if (!target) {
+    fail(ctx, '用户不存在', 404)
+    return
+  }
+  const body = ctx.request.body || {}
+  const merged = mergeAdminRiskCallParams(target, body)
+
+  let row
+  try {
+    row = await runSingleRiskSlot(slotKey, {
+      manualInvoke: true,
+      enableSms: Boolean(body.allowSms),
+      tryContract: Boolean(body.tryContract),
+      params: {
+        userName: merged.userName,
+        phoneNumber: merged.phoneNumber,
+        idNumber: merged.idNumber,
+        idCardFront: merged.idCardFront,
+        idCardBack: merged.idCardBack,
+        totalAmount: merged.totalAmount,
+      },
+    })
+  }
+  catch (err) {
+    fail(ctx, err && err.message ? String(err.message) : '单接口调用失败', 400)
+    return
+  }
+
+  const prev = target.riskControlSnapshot && typeof target.riskControlSnapshot === 'object'
+    ? { ...target.riskControlSnapshot }
+    : {}
+  let fourteenRows = Array.isArray(prev.fourteenRows) ? [...prev.fourteenRows] : null
+  if (!fourteenRows || fourteenRows.length !== 14) {
+    fourteenRows = normalizeFourteenProductRows([])
+  }
+  const idx = fourteenRows.findIndex(r => r.slotKey === slotKey)
+  if (idx >= 0) {
+    fourteenRows[idx] = row
+  }
+
+  const anyFail = fourteenRows.some(r => r.state === 'fail')
+  target.riskControlSnapshot = {
+    ...prev,
+    fourteenRows,
+    configured: isRiskUpstreamConfigured(),
+    simulated: false,
+    passed: !anyFail,
+    checkedAt: new Date().toISOString(),
+    summaryMessage: prev.summaryMessage || '',
+    userId: target.id,
+  }
+  writeDb(db)
+
+  ctx.body = success({
+    row,
+    user: attachUserOrderStats(db, target),
+    snapshot: target.riskControlSnapshot,
+  })
+})
+
+router.post('/users/:id/risk-check', async (ctx) => {
+  if (!requireAdminPermission(ctx, [ADMIN_ROLES.SUPER, ADMIN_ROLES.REVIEWER, ADMIN_ROLES.SERVICE], '用户风控核查')) {
+    return
+  }
+  const db = readDb()
+  const { id } = ctx.params
+  const target = db.users.find(item => item.id === id)
+  if (!target) {
+    fail(ctx, '用户不存在', 404)
+    return
+  }
+  const body = ctx.request.body || {}
+  const opts = {
+    enableSms: Boolean(body.enableSms),
+    tryContract: Boolean(body.tryContract),
+  }
+  const merged = mergeAdminRiskCallParams(target, body)
+
+  if (!isRiskUpstreamConfigured()) {
+    fail(ctx, '未配置风控上游（RISK_UPSTREAM_*），无法进行全量核查。配置后可调用真实接口或使用单项手动查询。', 503)
+    return
+  }
+
+  const pre = await runCreditPreliminaryReview({
+    userName: merged.userName,
+    phoneNumber: merged.phoneNumber,
+    idNumber: merged.idNumber,
+    idCardFront: merged.idCardFront,
+    idCardBack: merged.idCardBack,
+    totalAmount: merged.totalAmount,
+    installmentPeriods: 1,
+  }, { ...opts, adminManagedBatch: true })
+
+  const snapshot = {
+    configured: Boolean(pre.configured),
+    simulated: Boolean(pre.simulated),
+    passed: pre.passed,
+    checkedAt: new Date().toISOString(),
+    summaryMessage: pre.summaryMessage || '',
+    fourteenRows: normalizeFourteenProductRows(pre.steps),
+    rawSteps: pre.steps,
+    stepsSummary: pre.stepsSummary,
+  }
+
+  target.riskControlSnapshot = {
+    ...snapshot,
+    userId: target.id,
+  }
+  writeDb(db)
+
+  ctx.body = success({
+    user: attachUserOrderStats(db, target),
+    snapshot,
+  })
+})
+
 router.post('/users', (ctx) => {
   if (!requireAdminPermission(ctx, [ADMIN_ROLES.SUPER], '新增用户')) {
     return
@@ -1219,6 +1713,9 @@ router.post('/users', (ctx) => {
     creditStatus,
     registerAt: now,
     quota: normalizeUserQuota(payload.quota),
+  }
+  if (typeof payload.idNumber === 'string' && payload.idNumber.trim()) {
+    nextUser.idNumber = payload.idNumber.trim().toUpperCase()
   }
   if (initPwd.length >= 6) {
     nextUser.passwordHash = hashMallUserPassword(initPwd)
@@ -1577,6 +2074,9 @@ router.patch('/users/:id', (ctx) => {
   if (typeof payload.idCardHandheld === 'string' && payload.idCardHandheld) {
     target.idCardHandheld = payload.idCardHandheld
   }
+  if (typeof payload.idNumber === 'string') {
+    target.idNumber = payload.idNumber.trim()
+  }
   if (typeof payload.latitude === 'number') {
     target.latitude = payload.latitude
   }
@@ -1692,17 +2192,70 @@ router.get('/orders/:id/risk-detail', async (ctx) => {
 router.post('/orders', async (ctx) => {
   const db = readDb()
   const payload = ctx.request.body || {}
+  const pid = payload.productId
+  const productRow = db.products.map(normalizeProductRecord).find(p => String(p.id) === String(pid))
+  if (!productRow) {
+    fail(ctx, '商品不存在', 404)
+    return
+  }
+  if (productRow.salesMode === 'mall') {
+    fail(ctx, '该商品为商城展示商品，不支持在线下单', 400)
+    return
+  }
+  if (!productRow.onSale) {
+    fail(ctx, '商品已下架', 400)
+    return
+  }
+  const receiverPhoneForDedupe = String(payload.receiverPhone || '').trim()
+  if (receiverPhoneForDedupe) {
+    const hasOpenSamePhone = db.orders.some(
+      (item) => String(item.receiverPhone || '').trim() === receiverPhoneForDedupe && item.status !== 'enjoying',
+    )
+    if (hasOpenSamePhone) {
+      fail(ctx, '您尚有未完成的订单，请待订单完成后再下单', 400)
+      return
+    }
+  }
+  const rawQty = Number(payload.quantity)
+  const quantity = Number.isFinite(rawQty) && rawQty >= 1 ? Math.min(99, Math.floor(rawQty)) : 1
+  const itemSubtotal = Number((Number(productRow.price) * quantity).toFixed(2))
+
+  const payType = payload.payType || 'full'
+  let totalAmount = Number(payload.totalAmount)
+  if (!Number.isFinite(totalAmount) || totalAmount <= 0) {
+    totalAmount = itemSubtotal
+  }
+  if (payType === 'installment') {
+    const buyerPhone = normalizePhone(receiverPhoneForDedupe)
+    if (!/^1\d{10}$/.test(buyerPhone)) {
+      fail(ctx, '请填写正确的收货手机号以便校验授信额度', 400)
+      return
+    }
+    const buyer = db.users.find(item => item.phone === buyerPhone)
+    if (!buyer) {
+      fail(ctx, '该手机号尚未注册，请先完成注册后再分期下单', 400)
+      return
+    }
+    const creditLimit = normalizeUserQuota(buyer.quota)
+    if (itemSubtotal > creditLimit) {
+      fail(ctx, `商品总额（￥${itemSubtotal}）已超过您的授信额度（￥${creditLimit}）`, 400)
+      return
+    }
+    totalAmount = itemSubtotal
+  }
+
   const nextOrder = {
     id: `OD${Date.now()}`,
     productId: payload.productId,
     name: payload.name,
     spec: payload.spec,
-    totalAmount: payload.totalAmount,
+    totalAmount,
+    quantity,
     createdAt: new Date().toISOString(),
     status: payload.status || 'reviewing',
     paid: Boolean(payload.paid),
-    payType: payload.payType || 'full',
-    installmentPeriods: Number(payload.installmentPeriods) || 12,
+    payType,
+    installmentPeriods: payType === 'installment' ? 1 : Number(payload.installmentPeriods) || 1,
     payChannel: payload.payChannel || 'wechat',
     receiverName: payload.receiverName || '匿名用户',
     receiverPhone: payload.receiverPhone || '',
@@ -1714,10 +2267,85 @@ router.post('/orders', async (ctx) => {
     trackingNumber: '',
   }
   if (nextOrder.payType === 'installment') {
-    const riskResult = await mockRiskCheck(nextOrder)
+    const skipUpstream = String(process.env.RISK_ORDER_SUBMIT_SKIP_UPSTREAM || '').trim() === '1'
+    const idForRisk = String(payload.idNumber || '').trim()
+    const idPlaceholder = String(process.env.RISK_PRELIMINARY_PLACEHOLDER_ID || '').trim()
+    if (isRiskUpstreamConfigured() && !skipUpstream && !idForRisk && !idPlaceholder) {
+      fail(ctx, '分期下单需提交身份证号以便系统风控核验，请先完成注册资料', 400)
+      return
+    }
+    const installmentRiskWaveId = String(payload.installmentRiskWaveId || '').trim()
+    let riskResult
+    let orderSubmitRiskStepsFull = []
+    if (installmentRiskWaveId) {
+      const consumed = consumeInstallmentRiskWaveForOrder(installmentRiskWaveId, {
+        userName: nextOrder.receiverName,
+        phoneNumber: normalizePhone(nextOrder.receiverPhone),
+        idNumber: idForRisk,
+      })
+      if (!consumed.ok) {
+        fail(ctx, consumed.reason || '分期风控校验未通过', 400)
+        return
+      }
+      orderSubmitRiskStepsFull = Array.isArray(consumed.steps) ? consumed.steps : []
+      riskResult = {
+        status: 'passed',
+        reason: '',
+        checkedAt: new Date().toISOString(),
+        preliminaryStepsSummary: orderSubmitRiskStepsFull.map(s => ({
+          key: s.key,
+          state: s.skipped ? 'skipped' : (s.ok ? 'ok' : 'fail'),
+          label: s.label,
+          error: s.error,
+        })),
+      }
+    }
+    else {
+      try {
+        const pack = await runOrderSubmitUpstreamRiskPack({
+          userName: nextOrder.receiverName,
+          phoneNumber: nextOrder.receiverPhone,
+          idNumber: idForRisk,
+        })
+        orderSubmitRiskStepsFull = Array.isArray(pack.steps) ? pack.steps : []
+        riskResult = {
+          status: pack.allPassed ? 'passed' : 'failed',
+          reason: pack.allPassed ? '' : (pack.message || '系统审核不通过'),
+          checkedAt: new Date().toISOString(),
+          preliminaryStepsSummary: orderSubmitRiskStepsFull.map(s => ({
+            key: s.key,
+            state: s.skipped ? 'skipped' : (s.ok ? 'ok' : 'fail'),
+            label: s.label,
+            error: s.error,
+          })),
+        }
+      }
+      catch (err) {
+        console.error('[order-submit-risk-pack]', err)
+        orderSubmitRiskStepsFull = []
+        riskResult = {
+          status: 'failed',
+          reason: err && err.message ? String(err.message) : '系统审核调用异常',
+          checkedAt: new Date().toISOString(),
+          preliminaryStepsSummary: [],
+        }
+      }
+    }
     nextOrder.riskStatus = riskResult.status
     nextOrder.riskReason = riskResult.reason
     nextOrder.riskCheckedAt = riskResult.checkedAt
+    if (Array.isArray(riskResult.preliminaryStepsSummary)) {
+      nextOrder.riskPreliminaryStepsSummary = riskResult.preliminaryStepsSummary
+    }
+    nextOrder.riskOrderSubmitPack = true
+    const buyerForRiskSnap = db.users.find(item => item.phone === normalizePhone(nextOrder.receiverPhone))
+    if (buyerForRiskSnap && orderSubmitRiskStepsFull.length > 0) {
+      mergeInstallmentOrderRiskStepsIntoUserSnapshot(
+        buyerForRiskSnap,
+        orderSubmitRiskStepsFull,
+        riskResult.checkedAt,
+      )
+    }
   }
   nextOrder.installmentPlan = buildInstallmentPlan(
     nextOrder.totalAmount,
@@ -1921,7 +2549,12 @@ router.delete('/orders/:id', (ctx) => {
 })
 
 app.use(cors())
-app.use(bodyParser())
+/** 注册等接口含证件 base64，默认 json 1mb 易 413；放宽（前有 Nginx 时仍需调 client_max_body_size） */
+app.use(bodyParser({
+  jsonLimit: '12mb',
+  formLimit: '12mb',
+  textLimit: '12mb',
+}))
 app.use(router.routes())
 app.use(router.allowedMethods())
 app.use(riskControlApi.router.routes())
@@ -1970,6 +2603,7 @@ app.use(riskControlApi.router.allowedMethods())
 
   try {
     const db = readDb()
+    ensureProductCatalog(db)
     reconcileInstallmentCompletionAcrossDb(db)
   }
   catch (err) {

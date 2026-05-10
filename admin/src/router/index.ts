@@ -49,10 +49,20 @@ const router = createRouter({
       meta: { title: '账号管理', roles: ['super_admin'] },
     },
     {
-      path: '/products',
-      name: 'products',
+      path: '/products/mall',
+      name: 'products-mall',
       component: ProductsPage,
-      meta: { title: '产品管理', roles: ['super_admin'] },
+      meta: { title: '商城产品', roles: ['super_admin'] },
+    },
+    {
+      path: '/products/installment',
+      name: 'products-installment',
+      component: ProductsPage,
+      meta: { title: '分期产品', roles: ['super_admin'] },
+    },
+    {
+      path: '/products',
+      redirect: '/products/mall',
     },
   ],
 })
