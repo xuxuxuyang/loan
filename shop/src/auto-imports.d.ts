@@ -8,10 +8,10 @@ export {}
 declare global {
   const $fetch: typeof import('@/spa-shim').$fetch
   const EffectScope: typeof import('vue').EffectScope
-  const ElLoading: typeof import('element-plus/es').ElLoading
   const ElMessage: typeof import('element-plus/es').ElMessage
-  const ElMessageBox: typeof import('element-plus/es').ElMessageBox
   const MALL_DEFAULT_CREDIT_QUOTA: typeof import('./composables/mallCreditQuota').MALL_DEFAULT_CREDIT_QUOTA
+  const captureRegisterChannelFromRoute: typeof import('./composables/useRegisterChannel').captureRegisterChannelFromRoute
+  const clearPendingRegisterChannel: typeof import('./composables/useRegisterChannel').clearPendingRegisterChannel
   const computeMallCreditOrderPrincipal: typeof import('./composables/mallCreditQuota').computeMallCreditOrderPrincipal
   const computeMallInstallmentRepayTotal: typeof import('./composables/mallCreditQuota').computeMallInstallmentRepayTotal
   const computed: typeof import('vue').computed
@@ -30,6 +30,7 @@ declare global {
   const getCurrentInstance: typeof import('vue').getCurrentInstance
   const getCurrentScope: typeof import('vue').getCurrentScope
   const getCurrentWatcher: typeof import('vue').getCurrentWatcher
+  const getPendingRegisterChannel: typeof import('./composables/useRegisterChannel').getPendingRegisterChannel
   const getSimulatedLogisticsTrace: typeof import('./composables/useMallOrders').getSimulatedLogisticsTrace
   const h: typeof import('vue').h
   const inject: typeof import('vue').inject
@@ -43,6 +44,7 @@ declare global {
   const isShallow: typeof import('vue').isShallow
   const markRaw: typeof import('vue').markRaw
   const nextTick: typeof import('vue').nextTick
+  const normalizeApiProduct: typeof import('./composables/useTeaProducts').normalizeApiProduct
   const normalizeMallAccount: typeof import('./composables/useMallAuth').normalizeMallAccount
   const normalizeOrderTrackingNumber: typeof import('./composables/useMallOrders').normalizeOrderTrackingNumber
   const onActivated: typeof import('vue').onActivated
@@ -53,6 +55,7 @@ declare global {
   const onBeforeUpdate: typeof import('vue').onBeforeUpdate
   const onDeactivated: typeof import('vue').onDeactivated
   const onErrorCaptured: typeof import('vue').onErrorCaptured
+  const onMallProductImageError: typeof import('./composables/useMallProductCover').onMallProductImageError
   const onMounted: typeof import('vue').onMounted
   const onRenderTracked: typeof import('vue').onRenderTracked
   const onRenderTriggered: typeof import('vue').onRenderTriggered
@@ -67,6 +70,7 @@ declare global {
   const reactive: typeof import('vue').reactive
   const readonly: typeof import('vue').readonly
   const ref: typeof import('vue').ref
+  const resolveChannelFromRouteQuery: typeof import('./composables/useRegisterChannel').resolveChannelFromRouteQuery
   const resolveComponent: typeof import('vue').resolveComponent
   const resolveMallCreditQuota: typeof import('./composables/mallCreditQuota').resolveMallCreditQuota
   const shallowReactive: typeof import('vue').shallowReactive
@@ -133,6 +137,8 @@ declare module 'vue' {
     readonly EffectScope: UnwrapRef<typeof import('vue')['EffectScope']>
     readonly ElMessage: UnwrapRef<typeof import('element-plus/es')['ElMessage']>
     readonly MALL_DEFAULT_CREDIT_QUOTA: UnwrapRef<typeof import('./composables/mallCreditQuota')['MALL_DEFAULT_CREDIT_QUOTA']>
+    readonly captureRegisterChannelFromRoute: UnwrapRef<typeof import('./composables/useRegisterChannel')['captureRegisterChannelFromRoute']>
+    readonly clearPendingRegisterChannel: UnwrapRef<typeof import('./composables/useRegisterChannel')['clearPendingRegisterChannel']>
     readonly computeMallCreditOrderPrincipal: UnwrapRef<typeof import('./composables/mallCreditQuota')['computeMallCreditOrderPrincipal']>
     readonly computeMallInstallmentRepayTotal: UnwrapRef<typeof import('./composables/mallCreditQuota')['computeMallInstallmentRepayTotal']>
     readonly computed: UnwrapRef<typeof import('vue')['computed']>
@@ -151,6 +157,7 @@ declare module 'vue' {
     readonly getCurrentInstance: UnwrapRef<typeof import('vue')['getCurrentInstance']>
     readonly getCurrentScope: UnwrapRef<typeof import('vue')['getCurrentScope']>
     readonly getCurrentWatcher: UnwrapRef<typeof import('vue')['getCurrentWatcher']>
+    readonly getPendingRegisterChannel: UnwrapRef<typeof import('./composables/useRegisterChannel')['getPendingRegisterChannel']>
     readonly getSimulatedLogisticsTrace: UnwrapRef<typeof import('./composables/useMallOrders')['getSimulatedLogisticsTrace']>
     readonly h: UnwrapRef<typeof import('vue')['h']>
     readonly inject: UnwrapRef<typeof import('vue')['inject']>
@@ -164,6 +171,7 @@ declare module 'vue' {
     readonly isShallow: UnwrapRef<typeof import('vue')['isShallow']>
     readonly markRaw: UnwrapRef<typeof import('vue')['markRaw']>
     readonly nextTick: UnwrapRef<typeof import('vue')['nextTick']>
+    readonly normalizeApiProduct: UnwrapRef<typeof import('./composables/useTeaProducts')['normalizeApiProduct']>
     readonly normalizeMallAccount: UnwrapRef<typeof import('./composables/useMallAuth')['normalizeMallAccount']>
     readonly normalizeOrderTrackingNumber: UnwrapRef<typeof import('./composables/useMallOrders')['normalizeOrderTrackingNumber']>
     readonly onActivated: UnwrapRef<typeof import('vue')['onActivated']>
@@ -174,6 +182,7 @@ declare module 'vue' {
     readonly onBeforeUpdate: UnwrapRef<typeof import('vue')['onBeforeUpdate']>
     readonly onDeactivated: UnwrapRef<typeof import('vue')['onDeactivated']>
     readonly onErrorCaptured: UnwrapRef<typeof import('vue')['onErrorCaptured']>
+    readonly onMallProductImageError: UnwrapRef<typeof import('./composables/useMallProductCover')['onMallProductImageError']>
     readonly onMounted: UnwrapRef<typeof import('vue')['onMounted']>
     readonly onRenderTracked: UnwrapRef<typeof import('vue')['onRenderTracked']>
     readonly onRenderTriggered: UnwrapRef<typeof import('vue')['onRenderTriggered']>
@@ -188,6 +197,7 @@ declare module 'vue' {
     readonly reactive: UnwrapRef<typeof import('vue')['reactive']>
     readonly readonly: UnwrapRef<typeof import('vue')['readonly']>
     readonly ref: UnwrapRef<typeof import('vue')['ref']>
+    readonly resolveChannelFromRouteQuery: UnwrapRef<typeof import('./composables/useRegisterChannel')['resolveChannelFromRouteQuery']>
     readonly resolveComponent: UnwrapRef<typeof import('vue')['resolveComponent']>
     readonly resolveMallCreditQuota: UnwrapRef<typeof import('./composables/mallCreditQuota')['resolveMallCreditQuota']>
     readonly shallowReactive: UnwrapRef<typeof import('vue')['shallowReactive']>

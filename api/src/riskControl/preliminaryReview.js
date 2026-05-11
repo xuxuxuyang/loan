@@ -436,7 +436,7 @@ async function runCreditPreliminaryReview(params, options = {}) {
     })))
     steps.push(await execStep('通知类短信发送', 'cl_sms_notify', () => postClSmsNotify({
       phone: phoneNumber,
-      msg: `【商城】您的分期订单已提交信誉初审，应付¥${amt.toFixed(2)}`.slice(0, 200),
+      msg: `【商城】您的先享后付订单已提交信誉初审，应付¥${amt.toFixed(2)}`.slice(0, 200),
     })))
   }
   else {
@@ -474,7 +474,7 @@ async function runCreditPreliminaryReview(params, options = {}) {
     const contractNo = `PRE${Date.now()}`.slice(0, 40)
     steps.push(await execStep('电子合同（创建）', 'create_contract', () => postCreateContract({
       contractNo,
-      contractName: `分期信誉初审-${phoneNumber}`.slice(0, 120),
+      contractName: `先享后付信誉初审-${phoneNumber}`.slice(0, 120),
       signOrder: 1,
       validityTime: 30,
     })))
@@ -911,7 +911,7 @@ async function runSingleRiskSlot(slotKey, opts = {}) {
         const amt = Number(params.totalAmount || 0)
         return execStepToRiskRow(key, await execStep(SLOT_PRODUCT_LABEL[key], 'cl_sms_notify', () => postClSmsNotify({
           phone: phoneNumber,
-          msg: `【商城】您的分期订单已提交信誉初审，应付¥${amt.toFixed(2)}`.slice(0, 200),
+          msg: `【商城】您的先享后付订单已提交信誉初审，应付¥${amt.toFixed(2)}`.slice(0, 200),
         })))
       }
     case 'logistics':
@@ -924,7 +924,7 @@ async function runSingleRiskSlot(slotKey, opts = {}) {
         const contractNo = `ADM${Date.now()}`.slice(0, 40)
         return execStepToRiskRow(key, await execStep(SLOT_PRODUCT_LABEL[key], 'create_contract', () => postCreateContract({
           contractNo,
-          contractName: `管理员手动-分期-${phoneNumber}`.slice(0, 120),
+          contractName: `管理员手动-先享后付-${phoneNumber}`.slice(0, 120),
           signOrder: 1,
           validityTime: 30,
         })))

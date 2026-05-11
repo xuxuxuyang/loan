@@ -2,10 +2,20 @@
 import { normalizeMallAccount } from '~/composables/useMallAuth'
 import { resolveMallCreditQuota } from '~/composables/mallCreditQuota'
 import { formatMallAddressLine, useMallMy } from '~/composables/useMallMy'
+import type { TeaProduct } from '~/composables/useTeaProducts'
+import {
+  ensureMallProductsLoaded,
+  ensureMallShowcaseProductsLoaded,
+  normalizeApiProduct,
+  useMallShowcaseProducts,
+  useTeaProducts,
+} from '~/composables/useTeaProducts'
 
 const route = useRoute()
+const router = useRouter()
 const { smartNavigate } = useCustomRouting(route)
-const products = useTeaProducts()
+const installmentProducts = useTeaProducts()
+const mallShowcaseProducts = useMallShowcaseProducts()
 const { ensureRegistered, profile, loginPhone, syncFromStorage } = useMallAuth()
 const { addresses, fetchAddresses } = useMallMy()
 const { orders, createOrder, syncFromRemote } = useMallOrders()
@@ -32,8 +42,23 @@ const productId = computed(() => {
   return Number.isNaN(rawId) ? 0 : rawId
 })
 
+/** 列表未命中时（深链、缓存未就绪）按 id 拉取单条 */
+const fetchedProductById = ref<TeaProduct | null>(null)
+
 const selectedProduct = computed(() => {
-  return products.value.find(item => item.id === productId.value) || products.value[0] || null
+  const id = productId.value
+  if (!id) {
+    return null
+  }
+  const fromMall = mallShowcaseProducts.value.find(item => item.id === id)
+  if (fromMall) {
+    return fromMall
+  }
+  const fromInstallment = installmentProducts.value.find(item => item.id === id)
+  if (fromInstallment) {
+    return fromInstallment
+  }
+  return fetchedProductById.value
 })
 
 function parseAddressIdFromRoute(): number | undefined {
@@ -102,6 +127,8 @@ const hasBlockingMallOrder = computed(() =>
 )
 
 const creditQuota = computed(() => resolveMallCreditQuota(profile.value))
+
+const orderBlacklisted = computed(() => Boolean(profile.value?.orderBlacklisted))
 
 async function loadShippingAddresses() {
   const account = normalizeMallAccount(loginPhone.value || profile.value?.phone || '')
@@ -179,7 +206,7 @@ const itemAmount = computed(() => {
   return selectedProduct.value.price * ORDER_QUANTITY
 })
 
-/** 分期应还总额：与订单商品小计、后端入账 `totalAmount` 一致（不再乘以系数） */
+/** 先享后付应还总额：与订单商品小计、后端入账 `totalAmount` 一致（不再乘以系数） */
 const installmentRepayTotal = computed(() => Number(itemAmount.value.toFixed(2)))
 
 /** 授信口径：商品金额（单件）与授信额度比较 */
@@ -190,14 +217,15 @@ const canSubmitOrder = computed(() =>
     selectedProduct.value
     && addressesLoaded.value
     && !hasBlockingMallOrder.value
-    && !exceedsCreditLimit.value,
+    && !exceedsCreditLimit.value
+    && !orderBlacklisted.value,
   ),
 )
 
-/** 按规则首期还款为下单后第 10 天；未下单前展示为自今日起第 10 天（预计） */
+/** 按规则首期还款为下单后第 15 天；未下单前展示为自今日起第 15 天（预计） */
 const estimatedRepayDateYmd = computed(() => {
   const d = new Date()
-  d.setDate(d.getDate() + 10)
+  d.setDate(d.getDate() + 15)
   const y = d.getFullYear()
   const m = `${d.getMonth() + 1}`.padStart(2, '0')
   const day = `${d.getDate()}`.padStart(2, '0')
@@ -236,6 +264,11 @@ async function submitOrder() {
     return
   }
 
+  if (orderBlacklisted.value) {
+    ElMessage.warning('您的账号暂不可下单，如有疑问请联系客服')
+    return
+  }
+
   if (exceedsCreditLimit.value) {
     ElMessage.warning(
       `当前商品总额（￥${itemAmount.value.toFixed(2)}）已超过您的授信额度（￥${creditQuota.value}），请更换商品后再试`,
@@ -251,7 +284,7 @@ async function submitOrder() {
     const apiBase = String(runtimeConfig.public.mallApiBase || '/api').replace(/\/$/, '')
     const idNumber = String(profile.value?.idNumber || '').trim()
     if (!idNumber) {
-      ElMessage.warning('分期下单需填写身份证号，请先在「我的」完善注册资料后再试')
+      ElMessage.warning('先享后付下单需填写身份证号，请先在「我的」完善注册资料后再试')
       return
     }
     type WaveCreateData = { waveId: string, stepKeys: string[] }
@@ -343,8 +376,12 @@ async function submitOrder() {
 
 async function bootstrapOrderPage() {
   await syncFromStorage()
-  await loadShippingAddresses()
-  await syncFromRemote()
+  await Promise.all([
+    ensureMallProductsLoaded(),
+    ensureMallShowcaseProductsLoaded(),
+    loadShippingAddresses(),
+    syncFromRemote(),
+  ])
 }
 
 if (!import.meta.env.SSR) {
@@ -364,6 +401,34 @@ watch(
       syncSelectedAddressAfterFetch()
     }
   },
+)
+
+watch(
+  () => String(route.query.productId || ''),
+  async (pidStr) => {
+    fetchedProductById.value = null
+    const id = Number.parseInt(pidStr, 10)
+    if (!pidStr || Number.isNaN(id) || id <= 0) {
+      return
+    }
+    await Promise.all([ensureMallProductsLoaded(), ensureMallShowcaseProductsLoaded()])
+    const hitMall = mallShowcaseProducts.value.some(p => p.id === id)
+    const hitInst = installmentProducts.value.some(p => p.id === id)
+    if (hitMall || hitInst) {
+      return
+    }
+    const base = String(runtimeConfig.public.mallApiBase || '/api').replace(/\/$/, '')
+    try {
+      const res = await $fetch<{ success: boolean; data: Record<string, unknown> }>(`${base}/products/${id}`)
+      if (res?.success && res.data) {
+        fetchedProductById.value = normalizeApiProduct(res.data as Partial<TeaProduct>)
+      }
+    }
+    catch {
+      fetchedProductById.value = null
+    }
+  },
+  { immediate: true },
 )
 
 watch(
@@ -419,6 +484,22 @@ watch(
             </div>
           </div>
         </div>
+      </div>
+
+      <div
+        v-else-if="productId"
+        class="mb-4 rounded-2xl border border-dashed border-black/15 bg-white p-6 text-center shadow-[0_8px_18px_rgba(24,39,75,0.05)]"
+      >
+        <p class="text-sm text-black/65 leading-relaxed">
+          未找到该商品信息，或商品列表仍在加载。请返回商品页重新点击「购买」。
+        </p>
+        <button
+          type="button"
+          class="mt-4 rounded-full bg-[var(--theme-color)] px-5 py-2 text-sm font-medium text-white active:opacity-90"
+          @click="router.back()"
+        >
+          返回上一页
+        </button>
       </div>
 
       <div
@@ -481,7 +562,7 @@ watch(
         </h2>
         <div class="rounded-xl border border-[var(--theme-color)] bg-[#eefcf8] px-3 py-3">
           <p class="text-sm font-semibold text-black/82">
-            分期支付
+            先享后付支付
           </p>
           <div class="mt-2 space-y-1.5 text-sm text-black/72">
             <p class="flex items-baseline justify-between gap-3">
@@ -531,7 +612,13 @@ watch(
           </p>
         </div>
         <p
-          v-if="hasBlockingMallOrder"
+          v-if="orderBlacklisted"
+          class="mb-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2.5 text-sm text-red-900 leading-relaxed"
+        >
+          您的账号暂不可下单
+        </p>
+        <p
+          v-else-if="hasBlockingMallOrder"
           class="mb-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2.5 text-sm text-amber-900 leading-relaxed"
         >
           您已有进行中的订单，须待该订单在「我的订单」中显示为「已完成」后才可再次下单。

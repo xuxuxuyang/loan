@@ -3,17 +3,36 @@ const route = useRoute()
 const { smartNavigate } = useCustomRouting(route)
 const { loginPhone, profile, syncFromStorage } = useMallAuth()
 const {
-  billSummary,
   bills: billList,
   fetchBills,
 } = useMallMy()
 const currentUserAccount = computed(() => loginPhone.value || profile.value?.phone || '')
 
+const pendingRepayTotal = computed(() =>
+  billList.value
+    .filter(item => item.status === '待还款')
+    .reduce((sum, item) => sum + Math.abs(Number(item.amount || 0)), 0),
+)
+
+function formatBillDateOnly(raw: string) {
+  const s = String(raw || '').trim()
+  const m = s.match(/^(\d{4}-\d{2}-\d{2})/)
+  return m ? m[1] : s
+}
+
+const repayDeadlineText = computed(() => {
+  const pending = billList.value.filter(item => item.status === '待还款')
+  if (!pending.length) {
+    return '暂无'
+  }
+  const sorted = [...pending].sort((a, b) => String(a.time).localeCompare(String(b.time)))
+  const t = sorted[0]?.time
+  return t ? formatBillDateOnly(t) : '暂无'
+})
+
 const summaryItems = computed(() => [
-  { label: '本月应还', value: `￥${billSummary.value.shouldRepay.toFixed(2)}` },
-  { label: '可用额度', value: `￥${billSummary.value.availableQuota.toFixed(2)}` },
-  { label: '账单日', value: billSummary.value.billDate },
-  { label: '最低还款', value: `￥${billSummary.value.minRepayment.toFixed(2)}` },
+  { label: '待还金额', value: `￥${pendingRepayTotal.value.toFixed(2)}` },
+  { label: '最晚还款日', value: repayDeadlineText.value },
 ])
 async function goBack() {
   await smartNavigate('/my')
@@ -162,7 +181,7 @@ if (!import.meta.env.SSR) {
         <div class="w-[106px]" />
       </div>
 
-      <div class="mb-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div class="mb-5 grid gap-4 sm:grid-cols-2">
         <article
           v-for="item in summaryItems"
           :key="item.label"
@@ -196,7 +215,7 @@ if (!import.meta.env.SSR) {
               </span>
             </div>
             <div class="mb-3 flex items-center justify-between text-sm text-black/45">
-              <span>分期 {{ group.records.length }} 笔</span>
+              <span>先享后付 {{ group.records.length }} 笔</span>
               <span>待还 {{ group.pendingCount }} 笔</span>
             </div>
             <div class="space-y-2">
@@ -214,7 +233,7 @@ if (!import.meta.env.SSR) {
                   </p>
                 </div>
                 <div class="flex items-center justify-between text-sm text-black/45">
-                  <span>{{ record.time }}</span>
+                  <span>{{ formatBillDateOnly(record.time) }}</span>
                   <span
                     class="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium leading-none"
                     :class="billStatusClass(record.status)"

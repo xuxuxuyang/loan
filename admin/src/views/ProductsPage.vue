@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import type { UploadProps } from 'element-plus'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { withAdminAuthHeaders } from '../composables/useAdminApi'
@@ -8,7 +9,7 @@ import { useRoute } from 'vue-router'
 
 type SalesMode = 'mall' | 'installment'
 
-type ProductCategory = 'travel' | 'calligraphy' | 'mobile' | 'jewelry'
+type ProductCategory = 'phones' | 'digital' | 'appliances' | 'cosmetics'
 
 interface ProductItem {
   id: number
@@ -52,13 +53,108 @@ const salesMode = computed<SalesMode>(() =>
 
 const channelHint = computed(() =>
   salesMode.value === 'mall'
-    ? '商城展示（前台首页「商城精选」仅展示，不支持下单）'
-    : '分期产品（前台「分期专区」先享后付，可下单）',
+    ? '商城首页商品（前台「商城精选」展示，支持在线下单）'
+    : '先享后付产品（前台「先享后付」先享后付，可下单）',
 )
 
 const products = ref<ProductItem[]>([])
 const loading = ref(false)
 const submitting = ref(false)
+const imageCompressing = ref(false)
+
+/** 商品主图：限制长边、转 JPEG，避免 base64 过大导致保存失败 */
+const PRODUCT_IMAGE_MAX_EDGE = 1600
+const PRODUCT_IMAGE_JPEG_QUALITY = 0.86
+
+function readFileAsDataUrl(file: File) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result || ''))
+    reader.onerror = () => reject(new Error('文件读取失败'))
+    reader.readAsDataURL(file)
+  })
+}
+
+function drawProductImageToJpegDataUrl(source: CanvasImageSource, sw: number, sh: number, quality: number): string {
+  const scale = Math.min(1, PRODUCT_IMAGE_MAX_EDGE / Math.max(sw, sh))
+  const cw = Math.max(1, Math.round(sw * scale))
+  const ch = Math.max(1, Math.round(sh * scale))
+  const canvas = document.createElement('canvas')
+  canvas.width = cw
+  canvas.height = ch
+  const ctx = canvas.getContext('2d')
+  if (!ctx) {
+    throw new Error('canvas')
+  }
+  ctx.drawImage(source, 0, 0, sw, sh, 0, 0, cw, ch)
+  return canvas.toDataURL('image/jpeg', quality)
+}
+
+async function compressProductImageFileToDataUrl(file: File): Promise<string> {
+  if (typeof createImageBitmap === 'function') {
+    try {
+      const bitmap = await createImageBitmap(file)
+      try {
+        return drawProductImageToJpegDataUrl(bitmap, bitmap.width, bitmap.height, PRODUCT_IMAGE_JPEG_QUALITY)
+      }
+      finally {
+        bitmap.close()
+      }
+    }
+    catch {
+      // HEIC 等可能失败，走 Image 解码
+    }
+  }
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file)
+    const img = new Image()
+    img.onload = () => {
+      URL.revokeObjectURL(url)
+      try {
+        resolve(drawProductImageToJpegDataUrl(img, img.naturalWidth, img.naturalHeight, PRODUCT_IMAGE_JPEG_QUALITY))
+      }
+      catch (e) {
+        reject(e)
+      }
+    }
+    img.onerror = () => {
+      URL.revokeObjectURL(url)
+      reject(new Error('图片无法解析，请换 JPG/PNG/WebP 重试'))
+    }
+    img.src = url
+  })
+}
+
+async function processProductCoverFile(file: File): Promise<string> {
+  try {
+    return await compressProductImageFileToDataUrl(file)
+  }
+  catch (e) {
+    console.warn('[ProductsPage] compress failed, use original data url', e)
+    return readFileAsDataUrl(file)
+  }
+}
+
+const onProductCoverChange: UploadProps['onChange'] = async (uploadFile) => {
+  const raw = uploadFile.raw
+  if (!raw) {
+    return
+  }
+  imageCompressing.value = true
+  try {
+    form.image = await processProductCoverFile(raw)
+  }
+  catch {
+    ElMessage.error('图片处理失败，请重新选择')
+  }
+  finally {
+    imageCompressing.value = false
+  }
+}
+
+function clearProductCover() {
+  form.image = ''
+}
 const deletingId = ref<number | null>(null)
 const pendingDeleteId = ref<number | null>(null)
 const keyword = ref('')
@@ -68,10 +164,10 @@ const editingId = ref<number | null>(null)
 const showEditor = ref(false)
 
 const categoryOptions: Array<{ value: ProductCategory, label: string }> = [
-  { value: 'travel', label: '旅游产品' },
-  { value: 'calligraphy', label: '字画定制' },
-  { value: 'mobile', label: '手机通讯' },
-  { value: 'jewelry', label: '珠宝黄金' },
+  { value: 'phones', label: '手机' },
+  { value: 'digital', label: '数码产品' },
+  { value: 'appliances', label: '家用电器' },
+  { value: 'cosmetics', label: '化妆品' },
 ]
 
 const form = reactive<ProductPayload>({
@@ -81,7 +177,7 @@ const form = reactive<ProductPayload>({
   origin: '',
   price: 0,
   image: '',
-  category: 'travel',
+  category: 'phones',
   onSale: true,
   salesMode: 'mall',
 })
@@ -92,7 +188,7 @@ const categoryLabelMap = computed(() => {
 
 const filteredProducts = computed(() => {
   const searchKey = keyword.value.trim()
-  return products.value.filter((item) => {
+  const list = products.value.filter((item) => {
     if (salesMode.value === 'mall' && categoryFilter.value !== 'all' && item.category !== categoryFilter.value) {
       return false
     }
@@ -107,12 +203,16 @@ const filteredProducts = computed(() => {
     }
     return item.name.includes(searchKey) || item.subtitle.includes(searchKey) || item.origin.includes(searchKey)
   })
+  if (salesMode.value === 'installment') {
+    return [...list].sort((a, b) => a.price - b.price)
+  }
+  return list
 })
 
 function normalizeProduct(item: Partial<ProductItem>): ProductItem {
   const category = categoryOptions.some(option => option.value === item.category)
     ? item.category as ProductCategory
-    : 'travel'
+    : 'phones'
   return {
     id: Number(item.id || 0),
     name: String(item.name || ''),
@@ -136,7 +236,7 @@ function resetForm() {
   form.origin = ''
   form.price = 0
   form.image = ''
-  form.category = 'travel'
+  form.category = 'phones'
   form.onSale = true
   form.salesMode = salesMode.value
 }
@@ -169,7 +269,7 @@ function closeEditor() {
 
 function validateForm() {
   if (!form.name.trim() || !form.subtitle.trim() || !form.description.trim() || !form.origin.trim() || !form.image.trim()) {
-    ElMessage.warning('请完善商品名称、副标题、描述、产地和图片链接')
+    ElMessage.warning('请完善商品名称、副标题、描述、产地并上传商品主图')
     return false
   }
   if (!Number.isFinite(form.price) || form.price <= 0) {
@@ -557,7 +657,7 @@ watch(salesMode, () => {
           前台专区
           <el-input
             class="form-input"
-            :model-value="'先享后付（与前台「分期专区」一致）'"
+            :model-value="'先享后付（与前台「先享后付」一致）'"
             disabled
           />
         </label>
@@ -597,13 +697,47 @@ watch(salesMode, () => {
           </el-select>
         </label>
         <label class="full">
-          图片链接
-          <el-input
-            v-model="form.image"
-            class="form-input"
-            placeholder="https://..."
-            clearable
-          />
+          商品主图（本地上传）
+          <div class="cover-upload-row">
+            <el-upload
+              class="cover-upload"
+              :auto-upload="false"
+              accept="image/jpeg,image/png,image/webp,image/gif"
+              :show-file-list="false"
+              :disabled="imageCompressing"
+              @change="onProductCoverChange"
+            >
+              <el-button
+                type="primary"
+                plain
+                :loading="imageCompressing"
+              >
+                {{ imageCompressing ? '处理中…' : '选择本地图片' }}
+              </el-button>
+            </el-upload>
+            <button
+              v-if="form.image"
+              type="button"
+              class="btn btn-ghost cover-remove"
+              :disabled="imageCompressing"
+              @click="clearProductCover"
+            >
+              移除图片
+            </button>
+          </div>
+          <p class="cover-upload-hint">
+            自动压缩为 JPEG 后保存；编辑已有商品时若不改图可保留当前图。
+          </p>
+          <div
+            v-if="form.image"
+            class="cover-preview-wrap"
+          >
+            <img
+              :src="form.image"
+              alt="主图预览"
+              class="cover-preview"
+            >
+          </div>
         </label>
         <label class="full">
           商品描述
@@ -620,7 +754,7 @@ watch(salesMode, () => {
         <button
           class="btn btn-primary"
           type="button"
-          :disabled="submitting"
+          :disabled="submitting || imageCompressing"
           @click="submitForm"
         >
           {{ submitting ? '保存中...' : '保存' }}
@@ -887,5 +1021,45 @@ watch(salesMode, () => {
 
 .form-grid textarea {
   resize: vertical;
+}
+
+.cover-upload-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.cover-upload :deep(.el-upload) {
+  display: inline-block;
+}
+
+.cover-remove {
+  height: 32px;
+}
+
+.cover-upload-hint {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: #9ca3af;
+  line-height: 1.45;
+}
+
+.cover-preview-wrap {
+  margin-top: 10px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 8px;
+  background: #f9fafb;
+  display: inline-block;
+  max-width: 100%;
+}
+
+.cover-preview {
+  display: block;
+  max-width: min(360px, 100%);
+  max-height: 220px;
+  object-fit: contain;
+  border-radius: 6px;
 }
 </style>

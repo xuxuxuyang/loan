@@ -4,9 +4,32 @@ import type { TeaProduct } from '~/composables/useTeaProducts'
 const props = withDefaults(
   defineProps<{
     products: TeaProduct[]
-    displayOnly?: boolean
+    /** 与首页分区一致，用于区块标题 */
+    listZone?: 'installment' | 'mall'
   }>(),
-  { displayOnly: false },
+  { listZone: 'mall' },
+)
+
+const listTitle = computed(() =>
+  props.listZone === 'installment' ? '先享后付' : '商城精选',
+)
+
+const isBnplZone = computed(() => props.listZone === 'installment')
+
+/** 按订单金额（展示价 price）升序，与接口顺序解耦 */
+const sortedProducts = computed(() => {
+  const list = props.products ?? []
+  return [...list].sort((a, b) => {
+    const pa = Number(a.price)
+    const pb = Number(b.price)
+    const na = Number.isFinite(pa) ? pa : 0
+    const nb = Number.isFinite(pb) ? pb : 0
+    return na - nb
+  })
+})
+
+const ctaLabel = computed(() =>
+  isBnplZone.value ? '先享后付' : '购买',
 )
 
 const route = useRoute()
@@ -14,10 +37,6 @@ const { smartNavigate } = useCustomRouting(route)
 const { ensureRegistered } = useMallAuth()
 
 async function handleBuy(item: TeaProduct) {
-  if (props.displayOnly) {
-    ElMessage.info('该商品仅供展示，请前往分期专区页面选购可下单商品')
-    return
-  }
   const passed = await ensureRegistered()
   if (!passed) {
     return
@@ -33,14 +52,17 @@ async function handleBuy(item: TeaProduct) {
   <section class="normal-font px-4 pb-5 pt-4">
     <div class="mb-4 text-center">
       <h3 class="text-2xl font-semibold text-black/85">
-        {{ props.displayOnly ? '商城展示' : '推荐' }}
+        {{ listTitle }}
       </h3>
-      <div class="mx-auto mt-1 h-1 w-16 rounded-full bg-[#79d2c7]" />
+      <div
+        class="mx-auto mt-1 h-1 w-16 rounded-full"
+        :class="isBnplZone ? 'section-accent-bnpl' : 'section-accent-mall'"
+      />
     </div>
 
     <div class="grid grid-cols-2 gap-3">
       <article
-        v-for="item in products"
+        v-for="item in sortedProducts"
         :key="item.id"
         role="button"
         tabindex="0"
@@ -52,6 +74,10 @@ async function handleBuy(item: TeaProduct) {
           :src="item.image"
           :alt="item.name"
           class="h-28 w-full object-cover pointer-events-none"
+          loading="lazy"
+          decoding="async"
+          referrerpolicy="no-referrer"
+          @error="onMallProductImageError($event, item.name)"
         >
         <div class="p-3">
           <h4 class="line-clamp-1 text-sm font-semibold">
@@ -61,12 +87,16 @@ async function handleBuy(item: TeaProduct) {
             {{ item.subtitle }}
           </p>
           <div class="flex items-center justify-between">
-            <span class="text-sm font-semibold leading-5 text-[var(--theme-color)]">￥{{ item.price }}</span>
             <span
-              class="rounded-md bg-[var(--theme-color)] px-2.5 py-1 text-xs text-white pointer-events-none"
+              class="text-sm font-semibold leading-5"
+              :class="isBnplZone ? 'text-[#e85a7a]' : 'text-[#ff5f47]'"
+            >￥{{ item.price }}</span>
+            <span
+              class="rounded-md px-2.5 py-1 text-xs text-white pointer-events-none shadow-sm"
+              :class="isBnplZone ? 'card-cta-bnpl' : 'card-cta-mall'"
               aria-hidden="true"
             >
-              {{ props.displayOnly ? '展示' : '购买' }}
+              {{ ctaLabel }}
             </span>
           </div>
         </div>
@@ -83,5 +113,22 @@ async function handleBuy(item: TeaProduct) {
 section :is(p, span, button, h3, h4) {
   font-family: "PingFang SC", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
   line-height: 1.3;
+}
+
+/* 与 banner 分区图标色一致：先享后付粉、商城橙渐变 */
+.section-accent-bnpl {
+  background: linear-gradient(90deg, #ff8fb3, #ff6e92);
+}
+
+.section-accent-mall {
+  background: linear-gradient(90deg, #ff8a5b, #ff5f6b);
+}
+
+.card-cta-bnpl {
+  background: linear-gradient(135deg, #ff8fb3, #ff6e92);
+}
+
+.card-cta-mall {
+  background: linear-gradient(135deg, #ff8a5b, #ff5f6b);
 }
 </style>

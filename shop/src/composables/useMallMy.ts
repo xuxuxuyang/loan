@@ -1,5 +1,5 @@
 import { normalizeMallAccount } from '~/composables/useMallAuth'
-import type { MallCardPackageDTO } from '~/api/modules/mall'
+import type { MallCardPackageDTO, MallCardPackageContractFlowData } from '~/api/modules/mall'
 import type { MallOrderStatus } from '~/composables/useMallOrders'
 
 export interface MallMySummary {
@@ -61,6 +61,80 @@ export interface MallBillSummary {
 function resolveMallApiBase() {
   const runtimeConfig = useRuntimeConfig()
   return runtimeConfig.public.mallApiBase || '/api'
+}
+
+/** 合同下载（含服务端 Puppeteer 生成 PDF）可能较慢；fetch 与 JSON 备用路径共用 */
+const CONTRACT_DOWNLOAD_FETCH_MS = 180_000
+
+/** 用户取消与内置超时任一触发即中止 fetch */
+function mergeAbortSignals(user?: AbortSignal, timeout?: AbortSignal): AbortSignal | undefined {
+  if (!user && !timeout) {
+    return undefined
+  }
+  if (!timeout) {
+    return user
+  }
+  if (!user) {
+    return timeout
+  }
+  const u = user
+  const t = timeout
+  if (u.aborted || t.aborted) {
+    const c = new AbortController()
+    c.abort(u.aborted ? u.reason : t.reason)
+    return c.signal
+  }
+  const merged = new AbortController()
+  u.addEventListener('abort', () => merged.abort(u.reason), { once: true })
+  t.addEventListener('abort', () => merged.abort(t.reason), { once: true })
+  return merged.signal
+}
+
+function base64ToContractBlob(b64: string, fileType: unknown): Blob {
+  const binary = atob(b64)
+  const bytes = new Uint8Array(binary.length)
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i)
+  }
+  const mime = Number(fileType) === 1 ? 'application/zip' : 'application/pdf'
+  return new Blob([bytes], { type: mime })
+}
+
+function parseContractDownloadDataObject(root: Record<string, unknown>): { blob: Blob, fileName: string } {
+  const flatData = root.data
+  if (typeof flatData === 'string' && flatData.trim()) {
+    const b64 = flatData.trim()
+    const fileName = String(root.fileName || root.file_name || '合同.pdf')
+    const fileType = root.fileType ?? root.file_type
+    return { blob: base64ToContractBlob(b64, fileType), fileName }
+  }
+  if (flatData && typeof flatData === 'object' && !Array.isArray(flatData)) {
+    const nested = flatData as Record<string, unknown>
+    const b64 = typeof nested.data === 'string' ? nested.data.trim() : ''
+    if (!b64) {
+      throw new Error('暂无可下载的文件')
+    }
+    const fileName = String(
+      nested.fileName || nested.file_name || root.fileName || root.file_name || '合同.pdf',
+    )
+    const fileType = nested.fileType ?? nested.file_type ?? root.fileType ?? root.file_type
+    return { blob: base64ToContractBlob(b64, fileType), fileName }
+  }
+  throw new Error('暂无可下载的文件')
+}
+
+function parseContractDownloadEnvelope(envelope: Record<string, unknown>): { blob: Blob, fileName: string } {
+  if (!envelope.success) {
+    const msg = typeof envelope.msg === 'string' ? envelope.msg : '下载失败'
+    const err = new Error(msg) as Error & { data?: unknown }
+    err.data = envelope
+    throw err
+  }
+  const root = envelope.data
+  if (!root || typeof root !== 'object' || Array.isArray(root)) {
+    throw new Error('合同数据为空')
+  }
+  return parseContractDownloadDataObject(root as Record<string, unknown>)
 }
 
 function emptySummary(): MallMySummary {
@@ -151,6 +225,113 @@ export function useMallMy() {
     })
     cardPackages.value = Array.isArray(response?.data) ? response.data : []
     return cardPackages.value
+  }
+
+  const fetchCardPackageContractFlow = async (account: string, orderId: string) => {
+    const phone = normalizeMallAccount(account)
+    if (!/^1\d{10}$/.test(phone)) {
+      throw new Error('请先登录')
+    }
+    const response = await $fetch<{ success: boolean, data: MallCardPackageContractFlowData }>(
+      `${resolveMallApiBase()}/card-packages/${encodeURIComponent(orderId)}/contract-flow`,
+      { method: 'GET', query: { phone } },
+    )
+    if (!response?.data) {
+      throw new Error('合同数据为空')
+    }
+    return response.data
+  }
+
+  const downloadCardPackageContract = async (account: string, orderId: string) => {
+    const phone = normalizeMallAccount(account)
+    if (!/^1\d{10}$/.test(phone)) {
+      throw new Error('请先登录')
+    }
+    return await $fetch<{ success: boolean, data: Record<string, unknown> }>(
+      `${resolveMallApiBase()}/card-packages/${encodeURIComponent(orderId)}/contract-download`,
+      { method: 'GET', query: { phone }, timeout: CONTRACT_DOWNLOAD_FETCH_MS },
+    )
+  }
+
+  /**
+   * 下载卡包合同：优先请求 PDF 二进制（mock 下 `file=1`，减轻 JSON Base64 体积与网关断连）；
+   * 否则解析 JSON（上游或旧版接口）。
+   * @param opts.signal 传入则用户可中止（与内置 180s 超时合并，任一即 abort）
+   */
+  const downloadCardPackageContractBlob = async (
+    account: string,
+    orderId: string,
+    opts?: { signal?: AbortSignal },
+  ) => {
+    const phone = normalizeMallAccount(account)
+    if (!/^1\d{10}$/.test(phone)) {
+      throw new Error('请先登录')
+    }
+    const base = `${resolveMallApiBase()}/card-packages/${encodeURIComponent(orderId)}/contract-download`
+    const urlPdf = `${base}?phone=${encodeURIComponent(phone)}&file=1`
+    const timeoutCtrl = new AbortController()
+    const timer = setTimeout(() => timeoutCtrl.abort(), CONTRACT_DOWNLOAD_FETCH_MS)
+    const signal = mergeAbortSignals(opts?.signal, timeoutCtrl.signal)
+    try {
+      const res = await fetch(urlPdf, { method: 'GET', signal })
+      const ct = (res.headers.get('content-type') || '').toLowerCase()
+      if (res.ok && ct.includes('application/pdf')) {
+        const disp = res.headers.get('content-disposition') || ''
+        let fileName = '合同.pdf'
+        const mStar = /filename\*=UTF-8''([^;]+)/i.exec(disp)
+        const mQuot = /filename="([^"]+)"/i.exec(disp)
+        if (mStar?.[1]) {
+          try {
+            fileName = decodeURIComponent(mStar[1].trim())
+          }
+          catch {
+            /* ignore */
+          }
+        }
+        else if (mQuot?.[1]) {
+          fileName = mQuot[1]
+        }
+        const blob = await res.blob()
+        return { blob, fileName }
+      }
+      const json = (await res.json().catch(() => null)) as Record<string, unknown> | null
+      if (!res.ok) {
+        const msg = (json && typeof json.msg === 'string' && json.msg) || res.statusText || '下载失败'
+        const err = new Error(msg) as Error & { data?: unknown }
+        err.data = json
+        throw err
+      }
+      if (json && json.success) {
+        return parseContractDownloadEnvelope(json)
+      }
+      const msg = (json && typeof json.msg === 'string' && json.msg) || '暂无可下载的文件'
+      throw new Error(msg)
+    }
+    finally {
+      clearTimeout(timer)
+    }
+  }
+
+  const ackCardPackageContract = async (account: string, orderId: string) => {
+    const phone = normalizeMallAccount(account)
+    if (!/^1\d{10}$/.test(phone)) {
+      throw new Error('请先登录')
+    }
+    return await $fetch<{ success: boolean, data: { signed?: boolean } }>(
+      `${resolveMallApiBase()}/card-packages/${encodeURIComponent(orderId)}/contract-ack`,
+      { method: 'POST', query: { phone } },
+    )
+  }
+
+  const resetCardPackageContractSign = async (account: string, orderId: string) => {
+    const phone = normalizeMallAccount(account)
+    if (!/^1\d{10}$/.test(phone)) {
+      throw new Error('请先登录')
+    }
+    return await $fetch<{ success: boolean, data: { reset?: boolean } }>(
+      `${resolveMallApiBase()}/card-packages/${encodeURIComponent(orderId)}/contract-sign-reset`,
+      { method: 'POST', query: { phone } },
+    )
   }
 
   const fetchAddresses = async (account: string) => {
@@ -269,6 +450,11 @@ export function useMallMy() {
     bills,
     fetchSummary,
     fetchCardPackages,
+    fetchCardPackageContractFlow,
+    downloadCardPackageContract,
+    downloadCardPackageContractBlob,
+    ackCardPackageContract,
+    resetCardPackageContractSign,
     fetchAddresses,
     createAddress,
     updateAddress,

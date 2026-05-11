@@ -9,14 +9,14 @@ export interface TeaProduct {
   price: number
   image: string
   category: MallCategoryKey
-  /** mall=仅展示；installment=可下单 */
+  /** mall=首页商城；installment=先享后付；均可下单 */
   salesMode: ProductSalesMode
   onSale?: boolean
   createdAt?: string
   updatedAt?: string
 }
 
-export type MallCategoryKey = 'all' | 'travel' | 'calligraphy' | 'mobile' | 'jewelry'
+export type MallCategoryKey = 'all' | 'phones' | 'digital' | 'appliances' | 'cosmetics'
 
 export interface MallCategoryItem {
   key: MallCategoryKey
@@ -30,10 +30,10 @@ const STATE_FETCH_OK_PREFIX = 'index-tea-products-fetch-ok-'
 
 const mallCategories: MallCategoryItem[] = [
   { key: 'all', name: '全部', icon: 'tabler:apps' },
-  { key: 'travel', name: '旅游产品', icon: 'tabler:plane' },
-  { key: 'calligraphy', name: '字画定制', icon: 'tabler:photo' },
-  { key: 'mobile', name: '手机通讯', icon: 'tabler:device-mobile' },
-  { key: 'jewelry', name: '珠宝黄金', icon: 'tabler:diamond' },
+  { key: 'phones', name: '手机', icon: 'tabler:device-mobile' },
+  { key: 'digital', name: '数码产品', icon: 'tabler:device-laptop' },
+  { key: 'appliances', name: '家用电器', icon: 'tabler:fridge' },
+  { key: 'cosmetics', name: '化妆品', icon: 'tabler:sparkles' },
 ]
 
 function resolveMallApiBase() {
@@ -41,9 +41,29 @@ function resolveMallApiBase() {
   return runtimeConfig.public.mallApiBase || '/api'
 }
 
-function normalizeApiProduct(product: Partial<TeaProduct>): TeaProduct {
-  const category = String(product.category || '')
-  const resolvedCategory = isMallCategoryKey(category) ? category : 'travel'
+const CATEGORY_LEGACY: Record<string, MallCategoryKey> = {
+  travel: 'digital',
+  calligraphy: 'digital',
+  mobile: 'phones',
+  jewelry: 'cosmetics',
+  phone: 'phones',
+  appliance: 'appliances',
+}
+
+function resolveShopCategory(raw: string): MallCategoryKey {
+  const t = String(raw || '').trim()
+  if (isMallCategoryKey(t) && t !== 'all') {
+    return t
+  }
+  const mapped = CATEGORY_LEGACY[t]
+  if (mapped) {
+    return mapped
+  }
+  return 'phones'
+}
+
+export function normalizeApiProduct(product: Partial<TeaProduct>): TeaProduct {
+  const resolvedCategory = resolveShopCategory(String(product.category || ''))
   const sm = String(product.salesMode || 'installment').trim() === 'mall' ? 'mall' : 'installment'
   return {
     id: Number(product.id || 0),
@@ -81,7 +101,7 @@ function getMallRefs() {
   return { products, fetchOk }
 }
 
-/** 可下单商品（分期专区） */
+/** 可下单商品（先享后付） */
 export async function ensureMallProductsLoaded(): Promise<void> {
   if (import.meta.env.SSR) {
     return Promise.resolve()
@@ -101,7 +121,7 @@ export async function ensureMallProductsLoaded(): Promise<void> {
         fetchOk.value = true
       }
       catch (error) {
-        console.error('[商城] 拉取分期商品失败', logUrl || resolveMallApiBase(), error)
+        console.error('[商城] 拉取先享后付商品失败', logUrl || resolveMallApiBase(), error)
         products.value = []
       }
       finally {
@@ -112,7 +132,7 @@ export async function ensureMallProductsLoaded(): Promise<void> {
   return installmentLoadInFlight
 }
 
-/** 仅展示商品（商城专区） */
+/** 首页商城分区商品（与先享后付列表分开展示，均可下单） */
 export async function ensureMallShowcaseProductsLoaded(): Promise<void> {
   if (import.meta.env.SSR) {
     return Promise.resolve()
@@ -132,7 +152,7 @@ export async function ensureMallShowcaseProductsLoaded(): Promise<void> {
         fetchOk.value = true
       }
       catch (error) {
-        console.error('[商城] 拉取展示商品失败', logUrl || resolveMallApiBase(), error)
+        console.error('[商城] 拉取首页商城商品失败', logUrl || resolveMallApiBase(), error)
         products.value = []
       }
       finally {

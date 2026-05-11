@@ -1,33 +1,38 @@
 <script setup lang="ts">
-import { Picture } from '@element-plus/icons-vue'
+import { CircleCheck, CircleClose, Minus, Picture } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { withAdminAuthHeaders } from '../composables/useAdminApi'
 import { getAdminSession } from '../composables/useAdminAuth'
-import UserRiskDetailDialog, { type UserItem, type UserRiskSnapshot } from '../components/UserRiskDetailDialog.vue'
+import UserRiskDetailDialog, {
+  type UserItem,
+  type UserRiskSnapshot,
+  type RiskProductRow,
+} from '../components/UserRiskDetailDialog.vue'
+import {
+  INSTALLMENT_ORDER_RISK_STEP_KEYS,
+  INSTALLMENT_ORDER_RISK_STEP_LABELS,
+} from '../constants/installmentOrderRisk'
 import { donePageProgress, startPageProgress } from '../utils/progress'
+import { getRiskFactLines, type RiskFactLine } from '../utils/riskRowFactLines'
 
 const DEFAULT_USER_QUOTA = 3000
 
 /** 与商城注册、后端校验一致的 18 位身份证号格式（扩展表单校验时可复用） */
 const CN_ID_CARD_RE = /^[1-9]\d{5}(18|19|20)\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])\d{3}[\dX]$/
 
-interface MallUserRiskPreview {
-  creditScore: number
-  riskLevel: '低风险' | '中风险' | '高风险'
-  overdueCount: number
-  repayRate30d: number
-  suggestedLimit: number
-  avgInstallmentAmount: number
-  tags: string[]
-  summary: string
-}
-
-/** 列表与预览：档案字段 + 管理端模拟信誉摘要；`riskControlSnapshot` 来自库内用户档案 */
+/** 列表与预览：档案字段；`riskControlSnapshot` 含十四槽 / 下单七项写入结果 */
 type ListedUser = UserItem & {
-  riskReport: MallUserRiskPreview
   riskControlSnapshot?: UserRiskSnapshot | null
   riskUpstreamConfigured?: boolean
+  adminRemark?: string
+  orderBlacklisted?: boolean
+  registerChannelCode?: string
+  /** 注册时写入的渠道名称快照 */
+  registerChannelName?: string
+  /** 列表展示：快照优先，否则当前渠道名 */
+  registerChannelLabel?: string
 }
 
 interface ApiUserItem {
@@ -37,15 +42,23 @@ interface ApiUserItem {
   quota?: number
   orderCount?: number
   totalAmount?: number
-  locationText: string
+  lastOrderAt?: string
+  locationText?: string
   registerAt?: string
   idCardFront: string
   idCardBack: string
-  idCardHandheld: string
+  idCardHandheld?: string
   creditStatus?: UserItem['creditStatus']
   idNumber?: string
   riskControlSnapshot?: UserRiskSnapshot | null
   riskUpstreamConfigured?: boolean
+  /** 仅管理端 GET 用户列表/详情返回，用于编辑回显 */
+  adminPasswordPlain?: string
+  adminRemark?: string
+  orderBlacklisted?: boolean
+  registerChannelCode?: string
+  registerChannelName?: string
+  registerChannelLabel?: string
 }
 
 const MALL_API_BASE = `${(import.meta.env.VITE_MALL_API_BASE || 'http://localhost:3110/api').replace(/\/$/, '')}`
@@ -59,18 +72,26 @@ const quotaDialogVisible = ref(false)
 const quotaSaving = ref(false)
 const quotaTarget = ref<ListedUser | null>(null)
 const quotaInput = ref('')
+const remarkDialogVisible = ref(false)
+const remarkSaving = ref(false)
+const remarkTarget = ref<ListedUser | null>(null)
+const remarkDraft = ref('')
+const blacklistBusyId = ref('')
 const createDialogVisible = ref(false)
 const keyword = ref('')
+/** 下单用户页：按「最近一笔已计入订单」的本地日期筛选 */
+const orderDateKey = ref<string | null>(null)
 const previewUser = ref<ListedUser | null>(null)
 const editingUserId = ref<string | null>(null)
 const userRiskDialogVisible = ref(false)
 const riskDialogUserId = ref<string | null>(null)
+/** 打开编辑时接口回显的登录密码；仅在与当前输入一致时不随 PATCH 重复提交 */
+const editPasswordBaseline = ref('')
 
 const createForm = reactive({
   name: '',
   phone: '',
   idNumber: '',
-  locationText: '',
   creditStatus: '良好' as UserItem['creditStatus'],
   /** 可选；至少 6 位才会写入商城登录密码 */
   initialPassword: '',
@@ -78,17 +99,71 @@ const createForm = reactive({
 
 const canManageUsers = computed(() => getAdminSession()?.role === 'super_admin')
 
+const route = useRoute()
+
+/** 下单用户页：仅展示订单数大于 0 的用户 */
+const isOrderingUsersView = computed(() => route.path === '/users/ordering')
+
 const editForm = reactive({
   name: '',
   phone: '',
   idNumber: '',
-  locationText: '',
   creditStatus: '良好' as UserItem['creditStatus'],
   /** 留空则不修改；填写则更新商城登录密码，至少 6 位 */
   newPassword: '',
 })
 
-const filteredUsers = computed(() => users.value)
+const filteredUsers = computed(() => {
+  if (!isOrderingUsersView.value) {
+    return users.value
+  }
+  return users.value.filter(u => Number(u.orderCount || 0) > 0)
+})
+
+/** 下单用户：可选按下单日本地日期筛选，再按最近下单时间倒序；注册用户：保持接口顺序 */
+const tableUsers = computed(() => {
+  let list = [...filteredUsers.value]
+  if (isOrderingUsersView.value) {
+    const dk = orderDateKey.value
+    if (dk) {
+      list = list.filter((u) => {
+        if (!u.lastOrderAt) {
+          return false
+        }
+        return localYmdFromIso(u.lastOrderAt) === dk
+      })
+    }
+    return list.sort((a, b) => {
+      const ta = a.lastOrderAt ? new Date(a.lastOrderAt).getTime() : 0
+      const tb = b.lastOrderAt ? new Date(b.lastOrderAt).getTime() : 0
+      if (tb !== ta) {
+        return tb - ta
+      }
+      return String(a.phone).localeCompare(String(b.phone))
+    })
+  }
+  return list
+})
+
+watch(
+  () => route.path,
+  (path) => {
+    if (path !== '/users/ordering') {
+      orderDateKey.value = null
+    }
+  },
+)
+
+function localYmdFromIso(iso: string) {
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) {
+    return ''
+  }
+  const y = d.getFullYear()
+  const m = `${d.getMonth() + 1}`.padStart(2, '0')
+  const day = `${d.getDate()}`.padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
 
 function formatDateTime(value?: string) {
   if (!value) return '-'
@@ -102,7 +177,7 @@ function formatDateTime(value?: string) {
   return `${yyyy}-${mm}-${dd} ${hh}:${min}`
 }
 
-function creditStatusTagType(status: UserItem['creditStatus']): 'success' | 'warning' | 'info' | 'danger' {
+function creditStatusTagType(status: DisplayCreditStatus | UserItem['creditStatus']): 'success' | 'warning' | 'info' | 'danger' {
   if (status === '优秀') return 'success'
   if (status === '良好') return 'info'
   if (status === '一般') return 'warning'
@@ -121,7 +196,12 @@ function onRiskDialogUserUpdated(mapped: UserItem) {
     users.value[idx] = {
       ...prev,
       ...mapped,
-      riskReport: prev.riskReport,
+      riskControlSnapshot: mapped.riskControlSnapshot ?? prev.riskControlSnapshot,
+      riskUpstreamConfigured: mapped.riskUpstreamConfigured ?? prev.riskUpstreamConfigured,
+      adminPasswordPlain: mapped.adminPasswordPlain ?? prev.adminPasswordPlain,
+      lastOrderAt: mapped.lastOrderAt ?? prev.lastOrderAt,
+      adminRemark: mapped.adminRemark ?? prev.adminRemark,
+      orderBlacklisted: mapped.orderBlacklisted ?? prev.orderBlacklisted,
     }
   }
 }
@@ -136,37 +216,139 @@ function isMockImgSrc(src: string) {
   return !s || s.startsWith('mock://')
 }
 
-function buildRiskReport(user: ApiUserItem): MallUserRiskPreview {
-  const orderCount = Number(user.orderCount || 0)
-  const totalAmount = Number(user.totalAmount || 0)
-  const creditStatus = user.creditStatus || '良好'
-  const scoreMap: Record<UserItem['creditStatus'], number> = { 优秀: 92, 良好: 78, 一般: 68, 风险: 56 }
-  const riskLevelMap: Record<UserItem['creditStatus'], MallUserRiskPreview['riskLevel']> = { 优秀: '低风险', 良好: '中风险', 一般: '中风险', 风险: '高风险' }
-  const overdueMap: Record<UserItem['creditStatus'], number> = { 优秀: 0, 良好: 1, 一般: 2, 风险: 4 }
-  const repayRateMap: Record<UserItem['creditStatus'], number> = { 优秀: 100, 良好: 92, 一般: 84, 风险: 61 }
-  const baseTags: Record<UserItem['creditStatus'], string[]> = {
-    优秀: ['实名一致', '稳定消费', '无逾期'],
-    良好: ['消费活跃', '履约正常'],
-    一般: ['消费波动', '建议持续观察'],
-    风险: ['多次逾期', '高频分期', '还款波动'],
+function findFourteenRow(rows: RiskProductRow[] | undefined, slotKey: string): RiskProductRow | null {
+  if (!Array.isArray(rows)) {
+    return null
+  }
+  return rows.find(r => r.slotKey === slotKey) || null
+}
+
+/** 占位槽「无执行记录」与真实跳过区分展示 */
+function isRiskRowPlaceholderSkipped(row: RiskProductRow): boolean {
+  return row.state === 'skipped'
+    && (String(row.skippedReason || '').includes('无执行记录') || !String(row.skippedReason || '').trim())
+}
+
+type OrderRiskStepDisplay = {
+  slotKey: string
+  label: string
+  row: RiskProductRow | null
+  /** 通过 | 未通过 | 已跳过 | 暂无 */
+  outcome: 'pass' | 'fail' | 'skip' | 'empty'
+  detail: string
+  /** 与风控详情弹窗一致的结构化摘要行 */
+  facts: RiskFactLine[]
+}
+
+const RADAR_SLOT_KEY = 'radar_v4_enc'
+
+function buildOrderRiskPreviewStep(
+  slotKey: string,
+  defaultLabel: string,
+  row: RiskProductRow | null,
+): OrderRiskStepDisplay {
+  let outcome: OrderRiskStepDisplay['outcome'] = 'empty'
+  let detail = ''
+  if (row) {
+    if (row.state === 'ok') {
+      outcome = 'pass'
+    }
+    else if (row.state === 'fail') {
+      outcome = 'fail'
+      detail = String(row.error || '').trim()
+    }
+    else if (isRiskRowPlaceholderSkipped(row)) {
+      outcome = 'empty'
+      detail = ''
+    }
+    else {
+      outcome = 'skip'
+      detail = String(row.skippedReason || '').trim()
+    }
+  }
+  const label = row?.productLabel?.trim() || defaultLabel
+  const facts = row ? getRiskFactLines(row) : []
+  return { slotKey, label, row, outcome, detail, facts }
+}
+
+function buildOrderSubmitSevenPanel(snapshot: UserRiskSnapshot | null | undefined): {
+  steps: OrderRiskStepDisplay[]
+  radarStep: OrderRiskStepDisplay
+  summary: string
+  checkedAt: string
+} {
+  const steps: OrderRiskStepDisplay[] = []
+  for (const key of INSTALLMENT_ORDER_RISK_STEP_KEYS) {
+    const defaultLabel = INSTALLMENT_ORDER_RISK_STEP_LABELS[key] || key
+    const row = snapshot ? findFourteenRow(snapshot.fourteenRows, key) : null
+    steps.push(buildOrderRiskPreviewStep(key, defaultLabel, row))
   }
 
-  return {
-    creditScore: scoreMap[creditStatus],
-    riskLevel: riskLevelMap[creditStatus],
-    overdueCount: overdueMap[creditStatus],
-    repayRate30d: repayRateMap[creditStatus],
-    suggestedLimit: Math.max(8000, Math.round(totalAmount * 2.5) || 12000),
-    avgInstallmentAmount: orderCount > 0 ? Number((totalAmount / orderCount).toFixed(2)) : 0,
-    tags: baseTags[creditStatus],
-    summary:
-      creditStatus === '风险'
-        ? '用户近期连续出现逾期，建议收紧额度并加强人工复核。'
-        : creditStatus === '优秀'
-          ? '用户近期还款稳定，未发现风险预警，可提高分期额度。'
-          : '用户具备持续消费能力，建议结合订单履约情况动态调整额度。',
+  const radarRow = snapshot ? findFourteenRow(snapshot.fourteenRows, RADAR_SLOT_KEY) : null
+  const radarStep = buildOrderRiskPreviewStep(RADAR_SLOT_KEY, '风控雷达（全景雷达-MD5）', radarRow)
+
+  const slots = [...steps, radarStep]
+  const tested = slots.filter(s => s.outcome !== 'empty')
+  const passN = slots.filter(s => s.outcome === 'pass').length
+  const failN = slots.filter(s => s.outcome === 'fail').length
+  const skipN = slots.filter(s => s.outcome === 'skip').length
+  const emptyN = slots.filter(s => s.outcome === 'empty').length
+
+  let summary = ''
+  if (tested.length === 0) {
+    summary = '档案中尚无下单七项与全景雷达的实测结果（多为占位「无执行记录」）。用户先享后付下单并完成系统审核后，接口结论会写入档案；也可点击「查看风控详情」手动单条核查。'
   }
+  else {
+    summary = `八项中已有 ${tested.length} 项有明确结论：通过 ${passN}，未通过 ${failN}，跳过 ${skipN}；未写入/占位 ${emptyN} 项。`
+    if (snapshot?.passed === false || failN > 0) {
+      summary += ' 存在未通过项时，请结合订单与人工审核处理。'
+    }
+    else if (failN === 0 && passN === slots.length) {
+      summary += ' 八项均已通过。'
+    }
+    else if (failN === 0 && passN === INSTALLMENT_ORDER_RISK_STEP_KEYS.length && radarStep.outcome === 'empty') {
+      summary += ' 下单七项均已通过；全景雷达尚未写入结论。'
+    }
+    const sm = typeof snapshot?.summaryMessage === 'string' ? snapshot.summaryMessage.trim() : ''
+    if (sm) {
+      summary += ` ${sm}`
+    }
+  }
+
+  const checkedAt = snapshot?.checkedAt ? formatDateTime(snapshot.checkedAt) : ''
+  return { steps, radarStep, summary, checkedAt }
 }
+
+const previewOrderRiskPanel = computed(() => buildOrderSubmitSevenPanel(previewUser.value?.riskControlSnapshot))
+
+/** 列表/预览展示用：八项风控任一为「未通过」→ 风险，否则良好（与档案实测结论一致，不读库内 creditStatus 字段） */
+type DisplayCreditStatus = '风险' | '良好'
+
+function riskSnapshotHasAnyFailedSlot(snapshot: UserRiskSnapshot | null | undefined): boolean {
+  if (!snapshot || !Array.isArray(snapshot.fourteenRows)) {
+    return false
+  }
+  const keys: string[] = [...INSTALLMENT_ORDER_RISK_STEP_KEYS, RADAR_SLOT_KEY]
+  for (const key of keys) {
+    const row = findFourteenRow(snapshot.fourteenRows, key)
+    if (row?.state === 'fail') {
+      return true
+    }
+  }
+  return false
+}
+
+function displayCreditStatusFromRisk(user: ListedUser | null | undefined): DisplayCreditStatus {
+  if (!user) {
+    return '良好'
+  }
+  if (riskSnapshotHasAnyFailedSlot(user.riskControlSnapshot)) {
+    return '风险'
+  }
+  return '良好'
+}
+
+const previewDisplayCreditStatus = computed(() => displayCreditStatusFromRisk(previewUser.value))
 
 function mapApiUser(user: ApiUserItem): ListedUser {
   const creditStatus = user.creditStatus || '良好'
@@ -181,8 +363,11 @@ function mapApiUser(user: ApiUserItem): ListedUser {
     quota,
     orderCount: Number(user.orderCount || 0),
     totalAmount: Number(user.totalAmount || 0),
-    locationText: user.locationText || '-',
+    locationText: user.locationText || '',
     registerAt: formatDateTime(user.registerAt),
+    lastOrderAt: typeof user.lastOrderAt === 'string' && user.lastOrderAt.trim()
+      ? user.lastOrderAt.trim()
+      : undefined,
     idCardFront: user.idCardFront || '',
     idCardBack: user.idCardBack || '',
     idCardHandheld: user.idCardHandheld || '',
@@ -192,9 +377,14 @@ function mapApiUser(user: ApiUserItem): ListedUser {
           : undefined)
       : undefined,
     creditStatus,
-    riskReport: buildRiskReport(user),
     riskControlSnapshot: user.riskControlSnapshot ?? undefined,
     riskUpstreamConfigured: user.riskUpstreamConfigured,
+    adminPasswordPlain: typeof user.adminPasswordPlain === 'string' ? user.adminPasswordPlain : undefined,
+    adminRemark: typeof user.adminRemark === 'string' ? user.adminRemark : '',
+    orderBlacklisted: Boolean(user.orderBlacklisted),
+    registerChannelCode: typeof user.registerChannelCode === 'string' ? user.registerChannelCode.trim() : undefined,
+    registerChannelName: typeof user.registerChannelName === 'string' ? user.registerChannelName.trim() : undefined,
+    registerChannelLabel: typeof user.registerChannelLabel === 'string' ? user.registerChannelLabel.trim() : undefined,
   }
 }
 
@@ -231,6 +421,7 @@ function openPreview(user: ListedUser) {
 function closePreview() {
   previewUser.value = null
   editingUserId.value = null
+  editPasswordBaseline.value = ''
 }
 
 function startEdit(user: ListedUser) {
@@ -240,9 +431,10 @@ function startEdit(user: ListedUser) {
   editForm.name = user.name
   editForm.phone = user.phone
   editForm.idNumber = user.idNumber || ''
-  editForm.locationText = user.locationText
   editForm.creditStatus = user.creditStatus
-  editForm.newPassword = ''
+  const echo = typeof user.adminPasswordPlain === 'string' ? user.adminPasswordPlain : ''
+  editForm.newPassword = echo
+  editPasswordBaseline.value = echo
 }
 
 function openCreateDialog() {
@@ -251,7 +443,6 @@ function openCreateDialog() {
   createForm.name = ''
   createForm.phone = ''
   createForm.idNumber = ''
-  createForm.locationText = ''
   createForm.creditStatus = '良好'
   createForm.initialPassword = ''
 }
@@ -289,7 +480,6 @@ async function createUser() {
       body: JSON.stringify({
         name: createForm.name.trim(),
         phone: createForm.phone.trim(),
-        locationText: createForm.locationText.trim(),
         creditStatus: createForm.creditStatus,
         ...(idRawCreate ? { idNumber: idRawCreate } : {}),
         ...(initPwd.length >= 6 ? { initialPassword: initPwd } : {}),
@@ -322,7 +512,7 @@ async function saveEdit() {
   }
   const pwd = editForm.newPassword.trim()
   if (pwd.length > 0 && pwd.length < 6) {
-    ElMessage.warning('新登录密码至少 6 位，或留空保持原密码')
+    ElMessage.warning('登录密码至少 6 位，或留空保持原密码')
     return
   }
   const idRaw = editForm.idNumber.trim().toUpperCase()
@@ -343,10 +533,9 @@ async function saveEdit() {
       body: JSON.stringify({
         name: editForm.name.trim(),
         phone: editForm.phone.trim(),
-        locationText: editForm.locationText.trim(),
         creditStatus: editForm.creditStatus,
         idNumber: idRaw,
-        ...(pwd.length >= 6 ? { newPassword: pwd } : {}),
+        ...(pwd.length >= 6 && pwd !== editPasswordBaseline.value ? { newPassword: pwd } : {}),
       }),
     })
     if (!response.ok) {
@@ -421,7 +610,7 @@ watch(users, () => {
   }
 })
 
-function getStatusClass(status: UserItem['creditStatus']) {
+function getStatusClass(status: DisplayCreditStatus | UserItem['creditStatus']) {
   if (status === '优秀') return 'credit-badge badge-good'
   if (status === '良好') return 'credit-badge badge-ok'
   if (status === '一般') return 'credit-badge badge-mid'
@@ -470,6 +659,73 @@ async function saveQuota() {
     quotaSaving.value = false
   }
 }
+
+function openRemarkDialog(user: ListedUser) {
+  if (!canManageUsers.value) return
+  remarkTarget.value = user
+  remarkDraft.value = typeof user.adminRemark === 'string' ? user.adminRemark : ''
+  remarkDialogVisible.value = true
+}
+
+function closeRemarkDialog() {
+  if (remarkSaving.value) return
+  remarkDialogVisible.value = false
+  remarkTarget.value = null
+  remarkDraft.value = ''
+}
+
+async function saveRemark() {
+  if (!canManageUsers.value || !remarkTarget.value || remarkSaving.value) return
+  const id = remarkTarget.value.id
+  remarkSaving.value = true
+  try {
+    const response = await fetch(`${MALL_API_BASE}/users/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      headers: withAdminAuthHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ adminRemark: remarkDraft.value.trim() }),
+    })
+    if (!response.ok) {
+      const payload = await response.json() as { msg?: string }
+      throw new Error(payload.msg || `保存备注失败: ${response.status}`)
+    }
+    ElMessage.success('备注已保存')
+    closeRemarkDialog()
+    await fetchUsers()
+  }
+  catch (error) {
+    console.error('保存备注失败', error)
+    ElMessage.error(error instanceof Error ? error.message : '保存备注失败')
+  }
+  finally {
+    remarkSaving.value = false
+  }
+}
+
+async function toggleBlacklist(user: ListedUser) {
+  if (!canManageUsers.value || blacklistBusyId.value) return
+  blacklistBusyId.value = user.id
+  const next = !user.orderBlacklisted
+  try {
+    const response = await fetch(`${MALL_API_BASE}/users/${encodeURIComponent(user.id)}`, {
+      method: 'PATCH',
+      headers: withAdminAuthHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ orderBlacklisted: next }),
+    })
+    if (!response.ok) {
+      const payload = await response.json() as { msg?: string }
+      throw new Error(payload.msg || `操作失败: ${response.status}`)
+    }
+    ElMessage.success(next ? '已限制该用户下单' : '已解除下单限制')
+    await fetchUsers()
+  }
+  catch (error) {
+    console.error('拉黑状态更新失败', error)
+    ElMessage.error(error instanceof Error ? error.message : '操作失败')
+  }
+  finally {
+    blacklistBusyId.value = ''
+  }
+}
 </script>
 
 <template>
@@ -481,6 +737,15 @@ async function saveQuota() {
         placeholder="搜索姓名 / 手机号"
         clearable
       />
+      <el-date-picker
+        v-if="isOrderingUsersView"
+        v-model="orderDateKey"
+        class="toolbar-datepicker"
+        type="date"
+        placeholder="下单日期"
+        value-format="YYYY-MM-DD"
+        clearable
+      />
       <button
         class="btn btn-refresh"
         type="button"
@@ -490,7 +755,7 @@ async function saveQuota() {
         刷新
       </button>
       <button
-        v-if="canManageUsers"
+        v-if="canManageUsers && !isOrderingUsersView"
         class="btn btn-primary"
         type="button"
         @click="openCreateDialog"
@@ -502,33 +767,36 @@ async function saveQuota() {
     <table class="table">
       <thead>
         <tr>
-          <th>注册时间</th>
+          <th>{{ isOrderingUsersView ? '下单时间' : '注册时间' }}</th>
           <th>姓名</th>
           <th>手机号</th>
+          <th>注册渠道</th>
           <th>信誉状态</th>
           <th>额度</th>
           <th>订单数</th>
           <th>操作</th>
+          <th>备注</th>
         </tr>
       </thead>
       <tbody>
         <tr
-          v-for="item in filteredUsers"
+          v-for="item in tableUsers"
           :key="item.id"
         >
-          <td>{{ item.registerAt }}</td>
+          <td>{{ isOrderingUsersView ? formatDateTime(item.lastOrderAt) : item.registerAt }}</td>
           <td>{{ item.name }}</td>
           <td>{{ item.phone }}</td>
+          <td>{{ item.registerChannelLabel || item.registerChannelName || item.registerChannelCode || '—' }}</td>
           <td class="td-credit-status">
             <el-tag
-              :type="creditStatusTagType(item.creditStatus)"
+              :type="creditStatusTagType(displayCreditStatusFromRisk(item))"
               effect="light"
               round
               size="small"
               class="credit-status-tag"
               @click="openUserRiskDetail(item)"
             >
-              {{ item.creditStatus }}
+              {{ displayCreditStatusFromRisk(item) }}
             </el-tag>
           </td>
           <td class="quota-cell">
@@ -562,6 +830,30 @@ async function saveQuota() {
                 @click="startEdit(item)"
               >
                 修改
+              </button>
+              <button
+                v-if="canManageUsers"
+                type="button"
+                class="btn btn-ghost"
+                @click="openRemarkDialog(item)"
+              >
+                {{ item.adminRemark?.trim() ? '编辑备注' : '添加备注' }}
+              </button>
+              <button
+                v-if="canManageUsers"
+                type="button"
+                class="btn"
+                :class="item.orderBlacklisted ? 'btn-muted' : 'btn-danger'"
+                :disabled="blacklistBusyId === item.id"
+                @click="toggleBlacklist(item)"
+              >
+                {{
+                  blacklistBusyId === item.id
+                    ? '处理中…'
+                    : item.orderBlacklisted
+                      ? '移除黑名单'
+                      : '拉黑'
+                }}
               </button>
               <div
                 v-if="canManageUsers"
@@ -602,9 +894,17 @@ async function saveQuota() {
               </div>
             </div>
           </td>
+          <td class="td-remark">
+            <p
+              class="remark-preview"
+              :title="item.adminRemark?.trim() ? item.adminRemark : ''"
+            >
+              {{ item.adminRemark?.trim() ? item.adminRemark : '—' }}
+            </p>
+          </td>
         </tr>
-        <tr v-if="!loading && filteredUsers.length === 0">
-          <td colspan="7" style="text-align: center; color: #9ca3af;">
+        <tr v-if="!loading && tableUsers.length === 0">
+          <td colspan="8" style="text-align: center; color: #9ca3af;">
             暂无用户数据
           </td>
         </tr>
@@ -654,14 +954,6 @@ async function saveQuota() {
             maxlength="18"
             clearable
             placeholder="18 位大陆身份证号，风控 B 类接口必填；可留空"
-          />
-        </label>
-        <label class="full">
-          注册定位
-          <el-input
-            v-model="createForm.locationText"
-            class="form-input"
-            clearable
           />
         </label>
         <label class="full">
@@ -745,6 +1037,51 @@ async function saveQuota() {
     </div>
   </div>
 
+  <div
+    v-if="remarkDialogVisible && remarkTarget && canManageUsers"
+    class="modal-mask"
+    @click.self="closeRemarkDialog"
+  >
+    <div class="modal-panel create-modal">
+      <div class="modal-header">
+        <h3>用户备注</h3>
+        <button
+          type="button"
+          class="btn btn-ghost"
+          :disabled="remarkSaving"
+          @click="closeRemarkDialog"
+        >
+          关闭
+        </button>
+      </div>
+      <p class="quota-hint">
+        {{ remarkTarget.name }}（{{ remarkTarget.phone }}）
+      </p>
+      <label class="quota-label full">
+        备注内容
+        <el-input
+          v-model="remarkDraft"
+          class="form-input"
+          type="textarea"
+          :rows="4"
+          maxlength="500"
+          show-word-limit
+          placeholder="仅后台可见，可用于记录沟通或风控说明"
+        />
+      </label>
+      <div class="actions actions-right">
+        <button
+          class="btn btn-primary"
+          type="button"
+          :disabled="remarkSaving"
+          @click="saveRemark"
+        >
+          {{ remarkSaving ? '保存中...' : '保存' }}
+        </button>
+      </div>
+    </div>
+  </div>
+
   <UserRiskDetailDialog
     v-model="userRiskDialogVisible"
     :user-id="riskDialogUserId"
@@ -817,15 +1154,7 @@ async function saveQuota() {
               />
             </label>
             <label class="user-preview-field user-preview-field--full">
-              <span class="user-preview-field__label">注册定位</span>
-              <el-input
-                v-model="editForm.locationText"
-                class="form-input"
-                clearable
-              />
-            </label>
-            <label class="user-preview-field user-preview-field--full">
-              <span class="user-preview-field__label">信誉状态</span>
+              <span class="user-preview-field__label">信誉状态（入库）</span>
               <el-select
                 v-model="editForm.creditStatus"
                 class="form-select"
@@ -835,9 +1164,12 @@ async function saveQuota() {
                 <el-option label="一般" value="一般" />
                 <el-option label="风险" value="风险" />
               </el-select>
+              <p class="user-preview-field__hint">
+                列表与预览角标按风控档案自动显示为「良好」或「风险」（下单七项 + 全景雷达任一条未通过即为风险）。
+              </p>
             </label>
             <label class="user-preview-field user-preview-field--full">
-              <span class="user-preview-field__label">新登录密码</span>
+              <span class="user-preview-field__label">登录密码</span>
               <el-input
                 v-model="editForm.newPassword"
                 class="form-input"
@@ -852,6 +1184,10 @@ async function saveQuota() {
               <div class="user-preview-edit-readonly__cell">
                 <span class="user-preview-edit-readonly__k">注册时间</span>
                 <span class="user-preview-edit-readonly__v">{{ previewUser.registerAt }}</span>
+              </div>
+              <div class="user-preview-edit-readonly__cell">
+                <span class="user-preview-edit-readonly__k">注册渠道</span>
+                <span class="user-preview-edit-readonly__v">{{ previewUser.registerChannelLabel || previewUser.registerChannelName || previewUser.registerChannelCode || '—' }}</span>
               </div>
               <div class="user-preview-edit-readonly__cell">
                 <span class="user-preview-edit-readonly__k">额度</span>
@@ -873,6 +1209,19 @@ async function saveQuota() {
               <el-descriptions-item label="手机号">
                 {{ previewUser.phone }}
               </el-descriptions-item>
+              <el-descriptions-item
+                v-if="canManageUsers"
+                label="登录密码"
+              >
+                <template v-if="previewUser.adminPasswordPlain">
+                  <span>已设置</span>
+                  <span class="user-preview-meta__muted user-preview-pwd-hint"> · 点击「编辑」可查看或重置</span>
+                </template>
+                <span
+                  v-else
+                  class="user-preview-meta__muted"
+                >未设置</span>
+              </el-descriptions-item>
               <el-descriptions-item label="身份证号码">
                 <span
                   v-if="previewUser.idNumber"
@@ -883,14 +1232,11 @@ async function saveQuota() {
                   class="user-preview-meta__muted"
                 >未填写</span>
               </el-descriptions-item>
-              <el-descriptions-item
-                label="注册定位"
-                :span="2"
-              >
-                {{ previewUser.locationText }}
-              </el-descriptions-item>
               <el-descriptions-item label="注册时间">
                 {{ previewUser.registerAt }}
+              </el-descriptions-item>
+              <el-descriptions-item label="注册渠道">
+                {{ previewUser.registerChannelLabel || previewUser.registerChannelName || previewUser.registerChannelCode || '—' }}
               </el-descriptions-item>
               <el-descriptions-item label="额度">
                 <span class="user-preview-quota">¥ {{ previewUser.quota }}</span>
@@ -900,8 +1246,8 @@ async function saveQuota() {
                 :span="2"
               >
                 <div class="user-preview-credit-row">
-                  <span :class="getStatusClass(previewUser.creditStatus)">
-                    {{ previewUser.creditStatus }}
+                  <span :class="getStatusClass(previewDisplayCreditStatus)">
+                    {{ previewDisplayCreditStatus }}
                   </span>
                   <button
                     type="button"
@@ -980,10 +1326,16 @@ async function saveQuota() {
             </div>
             <div class="user-preview-id-cell">
               <p class="user-preview-id-label">
-                手持身份证照片
+                手持身份证
               </p>
               <div class="user-preview-id-frame">
-                <template v-if="isMockImgSrc(previewUser.idCardHandheld)">
+                <template v-if="!String(previewUser.idCardHandheld || '').trim()">
+                  <div class="user-preview-id-placeholder">
+                    <el-icon class="user-preview-id-placeholder__icon"><Picture /></el-icon>
+                    <span>未上传</span>
+                  </div>
+                </template>
+                <template v-else-if="isMockImgSrc(previewUser.idCardHandheld)">
                   <div class="user-preview-id-placeholder">
                     <el-icon class="user-preview-id-placeholder__icon"><Picture /></el-icon>
                     <span>模拟证件 · 无图片</span>
@@ -1017,64 +1369,133 @@ async function saveQuota() {
                   信誉报告
                 </h4>
                 <p class="user-preview-risk-card__sub">
-                  模拟风控数据 · 仅供参考
+                  <template v-if="previewOrderRiskPanel.checkedAt">
+                    档案更新时间 {{ previewOrderRiskPanel.checkedAt }} ·
+                  </template>
+                  先享后付下单七项与全景雷达（共八项，与商城档案写入口径一致）
                 </p>
               </div>
-              <span :class="getStatusClass(previewUser.creditStatus)">
-                {{ previewUser.creditStatus }}
+              <span :class="getStatusClass(previewDisplayCreditStatus)">
+                {{ previewDisplayCreditStatus }}
               </span>
             </div>
 
-            <div class="user-preview-risk-stats">
-              <article class="user-preview-stat">
-                <p class="user-preview-stat__label">
-                  信用评分
-                </p>
-                <strong class="user-preview-stat__value user-preview-stat__value--score">{{ previewUser.riskReport.creditScore }}</strong>
-              </article>
-              <article class="user-preview-stat">
-                <p class="user-preview-stat__label">
-                  风险等级
-                </p>
-                <strong class="user-preview-stat__value">{{ previewUser.riskReport.riskLevel }}</strong>
-              </article>
-              <article class="user-preview-stat">
-                <p class="user-preview-stat__label">
-                  近30日还款率
-                </p>
-                <strong class="user-preview-stat__value">{{ previewUser.riskReport.repayRate30d }}%</strong>
-              </article>
-              <article class="user-preview-stat">
-                <p class="user-preview-stat__label">
-                  历史逾期次数
-                </p>
-                <strong class="user-preview-stat__value">{{ previewUser.riskReport.overdueCount }}</strong>
-              </article>
-              <article class="user-preview-stat">
-                <p class="user-preview-stat__label">
-                  建议授信额度
-                </p>
-                <strong class="user-preview-stat__value">¥ {{ previewUser.riskReport.suggestedLimit }}</strong>
-              </article>
-              <article class="user-preview-stat">
-                <p class="user-preview-stat__label">
-                  平均分期金额
-                </p>
-                <strong class="user-preview-stat__value">¥ {{ previewUser.riskReport.avgInstallmentAmount }}</strong>
-              </article>
-            </div>
-
-            <div class="user-preview-risk-tags">
-              <span
-                v-for="tag in previewUser.riskReport.tags"
-                :key="tag"
-                class="user-preview-tag"
+            <div class="user-preview-risk-seven">
+              <article
+                v-for="step in previewOrderRiskPanel.steps"
+                :key="step.slotKey"
+                class="user-preview-risk-step"
               >
-                {{ tag }}
-              </span>
+                <p class="user-preview-risk-step__label">
+                  {{ step.label }}
+                </p>
+                <div class="user-preview-risk-step__row">
+                  <template v-if="step.outcome === 'pass'">
+                    <el-icon class="user-preview-risk-icon user-preview-risk-icon--ok" aria-hidden="true">
+                      <CircleCheck />
+                    </el-icon>
+                    <span class="user-preview-risk-outcome">通过</span>
+                  </template>
+                  <template v-else-if="step.outcome === 'fail'">
+                    <el-icon class="user-preview-risk-icon user-preview-risk-icon--bad" aria-hidden="true">
+                      <CircleClose />
+                    </el-icon>
+                    <span class="user-preview-risk-outcome user-preview-risk-outcome--bad">未通过</span>
+                  </template>
+                  <template v-else-if="step.outcome === 'skip'">
+                    <el-icon class="user-preview-risk-icon user-preview-risk-icon--skip" aria-hidden="true">
+                      <Minus />
+                    </el-icon>
+                    <span class="user-preview-risk-outcome user-preview-risk-outcome--skip">已跳过</span>
+                  </template>
+                  <template v-else>
+                    <el-icon class="user-preview-risk-icon user-preview-risk-icon--muted" aria-hidden="true">
+                      <Minus />
+                    </el-icon>
+                    <span class="user-preview-risk-outcome user-preview-risk-outcome--muted">暂无</span>
+                  </template>
+                </div>
+                <ul
+                  v-if="step.facts.length"
+                  class="user-preview-risk-facts"
+                >
+                  <li
+                    v-for="(line, fi) in step.facts"
+                    :key="fi"
+                    class="user-preview-risk-facts__line"
+                    :class="{ 'user-preview-risk-facts__line--emph': line.emphasis }"
+                  >
+                    <span class="user-preview-risk-facts__k">{{ line.label }}</span>
+                    <span class="user-preview-risk-facts__v">{{ line.value }}</span>
+                  </li>
+                </ul>
+                <p
+                  v-if="step.detail"
+                  class="user-preview-risk-step__detail"
+                  :title="step.detail"
+                >
+                  {{ step.detail }}
+                </p>
+              </article>
             </div>
+
+            <div class="user-preview-risk-radar">
+              <article class="user-preview-risk-step user-preview-risk-step--radar">
+                <p class="user-preview-risk-step__label">
+                  {{ previewOrderRiskPanel.radarStep.label }}
+                </p>
+                <div class="user-preview-risk-step__row">
+                  <template v-if="previewOrderRiskPanel.radarStep.outcome === 'pass'">
+                    <el-icon class="user-preview-risk-icon user-preview-risk-icon--ok" aria-hidden="true">
+                      <CircleCheck />
+                    </el-icon>
+                    <span class="user-preview-risk-outcome">通过</span>
+                  </template>
+                  <template v-else-if="previewOrderRiskPanel.radarStep.outcome === 'fail'">
+                    <el-icon class="user-preview-risk-icon user-preview-risk-icon--bad" aria-hidden="true">
+                      <CircleClose />
+                    </el-icon>
+                    <span class="user-preview-risk-outcome user-preview-risk-outcome--bad">未通过</span>
+                  </template>
+                  <template v-else-if="previewOrderRiskPanel.radarStep.outcome === 'skip'">
+                    <el-icon class="user-preview-risk-icon user-preview-risk-icon--skip" aria-hidden="true">
+                      <Minus />
+                    </el-icon>
+                    <span class="user-preview-risk-outcome user-preview-risk-outcome--skip">已跳过</span>
+                  </template>
+                  <template v-else>
+                    <el-icon class="user-preview-risk-icon user-preview-risk-icon--muted" aria-hidden="true">
+                      <Minus />
+                    </el-icon>
+                    <span class="user-preview-risk-outcome user-preview-risk-outcome--muted">暂无</span>
+                  </template>
+                </div>
+                <ul
+                  v-if="previewOrderRiskPanel.radarStep.facts.length"
+                  class="user-preview-risk-facts user-preview-risk-facts--radar"
+                >
+                  <li
+                    v-for="(line, fi) in previewOrderRiskPanel.radarStep.facts"
+                    :key="fi"
+                    class="user-preview-risk-facts__line"
+                    :class="{ 'user-preview-risk-facts__line--emph': line.emphasis }"
+                  >
+                    <span class="user-preview-risk-facts__k">{{ line.label }}</span>
+                    <span class="user-preview-risk-facts__v">{{ line.value }}</span>
+                  </li>
+                </ul>
+                <p
+                  v-if="previewOrderRiskPanel.radarStep.detail"
+                  class="user-preview-risk-step__detail user-preview-risk-step__detail--radar"
+                  :title="previewOrderRiskPanel.radarStep.detail"
+                >
+                  {{ previewOrderRiskPanel.radarStep.detail }}
+                </p>
+              </article>
+            </div>
+
             <p class="user-preview-risk-summary">
-              {{ previewUser.riskReport.summary }}
+              {{ previewOrderRiskPanel.summary }}
             </p>
           </div>
         </section>
@@ -1097,7 +1518,9 @@ async function saveQuota() {
 <style scoped>
 .actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
+  align-items: center;
 }
 
 .actions-right {
@@ -1107,6 +1530,10 @@ async function saveQuota() {
 
 .toolbar-input {
   width: 260px;
+}
+
+.toolbar-datepicker {
+  width: 168px;
 }
 
 .btn {
@@ -1163,8 +1590,36 @@ async function saveQuota() {
   color: #fff;
 }
 
+.btn-muted {
+  border-color: #9ca3af;
+  background: #f3f4f6;
+  color: #1f2937;
+}
+
 .btn-ghost {
   color: #374151;
+}
+
+.td-remark {
+  max-width: 280px;
+  vertical-align: top;
+}
+
+.remark-preview {
+  margin: 0;
+  font-size: 13px;
+  color: #374151;
+  line-height: 1.45;
+  max-height: 4.35em;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  word-break: break-word;
+}
+
+.quota-label.full {
+  width: 100%;
 }
 
 .delete-wrap {
@@ -1368,6 +1823,13 @@ async function saveQuota() {
   color: #64748b;
 }
 
+.user-preview-field__hint {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: #94a3b8;
+}
+
 .user-preview-edit-readonly {
   grid-column: 1 / -1;
   display: grid;
@@ -1401,6 +1863,12 @@ async function saveQuota() {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 14px;
+}
+
+@media (max-width: 900px) {
+  .user-preview-id-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 700px) {
@@ -1494,15 +1962,132 @@ async function saveQuota() {
   color: #64748b;
 }
 
-.user-preview-risk-stats {
+.user-preview-risk-seven {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
 }
 
+.user-preview-risk-step {
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  padding: 10px 12px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+
+.user-preview-risk-step__label {
+  margin: 0 0 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #334155;
+  line-height: 1.35;
+}
+
+.user-preview-risk-step__row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.user-preview-risk-icon {
+  font-size: 18px;
+}
+
+.user-preview-risk-icon--ok {
+  color: #16a34a;
+}
+
+.user-preview-risk-icon--bad {
+  color: #dc2626;
+}
+
+.user-preview-risk-icon--skip {
+  color: #d97706;
+}
+
+.user-preview-risk-icon--muted {
+  color: #94a3b8;
+}
+
+.user-preview-risk-outcome {
+  font-size: 12px;
+  font-weight: 600;
+  color: #15803d;
+}
+
+.user-preview-risk-outcome--bad {
+  color: #b91c1c;
+}
+
+.user-preview-risk-outcome--skip {
+  color: #b45309;
+}
+
+.user-preview-risk-outcome--muted {
+  font-weight: 500;
+  color: #64748b;
+}
+
+.user-preview-risk-facts {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.user-preview-risk-facts__line {
+  display: grid;
+  grid-template-columns: minmax(0, 0.42fr) minmax(0, 1fr);
+  gap: 8px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: #475569;
+}
+
+.user-preview-risk-facts__line--emph .user-preview-risk-facts__v {
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.user-preview-risk-facts__k {
+  color: #64748b;
+  word-break: break-word;
+}
+
+.user-preview-risk-facts__v {
+  word-break: break-word;
+}
+
+.user-preview-risk-facts--radar .user-preview-risk-facts__line {
+  grid-template-columns: minmax(0, 0.36fr) minmax(0, 1fr);
+}
+
+.user-preview-risk-radar {
+  margin-top: 10px;
+}
+
+.user-preview-risk-step__detail--radar {
+  -webkit-line-clamp: 6;
+}
+
+.user-preview-risk-step__detail {
+  margin: 8px 0 0;
+  font-size: 11px;
+  line-height: 1.45;
+  color: #64748b;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
 @media (max-width: 640px) {
-  .user-preview-risk-stats {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+  .user-preview-risk-seven {
+    grid-template-columns: 1fr;
   }
 
   .user-preview-edit-grid {
@@ -1514,61 +2099,7 @@ async function saveQuota() {
   }
 }
 
-.user-preview-stat {
-  background: #fff;
-  border: 1px solid #e2e8f0;
-  border-radius: 10px;
-  padding: 10px 12px;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
-}
-
-.user-preview-stat__label {
-  margin: 0;
-  font-size: 11px;
-  font-weight: 600;
-  color: #64748b;
-  text-transform: none;
-  letter-spacing: 0.02em;
-}
-
-.user-preview-stat__value {
-  display: block;
-  margin-top: 6px;
-  font-size: 15px;
-  font-weight: 700;
-  color: #0f172a;
-  font-variant-numeric: tabular-nums;
-}
-
-.user-preview-stat__value--score {
-  font-size: 22px;
-  background: linear-gradient(120deg, #4f46e5, #7c3aed);
-  background-clip: text;
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-}
-
-.user-preview-risk-tags {
-  margin-top: 14px;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.user-preview-tag {
-  display: inline-flex;
-  align-items: center;
-  padding: 4px 10px;
-  border-radius: 999px;
-  font-size: 12px;
-  font-weight: 600;
-  color: #4338ca;
-  background: rgba(99, 102, 241, 0.12);
-  border: 1px solid rgba(99, 102, 241, 0.2);
-}
-
-.user-preview-risk-summary {
-  margin: 14px 0 0;
+.user-preview-risk-summary {  margin: 14px 0 0;
   padding: 12px 14px;
   border-radius: 10px;
   font-size: 13px;

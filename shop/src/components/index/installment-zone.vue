@@ -77,6 +77,10 @@ if (!import.meta.env.SSR) {
             :src="item.image"
             :alt="item.name"
             class="pointer-events-none h-56 w-full object-cover"
+            loading="lazy"
+            decoding="async"
+            referrerpolicy="no-referrer"
+            @error="onMallProductImageError($event, item.name)"
           >
           <div class="p-5">
             <p class="mb-2 text-xs text-black/50">

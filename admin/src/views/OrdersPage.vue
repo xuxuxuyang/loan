@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { InstallmentItem, OrderItem } from '../stores/useOrdersStore'
 import { getAdminSession } from '../composables/useAdminAuth'
@@ -10,8 +11,14 @@ import { donePageProgress, startPageProgress } from '../utils/progress'
 
 const MALL_API_BASE = `${(import.meta.env.VITE_MALL_API_BASE || 'http://localhost:3110/api').replace(/\/$/, '')}`
 
+const route = useRoute()
+/** 订单数据页：仅展示后台已标记「卡包已发放」的订单 */
+const isCardPackageDataPage = computed(() => route.name === 'orders-card-data')
+
 const keyword = ref('')
 const status = ref<'全部' | OrderItem['status']>('全部')
+/** 订单数据页：按先享后付还款情况筛选（与发货状态无关） */
+const repayFilter = ref<'全部' | '待还款' | '已还款' | '已逾期'>('全部')
 const payType = ref<'全部' | OrderItem['payType']>('全部')
 const orderDate = ref('')
 const selectedOrder = ref<OrderItem | null>(null)
@@ -19,14 +26,17 @@ const loading = ref(false)
 const changingStatusOrderId = ref('')
 const trackingSavingId = ref('')
 const cardPackageSavingId = ref('')
+const cardPackageContractSavingId = ref('')
 const deletingOrderId = ref('')
 const trackingDialogOpen = ref(false)
 const trackingDialogOrder = ref<OrderItem | null>(null)
 const trackingDialogInput = ref('')
+const addressDialogOpen = ref(false)
+const addressDialogOrder = ref<OrderItem | null>(null)
 const userRiskDialogVisible = ref(false)
 const riskDialogUserId = ref<string | null>(null)
 const resolvingRiskUserOrderId = ref<string | null>(null)
-const { orders, recalculateOrderFields, fetchOrders, updateInstallmentPaid, updateOrderStatus, updateOrderShipment, updateOrderCardPackage, deleteOrder } = useOrdersStore()
+const { orders, recalculateOrderFields, fetchOrders, updateInstallmentPaid, updateInstallmentDueDate, updateOrderStatus, updateOrderShipment, updateOrderCardPackage, updateOrderCardPackageContract, deleteOrder } = useOrdersStore()
 const canOperateOrders = computed(() => getAdminSession()?.role === 'super_admin')
 
 function normalizePhone(raw: string): string {
@@ -83,9 +93,84 @@ function showTrackingEditor(item: OrderItem): boolean {
   return item.status === '待发货' || item.status === '待收货'
 }
 
+function formatLocalYmd(d: Date) {
+  const y = d.getFullYear()
+  const m = `${d.getMonth() + 1}`.padStart(2, '0')
+  const day = `${d.getDate()}`.padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+
+const todayYmd = computed(() => formatLocalYmd(new Date()))
+
+function dueKey(dueDate: string) {
+  const s = String(dueDate || '').trim()
+  const m = s.match(/^(\d{4}-\d{2}-\d{2})/)
+  return m ? m[1] : ''
+}
+
+/** 根据当前日期 + 各期还款日 + 是否已还，得到订单还款维度状态 */
+function orderRepayBucket(order: OrderItem): '已还款' | '待还款' | '已逾期' {
+  const plan = order.installmentPlan || []
+  if (plan.length === 0) {
+    return '已还款'
+  }
+  if (plan.every(p => p.paid)) {
+    return '已还款'
+  }
+  const t = todayYmd.value
+  for (const p of plan) {
+    if (p.paid) {
+      continue
+    }
+    const dk = dueKey(p.dueDate)
+    if (dk && dk < t) {
+      return '已逾期'
+    }
+  }
+  return '待还款'
+}
+
+function repayBucketTagType(bucket: '已还款' | '待还款' | '已逾期'): 'success' | 'warning' | 'danger' {
+  if (bucket === '已还款') {
+    return 'success'
+  }
+  if (bucket === '待还款') {
+    return 'warning'
+  }
+  return 'danger'
+}
+
+/** 单期在弹窗中的还款展示状态（与列表还款维度一致） */
+function periodRepayStatus(plan: InstallmentItem): '已还款' | '待还款' | '已逾期' {
+  if (plan.paid) {
+    return '已还款'
+  }
+  const dk = dueKey(plan.dueDate)
+  const t = todayYmd.value
+  if (dk && dk < t) {
+    return '已逾期'
+  }
+  return '待还款'
+}
+
+const deferDueSavingKey = ref('')
+
+const orderTableColspan = computed(() => (isCardPackageDataPage.value ? 14 : 13))
+
 const filteredOrders = computed(() => {
   // 订单管理仅展示已通过人工审核后的订单，待审核订单统一在“审核订单”页面处理。
-  return orders.value.filter(item => item.status !== '待审核' && item.status !== '风控未通过')
+  let list = orders.value.filter(item => item.status !== '待审核' && item.status !== '风控未通过')
+  if (isCardPackageDataPage.value) {
+    list = list.filter(item => item.cardPackageIssued)
+    if (repayFilter.value !== '全部') {
+      list = list.filter(item => orderRepayBucket(item) === repayFilter.value)
+    }
+  }
+  else {
+    // 已审核订单：卡包已发放后仅出现在「订单数据」，本列表不再展示
+    list = list.filter(item => !item.cardPackageIssued)
+  }
+  return list
 })
 
 function openPlan(order: OrderItem) {
@@ -104,11 +189,18 @@ async function toggleRepay(order: OrderItem, period: InstallmentItem) {
   recalculateOrderFields(order)
   try {
     await updateInstallmentPaid(order.id, period.period, nextPaid)
+    const id = selectedOrder.value?.id
+    if (id) {
+      const fresh = orders.value.find(o => o.id === id)
+      if (fresh) {
+        selectedOrder.value = fresh
+      }
+    }
   }
   catch (error) {
     period.paid = prevPaid
     recalculateOrderFields(order)
-    ElMessage.error('更新分期状态失败，请稍后重试')
+    ElMessage.error('更新先享后付状态失败，请稍后重试')
   }
 }
 
@@ -124,6 +216,15 @@ function openTrackingDialog(order: OrderItem) {
 function onTrackingDialogClosed() {
   trackingDialogOrder.value = null
   trackingDialogInput.value = ''
+}
+
+function openAddressDialog(order: OrderItem) {
+  addressDialogOrder.value = order
+  addressDialogOpen.value = true
+}
+
+function onAddressDialogClosed() {
+  addressDialogOrder.value = null
 }
 
 async function confirmTrackingDialog() {
@@ -167,8 +268,62 @@ async function confirmTrackingDialog() {
   }
 }
 
+/** 本页列表可操作的后台物流态（与接口 shipping / receiving / enjoying / reviewing 对应） */
+const ORDER_STATUS_EDIT_OPTIONS: Array<'待发货' | '待收货' | '已完成' | '待审核'> = [
+  '待发货',
+  '待收货',
+  '已完成',
+  '待审核',
+]
+
+const orderStatusToApi: Record<
+  '待发货' | '待收货' | '已完成' | '待审核',
+  'shipping' | 'receiving' | 'enjoying' | 'reviewing'
+> = {
+  待发货: 'shipping',
+  待收货: 'receiving',
+  已完成: 'enjoying',
+  待审核: 'reviewing',
+}
+
+async function handleOrderStatusCommand(order: OrderItem, label: string) {
+  if (!canOperateOrders.value) {
+    return
+  }
+  if (order.cardPackageIssued) {
+    ElMessage.warning('卡包已发放时不可修改订单状态，请先改为未发放')
+    return
+  }
+  const key = label as keyof typeof orderStatusToApi
+  if (!(key in orderStatusToApi)) {
+    return
+  }
+  if (order.status === label) {
+    return
+  }
+  if (changingStatusOrderId.value) {
+    return
+  }
+  changingStatusOrderId.value = order.id
+  try {
+    await updateOrderStatus(order.id, orderStatusToApi[key])
+    ElMessage.success('订单状态已更新')
+    await loadOrders()
+  }
+  catch {
+    ElMessage.error('更新订单状态失败，请稍后重试')
+  }
+  finally {
+    changingStatusOrderId.value = ''
+  }
+}
+
 async function rollbackToReview(order: OrderItem) {
   if (!canOperateOrders.value) return
+  if (order.cardPackageIssued) {
+    ElMessage.warning('卡包已发放时不可打回审核，请先改为未发放')
+    return
+  }
   if (changingStatusOrderId.value) {
     return
   }
@@ -231,6 +386,45 @@ function cardPackageTagType(issued: boolean): 'success' | 'info' {
   return issued ? 'success' : 'info'
 }
 
+function contractSignedTagType(signed: boolean): 'success' | 'info' {
+  return signed ? 'success' : 'info'
+}
+
+/** 仅先享后付订单展示卡包合同签署；全款不适用 */
+function orderHasCardPackageContract(order: OrderItem): boolean {
+  return order.payType === '先享后付'
+}
+
+/** 先享后付：仅合同已签署后才允许标记卡包已发放 */
+function canMarkCardPackageIssued(order: OrderItem): boolean {
+  if (!orderHasCardPackageContract(order)) {
+    return true
+  }
+  return Boolean(order.cardPackageContractSigned)
+}
+
+/** 「已发放」因未签合同被禁用时，用于气泡提示 */
+function issuedOptionNeedsContractTip(order: OrderItem): boolean {
+  return orderHasCardPackageContract(order) && !order.cardPackageContractSigned && !order.cardPackageIssued
+}
+
+function formatContractSignedTooltip(iso: string) {
+  const s = String(iso || '').trim()
+  if (!s) {
+    return ''
+  }
+  const d = new Date(s)
+  if (Number.isNaN(d.getTime())) {
+    return s
+  }
+  const y = d.getFullYear()
+  const m = `${d.getMonth() + 1}`.padStart(2, '0')
+  const day = `${d.getDate()}`.padStart(2, '0')
+  const hh = `${d.getHours()}`.padStart(2, '0')
+  const mm = `${d.getMinutes()}`.padStart(2, '0')
+  return `签署时间 ${y}-${m}-${day} ${hh}:${mm}`
+}
+
 function orderStatusTagType(s: OrderItem['status']): 'success' | 'warning' | 'info' | 'danger' | 'primary' {
   if (s === '待发货') {
     return 'warning'
@@ -264,16 +458,102 @@ async function applyCardPackage(order: OrderItem, next: boolean) {
   if (next === order.cardPackageIssued) {
     return
   }
+  if (next && !canMarkCardPackageIssued(order)) {
+    ElMessage.warning('请先完成合同签署后再标记卡包已发放')
+    return
+  }
   cardPackageSavingId.value = order.id
   try {
     await updateOrderCardPackage(order.id, next)
-    ElMessage.success('卡包发放状态已更新')
+    ElMessage.success(next ? '卡包已标记发放，订单状态已同步为已完成' : '卡包发放状态已更新')
   }
-  catch {
-    ElMessage.error('更新卡包状态失败，请稍后重试')
+  catch (e) {
+    ElMessage.error(e instanceof Error ? e.message : '更新卡包状态失败，请稍后重试')
   }
   finally {
     cardPackageSavingId.value = ''
+  }
+}
+
+function handleCardPackageContractCmd(order: OrderItem, cmd: string) {
+  if (cmd !== 'signed' && cmd !== 'unsigned') {
+    return
+  }
+  void applyCardPackageContract(order, cmd === 'signed')
+}
+
+async function applyCardPackageContract(order: OrderItem, nextSigned: boolean) {
+  if (!canOperateOrders.value || !orderHasCardPackageContract(order)) {
+    return
+  }
+  if (cardPackageContractSavingId.value) {
+    return
+  }
+  if (nextSigned === order.cardPackageContractSigned) {
+    return
+  }
+  if (!nextSigned && order.cardPackageIssued) {
+    ElMessage.warning('卡包已发放时不可将合同改为未签署，请先将卡包改为未发放')
+    return
+  }
+  cardPackageContractSavingId.value = order.id
+  try {
+    await updateOrderCardPackageContract(order.id, nextSigned)
+    ElMessage.success(nextSigned ? '已标记为已签署' : '已标记为未签署')
+  }
+  catch (e) {
+    ElMessage.error(e instanceof Error ? e.message : '更新合同签署状态失败')
+  }
+  finally {
+    cardPackageContractSavingId.value = ''
+  }
+}
+
+async function deferRepaymentDue(order: OrderItem, plan: InstallmentItem) {
+  if (!canOperateOrders.value || plan.paid) {
+    return
+  }
+  const key = `${order.id}-${plan.period}`
+  if (deferDueSavingKey.value) {
+    return
+  }
+  try {
+    const { value } = await ElMessageBox.prompt(
+      '请输入延期天数（正整数）。确认后将在当前「还款日」基础上向后顺延该天数。',
+      '延期还款',
+      {
+        confirmButtonText: '确定',
+        cancelButtonText: '取消',
+        inputValue: '14',
+        inputPattern: /^[1-9]\d*$/,
+        inputErrorMessage: '请输入大于 0 的整数天数',
+        confirmButtonClass: 'defer-repay-msgbox-confirm',
+      },
+    )
+    const days = Number.parseInt(String(value).trim(), 10)
+    if (!Number.isFinite(days) || days < 1 || days > 3650) {
+      ElMessage.error('延期天数须在 1～3650 之间')
+      return
+    }
+    deferDueSavingKey.value = key
+    await updateInstallmentDueDate(order.id, plan.period, days)
+    ElMessage.success(`已延期 ${days} 天`)
+    const id = selectedOrder.value?.id
+    if (id) {
+      const fresh = orders.value.find(o => o.id === id)
+      if (fresh) {
+        selectedOrder.value = fresh
+      }
+    }
+  }
+  catch (e: unknown) {
+    if (e === 'cancel' || e === 'close') {
+      return
+    }
+    ElMessage.error(e instanceof Error ? e.message : '延期失败')
+  }
+  finally {
+    deferDueSavingKey.value = ''
   }
 }
 
@@ -283,7 +563,8 @@ async function loadOrders() {
   try {
     await fetchOrders({
       keyword: keyword.value.trim(),
-      status: status.value,
+      // 订单数据页按还款维度前端筛选，请求不再按发货状态过滤
+      status: isCardPackageDataPage.value ? '全部' : status.value,
       payType: payType.value,
       date: orderDate.value,
     })
@@ -303,12 +584,32 @@ onMounted(() => {
 })
 
 watch(status, () => {
-  void loadOrders()
+  if (!isCardPackageDataPage.value) {
+    void loadOrders()
+  }
 })
+
+watch(
+  () => route.name,
+  (name) => {
+    if (name !== 'orders-card-data') {
+      repayFilter.value = '全部'
+    }
+    void loadOrders()
+  },
+)
 </script>
 
 <template>
   <div class="panel">
+    <el-alert
+      v-if="isCardPackageDataPage"
+      class="card-data-hint"
+      type="info"
+      :closable="false"
+      show-icon
+      title="本页以卡包发放状态为准，仅展示已标记为「卡包已发放」的订单。筛选为还款维度：结合各期「还款日」与当前日期、以及是否已还。"
+    />
     <div class="toolbar">
       <el-input
         v-model="keyword"
@@ -317,6 +618,7 @@ watch(status, () => {
         clearable
       />
       <el-select
+        v-if="!isCardPackageDataPage"
         v-model="status"
         class="toolbar-select"
       >
@@ -324,6 +626,24 @@ watch(status, () => {
         <el-option label="待发货" value="待发货" />
         <el-option label="待收货" value="待收货" />
         <el-option label="已完成" value="已完成" />
+      </el-select>
+      <el-select
+        v-else
+        v-model="repayFilter"
+        class="toolbar-select"
+      >
+        <el-option value="全部">
+          <span class="repay-filter-opt repay-filter-opt--all">全部</span>
+        </el-option>
+        <el-option value="待还款">
+          <span class="repay-filter-opt repay-filter-opt--pending">待还款</span>
+        </el-option>
+        <el-option value="已还款">
+          <span class="repay-filter-opt repay-filter-opt--paid">已还款</span>
+        </el-option>
+        <el-option value="已逾期">
+          <span class="repay-filter-opt repay-filter-opt--late">已逾期</span>
+        </el-option>
       </el-select>
       <el-date-picker
         v-model="orderDate"
@@ -350,23 +670,26 @@ watch(status, () => {
       </button>
     </div>
 
-    <table class="table">
+    <div class="orders-table-scroll">
+      <table class="table orders-page-table">
       <thead>
         <tr>
           <th>订单号</th>
           <th>用户</th>
+          <th>备注</th>
           <th>商品</th>
           <th>总金额</th>
-          <th>分期期数</th>
           <th>本期应还</th>
-          <th>当前期数</th>
           <th>下次还款日</th>
-          <th>支付方式</th>
+          <th v-if="isCardPackageDataPage">
+            还款状态
+          </th>
           <th>下单时间</th>
           <th>订单状态</th>
           <th>快递单号</th>
           <th>卡包发放</th>
-          <th>操作</th>
+          <th>合同签署</th>
+          <th>{{ canOperateOrders ? '操作' : '查看' }}</th>
         </tr>
       </thead>
       <tbody>
@@ -388,16 +711,78 @@ watch(status, () => {
               {{ item.user }}
             </el-tag>
           </td>
-          <td>{{ item.product }}</td>
+          <td class="td-user-remark">
+            <p
+              class="order-user-remark-text"
+              :title="(item.userRemark || '').trim() ? item.userRemark : ''"
+            >
+              {{ (item.userRemark || '').trim() ? item.userRemark : '—' }}
+            </p>
+          </td>
+          <td
+            class="td-product"
+            :title="item.product"
+          >
+            {{ item.product }}
+          </td>
           <td>¥ {{ item.totalAmount }}</td>
-          <td>{{ item.periods }} 期</td>
           <td>¥ {{ item.periodAmount }}</td>
-          <td>{{ item.currentPeriod }} / {{ item.periods }}</td>
           <td>{{ item.nextRepayDate }}</td>
-          <td>{{ item.payType }}</td>
+          <td v-if="isCardPackageDataPage">
+            <el-tag
+              :type="repayBucketTagType(orderRepayBucket(item))"
+              effect="light"
+              round
+              size="small"
+            >
+              {{ orderRepayBucket(item) }}
+            </el-tag>
+          </td>
           <td>{{ item.createdAt }}</td>
           <td class="td-order-status">
+            <el-dropdown
+              v-if="canOperateOrders && !item.cardPackageIssued"
+              trigger="click"
+              :disabled="changingStatusOrderId === item.id"
+              @command="(cmd: string) => handleOrderStatusCommand(item, cmd)"
+            >
+              <span class="order-status-dropdown-trigger">
+                <el-tag
+                  :type="orderStatusTagType(item.status)"
+                  effect="light"
+                  round
+                  size="small"
+                  class="order-status-tag order-status-tag--clickable"
+                >
+                  {{ item.status }}
+                </el-tag>
+              </span>
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item
+                    v-for="opt in ORDER_STATUS_EDIT_OPTIONS"
+                    :key="opt"
+                    :command="opt"
+                    :disabled="item.status === opt"
+                  >
+                    {{ opt }}
+                  </el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
             <el-tag
+              v-else-if="canOperateOrders && item.cardPackageIssued"
+              :type="orderStatusTagType(item.status)"
+              effect="light"
+              round
+              size="small"
+              class="order-status-tag order-status-tag--locked"
+              title="卡包已发放，不可修改订单状态；请先将卡包改为未发放"
+            >
+              {{ item.status }}
+            </el-tag>
+            <el-tag
+              v-else
               :type="orderStatusTagType(item.status)"
               effect="light"
               round
@@ -450,8 +835,29 @@ watch(status, () => {
                       未发放
                     </el-dropdown-item>
                     <el-dropdown-item
+                      v-if="!item.cardPackageIssued && canMarkCardPackageIssued(item)"
                       command="issued"
-                      :disabled="item.cardPackageIssued"
+                    >
+                      已发放
+                    </el-dropdown-item>
+                    <el-tooltip
+                      v-else-if="issuedOptionNeedsContractTip(item)"
+                      content="未签署合同"
+                      placement="top"
+                    >
+                      <span class="card-package-issued-tip-wrap">
+                        <el-dropdown-item
+                          command="issued"
+                          disabled
+                        >
+                          已发放
+                        </el-dropdown-item>
+                      </span>
+                    </el-tooltip>
+                    <el-dropdown-item
+                      v-else
+                      command="issued"
+                      disabled
                     >
                       已发放
                     </el-dropdown-item>
@@ -470,6 +876,61 @@ watch(status, () => {
               {{ item.cardPackageIssued ? '已发放' : '未发放' }}
             </el-tag>
           </td>
+          <td class="td-card-contract">
+            <template v-if="orderHasCardPackageContract(item)">
+              <template v-if="canOperateOrders">
+                <el-dropdown
+                  trigger="click"
+                  :disabled="cardPackageContractSavingId === item.id"
+                  @command="(cmd: string) => handleCardPackageContractCmd(item, cmd)"
+                >
+                  <span class="card-package-dropdown-trigger">
+                    <el-tag
+                      :type="contractSignedTagType(item.cardPackageContractSigned)"
+                      effect="light"
+                      round
+                      size="small"
+                      class="card-package-tag"
+                      :title="item.cardPackageContractSigned ? formatContractSignedTooltip(item.cardPackageContractSignedAt) : ''"
+                    >
+                      {{ item.cardPackageContractSigned ? '已签署' : '未签署' }}
+                    </el-tag>
+                  </span>
+                  <template #dropdown>
+                    <el-dropdown-menu>
+                      <el-dropdown-item
+                        command="unsigned"
+                        :disabled="!item.cardPackageContractSigned || item.cardPackageIssued"
+                      >
+                        未签署
+                      </el-dropdown-item>
+                      <el-dropdown-item
+                        command="signed"
+                        :disabled="item.cardPackageContractSigned"
+                      >
+                        已签署
+                      </el-dropdown-item>
+                    </el-dropdown-menu>
+                  </template>
+                </el-dropdown>
+              </template>
+              <el-tag
+                v-else
+                :type="contractSignedTagType(item.cardPackageContractSigned)"
+                effect="light"
+                round
+                size="small"
+                class="card-package-tag"
+                :title="item.cardPackageContractSigned ? formatContractSignedTooltip(item.cardPackageContractSignedAt) : ''"
+              >
+                {{ item.cardPackageContractSigned ? '已签署' : '未签署' }}
+              </el-tag>
+            </template>
+            <span
+              v-else
+              class="order-contract-na"
+            >—</span>
+          </td>
           <td class="actions-cell">
             <div class="actions">
               <button
@@ -477,36 +938,48 @@ watch(status, () => {
                 type="button"
                 @click="openPlan(item)"
               >
-                查看分期
+                查看先享后付
               </button>
               <button
-                v-if="canOperateOrders"
-                class="btn btn-warning"
+                class="btn btn-secondary"
                 type="button"
-                :disabled="changingStatusOrderId === item.id || item.status === '待审核'"
-                @click="rollbackToReview(item)"
+                @click="openAddressDialog(item)"
               >
-                {{ changingStatusOrderId === item.id ? '处理中...' : '打回审核' }}
+                查看收货地址
               </button>
-              <button
-                v-if="canOperateOrders"
-                class="btn btn-danger"
-                type="button"
-                :disabled="deletingOrderId === item.id"
-                @click="handleDeleteOrder(item)"
-              >
-                {{ deletingOrderId === item.id ? '删除中...' : '删除' }}
-              </button>
+              <template v-if="canOperateOrders">
+                <button
+                  v-if="item.status !== '已完成' && !item.cardPackageIssued"
+                  class="btn btn-warning"
+                  type="button"
+                  :disabled="changingStatusOrderId === item.id || item.status === '待审核'"
+                  @click="rollbackToReview(item)"
+                >
+                  {{ changingStatusOrderId === item.id ? '处理中...' : '打回审核' }}
+                </button>
+                <button
+                  class="btn btn-danger"
+                  type="button"
+                  :disabled="deletingOrderId === item.id"
+                  @click="handleDeleteOrder(item)"
+                >
+                  {{ deletingOrderId === item.id ? '删除中...' : '删除' }}
+                </button>
+              </template>
             </div>
           </td>
         </tr>
         <tr v-if="!loading && filteredOrders.length === 0">
-          <td colspan="14" style="text-align: center; color: #9ca3af;">
-            暂无订单数据
+          <td
+            :colspan="orderTableColspan"
+            style="text-align: center; color: #9ca3af;"
+          >
+            {{ isCardPackageDataPage ? '暂无卡包已发放的订单' : '暂无未发放卡包的订单' }}
           </td>
         </tr>
       </tbody>
     </table>
+    </div>
   </div>
 
   <div
@@ -516,7 +989,7 @@ watch(status, () => {
   >
     <div class="modal-panel">
       <div class="modal-header">
-        <h3>分期计划 - {{ selectedOrder.id }}</h3>
+        <h3>先享后付计划 - {{ selectedOrder.id }}</h3>
         <button
           class="btn"
           type="button"
@@ -538,16 +1011,16 @@ watch(status, () => {
         <span> ｜ 商品：{{ selectedOrder.product }} ｜ 总金额：¥ {{ selectedOrder.totalAmount }}</span>
       </p>
 
-      <table class="table">
+      <table class="table table--plan-modal">
         <thead>
           <tr>
-            <th>期数</th>
             <th>还款日</th>
-            <th>本金</th>
-            <th>手续费</th>
+            <th>订单金额</th>
             <th>应还金额</th>
             <th>状态</th>
-            <th>操作</th>
+            <th v-if="canOperateOrders">
+              操作
+            </th>
           </tr>
         </thead>
         <tbody>
@@ -555,22 +1028,40 @@ watch(status, () => {
             v-for="plan in selectedOrder.installmentPlan"
             :key="plan.period"
           >
-            <td>第 {{ plan.period }} 期</td>
             <td>{{ plan.dueDate }}</td>
-            <td>¥ {{ plan.principal }}</td>
-            <td>¥ {{ plan.fee }}</td>
+            <td>¥ {{ selectedOrder.totalAmount }}</td>
             <td>¥ {{ plan.amount }}</td>
-            <td>{{ plan.paid ? '已还款' : '待还款' }}</td>
             <td>
-              <button
-                v-if="canOperateOrders"
-                class="btn"
-                :class="plan.paid ? 'btn-warning' : 'btn-success'"
-                type="button"
-                @click="toggleRepay(selectedOrder, plan)"
+              <el-tag
+                :type="repayBucketTagType(periodRepayStatus(plan))"
+                effect="light"
+                round
+                size="small"
               >
-                {{ plan.paid ? '标记未还' : '标记已还' }}
-              </button>
+                {{ periodRepayStatus(plan) }}
+              </el-tag>
+            </td>
+            <td v-if="canOperateOrders">
+              <div class="plan-modal-actions">
+                <button
+                  class="btn"
+                  :class="plan.paid ? 'btn-warning' : 'btn-success'"
+                  type="button"
+                  :disabled="!!deferDueSavingKey"
+                  @click="toggleRepay(selectedOrder, plan)"
+                >
+                  {{ plan.paid ? '标记未还' : '标记已还' }}
+                </button>
+                <button
+                  v-if="!plan.paid"
+                  class="btn btn-warning"
+                  type="button"
+                  :disabled="!!deferDueSavingKey"
+                  @click="deferRepaymentDue(selectedOrder, plan)"
+                >
+                  {{ deferDueSavingKey === `${selectedOrder.id}-${plan.period}` ? '处理中…' : '延期还款' }}
+                </button>
+              </div>
             </td>
           </tr>
         </tbody>
@@ -614,6 +1105,39 @@ watch(status, () => {
     </template>
   </el-dialog>
 
+  <el-dialog
+    v-model="addressDialogOpen"
+    title="收货地址"
+    width="440px"
+    align-center
+    destroy-on-close
+    class="order-address-dialog"
+    body-class="order-address-dialog__body"
+    @closed="onAddressDialogClosed"
+  >
+    <template v-if="addressDialogOrder">
+      <p class="order-address-dialog__meta">
+        订单 {{ addressDialogOrder.id }} ｜ {{ addressDialogOrder.product }}
+      </p>
+      <dl class="order-address-dl">
+        <dt>收货人</dt>
+        <dd>{{ addressDialogOrder.user || '—' }}</dd>
+        <dt>手机号</dt>
+        <dd>{{ addressDialogOrder.receiverPhone?.trim() || '—' }}</dd>
+        <dt>详细地址</dt>
+        <dd>{{ addressDialogOrder.receiverAddress?.trim() || '（无）' }}</dd>
+      </dl>
+    </template>
+    <template #footer>
+      <el-button
+        type="primary"
+        @click="addressDialogOpen = false"
+      >
+        关闭
+      </el-button>
+    </template>
+  </el-dialog>
+
   <UserRiskDetailDialog
     v-model="userRiskDialogVisible"
     :user-id="riskDialogUserId"
@@ -622,6 +1146,104 @@ watch(status, () => {
 </template>
 
 <style scoped>
+.orders-table-scroll {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.orders-page-table {
+  /* 覆盖全局 .table { width:100% }，按内容撑开以便横向滚动能看到最右侧「操作」列 */
+  width: max-content;
+  min-width: 100%;
+  table-layout: auto;
+}
+
+.orders-page-table th,
+.orders-page-table td {
+  box-sizing: border-box;
+}
+
+.orders-page-table th:nth-child(1),
+.orders-page-table td:nth-child(1) {
+  min-width: 9.5rem;
+  max-width: 11rem;
+  word-break: break-all;
+}
+
+.orders-page-table th:nth-child(2),
+.orders-page-table td:nth-child(2) {
+  min-width: 4.5rem;
+  white-space: nowrap;
+}
+
+.orders-page-table th:nth-child(3),
+.orders-page-table td:nth-child(3) {
+  min-width: 5rem;
+  max-width: 7.5rem;
+}
+
+.orders-page-table th:nth-child(4),
+.orders-page-table td:nth-child(4) {
+  width: 9rem;
+  max-width: 9rem;
+}
+
+.orders-page-table .td-product {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.orders-page-table th:last-child,
+.orders-page-table td.actions-cell {
+  min-width: 26rem;
+  width: auto;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+.card-package-issued-tip-wrap {
+  display: block;
+  width: 100%;
+}
+
+.card-data-hint {
+  margin-bottom: 14px;
+}
+
+.plan-modal-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.table--plan-modal {
+  margin-top: 8px;
+}
+
+.repay-filter-opt {
+  font-weight: 600;
+}
+
+.repay-filter-opt--all {
+  color: #64748b;
+}
+
+.repay-filter-opt--pending {
+  color: #c2410c;
+}
+
+.repay-filter-opt--paid {
+  color: #15803d;
+}
+
+.repay-filter-opt--late {
+  color: #b91c1c;
+}
+
 .btn {
   height: 30px;
   border-radius: 6px;
@@ -685,6 +1307,22 @@ watch(status, () => {
 
 .td-user-risk {
   vertical-align: middle;
+}
+
+.td-user-remark {
+  vertical-align: middle;
+}
+
+.order-user-remark-text {
+  margin: 0;
+  font-size: 13px;
+  color: #374151;
+  line-height: 1.45;
+  word-break: break-word;
+  overflow: hidden;
+  display: block;
+  width: 100%;
+  max-height: 4.35em;
 }
 
 .order-user-risk-tag {
@@ -776,18 +1414,42 @@ watch(status, () => {
   font-weight: 600;
 }
 
+.order-status-dropdown-trigger {
+  cursor: pointer;
+  outline: none;
+}
+
+.order-status-tag--clickable:hover {
+  filter: brightness(0.97);
+}
+
+.order-status-tag--locked {
+  cursor: default;
+}
+
 .td-card-package {
   vertical-align: middle;
 }
 
+.td-card-contract {
+  vertical-align: middle;
+}
+
+.order-contract-na {
+  color: #9ca3af;
+  font-size: 0.9rem;
+}
+
 /* 卡包发放：冷色紫灰系，避免与订单「待发货」黄色气泡混淆 */
-.td-card-package :deep(.el-tag--info) {
+.td-card-package :deep(.el-tag--info),
+.td-card-contract :deep(.el-tag--info) {
   --el-tag-bg-color: #f5f3ff;
   --el-tag-border-color: #c4b5fd;
   --el-tag-text-color: #5b21b6;
 }
 
-.td-card-package :deep(.el-tag--success) {
+.td-card-package :deep(.el-tag--success),
+.td-card-contract :deep(.el-tag--success) {
   --el-tag-bg-color: #ecfdf5;
   --el-tag-border-color: #6ee7b7;
   --el-tag-text-color: #047857;
@@ -822,11 +1484,7 @@ watch(status, () => {
 }
 
 .actions-cell {
-  overflow-x: auto;
-}
-
-.actions-cell::-webkit-scrollbar {
-  height: 6px;
+  overflow: visible;
 }
 
 .modal-mask {
@@ -867,9 +1525,49 @@ watch(status, () => {
 
 <style>
 /* el-dialog 内容挂到 body，与 scoped 分离 */
+.defer-repay-msgbox-confirm.el-button--primary {
+  background-color: #d97706;
+  border-color: #d97706;
+  color: #fff;
+}
+
+.defer-repay-msgbox-confirm.el-button--primary:hover,
+.defer-repay-msgbox-confirm.el-button--primary:focus {
+  background-color: #b45309;
+  border-color: #b45309;
+  color: #fff;
+}
+
 .tracking-shipment-dialog__body .tracking-dialog-meta {
   margin: 0 0 12px;
   font-size: 13px;
   color: #64748b;
+}
+
+.order-address-dialog__body .order-address-dialog__meta {
+  margin: 0 0 12px;
+  font-size: 13px;
+  color: #64748b;
+}
+
+.order-address-dialog__body .order-address-dl {
+  margin: 0;
+  display: grid;
+  grid-template-columns: 72px 1fr;
+  gap: 8px 12px;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.order-address-dialog__body .order-address-dl dt {
+  margin: 0;
+  color: #64748b;
+  font-weight: 500;
+}
+
+.order-address-dialog__body .order-address-dl dd {
+  margin: 0;
+  color: #1f2937;
+  word-break: break-word;
 }
 </style>

@@ -3,16 +3,39 @@ const route = useRoute()
 const { smartNavigate } = useCustomRouting(route)
 const { loginPhone, profile, syncFromStorage } = useMallAuth()
 const {
-  billSummary,
   bills: billList,
   fetchBills,
 } = useMallMy()
 const currentUserAccount = computed(() => loginPhone.value || profile.value?.phone || '')
 
+/** 全部待还本金合计（与列表中「待还款」一致） */
+const pendingRepayTotal = computed(() =>
+  billList.value
+    .filter(item => item.status === '待还款')
+    .reduce((sum, item) => sum + Math.abs(Number(item.amount || 0)), 0),
+)
+
+/** 账单时间仅展示日期（YYYY-MM-DD） */
+function formatBillDateOnly(raw: string) {
+  const s = String(raw || '').trim()
+  const m = s.match(/^(\d{4}-\d{2}-\d{2})/)
+  return m ? m[1] : s
+}
+
+/** 最近一笔待还的到期日 */
+const repayDeadlineText = computed(() => {
+  const pending = billList.value.filter(item => item.status === '待还款')
+  if (!pending.length) {
+    return '暂无'
+  }
+  const sorted = [...pending].sort((a, b) => String(a.time).localeCompare(String(b.time)))
+  const t = sorted[0]?.time
+  return t ? formatBillDateOnly(t) : '暂无'
+})
+
 const billItems = computed(() => [
-  { label: '本月应还', value: `￥${billSummary.value.shouldRepay.toFixed(2)}` },
-  { label: '可用额度', value: `￥${billSummary.value.availableQuota.toFixed(2)}` },
-  { label: '账单日', value: billSummary.value.billDate },
+  { label: '待还金额', value: `￥${pendingRepayTotal.value.toFixed(2)}` },
+  { label: '最晚还款日', value: repayDeadlineText.value },
 ])
 async function goBack() {
   await smartNavigate('/my')
@@ -195,7 +218,7 @@ if (!import.meta.env.SSR) {
           </div>
 
           <div class="mb-2 flex items-center justify-between text-xs text-black/45">
-            <span>分期 {{ group.records.length }} 笔</span>
+            <span>先享后付 {{ group.records.length }} 笔</span>
             <span>待还 {{ group.pendingCount }} 笔</span>
           </div>
 
@@ -214,7 +237,7 @@ if (!import.meta.env.SSR) {
                 </p>
               </div>
               <div class="flex items-center justify-between text-xs text-black/45">
-                <span>{{ record.time }}</span>
+                <span>{{ formatBillDateOnly(record.time) }}</span>
                 <span
                   class="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium leading-none"
                   :class="billStatusClass(record.status)"

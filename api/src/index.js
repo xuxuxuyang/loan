@@ -13,6 +13,10 @@ const { readDb, writeDb, resetDb, hydrateFromMongoAfterConnect, isMongoPersisten
   = require('./store')
 const { DEFAULT_SUPER_ADMIN_USERNAME, BOOTSTRAP_ADMIN_ACCOUNTS } = require('./defaultBootstrap')
 const crypto = require('node:crypto')
+const path = require('node:path')
+const fsp = require('node:fs/promises')
+const mount = require('koa-mount')
+const serve = require('koa-static')
 
 const riskControlApi = require('./riskControl/router')
 const {
@@ -25,6 +29,11 @@ const {
   runOrderSubmitUpstreamRiskPack,
   runOrderSubmitSingleRiskStep,
   ORDER_INSTALLMENT_RISK_STEP_LABELS,
+  postCreateContract,
+  postAddPersonalUser,
+  postAddSigner,
+  postGetContract,
+  postDownloadContract,
 } = require('./riskControl/upstreamClient')
 const {
   createWave: createInstallmentRiskWave,
@@ -32,21 +41,53 @@ const {
   recordStepResult: recordInstallmentRiskWaveStep,
   consumeForOrder: consumeInstallmentRiskWaveForOrder,
 } = require('./riskControl/installmentRiskWave')
+const {
+  sendRegisterVerificationSms,
+  verifyAndConsumeRegisterSms,
+  isRegisterSmsSkipped,
+} = require('./mallRegisterSms')
+
+const { buildCardPackageContractViewHtml } = require('./cardPackageContractViewHtml')
+const { buildCardPackageContractPdfBuffer } = require('./cardPackageContractPdf')
 
 const app = new Koa()
 const router = new Router({ prefix: '/api' })
 const PORT = Number(process.env.PORT || 3110)
+/** GET /static/* → api/public/*（卡包合同模板 PDF 等，供电子签上游按 URL 拉取；本地 mock 下载 PDF 由程序按订单动态生成，不读该目录） */
+const API_PUBLIC_DIR = path.join(__dirname, '..', 'public')
 const MALL_PASSWORD_PEPPER = 'mall-local-pepper-v1'
-const PRODUCT_CATEGORIES = new Set(['travel', 'calligraphy', 'mobile', 'jewelry'])
-/** mall=仅展示；installment=可下单（分期商城） */
+const PRODUCT_CATEGORIES = new Set(['phone', 'digital', 'appliance', 'cosmetics'])
+/** 历史数据中的旧分类键 → 新分类（仅读库归一化，新建商品请用新分类） */
+const PRODUCT_CATEGORY_LEGACY_MAP = {
+  travel: 'digital',
+  calligraphy: 'cosmetics',
+  mobile: 'phone',
+  jewelry: 'cosmetics',
+  phones: 'phone',
+  appliances: 'appliance',
+}
+/** mall=首页商城分区；installment=先享后付；均可在线下单 */
 const PRODUCT_SALES_MODES = new Set(['mall', 'installment'])
+
+function resolveProductCategoryKey(raw) {
+  const t = String(raw || '').trim()
+  if (PRODUCT_CATEGORIES.has(t)) {
+    return t
+  }
+  const mapped = PRODUCT_CATEGORY_LEGACY_MAP[t]
+  if (mapped && PRODUCT_CATEGORIES.has(mapped)) {
+    return mapped
+  }
+  return 'phone'
+}
 const ADMIN_ROLES = {
   SUPER: 'super_admin',
   REVIEWER: 'reviewer',
   SERVICE: 'customer_service',
+  COLLECTOR: 'collector',
 }
 const ADMIN_ROLE_SET = new Set(Object.values(ADMIN_ROLES))
-/** 商城用户注册及未填写额度时的默认分期可用额度（元） */
+/** 商城用户注册及未填写额度时的默认先享后付可用额度（元） */
 const DEFAULT_USER_QUOTA = 2750
 
 function hashMallUserPassword(plain) {
@@ -61,11 +102,21 @@ function verifyMallUserPassword(plain, hash) {
   return hashMallUserPassword(String(plain)) === String(hash)
 }
 
-function sanitizeMallUser(user) {
+function sanitizeMallUser(user, opts = {}) {
   if (!user) {
     return user
   }
-  const { passwordHash, ...rest } = user
+  const { passwordHash, adminPasswordPlain, ...rest } = user
+  if (opts.mall) {
+    const {
+      adminRemark,
+      registerChannelCode,
+      registerChannelName,
+      signAuthSerialNo,
+      ...mallRest
+    } = rest
+    return mallRest
+  }
   return rest
 }
 
@@ -149,6 +200,9 @@ function normalizeAdminRole(role) {
   if (value === 'customer_service' || value === 'customer-service' || value === 'customerservice' || value === '客服') {
     return ADMIN_ROLES.SERVICE
   }
+  if (value === 'collector' || value === 'debt_collector' || value === 'collection' || value === '催收' || value === '催收员') {
+    return ADMIN_ROLES.COLLECTOR
+  }
   return ''
 }
 
@@ -156,6 +210,7 @@ function getRoleLabel(role) {
   if (role === ADMIN_ROLES.SUPER) return '超级管理员'
   if (role === ADMIN_ROLES.REVIEWER) return '审核员'
   if (role === ADMIN_ROLES.SERVICE) return '客服'
+  if (role === ADMIN_ROLES.COLLECTOR) return '催收员'
   return '未知角色'
 }
 
@@ -265,7 +320,7 @@ function requireAdminPermission(ctx, allowedRoles, actionLabel) {
   if (!role) {
     fail(
       ctx,
-      `未提供后台角色信息，无法执行${actionLabel}。请在请求头传 x-admin-role: super_admin / reviewer / customer_service`,
+      `未提供后台角色信息，无法执行${actionLabel}。请在请求头传 x-admin-role: super_admin / reviewer / customer_service / collector`,
       401,
     )
     return ''
@@ -289,9 +344,7 @@ function normalizeProductRecord(product) {
     origin: String(product.origin || '').trim(),
     price: Number(product.price || 0),
     image: String(product.image || '').trim(),
-    category: PRODUCT_CATEGORIES.has(String(product.category || '').trim())
-      ? String(product.category).trim()
-      : 'travel',
+    category: resolveProductCategoryKey(product.category),
     salesMode,
     onSale: typeof product.onSale === 'boolean' ? product.onSale : true,
     createdAt: product.createdAt || now,
@@ -334,7 +387,7 @@ function parseProductPayload(payload, { partial = false } = {}) {
   if (payload.salesMode !== undefined) {
     const sm = String(payload.salesMode || '').trim()
     if (!PRODUCT_SALES_MODES.has(sm)) {
-      return { error: '销售渠道必须为 mall（商城展示）或 installment（分期可下单）' }
+      return { error: '销售渠道必须为 mall（首页商城）或 installment（先享后付可下单）' }
     }
     next.salesMode = sm
   }
@@ -384,7 +437,7 @@ function ensureProductCatalog(db) {
 }
 
 /**
- * 分期下单 7 步风控单条 → 管理端十四项 `fourteenRows` 中的对应槽位（与 `runOrderSubmitSingleRiskStep` 的 key 一致）
+ * 先享后付下单 7 步风控单条 → 管理端十四项 `fourteenRows` 中的对应槽位（与 `runOrderSubmitSingleRiskStep` 的 key 一致）
  * @param {Record<string, unknown>} s
  */
 function riskProductRowFromOrderSubmitRiskStep(s) {
@@ -480,11 +533,11 @@ function buildOrderRiskDetail(order) {
     },
     {
       code: 'R002',
-      name: '分期期数风险',
+      name: '先享后付期数风险',
       hit: periods > 1,
       scoreImpact: periods > 1 ? 120 : 0,
       detail: periods > 1
-        ? `分期期数 ${periods} 期，期数越长违约不确定性越高`
+        ? `先享后付期数 ${periods} 期，期数越长违约不确定性越高`
         : '当前为单期还款，无多期展期风险',
     },
     {
@@ -498,8 +551,8 @@ function buildOrderRiskDetail(order) {
 
   const factors = [
     `订单金额：¥${totalAmount}`,
-    `支付方式：${order.payType === 'installment' ? '分期' : '全款'}`,
-    `分期期数：${periods} 期`,
+    `支付方式：${order.payType === 'installment' ? '先享后付' : '全款'}`,
+    `先享后付期数：${periods} 期`,
     `手机号尾号：${String(order.receiverPhone || '').slice(-2) || '--'}`,
   ]
 
@@ -540,11 +593,11 @@ function buildInstallmentPlan(totalAmount, payType, createdAt, paid, installment
     }]
   }
 
-  /** 仅支持单期：应还总额=订单 totalAmount（与商品小计一致），还款日为下单后第 10 天 */
+  /** 仅支持单期：应还总额=订单 totalAmount（与商品小计一致），还款日为下单后第 15 天 */
   const principal = Number(parsedAmount.toFixed(2))
   return [{
     period: 1,
-    dueDate: addDays(createdAt, 10),
+    dueDate: addDays(createdAt, 15),
     principal,
     fee: 0,
     amount: principal,
@@ -570,7 +623,7 @@ function ensureOrderInstallmentPlan(order) {
   ensureOrderRiskState(order)
   if (Array.isArray(order.installmentPlan) && order.installmentPlan.length > 0) {
     // 不信任「order.paid 则强行首期已还」的内存补丁：会与持久化快照不一致，
-    // 导致 /bills（用户端）与 /orders（后台）展示分裂。首期是否已还以存储与 PATCH pay / 分期接口为准。
+    // 导致 /bills（用户端）与 /orders（后台）展示分裂。首期是否已还以存储与 PATCH pay / 先享后付接口为准。
     return
   }
   order.installmentPlan = buildInstallmentPlan(
@@ -583,13 +636,13 @@ function ensureOrderInstallmentPlan(order) {
 }
 
 /**
- * 历史数据：旧版在内存中把「订单已付 + 分期」的首期标为已还，但未写库，导致用户端与后台、与持久化不一致。
- * 若库里 order.paid 为 true 且分期计划里没有任何一期 paid，则把第 1 期写入 paid（幂等，只补缺）。
- * 若已对应用 installmentScheduleExplicit（见 PATCH installments pay），则说明分期状态以人工/接口为准，不再回填首期。
+ * 历史数据：旧版在内存中把「订单已付 + 先享后付」的首期标为已还，但未写库，导致用户端与后台、与持久化不一致。
+ * 若库里 order.paid 为 true 且先享后付计划里没有任何一期 paid，则把第 1 期写入 paid（幂等，只补缺）。
+ * 若已对应用 installmentScheduleExplicit（见 PATCH installments pay），则说明先享后付状态以人工/接口为准，不再回填首期。
  * @returns {boolean} 是否修改了该订单
  */
 function persistLegacyInstallmentFirstPaidIfOrderPaid(order) {
-  /** 管理员或接口已显式调整过分期入账状态后，不得以「订单已付」为由再自动把首期标已还 */
+  /** 管理员或接口已显式调整过先享后付入账状态后，不得以「订单已付」为由再自动把首期标已还 */
   if (order.installmentScheduleExplicit) {
     return false
   }
@@ -611,8 +664,11 @@ function persistLegacyInstallmentFirstPaidIfOrderPaid(order) {
   return true
 }
 
-/** 分期订单：全部分期已还则订单进入 enjoying（已完成）；若有任一期未还则从 enjoying 退回 shipping/receiving */
-function applyInstallmentCompletionOrderStatus(order) {
+/** 先享后付订单：全部先享后付已还则订单进入 enjoying（已完成）；若有任一期未还则从 enjoying 退回 shipping/receiving。
+ * @param {{ ignoreAdminSkip?: boolean }} opts 为 true 时忽略 skipInstallmentAutoEnjoying（用户还款、标记先享后付等「真实入账」路径）
+ */
+function applyInstallmentCompletionOrderStatus(order, opts = {}) {
+  const ignoreAdminSkip = opts.ignoreAdminSkip === true
   if (order.payType !== 'installment') {
     return false
   }
@@ -623,7 +679,12 @@ function applyInstallmentCompletionOrderStatus(order) {
   const allPaid = plan.every(item => item.paid)
   if (allPaid) {
     if (order.status !== 'enjoying') {
+      /** 后台手动改过订单状态后，列表接口 reconcile 不应再强行覆盖为 enjoying（否则前端「订单状态已更新」刷新仍显示已完成） */
+      if (!ignoreAdminSkip && order.skipInstallmentAutoEnjoying === true) {
+        return false
+      }
       order.status = 'enjoying'
+      order.skipInstallmentAutoEnjoying = false
       return true
     }
     return false
@@ -638,7 +699,7 @@ function applyInstallmentCompletionOrderStatus(order) {
 }
 
 /**
- * 旧版曾把分期订单 totalAmount 写成「商品小计 × 1.35」。与当前规则（totalAmount=商品小计）不一致。
+ * 旧版曾把先享后付订单 totalAmount 写成「商品小计 × 1.35」。与当前规则（totalAmount=商品小计）不一致。
  * 若当前 total 与 sub×1.35 在容差内匹配，则回写 totalAmount=sub 并重建 installmentPlan（保留首期是否已还）。
  * 在 GET /orders 等读库路径上幂等执行，单次 writeDb 与 reconcileInstallmentCompletionAcrossDb 合并。
  * @returns {boolean} 是否修改了任意订单
@@ -715,6 +776,346 @@ function ensureOrderCardPackage(order) {
   if (typeof order.cardPackageIssued !== 'boolean') {
     order.cardPackageIssued = false
   }
+  if (order.cardPackageContractNo === undefined || order.cardPackageContractNo === null) {
+    order.cardPackageContractNo = ''
+  }
+  if (order.cardPackageContractSignaturePng === undefined || order.cardPackageContractSignaturePng === null) {
+    order.cardPackageContractSignaturePng = ''
+  }
+  if (order.cardPackageContractPdfCacheFile === undefined || order.cardPackageContractPdfCacheFile === null) {
+    order.cardPackageContractPdfCacheFile = ''
+  }
+}
+
+/** 卡包合同：本地模拟签署（不调用开放平台电子签，仅流程约束） */
+function isMallCardPackageContractMock() {
+  return normalizeBoolean(process.env.MALL_CARD_PACKAGE_CONTRACT_MOCK, false)
+}
+
+function mallCardPackagePublicOrigin(ctx) {
+  const xfProto = String(ctx.get('x-forwarded-proto') || '').trim().split(',')[0]
+  const xfHost = String(ctx.get('x-forwarded-host') || '').trim().split(',')[0]
+  if (xfHost) {
+    return `${xfProto || 'https'}://${xfHost}`
+  }
+  if (typeof ctx.origin === 'string' && ctx.origin) {
+    return ctx.origin
+  }
+  return `${ctx.protocol}://${ctx.host}`
+}
+
+/** 模拟签署：带用户信息 + 确认按钮的 HTML 页（非静态 PDF） */
+function mallCardPackageMockSignPageUrl(ctx, orderId, phone) {
+  const oid = encodeURIComponent(String(orderId || '').trim())
+  const ph = encodeURIComponent(String(phone || '').trim())
+  return `${mallCardPackagePublicOrigin(ctx)}/api/card-packages/${oid}/contract-view?phone=${ph}`
+}
+
+function buildMockGetContractJson(ctx, order, contractNo, phone) {
+  const pageUrl = mallCardPackageMockSignPageUrl(ctx, order.id, phone)
+  const signed = Boolean(order.cardPackageContractSignedAt)
+  const name = sanitizeCardPackageContractName(order)
+  return {
+    success: true,
+    code: 0,
+    msg: 'ok',
+    data: {
+      contractNo,
+      contractName: name,
+      status: signed ? '2' : '1',
+      previewUrl: pageUrl,
+      embeddedUrl: pageUrl,
+      signUrl: pageUrl,
+      signUser: [
+        {
+          account: phone,
+          noticeMobile: phone,
+          signUrl: pageUrl,
+          signStatus: signed ? '2' : '1',
+        },
+      ],
+    },
+  }
+}
+
+/** 商城卡包领取：上游合同 JSON 是否视为成功 */
+function mallUpstreamContractJsonOk(json) {
+  if (!json || typeof json !== 'object') {
+    return false
+  }
+  if (Object.prototype.hasOwnProperty.call(json, 'success') && json.success === false) {
+    return false
+  }
+  const c = json.code ?? json.Code
+  if (c !== undefined && c !== null && String(c).trim() !== '') {
+    const cn = Number(c)
+    if (!Number.isNaN(cn) && cn >= 400) {
+      return false
+    }
+    const cs = String(c).trim().toLowerCase()
+    if (['fail', 'false', 'error', '-1'].includes(cs)) {
+      return false
+    }
+  }
+  return true
+}
+
+function buildCardPackageContractNo(order) {
+  const raw = String(order.id || '').replace(/[^a-zA-Z0-9]/g, '') || `OD${Date.now()}`
+  const prefixed = `CP${raw}`
+  return prefixed.slice(0, 40)
+}
+
+function sanitizeCardPackageContractName(order) {
+  const fixed = String(process.env.MALL_CONTRACT_DOC_TITLE || '').trim()
+  if (fixed) {
+    const cleaned = fixed.replace(/[*":\\/<>|]/g, '').slice(0, 120)
+    if (cleaned) {
+      return cleaned
+    }
+  }
+  let name = `先享后付订单-${String(order.name || '订单').trim()}`.slice(0, 120)
+  name = name.replace(/[*":\\/<>|]/g, '')
+  if (!name) {
+    name = '商品购销及服务协议'
+  }
+  return name
+}
+
+function safeCardPackageContractPdfFileName(order) {
+  let base = sanitizeCardPackageContractName(order)
+    .replace(/[\x00-\x1f<>:"/\\|?*\uFFFD]/g, '_')
+    .trim()
+    .slice(0, 120) || '合同'
+  base = base.replace(/\.pdf$/i, '')
+  return `${base}.pdf`
+}
+
+/** 模拟合同 PDF 磁盘缓存目录（首次生成慢，命中后等同静态文件下载） */
+const MOCK_CARD_PACKAGE_PDF_CACHE_DIR = path.join(API_PUBLIC_DIR, 'generated', 'card-package-contracts')
+
+/** 同一缓存键并发只跑一趟 Chromium，减轻内存与 CPU 尖峰（降低 502 概率） */
+const mockCardPackagePdfBuildInFlight = new Map()
+
+function makeMockCardPackagePdfCacheFilename(order, user, phone, contractNo, apiOrigin) {
+  const signedAt = String(order.cardPackageContractSignedAt || '')
+  const sig = String(order.cardPackageContractSignaturePng || '')
+  const userPart = user
+    ? [user.name, user.idNumber, user.locationText].map(x => String(x || '')).join('\t')
+    : ''
+  const raw = [
+    String(phone),
+    String(order.id),
+    String(contractNo),
+    signedAt,
+    String(sig.length),
+    sig.slice(0, 500),
+    String(order.name || ''),
+    String(order.spec || ''),
+    String(order.totalAmount ?? ''),
+    String(order.receiverName || ''),
+    String(order.receiverPhone || ''),
+    String(order.receiverAddress || ''),
+    String(order.createdAt || ''),
+    userPart,
+    String(apiOrigin || ''),
+  ].join('\n')
+  const hex = crypto.createHash('sha256').update(raw).digest('hex').slice(0, 32)
+  return `cpdf-${hex}.pdf`
+}
+
+async function readMockCardPackagePdfCache(filename) {
+  if (!filename || !/^cpdf-[a-f0-9]{32}\.pdf$/i.test(filename)) {
+    return null
+  }
+  const full = path.join(MOCK_CARD_PACKAGE_PDF_CACHE_DIR, filename)
+  try {
+    const st = await fsp.stat(full)
+    if (st.size < 64) {
+      return null
+    }
+    return await fsp.readFile(full)
+  }
+  catch {
+    return null
+  }
+}
+
+async function unlinkMockCardPackagePdfCacheFile(order) {
+  ensureOrderCardPackage(order)
+  const fn = String(order.cardPackageContractPdfCacheFile || '').trim()
+  order.cardPackageContractPdfCacheFile = ''
+  if (!fn || !/^cpdf-[a-f0-9]{32}\.pdf$/i.test(fn)) {
+    return
+  }
+  await fsp.unlink(path.join(MOCK_CARD_PACKAGE_PDF_CACHE_DIR, fn)).catch(() => {})
+}
+
+/**
+ * 生成或读取缓存的模拟卡包合同 PDF（避免每次下载都跑 Chromium）。
+ * 调试可加 query nocache=1 跳过缓存。
+ */
+async function getOrBuildMockCardPackagePdfBuffer(ctx, db, order, user, phone, contractNo, skipCache) {
+  const apiOrigin = mallCardPackagePublicOrigin(ctx)
+  const filename = makeMockCardPackagePdfCacheFilename(order, user || null, phone, contractNo, apiOrigin)
+  if (!skipCache) {
+    const hit = await readMockCardPackagePdfCache(filename)
+    if (hit) {
+      return hit
+    }
+  }
+  let inflight = mockCardPackagePdfBuildInFlight.get(filename)
+  if (inflight) {
+    return await inflight
+  }
+  inflight = (async () => {
+    try {
+      await fsp.mkdir(MOCK_CARD_PACKAGE_PDF_CACHE_DIR, { recursive: true })
+      const buf = await buildCardPackageContractPdfBuffer({
+        order,
+        user: user || null,
+        phone,
+        contractNo,
+        contractTitle: sanitizeCardPackageContractName(order),
+        signedAt: order.cardPackageContractSignedAt || '',
+        apiOrigin,
+        orderId: order.id,
+      })
+      await fsp.writeFile(path.join(MOCK_CARD_PACKAGE_PDF_CACHE_DIR, filename), buf).catch((e) => {
+        console.warn('[card-package-pdf-cache-write]', e && e.message ? String(e.message) : e)
+      })
+      const prev = String(order.cardPackageContractPdfCacheFile || '').trim()
+      order.cardPackageContractPdfCacheFile = filename
+      if (prev && prev !== filename && /^cpdf-[a-f0-9]{32}\.pdf$/i.test(prev)) {
+        await fsp.unlink(path.join(MOCK_CARD_PACKAGE_PDF_CACHE_DIR, prev)).catch(() => {})
+      }
+      writeDb(db)
+      return buf
+    }
+    finally {
+      mockCardPackagePdfBuildInFlight.delete(filename)
+    }
+  })()
+  mockCardPackagePdfBuildInFlight.set(filename, inflight)
+  return await inflight
+}
+
+/**
+ * 卡包电子签创建合同时，上游通常要求 contractFiles 为可拉取的 PDF URL 数组。
+ * 配置其一即可：
+ * - MALL_CARD_PACKAGE_CONTRACT_FILE_URL：单个 URL
+ * - MALL_CARD_PACKAGE_CONTRACT_FILE_URLS：逗号/分号/换行分隔，或以 JSON 数组形式
+ */
+function resolveMallCardPackageContractFileUrls() {
+  const single = String(process.env.MALL_CARD_PACKAGE_CONTRACT_FILE_URL || '').trim()
+  const multi = String(process.env.MALL_CARD_PACKAGE_CONTRACT_FILE_URLS || '').trim()
+  const list = []
+  if (multi.startsWith('[')) {
+    try {
+      const parsed = JSON.parse(multi)
+      if (Array.isArray(parsed)) {
+        for (const x of parsed) {
+          const u = String(x || '').trim()
+          if (u) {
+            list.push(u)
+          }
+        }
+      }
+    }
+    catch (_) {
+      /* ignore */
+    }
+  }
+  if (list.length === 0 && multi) {
+    for (const part of multi.split(/[,;|\n]+/)) {
+      const u = part.trim()
+      if (u) {
+        list.push(u)
+      }
+    }
+  }
+  if (list.length === 0 && single) {
+    list.push(single)
+  }
+  return list
+}
+
+function mallUpstreamContractErrorMessage(json) {
+  if (!json || typeof json !== 'object') {
+    return '电子合同接口异常'
+  }
+  const s = json.msg ?? json.message ?? json.info ?? json.Msg ?? json.Message ?? json.Info
+  const t = String(s || '').trim()
+  return t || '电子合同接口异常'
+}
+
+function resolveSignAuthSerialNo(db, phone) {
+  const envSerial = String(process.env.MALL_CARD_PACKAGE_SIGN_AUTH_SERIAL || '').trim()
+  if (envSerial) {
+    return envSerial
+  }
+  const user = db.users.find(item => item.phone === phone)
+  if (user && typeof user.signAuthSerialNo === 'string') {
+    const s = user.signAuthSerialNo.trim()
+    if (s) {
+      return s
+    }
+  }
+  return ''
+}
+
+/**
+ * 卡包电子签：添加签署方前先在签约平台登记个人用户（与人脸/实名 serialNo 绑定）。
+ * 无 serial 时跳过；失败仅打日志，仍继续尝试 addSigner（兼容已登记用户）。
+ */
+async function ensureEsignPersonalUserForCardPackage(db, phone) {
+  const serialNo = resolveSignAuthSerialNo(db, phone)
+  if (!serialNo) {
+    return
+  }
+  try {
+    const res = await postAddPersonalUser({ account: phone, serialNo })
+    if (mallUpstreamContractJsonOk(res.json)) {
+      return
+    }
+    const msg = mallUpstreamContractErrorMessage(res.json)
+    if (/已|重复|exist|registered|成功/i.test(msg)) {
+      return
+    }
+    console.warn('[card-package] addPersonalUser:', msg)
+  }
+  catch (err) {
+    console.warn('[card-package] addPersonalUser:', err && err.message ? String(err.message) : err)
+  }
+}
+
+function cardPackageAddSignerFailHint() {
+  return '若提示签名或签署方错误，请为人脸/实名认证返回的 serialNo 配置到用户字段 signAuthSerialNo（管理端 PATCH）或临时使用环境变量 MALL_CARD_PACKAGE_SIGN_AUTH_SERIAL（仅联调），并确认上游「添加个人用户」与「添加签署方」使用同一 account（手机号）。'
+}
+
+function findMallCardPackageClaimOrder(db, phone, orderId) {
+  const id = String(orderId || '').trim()
+  if (!id) {
+    return null
+  }
+  const order = db.orders.find(item => item.id === id)
+  if (!order || order.receiverPhone !== phone) {
+    return null
+  }
+  if (!isOrderCardPackageEligible(order)) {
+    return null
+  }
+  ensureOrderCardPackage(order)
+  if (order.cardPackageIssued) {
+    return null
+  }
+  return order
+}
+
+function isCardPackageContractSignedInUpstreamData(data) {
+  const d = data && typeof data === 'object' ? data : {}
+  const s = d.status
+  return s === 2 || s === '2'
 }
 
 function ensureOrderShipment(order) {
@@ -770,6 +1171,37 @@ function mergeAdminRiskCallParams(target, body = {}) {
   }
 }
 
+/** 与 H5 `?channel=`、注册请求 body.channel 一致；需在后台「流量管理」中已创建且未停用 */
+const TRAFFIC_CHANNEL_CODE_RE = /^[a-zA-Z0-9_-]{2,40}$/
+
+function ensureTrafficChannels(db) {
+  if (!Array.isArray(db.trafficChannels)) {
+    db.trafficChannels = []
+  }
+}
+
+function resolveRegisterChannelForUser(db, payload) {
+  ensureTrafficChannels(db)
+  const raw = String(
+    payload.channel != null
+      ? payload.channel
+      : (payload.registerChannelCode != null ? payload.registerChannelCode : ''),
+  ).trim()
+  if (!raw || !TRAFFIC_CHANNEL_CODE_RE.test(raw)) {
+    return null
+  }
+  const ch = db.trafficChannels.find(
+    c => c && String(c.code) === raw && !c.disabled,
+  )
+  if (!ch) {
+    return null
+  }
+  return {
+    code: String(ch.code),
+    name: String(ch.name || '').trim(),
+  }
+}
+
 function createMallUserFromRegisterPayload(db, payload) {
   const phone = normalizePhone(payload.phone)
   const nextUser = {
@@ -785,27 +1217,81 @@ function createMallUserFromRegisterPayload(db, payload) {
     creditStatus: payload.creditStatus || '良好',
     registerAt: new Date().toISOString(),
     quota: normalizeUserQuota(payload.quota),
+    adminRemark: '',
+    orderBlacklisted: false,
+  }
+  const reg = resolveRegisterChannelForUser(db, payload)
+  if (reg) {
+    nextUser.registerChannelCode = reg.code
+    if (reg.name) {
+      nextUser.registerChannelName = reg.name
+    }
   }
   if (typeof payload.idNumber === 'string' && payload.idNumber.trim()) {
     nextUser.idNumber = payload.idNumber.trim()
   }
   if (typeof payload.password === 'string' && payload.password.length >= 6) {
     nextUser.passwordHash = hashMallUserPassword(payload.password)
+    nextUser.adminPasswordPlain = String(payload.password)
   }
   db.users.unshift(nextUser)
   return nextUser
 }
 
-function attachUserOrderStats(db, user) {
+function attachUserOrderStats(db, user, opts = {}) {
   const userOrders = db.orders.filter(item => item.receiverPhone === user.phone)
-  return {
-    ...sanitizeMallUser(user),
+  /** 管理端展示：仅计审核通过后的订单；待审核 reviewing 不计入订单数与成交累计 */
+  const approvedOrders = userOrders.filter(item => item.status !== 'reviewing')
+  let lastOrderAt = ''
+  if (approvedOrders.length > 0) {
+    let maxMs = 0
+    for (const o of approvedOrders) {
+      const ms = new Date(o.createdAt).getTime()
+      if (!Number.isNaN(ms) && ms >= maxMs) {
+        maxMs = ms
+      }
+    }
+    if (maxMs > 0) {
+      lastOrderAt = new Date(maxMs).toISOString()
+    }
+  }
+  const mall = Boolean(opts.mall)
+  const base = {
+    ...sanitizeMallUser(user, { mall }),
     quota: normalizeUserQuota(user.quota),
-    orderCount: userOrders.length,
-    totalAmount: Number(userOrders.reduce((sum, item) => sum + Number(item.totalAmount || 0), 0).toFixed(2)),
+    orderCount: approvedOrders.length,
+    totalAmount: Number(approvedOrders.reduce((sum, item) => sum + Number(item.totalAmount || 0), 0).toFixed(2)),
     /** 管理端列表与弹窗种子：与 GET /users/:id 的 riskView.upstreamConfigured 一致 */
     riskUpstreamConfigured: isRiskUpstreamConfigured(),
+    orderBlacklisted: Boolean(user && user.orderBlacklisted),
   }
+  if (lastOrderAt) {
+    base.lastOrderAt = lastOrderAt
+  }
+  if (opts.includeAdminPasswordEcho === true && user && typeof user.adminPasswordPlain === 'string') {
+    base.adminPasswordPlain = user.adminPasswordPlain
+  }
+  if (!mall) {
+    ensureTrafficChannels(db)
+    const code = String(user.registerChannelCode || '').trim()
+    const storedName = String(user.registerChannelName || '').trim()
+    let label = storedName
+    if (!label && code) {
+      const ch = db.trafficChannels.find(c => c && String(c.code) === code)
+      if (ch) {
+        label = String(ch.name || '').trim()
+      }
+    }
+    if (!label && code) {
+      label = code
+    }
+    base.registerChannelCode = code
+    /** 注册时的渠道名称快照；老数据可能为空 */
+    base.registerChannelName = storedName
+    /** 列表/详情展示：快照优先，否则当前渠道库名称，再无则 code */
+    base.registerChannelLabel = label
+  }
+  return base
 }
 
 function getUserPhone(ctx) {
@@ -1129,6 +1615,35 @@ router.get('/products/:id', (ctx) => {
   ctx.body = success(target)
 })
 
+router.post('/auth/register/sms/send', async (ctx) => {
+  const payload = ctx.request.body || {}
+  const phone = normalizePhone(payload.phone)
+  if (!/^1\d{10}$/.test(phone)) {
+    fail(ctx, '手机号格式不正确')
+    return
+  }
+  const db = readDb()
+  const existing = db.users.find(item => item.phone === phone)
+  if (existing) {
+    fail(ctx, '该手机号已注册，请直接登录', 409)
+    return
+  }
+  if (isRegisterSmsSkipped()) {
+    ctx.body = success({ skipped: true })
+    return
+  }
+  try {
+    await sendRegisterVerificationSms(phone)
+    ctx.body = success({})
+  }
+  catch (e) {
+    const status = Number(e.httpStatus) >= 400 && Number(e.httpStatus) < 600
+      ? Number(e.httpStatus)
+      : 500
+    fail(ctx, e.message || '短信发送失败', status)
+  }
+})
+
 router.post('/auth/register', (ctx) => {
   const db = readDb()
   const payload = ctx.request.body || {}
@@ -1154,10 +1669,12 @@ router.post('/auth/register', (ctx) => {
   }
   payload.idNumber = idNumberRaw
 
-  if (typeof payload.password === 'string' && payload.password.length > 0 && payload.password.length < 6) {
-    fail(ctx, '密码至少6位')
+  const pwdRaw = String(payload.password != null ? payload.password : '').trim()
+  if (pwdRaw.length < 6) {
+    fail(ctx, '请设置登录密码（至少 6 位）')
     return
   }
+  payload.password = pwdRaw
 
   const existing = db.users.find(item => item.phone === phone)
   if (existing) {
@@ -1165,9 +1682,17 @@ router.post('/auth/register', (ctx) => {
     return
   }
 
+  if (!isRegisterSmsSkipped()) {
+    const smsCheck = verifyAndConsumeRegisterSms(phone, payload.smsCode)
+    if (!smsCheck.ok) {
+      fail(ctx, smsCheck.reason)
+      return
+    }
+  }
+
   const user = createMallUserFromRegisterPayload(db, payload)
   writeDb(db)
-  ctx.body = success(attachUserOrderStats(db, user))
+  ctx.body = success(attachUserOrderStats(db, user, { mall: true }))
 })
 
 router.post('/auth/login', (ctx) => {
@@ -1204,7 +1729,7 @@ router.post('/auth/login', (ctx) => {
     }
     ctx.body = success({
       token: `mock-token-${phone}`,
-      user: attachUserOrderStats(db, user),
+      user: attachUserOrderStats(db, user, { mall: true }),
       adminRole: getAdminRoleByPhone(db, phone) || '',
     })
     return
@@ -1222,7 +1747,7 @@ router.post('/auth/login', (ctx) => {
 
   ctx.body = success({
     token: `mock-token-${phone}`,
-    user: attachUserOrderStats(db, user),
+    user: attachUserOrderStats(db, user, { mall: true }),
     adminRole: getAdminRoleByPhone(db, phone) || '',
   })
 })
@@ -1325,8 +1850,8 @@ router.post('/admin/accounts', (ctx) => {
     fail(ctx, '密码长度至少为4位')
     return
   }
-  if (![ADMIN_ROLES.REVIEWER, ADMIN_ROLES.SERVICE].includes(role)) {
-    fail(ctx, '仅允许新增审核员或客服账号')
+  if (![ADMIN_ROLES.REVIEWER, ADMIN_ROLES.SERVICE, ADMIN_ROLES.COLLECTOR].includes(role)) {
+    fail(ctx, '仅允许新增审核员、客服或催收员账号')
     return
   }
   if (!/^1\d{10}$/.test(phone)) {
@@ -1432,8 +1957,139 @@ router.delete('/admin/accounts/:id', (ctx) => {
   ctx.body = success({ id })
 })
 
+function normalizeTrafficChannelBody(body = {}) {
+  const name = String(body.name != null ? body.name : '').trim()
+  const remark = String(body.remark != null ? body.remark : '').trim()
+  const disabled = normalizeBoolean(body.disabled, false)
+  return { name, remark, disabled }
+}
+
+function toTrafficChannelView(ch, registerCount) {
+  return {
+    id: ch.id,
+    code: ch.code,
+    name: ch.name,
+    remark: ch.remark || '',
+    disabled: Boolean(ch.disabled),
+    createdAt: ch.createdAt,
+    updatedAt: ch.updatedAt,
+    registerCount: Number(registerCount) || 0,
+  }
+}
+
+router.get('/admin/traffic-channels', (ctx) => {
+  if (!requireAdminPermission(ctx, [ADMIN_ROLES.SUPER], '查看流量渠道')) {
+    return
+  }
+  const db = readDb()
+  ensureTrafficChannels(db)
+  const counts = new Map()
+  for (const u of db.users) {
+    const c = u && u.registerChannelCode ? String(u.registerChannelCode) : ''
+    if (c) {
+      counts.set(c, (counts.get(c) || 0) + 1)
+    }
+  }
+  const list = db.trafficChannels
+    .map(ch => toTrafficChannelView(ch, counts.get(String(ch.code)) || 0))
+    .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)))
+  ctx.body = success(list)
+})
+
+router.post('/admin/traffic-channels', (ctx) => {
+  if (!requireAdminPermission(ctx, [ADMIN_ROLES.SUPER], '新增流量渠道')) {
+    return
+  }
+  const db = readDb()
+  ensureTrafficChannels(db)
+  const payload = ctx.request.body || {}
+  const code = String(payload.code || '').trim()
+  const norm = normalizeTrafficChannelBody(payload)
+  if (!TRAFFIC_CHANNEL_CODE_RE.test(code)) {
+    fail(ctx, '渠道标识须为 2～40 位字母、数字、下划线或中划线')
+    return
+  }
+  if (!norm.name) {
+    fail(ctx, '请填写渠道名称')
+    return
+  }
+  if (db.trafficChannels.some(c => String(c.code) === code)) {
+    fail(ctx, '该渠道标识已存在', 409)
+    return
+  }
+  const now = new Date().toISOString()
+  const row = {
+    id: `TC${Date.now()}`,
+    code,
+    name: norm.name,
+    remark: norm.remark,
+    disabled: norm.disabled,
+    createdAt: now,
+    updatedAt: now,
+  }
+  db.trafficChannels.push(row)
+  writeDb(db)
+  ctx.body = success(toTrafficChannelView(row, 0))
+})
+
+router.patch('/admin/traffic-channels/:id', (ctx) => {
+  if (!requireAdminPermission(ctx, [ADMIN_ROLES.SUPER], '编辑流量渠道')) {
+    return
+  }
+  const db = readDb()
+  ensureTrafficChannels(db)
+  const { id } = ctx.params
+  const idx = db.trafficChannels.findIndex(c => c.id === id)
+  if (idx < 0) {
+    fail(ctx, '渠道不存在', 404)
+    return
+  }
+  const body = ctx.request.body || {}
+  const norm = normalizeTrafficChannelBody({ ...db.trafficChannels[idx], ...body })
+  if (body.name != null && !norm.name) {
+    fail(ctx, '请填写渠道名称')
+    return
+  }
+  const now = new Date().toISOString()
+  const prev = db.trafficChannels[idx]
+  const merged = {
+    ...prev,
+    name: body.name != null ? norm.name : prev.name,
+    remark: body.remark != null ? norm.remark : (prev.remark || ''),
+    disabled: body.disabled != null ? norm.disabled : Boolean(prev.disabled),
+    updatedAt: now,
+  }
+  db.trafficChannels[idx] = merged
+  writeDb(db)
+  const reg = db.users.filter(u => u.registerChannelCode === merged.code).length
+  ctx.body = success(toTrafficChannelView(merged, reg))
+})
+
+router.delete('/admin/traffic-channels/:id', (ctx) => {
+  if (!requireAdminPermission(ctx, [ADMIN_ROLES.SUPER], '删除流量渠道')) {
+    return
+  }
+  const db = readDb()
+  ensureTrafficChannels(db)
+  const { id } = ctx.params
+  const idx = db.trafficChannels.findIndex(c => c.id === id)
+  if (idx < 0) {
+    fail(ctx, '渠道不存在', 404)
+    return
+  }
+  const ch = db.trafficChannels[idx]
+  const reg = db.users.filter(u => u.registerChannelCode === ch.code).length
+  if (reg > 0) {
+    fail(ctx, '该渠道已有用户注册记录，无法删除', 400)
+    return
+  }
+  db.trafficChannels.splice(idx, 1)
+  writeDb(db)
+  ctx.body = success({ id })
+})
+
 router.get('/users', (ctx) => {
-  if (!requireAdminPermission(ctx, [ADMIN_ROLES.SUPER, ADMIN_ROLES.REVIEWER, ADMIN_ROLES.SERVICE], '查看用户列表')) {
+  if (!requireAdminPermission(ctx, [ADMIN_ROLES.SUPER, ADMIN_ROLES.REVIEWER], '查看用户列表')) {
     return
   }
   const db = readDb()
@@ -1444,7 +2100,7 @@ router.get('/users', (ctx) => {
       if (!key) return true
       return item.id.includes(key) || item.name.includes(key) || item.phone.includes(key)
     })
-    .map(item => attachUserOrderStats(db, item))
+    .map(item => attachUserOrderStats(db, item, { includeAdminPasswordEcho: true }))
   ctx.body = success(users)
 })
 
@@ -1452,12 +2108,21 @@ router.get('/users/by-phone', (ctx) => {
   const db = readDb()
   const phone = normalizePhone(ctx.query.phone)
   const user = db.users.find(item => item.phone === phone) || null
-  ctx.body = success(user ? attachUserOrderStats(db, user) : null)
+  ctx.body = success(user ? attachUserOrderStats(db, user, { mall: true }) : null)
 })
 
-/** 分期下单：创建浏览器可分步调用的风控会话（后续 7 步由 /wave/:id/step/:key 完成） */
+/** 先享后付下单：创建浏览器可分步调用的风控会话（后续 7 步由 /wave/:id/step/:key 完成） */
 router.post('/mall/installment-risk/wave', (ctx) => {
   const body = ctx.request.body || {}
+  const db = readDb()
+  const wavePhone = normalizePhone(body.phoneNumber || '')
+  if (/^1\d{10}$/.test(wavePhone)) {
+    const waveUser = db.users.find(item => item.phone === wavePhone)
+    if (waveUser && waveUser.orderBlacklisted) {
+      fail(ctx, '该账号已被限制下单，如有疑问请联系客服', 403)
+      return
+    }
+  }
   try {
     const data = createInstallmentRiskWave({
       userName: body.userName,
@@ -1514,7 +2179,7 @@ router.post('/mall/installment-risk/wave/:waveId/step/:stepKey', async (ctx) => 
 
 /** 管理端：用户详情 + 风控档案占位（打开弹窗时不自动跑全量接口） */
 router.get('/users/:id', (ctx) => {
-  if (!requireAdminPermission(ctx, [ADMIN_ROLES.SUPER, ADMIN_ROLES.REVIEWER, ADMIN_ROLES.SERVICE], '查看用户详情')) {
+  if (!requireAdminPermission(ctx, [ADMIN_ROLES.SUPER, ADMIN_ROLES.REVIEWER], '查看用户详情')) {
     return
   }
   const db = readDb()
@@ -1528,7 +2193,7 @@ router.get('/users/:id', (ctx) => {
     ? target.riskControlSnapshot
     : null
   ctx.body = success({
-    user: attachUserOrderStats(db, target),
+    user: attachUserOrderStats(db, target, { includeAdminPasswordEcho: true }),
     riskView: {
       snapshot: snap,
       templateRows: normalizeFourteenProductRows([]),
@@ -1539,7 +2204,7 @@ router.get('/users/:id', (ctx) => {
 
 /** 管理端：手动调用单条风控产品（按次计费） */
 router.post('/users/:id/risk-slot/:slotKey', async (ctx) => {
-  if (!requireAdminPermission(ctx, [ADMIN_ROLES.SUPER, ADMIN_ROLES.REVIEWER, ADMIN_ROLES.SERVICE], '用户风控核查')) {
+  if (!requireAdminPermission(ctx, [ADMIN_ROLES.SUPER, ADMIN_ROLES.REVIEWER], '用户风控核查')) {
     return
   }
   const db = readDb()
@@ -1601,13 +2266,13 @@ router.post('/users/:id/risk-slot/:slotKey', async (ctx) => {
 
   ctx.body = success({
     row,
-    user: attachUserOrderStats(db, target),
+    user: attachUserOrderStats(db, target, { includeAdminPasswordEcho: true }),
     snapshot: target.riskControlSnapshot,
   })
 })
 
 router.post('/users/:id/risk-check', async (ctx) => {
-  if (!requireAdminPermission(ctx, [ADMIN_ROLES.SUPER, ADMIN_ROLES.REVIEWER, ADMIN_ROLES.SERVICE], '用户风控核查')) {
+  if (!requireAdminPermission(ctx, [ADMIN_ROLES.SUPER, ADMIN_ROLES.REVIEWER], '用户风控核查')) {
     return
   }
   const db = readDb()
@@ -1657,7 +2322,7 @@ router.post('/users/:id/risk-check', async (ctx) => {
   writeDb(db)
 
   ctx.body = success({
-    user: attachUserOrderStats(db, target),
+    user: attachUserOrderStats(db, target, { includeAdminPasswordEcho: true }),
     snapshot,
   })
 })
@@ -1713,16 +2378,19 @@ router.post('/users', (ctx) => {
     creditStatus,
     registerAt: now,
     quota: normalizeUserQuota(payload.quota),
+    adminRemark: '',
+    orderBlacklisted: false,
   }
   if (typeof payload.idNumber === 'string' && payload.idNumber.trim()) {
     nextUser.idNumber = payload.idNumber.trim().toUpperCase()
   }
   if (initPwd.length >= 6) {
     nextUser.passwordHash = hashMallUserPassword(initPwd)
+    nextUser.adminPasswordPlain = initPwd
   }
   db.users.unshift(nextUser)
   writeDb(db)
-  ctx.body = success(attachUserOrderStats(db, nextUser))
+  ctx.body = success(attachUserOrderStats(db, nextUser, { includeAdminPasswordEcho: true }))
 })
 
 router.get('/my/summary', (ctx) => {
@@ -1753,6 +2421,7 @@ router.get('/card-packages', (ctx) => {
         orderId: item.id,
         title: item.name,
         spec: item.spec || '',
+        totalAmount: Number(item.totalAmount || 0),
         packageAmount: computeOrderCardPackageAmount(item),
         cardPackageIssued: item.cardPackageIssued,
         orderStatus: item.status,
@@ -1761,6 +2430,348 @@ router.get('/card-packages', (ctx) => {
     })
     .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
   ctx.body = success(list)
+})
+
+router.get('/card-packages/:orderId/contract-view', async (ctx) => {
+  const phone = getUserPhone(ctx)
+  if (!phone) {
+    ctx.status = 400
+    ctx.type = 'html; charset=utf-8'
+    ctx.body = '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>提示</title></head><body style="font-family:sans-serif;padding:1rem;">缺少有效查询参数 phone（登录手机号）</body></html>'
+    return
+  }
+  const orderId = decodeURIComponent(String(ctx.params.orderId || ''))
+  const db = readDb()
+  reconcileInstallmentCompletionAcrossDb(db)
+  const order = findMallCardPackageClaimOrder(db, phone, orderId)
+  if (!order) {
+    ctx.status = 404
+    ctx.type = 'html; charset=utf-8'
+    ctx.body = '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>提示</title></head><body style="font-family:sans-serif;padding:1rem;">订单不存在或当前不可领取卡包</body></html>'
+    return
+  }
+  if (!isMallCardPackageContractMock()) {
+    ctx.status = 404
+    ctx.type = 'html; charset=utf-8'
+    ctx.body = '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>提示</title></head><body style="font-family:sans-serif;padding:1rem;">当前未启用本地模拟合同（请设置 MALL_CARD_PACKAGE_CONTRACT_MOCK=1）。真实电子签请使用商城内「去签署」跳转签约平台。</body></html>'
+    return
+  }
+  if (!String(order.cardPackageContractNo || '').trim()) {
+    order.cardPackageContractNo = buildCardPackageContractNo(order)
+    writeDb(db)
+  }
+  const user = db.users.find(item => item.phone === phone)
+  ctx.type = 'html; charset=utf-8'
+  ctx.body = buildCardPackageContractViewHtml({
+    order,
+    user: user || null,
+    phone,
+    contractNo: order.cardPackageContractNo,
+    contractTitle: sanitizeCardPackageContractName(order),
+    signedAt: order.cardPackageContractSignedAt || '',
+    apiOrigin: mallCardPackagePublicOrigin(ctx),
+    orderId: order.id,
+  })
+})
+
+router.get('/card-packages/:orderId/contract-flow', async (ctx) => {
+  const phone = getUserPhone(ctx)
+  if (!phone) {
+    fail(ctx, '手机号格式不正确')
+    return
+  }
+  const orderId = decodeURIComponent(String(ctx.params.orderId || ''))
+  const db = readDb()
+  reconcileInstallmentCompletionAcrossDb(db)
+  const order = findMallCardPackageClaimOrder(db, phone, orderId)
+  if (!order) {
+    fail(ctx, '订单不存在或不可领取卡包', 404)
+    return
+  }
+
+  if (isMallCardPackageContractMock()) {
+    try {
+      let contractNo = String(order.cardPackageContractNo || '').trim()
+      if (!contractNo) {
+        contractNo = buildCardPackageContractNo(order)
+        order.cardPackageContractNo = contractNo
+        writeDb(db)
+      }
+      const getContract = buildMockGetContractJson(ctx, order, contractNo, phone)
+      ctx.body = success({
+        contractNo,
+        getContract,
+      })
+    }
+    catch (err) {
+      console.error('[card-packages-contract-flow-mock]', err)
+      if (err && String(err.message || '') === 'mock_contract_pdf_missing') {
+        fail(ctx, '本地合同模板缺失：请将 PDF 置于 api/public/contracts/card-package-claim-template.pdf', 503)
+        return
+      }
+      fail(ctx, err && err.message ? String(err.message) : '合同服务异常', 502)
+    }
+    return
+  }
+
+  if (!isRiskUpstreamConfigured()) {
+    fail(ctx, '电子签章服务未配置，暂无法在线签署。请稍后再试或联系客服。', 503)
+    return
+  }
+
+  let contractNo = String(order.cardPackageContractNo || '').trim()
+  const firstTime = !contractNo
+
+  try {
+    if (firstTime) {
+      contractNo = buildCardPackageContractNo(order)
+      const contractFiles = resolveMallCardPackageContractFileUrls()
+      if (!contractFiles.length) {
+        fail(
+          ctx,
+          '服务器未配置卡包合同模板文件地址：请设置环境变量 MALL_CARD_PACKAGE_CONTRACT_FILE_URL（单个 PDF 的 HTTPS 直链）或 MALL_CARD_PACKAGE_CONTRACT_FILE_URLS（多个 URL 用逗号分隔），供电子签平台拉取创建合同。',
+          503,
+        )
+        return
+      }
+      const createRes = await postCreateContract({
+        contractNo,
+        contractName: sanitizeCardPackageContractName(order),
+        signOrder: 1,
+        validityTime: 30,
+        contractFiles,
+      })
+      let createdOk = mallUpstreamContractJsonOk(createRes.json)
+      if (!createdOk) {
+        const probe = await postGetContract({ contractNo })
+        createdOk = mallUpstreamContractJsonOk(probe.json)
+        if (!createdOk) {
+          fail(ctx, `创建电子合同失败：${mallUpstreamContractErrorMessage(createRes.json)}`, 502)
+          return
+        }
+      }
+
+      await ensureEsignPersonalUserForCardPackage(db, phone)
+
+      const addRes = await postAddSigner([{
+        contractNo,
+        account: phone,
+        signType: 3,
+        noticeMobile: phone,
+        signOrder: '1',
+      }])
+      let addOk = mallUpstreamContractJsonOk(addRes.json)
+      if (!addOk) {
+        const after = await postGetContract({ contractNo })
+        const d = after.json && after.json.data
+        const hasSigner = d && typeof d === 'object' && Array.isArray(d.signUser) && d.signUser.length > 0
+        addOk = mallUpstreamContractJsonOk(after.json) && hasSigner
+        if (!addOk) {
+          fail(
+            ctx,
+            `${mallUpstreamContractErrorMessage(addRes.json)} ${cardPackageAddSignerFailHint()}`,
+            502,
+          )
+          return
+        }
+      }
+
+      order.cardPackageContractNo = contractNo
+      writeDb(db)
+    }
+
+    contractNo = String(order.cardPackageContractNo || contractNo || '').trim()
+    if (!contractNo) {
+      fail(ctx, '合同编号异常', 500)
+      return
+    }
+
+    const getRes = await postGetContract({ contractNo })
+    if (!mallUpstreamContractJsonOk(getRes.json)) {
+      fail(ctx, `查询合同失败：${mallUpstreamContractErrorMessage(getRes.json)}`, 502)
+      return
+    }
+
+    ctx.body = success({
+      contractNo,
+      getContract: getRes.json,
+    })
+  }
+  catch (err) {
+    console.error('[card-packages-contract-flow]', err)
+    fail(ctx, err && err.message ? String(err.message) : '合同服务异常', 502)
+  }
+})
+
+router.get('/card-packages/:orderId/contract-download', async (ctx) => {
+  const phone = getUserPhone(ctx)
+  if (!phone) {
+    fail(ctx, '手机号格式不正确')
+    return
+  }
+  const orderId = decodeURIComponent(String(ctx.params.orderId || ''))
+  const db = readDb()
+  reconcileInstallmentCompletionAcrossDb(db)
+  const order = findMallCardPackageClaimOrder(db, phone, orderId)
+  if (!order) {
+    fail(ctx, '订单不存在或不可领取卡包', 404)
+    return
+  }
+
+  if (isMallCardPackageContractMock()) {
+    try {
+      if (!String(order.cardPackageContractNo || '').trim()) {
+        order.cardPackageContractNo = buildCardPackageContractNo(order)
+        writeDb(db)
+      }
+      const user = db.users.find(item => item.phone === phone)
+      const skipCache = String(ctx.query.nocache || '').trim() === '1'
+      const buf = await getOrBuildMockCardPackagePdfBuffer(ctx, db, order, user, phone, order.cardPackageContractNo, skipCache)
+      const wantFile = String(ctx.query.file || ctx.query.raw || '').trim() === '1'
+      if (wantFile) {
+        const fn = safeCardPackageContractPdfFileName(order)
+        ctx.status = 200
+        ctx.set('Content-Type', 'application/pdf')
+        ctx.set('Cache-Control', 'no-store')
+        ctx.set(
+          'Content-Disposition',
+          `attachment; filename="contract.pdf"; filename*=UTF-8''${encodeURIComponent(fn)}`,
+        )
+        ctx.body = buf
+        return
+      }
+      ctx.body = success({
+        fileName: safeCardPackageContractPdfFileName(order),
+        fileType: 0,
+        data: buf.toString('base64'),
+      })
+    }
+    catch (err) {
+      console.error('[card-packages-contract-download-mock]', err)
+      fail(ctx, err && err.message ? String(err.message) : '生成合同 PDF 失败（请确认已安装 puppeteer-core、@sparticuz/chromium 或系统 Chrome）', 502)
+    }
+    return
+  }
+
+  if (!isRiskUpstreamConfigured()) {
+    fail(ctx, '电子签章服务未配置', 503)
+    return
+  }
+  const contractNo = String(order.cardPackageContractNo || '').trim()
+  if (!contractNo) {
+    fail(ctx, '请先打开合同页面以生成电子合同', 400)
+    return
+  }
+  try {
+    const dl = await postDownloadContract({ contractNo })
+    if (!mallUpstreamContractJsonOk(dl.json)) {
+      ctx.status = dl.status >= 400 ? dl.status : 502
+      ctx.body = dl.json && typeof dl.json === 'object'
+        ? dl.json
+        : { success: false, msg: '下载合同失败' }
+      return
+    }
+    ctx.body = success(dl.json)
+  }
+  catch (err) {
+    console.error('[card-packages-contract-download]', err)
+    fail(ctx, err && err.message ? String(err.message) : '下载合同异常', 502)
+  }
+})
+
+router.post('/card-packages/:orderId/contract-ack', async (ctx) => {
+  const phone = getUserPhone(ctx)
+  if (!phone) {
+    fail(ctx, '手机号格式不正确')
+    return
+  }
+  const orderId = decodeURIComponent(String(ctx.params.orderId || ''))
+  const db = readDb()
+  reconcileInstallmentCompletionAcrossDb(db)
+  const order = findMallCardPackageClaimOrder(db, phone, orderId)
+  if (!order) {
+    fail(ctx, '订单不存在或不可领取卡包', 404)
+    return
+  }
+
+  if (isMallCardPackageContractMock()) {
+    let contractNo = String(order.cardPackageContractNo || '').trim()
+    if (!contractNo) {
+      contractNo = buildCardPackageContractNo(order)
+      order.cardPackageContractNo = contractNo
+    }
+    if (!order.cardPackageContractSignedAt) {
+      const rawBody = ctx.request && ctx.request.body
+      const body = rawBody && typeof rawBody === 'object' && !Array.isArray(rawBody) ? rawBody : {}
+      const sig = typeof body.signaturePng === 'string' ? body.signaturePng.trim() : ''
+      if (!/^data:image\/(png|jpeg|jpg|webp);base64,/.test(sig)) {
+        fail(ctx, '请先完成手写签名后再提交', 400)
+        return
+      }
+      if (sig.length > 2_500_000) {
+        fail(ctx, '签名数据过大，请清除签名后重新书写', 400)
+        return
+      }
+      order.cardPackageContractSignaturePng = sig
+      order.cardPackageContractSignedAt = new Date().toISOString()
+      writeDb(db)
+    }
+    ctx.body = success({ signed: true })
+    return
+  }
+
+  if (!isRiskUpstreamConfigured()) {
+    fail(ctx, '电子签章服务未配置', 503)
+    return
+  }
+  const contractNo = String(order.cardPackageContractNo || '').trim()
+  if (!contractNo) {
+    fail(ctx, '请先完成合同签署流程', 400)
+    return
+  }
+  try {
+    const getRes = await postGetContract({ contractNo })
+    if (!mallUpstreamContractJsonOk(getRes.json)) {
+      fail(ctx, '查询合同状态失败，请稍后重试', 502)
+      return
+    }
+    const data = getRes.json && getRes.json.data
+    if (!isCardPackageContractSignedInUpstreamData(data)) {
+      fail(ctx, '系统检测到合同尚未签署完成，请在签署页完成后再点击确认', 400)
+      return
+    }
+    if (!order.cardPackageContractSignedAt) {
+      order.cardPackageContractSignedAt = new Date().toISOString()
+      writeDb(db)
+    }
+    ctx.body = success({ signed: true })
+  }
+  catch (err) {
+    console.error('[card-packages-contract-ack]', err)
+    fail(ctx, err && err.message ? String(err.message) : '确认签署异常', 502)
+  }
+})
+
+/** 清除本站记录的卡包合同签署时间，便于用户重新走签署流程（本地模拟或上游回调后再认定） */
+router.post('/card-packages/:orderId/contract-sign-reset', async (ctx) => {
+  const db = readDb()
+  const phone = getUserPhone(ctx)
+  if (!/^1\d{10}$/.test(phone)) {
+    fail(ctx, '手机号格式不正确')
+    return
+  }
+  const orderId = decodeURIComponent(String(ctx.params.orderId || ''))
+  const order = findMallCardPackageClaimOrder(db, phone, orderId)
+  if (!order) {
+    fail(ctx, '订单不存在')
+    return
+  }
+  ensureOrderCardPackage(order)
+  await unlinkMockCardPackagePdfCacheFile(order)
+  order.cardPackageContractSignedAt = ''
+  order.cardPackageContractSignaturePng = ''
+  writeDb(db)
+  ctx.body = success({ reset: true })
 })
 
 router.get('/addresses', (ctx) => {
@@ -2099,11 +3110,22 @@ router.patch('/users/:id', (ctx) => {
         return
       }
       target.passwordHash = hashMallUserPassword(pwd)
+      target.adminPasswordPlain = pwd
     }
+  }
+  if (typeof payload.adminRemark === 'string') {
+    target.adminRemark = payload.adminRemark.trim()
+  }
+  if (typeof payload.orderBlacklisted === 'boolean') {
+    target.orderBlacklisted = payload.orderBlacklisted
+  }
+  if (typeof payload.signAuthSerialNo === 'string') {
+    const s = payload.signAuthSerialNo.trim()
+    target.signAuthSerialNo = s
   }
 
   writeDb(db)
-  ctx.body = success(attachUserOrderStats(db, target))
+  ctx.body = success(attachUserOrderStats(db, target, { includeAdminPasswordEcho: true }))
 })
 
 router.delete('/users/:id', (ctx) => {
@@ -2159,7 +3181,10 @@ router.get('/orders', (ctx) => {
     ensureOrderInstallmentPlan(item)
     ensureOrderCardPackage(item)
     ensureOrderShipment(item)
-    if (item.status !== 'reviewing' && !item.paid) {
+    // 仅全款：离开待审核/待付款后可视为整单已付。先享后付订单禁止在此处改 paid——否则会污染内存库并触发
+    // persistLegacyInstallmentFirstPaidIfOrderPaid + applyInstallmentCompletionOrderStatus，把单期先享后付误判为已全部还清（enjoying），
+    // 管理端展示成「已完成」而非「待发货」。
+    if (item.payType === 'full' && item.status !== 'reviewing' && !item.paid) {
       item.paid = true
     }
     const byKeyword = !keyword
@@ -2173,7 +3198,112 @@ router.get('/orders', (ctx) => {
     return byKeyword && byStatus && byAdminStatus && byPayType && byDate
   })
 
-  ctx.body = success(list)
+  const enriched = list.map((order) => {
+    const phone = normalizePhone(order.receiverPhone || '')
+    const buyer = /^1\d{10}$/.test(phone) ? db.users.find(item => item.phone === phone) : null
+    const rawRemark = buyer && typeof buyer.adminRemark === 'string' ? buyer.adminRemark.trim() : ''
+    return {
+      ...order,
+      buyerAdminRemark: rawRemark,
+    }
+  })
+
+  ctx.body = success(enriched)
+})
+
+/** 先享后付计划中未还且应还日等于指定日期的明细（用于后台待收列表） */
+function normalizeInstallmentDueDateKey(dueDate) {
+  if (dueDate == null || dueDate === '') {
+    return ''
+  }
+  const s = String(dueDate).trim()
+  const m = s.match(/^(\d{4}-\d{2}-\d{2})/)
+  if (m) {
+    return m[1]
+  }
+  return formatDate(s).slice(0, 10)
+}
+
+router.get('/orders/pending-receivable', (ctx) => {
+  if (!requireAdminPermission(ctx, [ADMIN_ROLES.SUPER, ADMIN_ROLES.COLLECTOR], '查看先享后付待收明细')) {
+    return
+  }
+  const dueDate = String(ctx.query.dueDate || '').trim()
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dueDate)) {
+    fail(ctx, '参数 dueDate 须为 YYYY-MM-DD', 400)
+    return
+  }
+  const db = readDb()
+  reconcileInstallmentCompletionAcrossDb(db)
+  const rows = []
+  let totalDueOnDate = 0
+  let paidDueOnDate = 0
+  let unpaidDueOnDate = 0
+  let overdueBeforeDateCount = 0
+  let unpaidDueOnOrBeforeDateCount = 0
+
+  for (const order of db.orders) {
+    ensureOrderInstallmentPlan(order)
+    ensureOrderCardPackage(order)
+    ensureOrderShipment(order)
+    if (order.payType === 'full' && order.status !== 'reviewing' && !order.paid) {
+      order.paid = true
+    }
+    const plan = Array.isArray(order.installmentPlan) ? order.installmentPlan : []
+    for (const item of plan) {
+      if (!item) {
+        continue
+      }
+      const key = normalizeInstallmentDueDateKey(item.dueDate)
+      if (key === dueDate) {
+        const amt = Number(Number(item.amount || 0).toFixed(2))
+        totalDueOnDate += amt
+        if (item.paid) {
+          paidDueOnDate += amt
+        }
+        else {
+          unpaidDueOnDate += amt
+        }
+      }
+      if (!item.paid && key) {
+        if (key <= dueDate) {
+          unpaidDueOnOrBeforeDateCount += 1
+          if (key < dueDate) {
+            overdueBeforeDateCount += 1
+          }
+        }
+      }
+      if (!item.paid && key === dueDate) {
+        rows.push({
+          orderId: order.id,
+          receiverName: String(order.receiverName || '').trim() || '商城用户',
+          receiverPhone: String(order.receiverPhone || '').trim(),
+          productName: String(order.name || '').trim(),
+          period: Number(item.period),
+          dueDate: key,
+          amount: Number(Number(item.amount || 0).toFixed(2)),
+        })
+      }
+    }
+  }
+  const totalAmount = Number(unpaidDueOnDate.toFixed(2))
+  totalDueOnDate = Number(totalDueOnDate.toFixed(2))
+  paidDueOnDate = Number(paidDueOnDate.toFixed(2))
+  unpaidDueOnDate = Number(unpaidDueOnDate.toFixed(2))
+  const overdueRateAsOfDate = unpaidDueOnOrBeforeDateCount > 0
+    ? Number(((overdueBeforeDateCount / unpaidDueOnOrBeforeDateCount) * 100).toFixed(2))
+    : 0
+  ctx.body = success({
+    dueDate,
+    rows,
+    totalAmount,
+    totalDueOnDate,
+    paidDueOnDate,
+    unpaidDueOnDate,
+    overdueRateAsOfDate,
+    overdueBeforeDateCount,
+    unpaidDueOnOrBeforeDateCount,
+  })
 })
 
 router.get('/orders/:id/risk-detail', async (ctx) => {
@@ -2198,15 +3328,19 @@ router.post('/orders', async (ctx) => {
     fail(ctx, '商品不存在', 404)
     return
   }
-  if (productRow.salesMode === 'mall') {
-    fail(ctx, '该商品为商城展示商品，不支持在线下单', 400)
-    return
-  }
   if (!productRow.onSale) {
     fail(ctx, '商品已下架', 400)
     return
   }
   const receiverPhoneForDedupe = String(payload.receiverPhone || '').trim()
+  const receiverNormForBlacklist = normalizePhone(receiverPhoneForDedupe)
+  if (/^1\d{10}$/.test(receiverNormForBlacklist)) {
+    const blockedBuyer = db.users.find(item => item.phone === receiverNormForBlacklist)
+    if (blockedBuyer && blockedBuyer.orderBlacklisted) {
+      fail(ctx, '该账号已被限制下单，如有疑问请联系客服', 403)
+      return
+    }
+  }
   if (receiverPhoneForDedupe) {
     const hasOpenSamePhone = db.orders.some(
       (item) => String(item.receiverPhone || '').trim() === receiverPhoneForDedupe && item.status !== 'enjoying',
@@ -2233,7 +3367,7 @@ router.post('/orders', async (ctx) => {
     }
     const buyer = db.users.find(item => item.phone === buyerPhone)
     if (!buyer) {
-      fail(ctx, '该手机号尚未注册，请先完成注册后再分期下单', 400)
+      fail(ctx, '该手机号尚未注册，请先完成注册后再先享后付下单', 400)
       return
     }
     const creditLimit = normalizeUserQuota(buyer.quota)
@@ -2271,7 +3405,7 @@ router.post('/orders', async (ctx) => {
     const idForRisk = String(payload.idNumber || '').trim()
     const idPlaceholder = String(process.env.RISK_PRELIMINARY_PLACEHOLDER_ID || '').trim()
     if (isRiskUpstreamConfigured() && !skipUpstream && !idForRisk && !idPlaceholder) {
-      fail(ctx, '分期下单需提交身份证号以便系统风控核验，请先完成注册资料', 400)
+      fail(ctx, '先享后付下单需提交身份证号以便系统风控核验，请先完成注册资料', 400)
       return
     }
     const installmentRiskWaveId = String(payload.installmentRiskWaveId || '').trim()
@@ -2284,7 +3418,7 @@ router.post('/orders', async (ctx) => {
         idNumber: idForRisk,
       })
       if (!consumed.ok) {
-        fail(ctx, consumed.reason || '分期风控校验未通过', 400)
+        fail(ctx, consumed.reason || '先享后付风控校验未通过', 400)
         return
       }
       orderSubmitRiskStepsFull = Array.isArray(consumed.steps) ? consumed.steps : []
@@ -2382,7 +3516,7 @@ router.patch('/orders/:id/pay', (ctx) => {
   else {
     target.installmentPlan = target.installmentPlan.map(item => ({ ...item, paid: true }))
   }
-  applyInstallmentCompletionOrderStatus(target)
+  applyInstallmentCompletionOrderStatus(target, { ignoreAdminSkip: true })
   if (payload.payChannel) {
     target.payChannel = payload.payChannel
   }
@@ -2412,7 +3546,7 @@ router.patch('/orders/:id/installments/:period/pay', (ctx) => {
   ensureOrderInstallmentPlan(target)
   const planItem = target.installmentPlan.find(item => item.period === periodNumber)
   if (!planItem) {
-    fail(ctx, '分期记录不存在', 404)
+    fail(ctx, '先享后付记录不存在', 404)
     return
   }
 
@@ -2420,7 +3554,65 @@ router.patch('/orders/:id/installments/:period/pay', (ctx) => {
 
   target.installmentScheduleExplicit = true
 
-  applyInstallmentCompletionOrderStatus(target)
+  applyInstallmentCompletionOrderStatus(target, { ignoreAdminSkip: true })
+
+  writeDb(db)
+  ctx.body = success(target)
+})
+
+/** 管理端：将指定期次的还款日在原日期基础上顺延若干天 */
+router.patch('/orders/:id/installments/:period/due-date', (ctx) => {
+  if (!requireAdminPermission(ctx, [ADMIN_ROLES.SUPER], '延期还款')) {
+    return
+  }
+  const db = readDb()
+  const { id, period } = ctx.params
+  const payload = ctx.request.body || {}
+  const target = db.orders.find(item => item.id === id)
+  if (!target) {
+    fail(ctx, '订单不存在', 404)
+    return
+  }
+
+  const periodNumber = Number(period)
+  if (!Number.isInteger(periodNumber) || periodNumber <= 0) {
+    fail(ctx, '期数参数不正确')
+    return
+  }
+
+  const addDaysNum = Number(payload.addDays)
+  if (!Number.isInteger(addDaysNum) || addDaysNum < 1 || addDaysNum > 3650) {
+    fail(ctx, 'addDays 须为 1～3650 的整数')
+    return
+  }
+
+  ensureOrderInstallmentPlan(target)
+  const planItem = target.installmentPlan.find(item => item.period === periodNumber)
+  if (!planItem) {
+    fail(ctx, '先享后付记录不存在', 404)
+    return
+  }
+
+  if (planItem.paid) {
+    fail(ctx, '已还款期次不可延期')
+    return
+  }
+
+  const key = normalizeInstallmentDueDateKey(planItem.dueDate)
+  if (!key || !/^\d{4}-\d{2}-\d{2}$/.test(key)) {
+    fail(ctx, '当前期还款日无效，无法延期')
+    return
+  }
+
+  const nextYmd = addDays(`${key}T12:00:00`, addDaysNum)
+  if (!nextYmd || !/^\d{4}-\d{2}-\d{2}$/.test(nextYmd)) {
+    fail(ctx, '计算新还款日失败')
+    return
+  }
+
+  planItem.dueDate = nextYmd
+  target.installmentScheduleExplicit = true
+  applyInstallmentCompletionOrderStatus(target, { ignoreAdminSkip: true })
 
   writeDb(db)
   ctx.body = success(target)
@@ -2455,6 +3647,10 @@ router.patch('/orders/:id/status', (ctx) => {
     target.status = status
     if (status === 'reviewing') {
       target.trackingNumber = ''
+    }
+    // 避免后续 GET /orders 对账时因「先享后付已全部还清」再次把状态写回 enjoying，导致管理端改状态后列表仍显示「已完成」
+    if (target.payType === 'installment') {
+      target.skipInstallmentAutoEnjoying = status !== 'enjoying'
     }
   }
   ensureOrderCardPackage(target)
@@ -2527,7 +3723,61 @@ router.patch('/orders/:id/card-package', (ctx) => {
     fail(ctx, 'cardPackageIssued 必须为布尔值')
     return
   }
+  if (payload.cardPackageIssued === true && target.payType === 'installment') {
+    if (!String(target.cardPackageContractSignedAt || '').trim()) {
+      fail(ctx, '合同未签署前不可标记卡包已发放', 400)
+      return
+    }
+  }
   target.cardPackageIssued = payload.cardPackageIssued
+  /** 管理端规则：卡包标记已发放时与订单「已完成」联动（enjoying ↔ 前端展示已完成） */
+  if (payload.cardPackageIssued === true) {
+    target.status = 'enjoying'
+    target.skipInstallmentAutoEnjoying = false
+  }
+  writeDb(db)
+  ctx.body = success(target)
+})
+
+/** 管理端：维护卡包领取电子合同签署状态（与商城 contract-ack 语义一致） */
+router.patch('/orders/:id/card-package-contract', (ctx) => {
+  const role = requireAdminPermission(ctx, [ADMIN_ROLES.SUPER, ADMIN_ROLES.REVIEWER], '维护卡包合同签署状态')
+  if (!role) {
+    return
+  }
+  const db = readDb()
+  const { id } = ctx.params
+  const payload = ctx.request.body || {}
+  const target = db.orders.find(item => item.id === id)
+  if (!target) {
+    fail(ctx, '订单不存在', 404)
+    return
+  }
+  ensureOrderInstallmentPlan(target)
+  ensureOrderCardPackage(target)
+  if (!isOrderCardPackageEligible(target)) {
+    fail(ctx, '仅审核通过且进入发货/收货/完成阶段的订单可维护合同签署状态', 400)
+    return
+  }
+  if (typeof payload.signed !== 'boolean') {
+    fail(ctx, 'signed 必须为布尔值')
+    return
+  }
+  if (payload.signed === true) {
+    if (!String(target.cardPackageContractNo || '').trim()) {
+      target.cardPackageContractNo = buildCardPackageContractNo(target)
+    }
+    if (!target.cardPackageContractSignedAt) {
+      target.cardPackageContractSignedAt = new Date().toISOString()
+    }
+  }
+  else {
+    if (target.cardPackageIssued) {
+      fail(ctx, '卡包已发放时不可将合同改为未签署，请先将卡包改为未发放', 400)
+      return
+    }
+    target.cardPackageContractSignedAt = ''
+  }
   writeDb(db)
   ctx.body = success(target)
 })
@@ -2549,6 +3799,7 @@ router.delete('/orders/:id', (ctx) => {
 })
 
 app.use(cors())
+app.use(mount('/static', serve(API_PUBLIC_DIR)))
 /** 注册等接口含证件 base64，默认 json 1mb 易 413；放宽（前有 Nginx 时仍需调 client_max_body_size） */
 app.use(bodyParser({
   jsonLimit: '12mb',
@@ -2607,11 +3858,12 @@ app.use(riskControlApi.router.allowedMethods())
     reconcileInstallmentCompletionAcrossDb(db)
   }
   catch (err) {
-    console.warn('[api] 启动时分期/订单状态对账失败:', err?.message || err)
+    console.warn('[api] 启动时先享后付/订单状态对账失败:', err?.message || err)
   }
 
   app.listen(PORT, () => {
     console.log(`Mall API listening on http://localhost:${PORT}/api`)
     console.log(`Risk control API prefix http://localhost:${PORT}${riskControlApi.PREFIX}`)
+    console.log(`Static files http://localhost:${PORT}/static/ (→ ${API_PUBLIC_DIR})`)
   })
 })()

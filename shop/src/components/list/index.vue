@@ -1,15 +1,11 @@
 <script setup lang="ts">
 import type { MallCategoryItem, MallCategoryKey, TeaProduct } from '~/composables/useTeaProducts'
 
-const props = withDefaults(
-  defineProps<{
-    products: TeaProduct[]
-    categories: MallCategoryItem[]
-    activeCategory: MallCategoryKey
-    displayOnly?: boolean
-  }>(),
-  { displayOnly: false },
-)
+defineProps<{
+  products: TeaProduct[]
+  categories: MallCategoryItem[]
+  activeCategory: MallCategoryKey
+}>()
 
 const emit = defineEmits<{
   'select-category': [category: MallCategoryKey]
@@ -17,7 +13,7 @@ const emit = defineEmits<{
 
 const promos = [
   { title: '新人福利', desc: '首单满 299 减 30', tag: 'NEW' },
-  { title: '满赠专区', desc: '购买两件赠茶具礼盒', tag: 'GIFT' },
+  { title: '满赠专区', desc: '满两件享精选赠品', tag: 'GIFT' },
   { title: '限时折扣', desc: '今晚 20:00 爆款 88 折', tag: 'SALE' },
 ]
 
@@ -34,10 +30,6 @@ async function handleCart(productName: string) {
 }
 
 async function handleBuy(productId: number, productName: string) {
-  if (props.displayOnly) {
-    ElMessage.info('该商品仅供展示，请前往分期专区页面选购可下单商品')
-    return
-  }
   const passed = await ensureRegistered()
   if (!passed) {
     return
@@ -57,13 +49,13 @@ async function handleBuy(productId: number, productName: string) {
     <div class="app-content">
       <div class="hero-card mb-6 rounded-2xl p-5 text-white md:p-7">
         <p class="mb-2 text-xs tracking-[0.22em] uppercase text-white/80">
-          Tea Mall
+          Mall
         </p>
         <h2 class="mb-2 text-2xl font-semibold md:text-3xl">
-          高端茶叶商城
+          品质生活商城
         </h2>
         <p class="text-sm text-white/85">
-          核心产区甄选，传统工艺监制，支持礼盒定制与企业采购。
+          手机数码、家用电器与美妆个护精选，支持先享后付与在线下单。
         </p>
       </div>
 
@@ -112,6 +104,10 @@ async function handleBuy(productId: number, productName: string) {
             :src="item.image"
             :alt="item.name"
             class="h-56 w-full object-cover pointer-events-none"
+            loading="lazy"
+            decoding="async"
+            referrerpolicy="no-referrer"
+            @error="onMallProductImageError($event, item.name)"
           >
           <div class="p-5">
             <div class="mb-2 flex items-center justify-between">
@@ -134,26 +130,19 @@ async function handleBuy(productId: number, productName: string) {
             <div class="flex items-center justify-between">
               <span class="text-xl font-semibold leading-6 text-[#df5b80]">￥{{ item.price }}</span>
               <div class="flex items-center gap-2">
-                <template v-if="props.displayOnly">
-                  <span class="rounded-lg bg-black/[0.06] px-4 py-2 text-sm text-black/50 pointer-events-none">
-                    仅展示
-                  </span>
-                </template>
-                <template v-else>
-                  <button
-                    type="button"
-                    class="rounded-lg border border-[#efcfdb] px-3 py-2 text-sm text-[#5f6474] hover:border-[#e88dad] hover:text-[#d85f89]"
-                    @click.stop="handleCart(item.name)"
-                  >
-                    加入购物车
-                  </button>
-                  <span
-                    class="buy-btn rounded-lg px-4 py-2 text-sm text-white pointer-events-none"
-                    aria-hidden="true"
-                  >
-                    立即购买
-                  </span>
-                </template>
+                <button
+                  type="button"
+                  class="rounded-lg border border-[#efcfdb] px-3 py-2 text-sm text-[#5f6474] hover:border-[#e88dad] hover:text-[#d85f89]"
+                  @click.stop="handleCart(item.name)"
+                >
+                  加入购物车
+                </button>
+                <span
+                  class="buy-btn rounded-lg px-4 py-2 text-sm text-white pointer-events-none"
+                  aria-hidden="true"
+                >
+                  立即购买
+                </span>
               </div>
             </div>
           </div>
@@ -161,7 +150,7 @@ async function handleBuy(productId: number, productName: string) {
       </div>
 
       <div class="mt-8 rounded-xl border border-dashed border-black/15 bg-white p-5 text-sm text-black/60">
-        已展示 {{ products.length }} 款高端茶叶商品，更多新品将持续上架。
+        已展示 {{ products.length }} 款商品，更多品类持续上架。
       </div>
     </div>
   </section>

@@ -1,882 +1,390 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import * as echarts from 'echarts'
-import { useOrdersStore, type OrderItem } from '../stores/useOrdersStore'
+import { Refresh } from '@element-plus/icons-vue'
+import { computed, onMounted, ref } from 'vue'
+import { useOrdersStore } from '../stores/useOrdersStore'
 
 const { orders, fetchOrders } = useOrdersStore()
-const todayKey = new Date().toISOString().slice(0, 10)
 
-interface InstallmentRow {
-  orderId: string
-  user: string
-  product: string
-  orderStatus: OrderItem['status']
-  period: number
-  dueDate: string
-  principal: number
-  fee: number
-  amount: number
-  repayState: '已回款' | '待回款' | '逾期待回'
+const loading = ref(false)
+
+function formatLocalYmd(d: Date) {
+  const y = d.getFullYear()
+  const m = `${d.getMonth() + 1}`.padStart(2, '0')
+  const day = `${d.getDate()}`.padStart(2, '0')
+  return `${y}-${m}-${day}`
 }
 
-const totalOrders = computed(() => orders.value.length)
-const totalSales = computed(() => orders.value.reduce((sum, item) => sum + item.totalAmount, 0))
+const todayStr = computed(() => formatLocalYmd(new Date()))
 
-const totalReceivable = computed(() => {
-  return orders.value.reduce((sum, order) => {
-    const pending = order.installmentPlan
-      .filter(item => !item.paid)
-      .reduce((acc, item) => acc + item.amount, 0)
-    return sum + pending
-  }, 0)
-})
+function dueKey(dueDate: string) {
+  const s = String(dueDate || '').trim()
+  const m = s.match(/^(\d{4}-\d{2}-\d{2})/)
+  return m ? m[1] : ''
+}
 
-const totalProfit = computed(() => {
-  return orders.value.reduce((sum, order) => {
-    const fee = order.installmentPlan.reduce((acc, item) => acc + item.fee, 0)
-    return sum + fee
-  }, 0)
-})
-
-const profitRate = computed(() => {
-  if (!totalSales.value) {
+/** 业务口径：本金 × 135% + 50 = 订单成交金额 → 反推本金 = (订单金额 - 50) / 1.35 */
+function impliedPrincipalFromOrderAmount(totalAmount: number) {
+  const amt = Number(totalAmount) || 0
+  if (amt <= 50) {
     return 0
   }
-  return (totalProfit.value / totalSales.value) * 100
-})
+  return Math.round(((amt - 50) / 1.35) * 100) / 100
+}
 
-const paidRate = computed(() => {
-  const totalInstallments = orders.value.reduce((sum, order) => sum + order.installmentPlan.length, 0)
-  const paidInstallments = orders.value.reduce(
-    (sum, order) => sum + order.installmentPlan.filter(item => item.paid).length,
-    0,
-  )
-  if (!totalInstallments) {
-    return 0
+/** 基于接口拉取的订单与先享后付计划汇总（与库内逻辑一致） */
+const kpis = computed(() => {
+  let totalSales = 0
+  let totalPrincipal = 0
+  let receivableAmount = 0
+  let receivablePrincipal = 0
+  let overdueAmount = 0
+  let unpaidCount = 0
+  let overdueCount = 0
+  let overdueOrderCount = 0
+
+  const t = todayStr.value
+
+  for (const order of orders.value) {
+    const orderTotal = Number(order.totalAmount) || 0
+    totalSales += orderTotal
+
+    if (order.payType === '先享后付') {
+      totalPrincipal += impliedPrincipalFromOrderAmount(orderTotal)
+    }
+    else {
+      for (const item of order.installmentPlan) {
+        totalPrincipal += Number(item.principal) || 0
+      }
+    }
+
+    let orderHasOverdue = false
+    for (const item of order.installmentPlan) {
+      const a = Number(item.amount) || 0
+      const p = Number(item.principal) || 0
+      const dk = dueKey(item.dueDate)
+
+      if (!item.paid) {
+        receivableAmount += a
+        receivablePrincipal += p
+        unpaidCount += 1
+        if (dk && dk < t) {
+          overdueAmount += a
+          overdueCount += 1
+          orderHasOverdue = true
+        }
+      }
+    }
+    if (orderHasOverdue) {
+      overdueOrderCount += 1
+    }
   }
-  return (paidInstallments / totalInstallments) * 100
-})
 
-const statusSummary = computed(() => {
+  const overdueRate = unpaidCount > 0 ? (overdueCount / unpaidCount) * 100 : 0
+
   return {
-    unpaid: orders.value.filter(item => item.status === '待付款').length,
-    pendingShip: orders.value.filter(item => item.status === '待发货').length,
-    pendingReceive: orders.value.filter(item => item.status === '待收货').length,
-    done: orders.value.filter(item => item.status === '已完成').length,
+    orderCount: orders.value.length,
+    totalSales,
+    totalPrincipal,
+    receivableAmount,
+    receivablePrincipal,
+    overdueAmount,
+    unpaidCount,
+    overdueCount,
+    overdueOrderCount,
+    overdueRate,
   }
 })
 
-const upcomingRepays = computed(() => {
-  return orders.value
-    .filter(item => item.nextRepayDate !== '-')
-    .map(item => ({
-      id: item.id,
-      user: item.user,
-      currentPeriod: item.currentPeriod,
-      periods: item.periods,
-      amount: item.periodAmount,
-      dueDate: item.nextRepayDate,
-    }))
-    .slice(0, 5)
-})
-
-const filterKeyword = ref('')
-const filterOrderStatus = ref<'all' | OrderItem['status']>('all')
-const filterPeriod = ref<'all' | number>('all')
-const filterRepayState = ref<'all' | InstallmentRow['repayState']>('all')
-
-const allPeriods = computed(() => {
-  const set = new Set<number>()
-  orders.value.forEach((order) => {
-    order.installmentPlan.forEach(item => set.add(item.period))
-  })
-  return [...set].sort((a, b) => a - b)
-})
-
-const installmentRows = computed<InstallmentRow[]>(() => {
-  return orders.value.flatMap(order =>
-    order.installmentPlan.map((item) => {
-      let repayState: InstallmentRow['repayState'] = '待回款'
-      if (item.paid) {
-        repayState = '已回款'
-      }
-      else if (item.dueDate < todayKey) {
-        repayState = '逾期待回'
-      }
-
-      return {
-        orderId: order.id,
-        user: order.user,
-        product: order.product,
-        orderStatus: order.status,
-        period: item.period,
-        dueDate: item.dueDate,
-        principal: item.principal,
-        fee: item.fee,
-        amount: item.amount,
-        repayState,
-      }
-    }),
-  )
-})
-
-const filteredInstallmentRows = computed(() => {
-  const keyword = filterKeyword.value.trim()
-  return installmentRows.value.filter((item) => {
-    if (keyword) {
-      const matched = item.orderId.includes(keyword)
-        || item.user.includes(keyword)
-        || item.product.includes(keyword)
-      if (!matched) {
-        return false
-      }
-    }
-
-    if (filterOrderStatus.value !== 'all' && item.orderStatus !== filterOrderStatus.value) {
-      return false
-    }
-
-    if (filterPeriod.value !== 'all' && item.period !== filterPeriod.value) {
-      return false
-    }
-
-    if (filterRepayState.value !== 'all' && item.repayState !== filterRepayState.value) {
-      return false
-    }
-
-    return true
-  })
-})
-
-const filteredInstallmentSummary = computed(() => {
-  return filteredInstallmentRows.value.reduce((acc, item) => {
-    acc.totalAmount += item.amount
-    acc.totalPrincipal += item.principal
-    acc.totalFee += item.fee
-    if (item.repayState === '已回款') {
-      acc.paidAmount += item.amount
-    }
-    else if (item.repayState === '逾期待回') {
-      acc.overdueAmount += item.amount
-    }
-    else {
-      acc.pendingAmount += item.amount
-    }
-    return acc
-  }, {
-    totalAmount: 0,
-    totalPrincipal: 0,
-    totalFee: 0,
-    paidAmount: 0,
-    pendingAmount: 0,
-    overdueAmount: 0,
-  })
-})
-
-const periodAmountRows = computed(() => {
-  const map = new Map<number, {
-    period: number
-    orderIds: Set<string>
-    installmentCount: number
-    totalPrincipal: number
-    totalFee: number
-    totalAmount: number
-    paidAmount: number
-    pendingAmount: number
-    overdueAmount: number
-  }>()
-
-  filteredInstallmentRows.value.forEach((item) => {
-    if (!map.has(item.period)) {
-      map.set(item.period, {
-        period: item.period,
-        orderIds: new Set<string>(),
-        installmentCount: 0,
-        totalPrincipal: 0,
-        totalFee: 0,
-        totalAmount: 0,
-        paidAmount: 0,
-        pendingAmount: 0,
-        overdueAmount: 0,
-      })
-    }
-    const target = map.get(item.period)
-    if (!target) return
-
-    target.orderIds.add(item.orderId)
-    target.installmentCount += 1
-    target.totalPrincipal += item.principal
-    target.totalFee += item.fee
-    target.totalAmount += item.amount
-
-    if (item.repayState === '已回款') {
-      target.paidAmount += item.amount
-    }
-    else if (item.repayState === '逾期待回') {
-      target.overdueAmount += item.amount
-    }
-    else {
-      target.pendingAmount += item.amount
-    }
-  })
-
-  return [...map.values()]
-    .sort((a, b) => a.period - b.period)
-    .map(item => ({
-      ...item,
-      orderCount: item.orderIds.size,
-      paidRate: item.totalAmount ? (item.paidAmount / item.totalAmount) * 100 : 0,
-    }))
-})
-
-function resetTableFilters() {
-  filterKeyword.value = ''
-  filterOrderStatus.value = 'all'
-  filterPeriod.value = 'all'
-  filterRepayState.value = 'all'
+function fmtYuan(n: number) {
+  return `¥${Number(n || 0).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 }
 
-function toMonthKey(value: string) {
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) {
-    return ''
+type Tone = 'greenSpring' | 'greenForest' | 'teal' | 'amberGold' | 'orangeBurnt' | 'violet' | 'redTomato' | 'redCrimson' | 'redWine'
+
+interface KpiCard {
+  label: string
+  value: string
+  hint?: string
+  tone: Tone
+}
+
+/** 第一行 4 列：成交总额、成交本金、待收金额、待收本金；第二行 4 列：订单数、逾期订单数、逾期金额、逾期率 */
+const row1Cards = computed<KpiCard[]>(() => {
+  const k = kpis.value
+  return [
+    {
+      label: '成交总额',
+      value: fmtYuan(k.totalSales),
+      hint: '全部订单成交金额',
+      tone: 'greenSpring',
+    },
+    {
+      label: '成交本金',
+      value: fmtYuan(k.totalPrincipal),
+      hint: '先享后付：(成交金额-50)÷1.35 反推本金；全款：计划本金合计',
+      tone: 'amberGold',
+    },
+    {
+      label: '待收金额',
+      value: fmtYuan(k.receivableAmount),
+      hint: '全部未还期次应还本息合计',
+      tone: 'teal',
+    },
+    {
+      label: '待收本金',
+      value: fmtYuan(k.receivablePrincipal),
+      hint: '全部未还期次对应本金合计',
+      tone: 'orangeBurnt',
+    },
+  ]
+})
+
+const row2Cards = computed<KpiCard[]>(() => {
+  const k = kpis.value
+  return [
+    {
+      label: '订单数',
+      value: String(k.orderCount),
+      hint: '订单总数',
+      tone: 'greenForest',
+    },
+    {
+      label: '逾期订单数',
+      value: String(k.overdueOrderCount),
+      hint: '存在逾期未还期次的订单数',
+      tone: 'redTomato',
+    },
+    {
+      label: '逾期金额',
+      value: fmtYuan(k.overdueAmount),
+      hint: '已到期仍未还本利合计',
+      tone: 'redCrimson',
+    },
+    {
+      label: '逾期率',
+      value: `${k.overdueRate.toFixed(2)}%`,
+      hint: '逾期未还期数 ÷ 未还期数',
+      tone: 'redWine',
+    },
+  ]
+})
+
+async function refresh() {
+  loading.value = true
+  try {
+    await fetchOrders()
   }
-  const yyyy = date.getFullYear()
-  const mm = `${date.getMonth() + 1}`.padStart(2, '0')
-  return `${yyyy}-${mm}`
-}
-
-function buildRecentMonthKeys() {
-  const keys: string[] = []
-  const cursor = new Date()
-  cursor.setDate(1)
-  for (let i = 5; i >= 0; i -= 1) {
-    const date = new Date(cursor)
-    date.setMonth(cursor.getMonth() - i)
-    const key = toMonthKey(date.toISOString())
-    if (key) {
-      keys.push(key)
-    }
+  finally {
+    loading.value = false
   }
-  return keys
-}
-
-const trendChartRef = ref<HTMLElement | null>(null)
-const gaugeChartRef = ref<HTMLElement | null>(null)
-const collectionChartRef = ref<HTMLElement | null>(null)
-
-let trendChart: echarts.ECharts | null = null
-let gaugeChart: echarts.ECharts | null = null
-let collectionChart: echarts.ECharts | null = null
-
-const trendMonthKeys = computed(() => buildRecentMonthKeys())
-
-const trendMonths = computed(() => {
-  return trendMonthKeys.value.map((key) => {
-    const month = Number(key.split('-')[1] || 0)
-    return `${month}月`
-  })
-})
-
-const salesTrendData = computed(() => {
-  const monthMap = new Map<string, number>()
-  orders.value.forEach((order) => {
-    const monthKey = toMonthKey(order.createdAt)
-    if (!monthKey) return
-    monthMap.set(monthKey, (monthMap.get(monthKey) || 0) + order.totalAmount)
-  })
-  return trendMonthKeys.value.map(key => Number((monthMap.get(key) || 0).toFixed(2)))
-})
-
-const receivableTrendData = computed(() => {
-  const monthMap = new Map<string, number>()
-  installmentRows.value
-    .filter(item => item.repayState !== '已回款')
-    .forEach((item) => {
-      const monthKey = toMonthKey(item.dueDate)
-      if (!monthKey) return
-      monthMap.set(monthKey, (monthMap.get(monthKey) || 0) + item.amount)
-    })
-  return trendMonthKeys.value.map(key => Number((monthMap.get(key) || 0).toFixed(2)))
-})
-
-const profitRateTrendData = computed(() => {
-  const feeMap = new Map<string, number>()
-  installmentRows.value.forEach((item) => {
-    const monthKey = toMonthKey(item.dueDate)
-    if (!monthKey) return
-    feeMap.set(monthKey, (feeMap.get(monthKey) || 0) + item.fee)
-  })
-  return trendMonthKeys.value.map((key, index) => {
-    const sales = salesTrendData.value[index] || 0
-    const fee = feeMap.get(key) || 0
-    if (!sales) {
-      return 0
-    }
-    return Number(((fee / sales) * 100).toFixed(2))
-  })
-})
-
-function renderTrendChart() {
-  if (!trendChartRef.value) return
-  trendChart = trendChart || echarts.init(trendChartRef.value)
-
-  trendChart.setOption({
-    tooltip: { trigger: 'axis' },
-    legend: {
-      top: 0,
-      textStyle: { color: '#4b5563' },
-      data: ['销售额', '待收款', '利润率'],
-    },
-    grid: { left: 36, right: 40, top: 40, bottom: 24 },
-    xAxis: {
-      type: 'category',
-      data: trendMonths.value,
-      axisLine: { lineStyle: { color: '#d1d5db' } },
-    },
-    yAxis: [
-      {
-        type: 'value',
-        name: '金额(¥)',
-        axisLabel: { color: '#6b7280' },
-        splitLine: { lineStyle: { color: '#eef2f7' } },
-      },
-      {
-        type: 'value',
-        name: '利润率(%)',
-        axisLabel: { color: '#6b7280' },
-        splitLine: { show: false },
-      },
-    ],
-    series: [
-      {
-        name: '销售额',
-        type: 'bar',
-        data: salesTrendData.value,
-        barMaxWidth: 22,
-        itemStyle: {
-          borderRadius: [8, 8, 0, 0],
-          color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-            { offset: 0, color: '#46a0ff' },
-            { offset: 1, color: '#2f6bff' },
-          ]),
-        },
-      },
-      {
-        name: '待收款',
-        type: 'bar',
-        data: receivableTrendData.value,
-        barMaxWidth: 22,
-        itemStyle: {
-          borderRadius: [8, 8, 0, 0],
-          color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-            { offset: 0, color: '#ffc167' },
-            { offset: 1, color: '#ff8d3a' },
-          ]),
-        },
-      },
-      {
-        name: '利润率',
-        type: 'line',
-        yAxisIndex: 1,
-        smooth: true,
-        symbolSize: 8,
-        data: profitRateTrendData.value,
-        lineStyle: { width: 3, color: '#19b47c' },
-        itemStyle: { color: '#19b47c' },
-      },
-    ],
-  })
-}
-
-function renderGaugeChart() {
-  if (!gaugeChartRef.value) return
-  gaugeChart = gaugeChart || echarts.init(gaugeChartRef.value)
-
-  gaugeChart.setOption({
-    series: [
-      {
-        name: '利润率',
-        type: 'gauge',
-        startAngle: 220,
-        endAngle: -40,
-        min: 0,
-        max: 25,
-        progress: { show: true, width: 12, itemStyle: { color: '#20c997' } },
-        axisLine: { lineStyle: { width: 12, color: [[1, '#e5e7eb']] } },
-        pointer: { show: false },
-        axisTick: { show: false },
-        splitLine: { show: false },
-        axisLabel: { show: false },
-        detail: {
-          valueAnimation: true,
-          formatter: '{value}%',
-          fontSize: 28,
-          color: '#111827',
-          offsetCenter: [0, '10%'],
-        },
-        title: {
-          offsetCenter: [0, '65%'],
-          color: '#6b7280',
-          fontSize: 13,
-        },
-        data: [{ value: Number(profitRate.value.toFixed(2)), name: '利润率' }],
-      },
-    ],
-  })
-}
-
-function renderCollectionChart() {
-  if (!collectionChartRef.value) return
-  collectionChart = collectionChart || echarts.init(collectionChartRef.value)
-  const collected = Math.max(totalSales.value - totalReceivable.value, 0)
-
-  collectionChart.setOption({
-    tooltip: { trigger: 'item' },
-    legend: {
-      bottom: 0,
-      textStyle: { color: '#4b5563' },
-    },
-    series: [
-      {
-        name: '回款情况',
-        type: 'pie',
-        radius: ['56%', '76%'],
-        center: ['50%', '44%'],
-        label: {
-          formatter: '{b}\n{d}%',
-          color: '#374151',
-          fontSize: 12,
-        },
-        data: [
-          {
-            value: Number(collected.toFixed(2)),
-            name: '已收款',
-            itemStyle: { color: '#386bff' },
-          },
-          {
-            value: Number(totalReceivable.value.toFixed(2)),
-            name: '待收款',
-            itemStyle: { color: '#ff9f43' },
-          },
-        ],
-      },
-    ],
-  })
-}
-
-function handleResize() {
-  trendChart?.resize()
-  gaugeChart?.resize()
-  collectionChart?.resize()
 }
 
 onMounted(() => {
-  void fetchOrders()
-  renderTrendChart()
-  renderGaugeChart()
-  renderCollectionChart()
-  window.addEventListener('resize', handleResize)
+  void refresh()
 })
-
-onBeforeUnmount(() => {
-  window.removeEventListener('resize', handleResize)
-  trendChart?.dispose()
-  gaugeChart?.dispose()
-  collectionChart?.dispose()
-  trendChart = null
-  gaugeChart = null
-  collectionChart = null
-})
-
-watch([orders, totalSales, totalReceivable, profitRate], () => {
-  renderTrendChart()
-  renderGaugeChart()
-  renderCollectionChart()
-}, { deep: true })
 </script>
 
 <template>
-  <div class="card-grid">
-    <article class="card">
-      <p class="card-label">
-        订单总数
-      </p>
-      <p class="card-value">
-        {{ totalOrders }}
-      </p>
-    </article>
-    <article class="card">
-      <p class="card-label">
-        销售额汇总
-      </p>
-      <p class="card-value">
-        ¥ {{ totalSales.toFixed(2) }}
-      </p>
-    </article>
-    <article class="card">
-      <p class="card-label">
-        待收款
-      </p>
-      <p class="card-value">
-        ¥ {{ totalReceivable.toFixed(2) }}
-      </p>
-    </article>
-    <article class="card">
-      <p class="card-label">
-        利润率（手续费）
-      </p>
-      <p class="card-value">
-        {{ profitRate.toFixed(2) }}%
-      </p>
-    </article>
-    <article class="card">
-      <p class="card-label">
-        分期已还占比
-      </p>
-      <p class="card-value">
-        {{ paidRate.toFixed(2) }}%
-      </p>
-    </article>
-    <article class="card">
-      <p class="card-label">
-        手续费利润
-      </p>
-      <p class="card-value">
-        ¥ {{ totalProfit.toFixed(2) }}
-      </p>
-    </article>
-  </div>
-
-  <div class="charts-grid mt">
-    <div class="panel">
-      <h3 class="section-title">
-        经营趋势（销售额 / 待收款 / 利润率）
-      </h3>
-      <div
-        ref="trendChartRef"
-        class="chart-box chart-large"
-      />
-    </div>
-
-    <div class="panel">
-      <h3 class="section-title">
-        利润率仪表盘
-      </h3>
-      <div
-        ref="gaugeChartRef"
-        class="chart-box chart-small"
-      />
-    </div>
-
-    <div class="panel">
-      <h3 class="section-title">
-        回款占比（已收款 / 待收款）
-      </h3>
-      <div
-        ref="collectionChartRef"
-        class="chart-box chart-small"
-      />
-    </div>
-  </div>
-
-  <div class="panel mt">
-    <h3 class="section-title">
-      订单状态汇总
-    </h3>
-    <div class="summary-grid">
-      <div class="summary-item">
-        <p>待付款</p>
-        <strong>{{ statusSummary.unpaid }}</strong>
-      </div>
-      <div class="summary-item">
-        <p>待发货</p>
-        <strong>{{ statusSummary.pendingShip }}</strong>
-      </div>
-      <div class="summary-item">
-        <p>待收货</p>
-        <strong>{{ statusSummary.pendingReceive }}</strong>
-      </div>
-      <div class="summary-item">
-        <p>已完成</p>
-        <strong>{{ statusSummary.done }}</strong>
-      </div>
-    </div>
-  </div>
-
-  <div class="panel mt">
-    <h3 class="section-title">
-      分期金额统计表（可筛选）
-    </h3>
-    <div class="filter-grid">
-      <label>
-        关键词
-        <el-input
-          v-model="filterKeyword"
-          class="filter-input"
-          placeholder="订单号 / 用户 / 商品"
-          clearable
-        />
-      </label>
-      <label>
-        订单状态
-        <el-select
-          v-model="filterOrderStatus"
-          class="filter-select"
+  <div
+    v-loading="loading"
+    class="dash-page"
+  >
+    <div class="dash-toolbar">
+      <div>
+        <h1 class="dash-title">
+          财务报表
+        </h1>
+        <el-text
+          type="info"
+          size="small"
         >
-          <el-option label="全部状态" value="all" />
-          <el-option label="待发货" value="待发货" />
-          <el-option label="待收货" value="待收货" />
-          <el-option label="已完成" value="已完成" />
-        </el-select>
-      </label>
-      <label>
-        期次
-        <el-select
-          v-model="filterPeriod"
-          class="filter-select"
-        >
-          <el-option label="全部期次" value="all" />
-          <el-option
-            v-for="period in allPeriods"
-            :key="period"
-            :label="`第${period}期`"
-            :value="period"
-          />
-        </el-select>
-      </label>
-      <label>
-        回款状态
-        <el-select
-          v-model="filterRepayState"
-          class="filter-select"
-        >
-          <el-option label="全部" value="all" />
-          <el-option label="已回款" value="已回款" />
-          <el-option label="待回款" value="待回款" />
-          <el-option label="逾期待回" value="逾期待回" />
-        </el-select>
-      </label>
-      <button
-        class="btn-reset"
-        type="button"
-        @click="resetTableFilters"
+          关键指标来自订单与先享后付数据（刷新后与数据库一致）
+        </el-text>
+      </div>
+      <el-button
+        type="primary"
+        :icon="Refresh"
+        :loading="loading"
+        @click="refresh"
       >
-        重置筛选
-      </button>
+        刷新数据
+      </el-button>
     </div>
 
-    <div class="amount-cards">
-      <article class="amount-item">
-        <p>筛选后总应还金额</p>
-        <strong>¥ {{ filteredInstallmentSummary.totalAmount.toFixed(2) }}</strong>
-      </article>
-      <article class="amount-item">
-        <p>筛选后已回款金额</p>
-        <strong>¥ {{ filteredInstallmentSummary.paidAmount.toFixed(2) }}</strong>
-      </article>
-      <article class="amount-item">
-        <p>筛选后待回款金额</p>
-        <strong>¥ {{ filteredInstallmentSummary.pendingAmount.toFixed(2) }}</strong>
-      </article>
-      <article class="amount-item">
-        <p>筛选后逾期待回金额</p>
-        <strong>¥ {{ filteredInstallmentSummary.overdueAmount.toFixed(2) }}</strong>
-      </article>
-    </div>
-
-    <table class="table">
-      <thead>
-        <tr>
-          <th>期次</th>
-          <th>订单数</th>
-          <th>分期笔数</th>
-          <th>总本金</th>
-          <th>总手续费</th>
-          <th>总应还金额</th>
-          <th>已回款</th>
-          <th>待回款</th>
-          <th>逾期待回</th>
-          <th>回款率</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr
-          v-for="item in periodAmountRows"
-          :key="item.period"
+    <div class="kpi-rows">
+      <div class="kpi-row">
+        <div
+          v-for="(card, idx) in row1Cards"
+          :key="`r1-${idx}`"
+          class="kpi-card"
+          :class="`kpi-card--${card.tone}`"
         >
-          <td>第{{ item.period }}期</td>
-          <td>{{ item.orderCount }}</td>
-          <td>{{ item.installmentCount }}</td>
-          <td>¥ {{ item.totalPrincipal.toFixed(2) }}</td>
-          <td>¥ {{ item.totalFee.toFixed(2) }}</td>
-          <td>¥ {{ item.totalAmount.toFixed(2) }}</td>
-          <td>¥ {{ item.paidAmount.toFixed(2) }}</td>
-          <td>¥ {{ item.pendingAmount.toFixed(2) }}</td>
-          <td>¥ {{ item.overdueAmount.toFixed(2) }}</td>
-          <td>{{ item.paidRate.toFixed(2) }}%</td>
-        </tr>
-        <tr v-if="!periodAmountRows.length">
-          <td
-            colspan="10"
-            class="empty-row"
+          <p class="kpi-label">
+            {{ card.label }}
+          </p>
+          <div class="kpi-rule" />
+          <p class="kpi-value">
+            {{ card.value }}
+          </p>
+          <p
+            v-if="card.hint"
+            class="kpi-hint"
           >
-            当前筛选条件下暂无金额数据
-          </td>
-        </tr>
-      </tbody>
-    </table>
-  </div>
-
-  <div class="panel mt">
-    <h3 class="section-title">
-      即将到期还款（TOP 5）
-    </h3>
-    <table class="table">
-      <thead>
-        <tr>
-          <th>订单号</th>
-          <th>用户</th>
-          <th>当前期数</th>
-          <th>本期应还</th>
-          <th>到期日</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr
-          v-for="item in upcomingRepays"
-          :key="item.id"
+            {{ card.hint }}
+          </p>
+        </div>
+      </div>
+      <div class="kpi-row">
+        <div
+          v-for="(card, idx) in row2Cards"
+          :key="`r2-${idx}`"
+          class="kpi-card"
+          :class="`kpi-card--${card.tone}`"
         >
-          <td>{{ item.id }}</td>
-          <td>{{ item.user }}</td>
-          <td>{{ item.currentPeriod }} / {{ item.periods }}</td>
-          <td>¥ {{ item.amount }}</td>
-          <td>{{ item.dueDate }}</td>
-        </tr>
-      </tbody>
-    </table>
+          <p class="kpi-label">
+            {{ card.label }}
+          </p>
+          <div class="kpi-rule" />
+          <p class="kpi-value">
+            {{ card.value }}
+          </p>
+          <p
+            v-if="card.hint"
+            class="kpi-hint"
+          >
+            {{ card.hint }}
+          </p>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
 <style scoped>
-.mt {
-  margin-top: 12px;
-}
-
-.section-title {
-  margin: 0 0 12px;
-  font-size: 16px;
-}
-
-.summary-grid {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 10px;
-}
-
-.summary-item {
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  padding: 12px;
-}
-
-.summary-item p {
-  margin: 0;
-  color: #6b7280;
-  font-size: 14px;
-}
-
-.summary-item strong {
-  display: block;
-  margin-top: 6px;
-  font-size: 20px;
-}
-
-.charts-grid {
-  display: grid;
-  grid-template-columns: 2fr 1fr 1fr;
-  gap: 12px;
-}
-
-.chart-box {
+.dash-page {
+  box-sizing: border-box;
   width: 100%;
+  max-width: 100%;
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
 }
 
-.chart-large {
-  height: 320px;
-}
-
-.chart-small {
-  height: 320px;
-}
-
-.filter-grid {
+.dash-toolbar {
   display: flex;
   flex-wrap: wrap;
   align-items: flex-end;
-  gap: 10px;
-  margin-bottom: 10px;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 20px;
+  flex-shrink: 0;
 }
 
-.filter-grid label {
-  display: grid;
-  gap: 6px;
-  font-size: 13px;
-  color: #6b7280;
-  width: 220px;
-  max-width: 100%;
+.dash-title {
+  margin: 0 0 6px;
+  font-size: 1.35rem;
+  font-weight: 600;
+  color: var(--el-text-color-primary);
 }
 
-.filter-input,
-.filter-select {
-  width: 100%;
+.kpi-rows {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  align-content: start;
 }
 
-.filter-grid input,
-.filter-grid select {
-  height: 34px;
-  border: 1px solid #d1d5db;
-  border-radius: 8px;
-  padding: 0 10px;
-}
-
-.btn-reset {
-  height: 34px;
-  border-radius: 8px;
-  border: 1px solid #2563eb;
-  background: #eff6ff;
-  color: #1d4ed8;
-  cursor: pointer;
-}
-
-.amount-cards {
+.kpi-row {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 10px;
-  margin-bottom: 10px;
+  gap: 14px;
 }
 
-.amount-item {
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  padding: 10px;
-  background: #fafafa;
+.kpi-card {
+  border-radius: 12px;
+  padding: 22px 18px 18px;
+  min-height: 168px;
+  color: #fff;
+  box-shadow: 0 2px 10px rgba(15, 23, 42, 0.12);
+  display: flex;
+  flex-direction: column;
+  position: relative;
 }
 
-.amount-item p {
+.kpi-label {
   margin: 0;
-  color: #6b7280;
-  font-size: 13px;
+  font-size: 14px;
+  font-weight: 500;
+  opacity: 0.95;
+  line-height: 1.35;
 }
 
-.amount-item strong {
-  display: block;
-  margin-top: 6px;
-  font-size: 20px;
+.kpi-rule {
+  height: 1px;
+  background: rgba(255, 255, 255, 0.35);
+  margin: 14px 0 10px;
 }
 
-.empty-row {
-  text-align: center;
-  color: #9ca3af;
+.kpi-value {
+  margin: 0;
+  font-size: 1.55rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.25;
+  word-break: break-all;
+}
+
+.kpi-hint {
+  margin: 12px 0 0;
+  font-size: 12px;
+  opacity: 0.82;
+  line-height: 1.4;
+}
+
+/* 语义色：绿/橙/红各系内深浅区分 */
+.kpi-card--greenSpring {
+  background: linear-gradient(145deg, #4ade80 0%, #16a34a 100%);
+}
+
+.kpi-card--greenForest {
+  background: linear-gradient(145deg, #22c55e 0%, #14532d 100%);
+}
+
+.kpi-card--teal {
+  background: linear-gradient(145deg, #14b8a6 0%, #0d9488 100%);
+}
+
+/* 本金相关：金黄琥珀 vs 深橙，同属橙色系 */
+.kpi-card--amberGold {
+  background: linear-gradient(145deg, #fbbf24 0%, #d97706 100%);
+}
+
+.kpi-card--orangeBurnt {
+  background: linear-gradient(145deg, #fb923c 0%, #c2410c 100%);
+}
+
+/* 逾期：番茄红 → 正红 → 酒红，同系不同色 */
+.kpi-card--redTomato {
+  background: linear-gradient(145deg, #fb7185 0%, #e11d48 100%);
+}
+
+.kpi-card--redCrimson {
+  background: linear-gradient(145deg, #f43f5e 0%, #b91c1c 100%);
+}
+
+.kpi-card--redWine {
+  background: linear-gradient(145deg, #be123c 0%, #7f1d1d 100%);
+}
+
+.kpi-card--violet {
+  background: linear-gradient(145deg, #8b5cf6 0%, #6d28d9 100%);
+}
+
+@media (max-width: 900px) {
+  .kpi-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 </style>

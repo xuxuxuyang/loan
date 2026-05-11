@@ -70,10 +70,6 @@ function handleSubmit() {
     >
       {{ props.loading ? '登录中...' : '立即登录' }}
     </button>
-
-    <div class="login-tip">
-      默认超级管理员：`xuyang` / `123456`（与商城该手机号登录密码一致）
-    </div>
   </div>
 </template>
 

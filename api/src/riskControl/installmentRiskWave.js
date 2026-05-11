@@ -117,7 +117,7 @@ function consumeForOrder(waveId, { userName, phoneNumber, idNumber }) {
       label: ORDER_INSTALLMENT_RISK_STEP_LABELS[key],
       ...(w.steps[key] || { ok: false, reason: '未完成' }),
     }))
-    return { ok: false, steps, reason: '分期风控未全部通过' }
+    return { ok: false, steps, reason: '先享后付风控未全部通过' }
   }
   const steps = ORDER_INSTALLMENT_RISK_STEP_KEYS.map((key) => ({
     key,

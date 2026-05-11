@@ -46,7 +46,8 @@ function getCloudConfigSummary() {
 }
 
 function resolveEnvPath() {
-  return path.join(__dirname, '..', '.env')
+  const mode = String(process.env.NODE_ENV || 'development').trim() || 'development'
+  return path.join(__dirname, '..', `.env.${mode}`)
 }
 
 module.exports = {

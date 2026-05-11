@@ -1,7 +1,21 @@
 <script setup lang="ts">
-const products = useTeaProducts()
+import type { TeaProduct } from '~/composables/useTeaProducts'
+
 const route = useRoute()
 const { smartNavigate } = useCustomRouting(route)
+const { isLoggedIn, loginPhone, profile, syncFromStorage, logout, ensureRegistered } = useMallAuth()
+const { summary, fetchSummary, cardPackages, fetchCardPackages } = useMallMy()
+const recommendProducts = useTeaProducts()
+
+/** 「我的」页先享后付推荐：按订单展示价（price）升序，再取前 4 个 */
+const sortedRecommendProducts = computed(() => {
+  const list = recommendProducts.value ?? []
+  return [...list].sort((a, b) => {
+    const pa = Number(a.price)
+    const pb = Number(b.price)
+    return (Number.isFinite(pa) ? pa : 0) - (Number.isFinite(pb) ? pb : 0)
+  })
+})
 
 const orderStatus = [
   { title: '审核中', icon: 'tabler:clock-bolt', key: 'reviewing' },
@@ -18,9 +32,6 @@ const serviceList = [
   { key: 'download', title: 'App下载', icon: 'tabler:download' },
   
 ]
-
-const { isLoggedIn, loginPhone, profile, syncFromStorage, logout } = useMallAuth()
-const { summary, fetchSummary, cardPackages, fetchCardPackages } = useMallMy()
 
 const displayName = computed(() => {
   if (!isLoggedIn.value) {
@@ -57,6 +68,7 @@ const displayOrderStatus = computed(() => {
 
 if (!import.meta.env.SSR) {
   syncFromStorage()
+  void ensureMallProductsLoaded()
   if (isLoggedIn.value) {
     void fetchSummary(loginPhone.value)
     void fetchCardPackages(loginPhone.value)
@@ -76,10 +88,15 @@ async function handleGoRegister() {
   await smartNavigate('/login')
 }
 
-function formatRecommendSubtitle(text: string) {
-  return text
-    .replace(/分期可下单/g, '仅供浏览')
-    .replace(/可下单/g, '仅供浏览')
+async function handleRecommendBuy(item: TeaProduct) {
+  const passed = await ensureRegistered()
+  if (!passed) {
+    return
+  }
+  await smartNavigate({
+    path: '/order-create',
+    query: { productId: String(item.id), productName: item.name },
+  })
 }
 
 async function handleBankCard() {
@@ -305,41 +322,45 @@ async function handleService(key: string) {
       </p>
     </div>
 
-    <div>
-      <div class="mb-3 text-center">
+    <div class="normal-font">
+      <div class="mb-4 text-center">
         <h3 class="text-2xl font-semibold text-black/85">
-          推荐商品
+          先享后付
         </h3>
-        <div class="mx-auto mt-1 h-1 w-16 rounded-full bg-[#79d2c7]" />
-        <p class="mx-auto mt-2 max-w-[280px] text-xs leading-relaxed text-black/45">
-          仅供浏览；下单请前往首页「先享后付」专区
-        </p>
+        <div class="mx-auto mt-1 h-1 w-16 rounded-full bg-gradient-to-r from-[#ff8fb3] to-[#ff6e92]" />
       </div>
       <div class="grid grid-cols-2 gap-3">
         <article
-          v-for="item in products.slice(0, 4)"
+          v-for="item in sortedRecommendProducts.slice(0, 4)"
           :key="item.id"
-          class="overflow-hidden rounded-2xl bg-white"
+          role="button"
+          tabindex="0"
+          class="cursor-pointer overflow-hidden rounded-xl border border-black/10 bg-white transition active:scale-[0.99]"
+          @click="handleRecommendBuy(item)"
+          @keydown.enter.prevent="handleRecommendBuy(item)"
         >
           <img
             :src="item.image"
             :alt="item.name"
-            class="h-28 w-full object-cover"
+            class="pointer-events-none h-28 w-full object-cover"
+            loading="lazy"
+            decoding="async"
+            referrerpolicy="no-referrer"
+            @error="onMallProductImageError($event, item.name)"
           >
-          <div class="p-2.5">
-            <p class="line-clamp-1 text-sm font-semibold text-black/85">
+          <div class="p-3">
+            <h4 class="line-clamp-1 text-sm font-semibold leading-snug text-black/85">
               {{ item.name }}
+            </h4>
+            <p class="mb-2 line-clamp-1 text-xs text-black/60">
+              {{ item.subtitle }}
             </p>
-            <p class="mt-1 text-xs text-black/55">
-              {{ formatRecommendSubtitle(item.subtitle) }}
-            </p>
-            <div class="mt-2 flex items-center justify-between gap-2">
-              <p class="text-sm font-semibold text-[#d45a33]">
-                ￥{{ item.price }}
-              </p>
+            <div class="flex items-center justify-between gap-1">
+              <span class="text-sm font-semibold leading-5 text-[#e85a7a]">￥{{ item.price }}</span>
               <span
-                class="shrink-0 rounded-md bg-black/6 px-2 py-1 text-[11px] font-medium text-black/45"
-              >仅展示</span>
+                class="pointer-events-none shrink-0 rounded-md bg-gradient-to-br from-[#ff8fb3] to-[#ff6e92] px-2.5 py-1 text-xs font-medium text-white shadow-sm"
+                aria-hidden="true"
+              >先享后付</span>
             </div>
           </div>
         </article>
@@ -399,7 +420,7 @@ async function handleService(key: string) {
   box-shadow: 0 6px 12px rgba(118, 132, 210, 0.25);
 }
 
-section :is(h3, p, button, span) {
+section :is(h3, h4, p, button, span) {
   font-family: "PingFang SC", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
   line-height: 1.3;
 }

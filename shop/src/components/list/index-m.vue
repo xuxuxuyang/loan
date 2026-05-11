@@ -1,15 +1,11 @@
 <script setup lang="ts">
 import type { MallCategoryItem, MallCategoryKey, TeaProduct } from '~/composables/useTeaProducts'
 
-const props = withDefaults(
-  defineProps<{
-    products: TeaProduct[]
-    categories: MallCategoryItem[]
-    activeCategory: MallCategoryKey
-    displayOnly?: boolean
-  }>(),
-  { displayOnly: false },
-)
+defineProps<{
+  products: TeaProduct[]
+  categories: MallCategoryItem[]
+  activeCategory: MallCategoryKey
+}>()
 
 const emit = defineEmits<{
   'select-category': [category: MallCategoryKey]
@@ -20,10 +16,6 @@ const { smartNavigate } = useCustomRouting(route)
 const { ensureRegistered } = useMallAuth()
 
 async function handleBuy(item: TeaProduct) {
-  if (props.displayOnly) {
-    ElMessage.info('该商品仅供展示，请前往分期专区页面选购')
-    return
-  }
   const passed = await ensureRegistered()
   if (!passed) {
     return
@@ -42,13 +34,13 @@ async function handleBuy(item: TeaProduct) {
   <section class="normal-font px-4 pb-5 pt-4">
     <div class="hero-card mb-4 rounded-2xl p-4 text-white">
       <p class="mb-1 text-[11px] tracking-[0.16em] uppercase text-white/80">
-        Product Zone
+        Mall
       </p>
       <h2 class="mb-1 text-xl font-semibold">
         全部商品
       </h2>
       <p class="text-xs text-white/85">
-        今日上新 3 款，支持礼盒定制
+        手机数码 · 家电美妆 · 正品速达
       </p>
     </div>
 
@@ -79,6 +71,10 @@ async function handleBuy(item: TeaProduct) {
           :src="item.image"
           :alt="item.name"
           class="h-20 w-20 shrink-0 rounded-lg object-cover pointer-events-none"
+          loading="lazy"
+          decoding="async"
+          referrerpolicy="no-referrer"
+          @error="onMallProductImageError($event, item.name)"
         >
         <div class="min-w-0 flex-1">
           <h3 class="line-clamp-1 text-sm font-semibold">
@@ -96,7 +92,7 @@ async function handleBuy(item: TeaProduct) {
               class="buy-btn rounded-md px-2.5 py-1 text-xs text-white pointer-events-none"
               aria-hidden="true"
             >
-              {{ props.displayOnly ? '展示' : '购买' }}
+              购买
             </span>
           </div>
         </div>

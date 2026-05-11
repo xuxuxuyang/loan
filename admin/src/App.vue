@@ -3,10 +3,15 @@ import type { Component } from 'vue'
 import { computed, ref, watch } from 'vue'
 import {
   Avatar,
+  Calendar,
+  ChatDotRound,
   CircleCheck,
   DataAnalysis,
+  DataBoard,
   Goods,
   List,
+  Promotion,
+  ShoppingCart,
   Tickets,
   User,
 } from '@element-plus/icons-vue'
@@ -37,7 +42,16 @@ const session = ref<AdminSession | null>(getAdminSession())
 const isLoginPage = computed(() => route.name === 'login')
 
 const allMenus: MenuEntry[] = [
-  { label: '用户管理', path: '/users', icon: User, roles: ['super_admin', 'reviewer', 'customer_service'] },
+  {
+    label: '用户管理',
+    path: '/users',
+    icon: User,
+    roles: ['super_admin'],
+    children: [
+      { label: '注册用户', path: '/users', icon: User },
+      { label: '下单用户', path: '/users/ordering', icon: ShoppingCart },
+    ],
+  },
   { label: '账号管理', path: '/accounts', icon: Avatar, roles: ['super_admin'] },
   {
     label: '产品管理',
@@ -46,25 +60,35 @@ const allMenus: MenuEntry[] = [
     roles: ['super_admin'],
     children: [
       { label: '商城产品', path: '/products/mall', icon: Goods },
-      { label: '分期产品', path: '/products/installment', icon: Goods },
+      { label: '先享后付产品', path: '/products/installment', icon: Goods },
     ],
   },
   {
     label: '订单管理',
     path: '/orders',
     icon: Tickets,
-    roles: ['super_admin', 'reviewer', 'customer_service'],
+    roles: ['super_admin', 'reviewer', 'collector'],
     children: [
+      { label: '未审核订单', path: '/orders/review', icon: CircleCheck, roles: ['super_admin', 'reviewer', 'collector'] },
       {
         label: '已审核订单',
         path: '/orders',
         icon: List,
-        roles: ['super_admin', 'reviewer', 'customer_service'],
+        roles: ['super_admin', 'reviewer', 'collector'],
       },
-      { label: '未审核订单', path: '/orders/review', icon: CircleCheck, roles: ['super_admin', 'reviewer'] },
+      {
+        label: '订单数据',
+        path: '/orders/card-data',
+        icon: DataBoard,
+        roles: ['super_admin', 'reviewer', 'collector'],
+      },
+      { label: '今日待收', path: '/orders/receivable/today', icon: Calendar, roles: ['super_admin', 'collector'] },
+      { label: '明日待收', path: '/orders/receivable/tomorrow', icon: Calendar, roles: ['super_admin', 'collector'] },
     ],
   },
-  { label: '数据大盘', path: '/', icon: DataAnalysis, roles: ['super_admin', 'reviewer', 'customer_service'] },
+  { label: '客服消息', path: '/cs-messages', icon: ChatDotRound, roles: ['super_admin', 'customer_service'] },
+  { label: '财务报表', path: '/dashboard', icon: DataAnalysis, roles: ['super_admin'] },
+  { label: '流量管理', path: '/traffic', icon: Promotion, roles: ['super_admin'] },
 ]
 
 const menus = computed(() => {
@@ -86,7 +110,9 @@ const sideMenuKey = computed(() =>
     ? 'admin-nav-orders'
     : route.path.startsWith('/products')
       ? 'admin-nav-products'
-      : 'admin-nav-default',
+      : route.path.startsWith('/users')
+        ? 'admin-nav-users'
+        : 'admin-nav-default',
 )
 
 const defaultOpenedSubmenus = computed(() => {
@@ -95,6 +121,9 @@ const defaultOpenedSubmenus = computed(() => {
   }
   if (route.path.startsWith('/products')) {
     return ['sub-/products/mall']
+  }
+  if (route.path.startsWith('/users')) {
+    return ['sub-/users']
   }
   return []
 })
@@ -107,6 +136,7 @@ function roleText(role?: AdminSession['role']) {
   if (role === 'super_admin') return '超级管理员'
   if (role === 'reviewer') return '审核员'
   if (role === 'customer_service') return '客服'
+  if (role === 'collector') return '催收员'
   return '访客'
 }
 
@@ -203,7 +233,9 @@ watch(
         </div>
       </header>
       <section class="admin-content">
-        <RouterView />
+        <div class="admin-page-root">
+          <RouterView />
+        </div>
       </section>
     </main>
   </div>

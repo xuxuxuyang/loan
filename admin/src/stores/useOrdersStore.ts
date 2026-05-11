@@ -13,6 +13,8 @@ export interface InstallmentItem {
 export interface OrderItem {
   id: string
   user: string
+  /** 下单时填写的收货地址 */
+  receiverAddress: string
   /** 收货人手机号；用于关联商城用户并打开与用户页一致的风控档案 */
   receiverPhone: string
   product: string
@@ -24,13 +26,19 @@ export interface OrderItem {
   status: '待付款' | '待审核' | '风控未通过' | '待发货' | '待收货' | '已完成'
   riskStatus: 'passed' | 'failed'
   riskReason: string
-  payType: '分期' | '全款'
+  payType: '先享后付' | '全款'
   createdAt: string
   installmentPlan: InstallmentItem[]
   /** 后台登记的卡包是否已发放（仅审核通过后的订单有意义） */
   cardPackageIssued: boolean
+  /** 卡包领取电子合同是否已签署 */
+  cardPackageContractSigned: boolean
+  /** 合同签署时间（ISO），未签署为空串 */
+  cardPackageContractSignedAt: string
   /** 快递单号；填写后订单进入运输流程（后台状态为待收货） */
   trackingNumber: string
+  /** 用户管理中的备注（关联收货手机号 users.adminRemark） */
+  userRemark: string
 }
 
 export interface RiskDetailRule {
@@ -77,9 +85,13 @@ interface MallOrderPayload {
   payType: 'installment' | 'full'
   receiverName: string
   receiverPhone?: string
+  receiverAddress?: string
   installmentPlan?: InstallmentItem[]
   cardPackageIssued?: boolean
+  cardPackageContractSignedAt?: string | null
   trackingNumber?: string
+  /** 管理端列表：关联收货手机号的商城用户后台备注 */
+  buyerAdminRemark?: string
 }
 
 interface RiskDetailPayload {
@@ -114,7 +126,9 @@ interface OrderFilterParams {
 
 const MALL_ORDERS_ENDPOINT = `${(import.meta.env.VITE_MALL_API_BASE || 'http://localhost:3110/api').replace(/\/$/, '')}/orders`
 const MALL_INSTALLMENT_PAY_ENDPOINT = `${MALL_ORDERS_ENDPOINT}/:id/installments/:period/pay`
+const MALL_INSTALLMENT_DUE_DATE_ENDPOINT = `${MALL_ORDERS_ENDPOINT}/:id/installments/:period/due-date`
 const MALL_ORDER_RISK_DETAIL_ENDPOINT = `${MALL_ORDERS_ENDPOINT}/:id/risk-detail`
+const MALL_ORDER_CARD_PACKAGE_CONTRACT_ENDPOINT = `${MALL_ORDERS_ENDPOINT}/:id/card-package-contract`
 const orders = ref<OrderItem[]>([])
 const initialized = ref(false)
 
@@ -137,8 +151,9 @@ function mapMallOrderStatus(
   payType: MallOrderPayload['payType'],
   riskStatus?: MallOrderPayload['riskStatus'],
 ): OrderItem['status'] {
-  if (status === 'reviewing') {
-    // 分期订单在人工审核通过前，统一归入“待审核”。
+  const s = typeof status === 'string' ? status.trim() : status
+  if (s === 'reviewing') {
+    // 先享后付订单在人工审核通过前，统一归入“待审核”。
     if (payType === 'installment') {
       if (riskStatus === 'failed') {
         return '风控未通过'
@@ -147,11 +162,14 @@ function mapMallOrderStatus(
     }
     return paid ? '待发货' : '待付款'
   }
-  if (status === 'shipping') {
+  if (s === 'shipping') {
     return '待发货'
   }
-  if (status === 'receiving') {
+  if (s === 'receiving') {
     return '待收货'
+  }
+  if (s === 'enjoying') {
+    return '已完成'
   }
   return '已完成'
 }
@@ -192,10 +210,14 @@ function mapMallOrderToAdminOrder(order: MallOrderPayload): OrderItem {
   const riskStatus = order.riskStatus === 'failed' ? 'failed' : 'passed'
   const tracking = String(order.trackingNumber || '').trim()
   const status = mapMallOrderStatus(order.status, order.paid, order.payType, order.riskStatus)
+  const userRemark = typeof order.buyerAdminRemark === 'string' ? order.buyerAdminRemark.trim() : ''
+  const signedAtRaw = order.cardPackageContractSignedAt
+  const signedAt = typeof signedAtRaw === 'string' && signedAtRaw.trim() ? signedAtRaw.trim() : ''
 
   return {
     id: order.id,
     user: order.receiverName || '商城用户',
+    receiverAddress: String(order.receiverAddress || '').trim(),
     receiverPhone: String(order.receiverPhone || '').trim(),
     product: order.name,
     totalAmount: Number(order.totalAmount.toFixed(2)),
@@ -206,12 +228,21 @@ function mapMallOrderToAdminOrder(order: MallOrderPayload): OrderItem {
     status,
     riskStatus,
     riskReason: order.riskReason || '',
-    payType: order.payType === 'installment' ? '分期' : '全款',
+    payType: order.payType === 'installment' ? '先享后付' : '全款',
     createdAt: formatDateTime(order.createdAt),
     installmentPlan: safePlan,
     cardPackageIssued: Boolean(order.cardPackageIssued),
+    cardPackageContractSigned: Boolean(signedAt),
+    cardPackageContractSignedAt: signedAt,
     trackingNumber: tracking,
+    userRemark,
   }
+}
+
+/** PATCH 返回的订单不含 buyerAdminRemark 时保留列表中已有的备注展示 */
+function mergeOrderAfterPatch(prev: OrderItem, mapped: OrderItem): OrderItem {
+  const ur = mapped.userRemark.trim() ? mapped.userRemark : prev.userRemark
+  return { ...mapped, userRemark: ur || '' }
 }
 
 function installmentPayUrl(orderId: string, period: number) {
@@ -220,15 +251,25 @@ function installmentPayUrl(orderId: string, period: number) {
     .replace(':period', encodeURIComponent(String(period)))
 }
 
+function installmentDueDateUrl(orderId: string, period: number) {
+  return MALL_INSTALLMENT_DUE_DATE_ENDPOINT
+    .replace(':id', encodeURIComponent(orderId))
+    .replace(':period', encodeURIComponent(String(period)))
+}
+
 function riskDetailUrl(orderId: string) {
   return MALL_ORDER_RISK_DETAIL_ENDPOINT.replace(':id', encodeURIComponent(orderId))
+}
+
+function cardPackageContractUrl(orderId: string) {
+  return MALL_ORDER_CARD_PACKAGE_CONTRACT_ENDPOINT.replace(':id', encodeURIComponent(orderId))
 }
 
 function mapPayTypeToApi(payType?: OrderItem['payType'] | '全部') {
   if (!payType || payType === '全部') {
     return ''
   }
-  return payType === '分期' ? 'installment' : 'full'
+  return payType === '先享后付' ? 'installment' : 'full'
 }
 
 function mapStatusToApi(status?: OrderItem['status'] | '全部') {
@@ -267,6 +308,24 @@ async function fetchOrders(params: OrderFilterParams = {}) {
   orders.value = list.map(mapMallOrderToAdminOrder)
 }
 
+async function updateInstallmentDueDate(orderId: string, period: number, addDays: number) {
+  const response = await fetch(installmentDueDateUrl(orderId, period), {
+    method: 'PATCH',
+    headers: withAdminAuthHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ addDays }),
+  })
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({})) as { msg?: string }
+    throw new Error(payload.msg || `延期还款日失败: ${response.status}`)
+  }
+  const payload = await response.json() as { success?: boolean, data?: MallOrderPayload }
+  if (!payload.data) {
+    return
+  }
+  const mapped = mapMallOrderToAdminOrder(payload.data)
+  orders.value = orders.value.map(item => (item.id === mapped.id ? mergeOrderAfterPatch(item, mapped) : item))
+}
+
 async function updateInstallmentPaid(orderId: string, period: number, paid: boolean) {
   const response = await fetch(installmentPayUrl(orderId, period), {
     method: 'PATCH',
@@ -274,14 +333,14 @@ async function updateInstallmentPaid(orderId: string, period: number, paid: bool
     body: JSON.stringify({ paid }),
   })
   if (!response.ok) {
-    throw new Error(`更新分期状态失败: ${response.status}`)
+    throw new Error(`更新先享后付状态失败: ${response.status}`)
   }
   const payload = await response.json() as { success?: boolean, data?: MallOrderPayload }
   if (!payload.data) {
     return
   }
   const mapped = mapMallOrderToAdminOrder(payload.data)
-  orders.value = orders.value.map(item => (item.id === mapped.id ? mapped : item))
+  orders.value = orders.value.map(item => (item.id === mapped.id ? mergeOrderAfterPatch(item, mapped) : item))
 }
 
 async function updateOrderCardPackage(orderId: string, cardPackageIssued: boolean) {
@@ -291,14 +350,33 @@ async function updateOrderCardPackage(orderId: string, cardPackageIssued: boolea
     body: JSON.stringify({ cardPackageIssued }),
   })
   if (!response.ok) {
-    throw new Error(`更新卡包发放状态失败: ${response.status}`)
+    const payload = await response.json().catch(() => ({})) as { msg?: string }
+    throw new Error(payload.msg || `更新卡包发放状态失败: ${response.status}`)
   }
   const payload = await response.json() as { success?: boolean, data?: MallOrderPayload }
   if (!payload.data) {
     return
   }
   const mapped = mapMallOrderToAdminOrder(payload.data)
-  orders.value = orders.value.map(item => (item.id === mapped.id ? mapped : item))
+  orders.value = orders.value.map(item => (item.id === mapped.id ? mergeOrderAfterPatch(item, mapped) : item))
+}
+
+async function updateOrderCardPackageContract(orderId: string, signed: boolean) {
+  const response = await fetch(cardPackageContractUrl(orderId), {
+    method: 'PATCH',
+    headers: withAdminAuthHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ signed }),
+  })
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({})) as { msg?: string }
+    throw new Error(payload.msg || `更新合同签署状态失败: ${response.status}`)
+  }
+  const payload = await response.json() as { success?: boolean, data?: MallOrderPayload }
+  if (!payload.data) {
+    return
+  }
+  const mapped = mapMallOrderToAdminOrder(payload.data)
+  orders.value = orders.value.map(item => (item.id === mapped.id ? mergeOrderAfterPatch(item, mapped) : item))
 }
 
 async function updateOrderShipment(orderId: string, trackingNumber: string) {
@@ -315,7 +393,7 @@ async function updateOrderShipment(orderId: string, trackingNumber: string) {
     return
   }
   const mapped = mapMallOrderToAdminOrder(payload.data)
-  orders.value = orders.value.map(item => (item.id === mapped.id ? mapped : item))
+  orders.value = orders.value.map(item => (item.id === mapped.id ? mergeOrderAfterPatch(item, mapped) : item))
 }
 
 async function updateOrderStatus(orderId: string, status: MallOrderPayload['status']) {
@@ -332,7 +410,7 @@ async function updateOrderStatus(orderId: string, status: MallOrderPayload['stat
     return
   }
   const mapped = mapMallOrderToAdminOrder(payload.data)
-  orders.value = orders.value.map(item => (item.id === mapped.id ? mapped : item))
+  orders.value = orders.value.map(item => (item.id === mapped.id ? mergeOrderAfterPatch(item, mapped) : item))
 }
 
 async function fetchOrderRiskDetail(orderId: string): Promise<OrderRiskDetail> {
@@ -416,9 +494,11 @@ export function useOrdersStore() {
     fetchOrders,
     recalculateOrderFields,
     updateInstallmentPaid,
+    updateInstallmentDueDate,
     updateOrderShipment,
     updateOrderStatus,
     updateOrderCardPackage,
+    updateOrderCardPackageContract,
     fetchOrderRiskDetail,
     deleteOrder,
   }

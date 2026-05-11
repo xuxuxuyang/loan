@@ -25,4 +25,3 @@ dist-ssr
 # 环境变量（含线上地址/密钥勿入库）；.env.example 模板仍提交
 .env
 .env.*
-!.env.example

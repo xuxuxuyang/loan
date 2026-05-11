@@ -1,4 +1,4 @@
-export type AdminRole = 'super_admin' | 'reviewer' | 'customer_service'
+export type AdminRole = 'super_admin' | 'reviewer' | 'customer_service' | 'collector'
 
 export interface AdminSession {
   username: string

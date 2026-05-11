@@ -47,6 +47,8 @@ function buildEmptyRaw() {
     addresses: [],
     bankCards: [],
     bills: [],
+    /** 推广渠道（H5 ?channel= 与注册归因） */
+    trafficChannels: [],
   }
 }
 
@@ -110,6 +112,7 @@ function shapeDbFromParsed(parsed) {
     addresses: Array.isArray(parsed.addresses) ? parsed.addresses : [],
     bankCards: Array.isArray(parsed.bankCards) ? parsed.bankCards : [],
     bills: Array.isArray(parsed.bills) ? parsed.bills : [],
+    trafficChannels: Array.isArray(parsed.trafficChannels) ? parsed.trafficChannels : [],
   }
   db.users = dedupeUsersById(ensureAdminUser(db.users))
   db.adminAccounts = ensureAdminAccounts(db.adminAccounts)
@@ -122,6 +125,7 @@ function shapeDbFromParsed(parsed) {
     addresses: db.addresses,
     bankCards: db.bankCards,
     bills: db.bills,
+    trafficChannels: db.trafficChannels,
   }
 }
 
@@ -147,6 +151,7 @@ function clonePayloadForMongo(db) {
     addresses: db.addresses,
     bankCards: db.bankCards,
     bills: db.bills,
+    trafficChannels: Array.isArray(db.trafficChannels) ? db.trafficChannels : [],
   }
   return JSON.parse(JSON.stringify(payload))
 }
@@ -233,6 +238,11 @@ function writeDb(db) {
   fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2), 'utf-8')
 }
 
+/** 供脚本在 writeDb 后 await，确保 Mongo replaceOne 已完成再断开连接 */
+function flushMongoPersist() {
+  return persistTail
+}
+
 function resetDb() {
   const seed = buildSeedDb()
   if (mongoBacked) {
@@ -303,6 +313,7 @@ module.exports = {
   readDb,
   resetDb,
   writeDb,
+  flushMongoPersist,
   hydrateFromMongoAfterConnect,
   importLocalSnapshotToMongo,
   isMongoPersistenceEnabled,

@@ -1,21 +1,25 @@
 <script setup lang="ts">
-interface TeaProduct {
-  id: number
-  name: string
-  subtitle: string
-  image: string
-  description: string
-  origin: string
-  price: number
-}
+import type { TeaProduct } from '~/composables/useTeaProducts'
 
 const props = withDefaults(
   defineProps<{
     products: TeaProduct[]
-    /** 仅展示，不可跳转下单 */
-    displayOnly?: boolean
+    listZone?: 'installment' | 'mall'
   }>(),
-  { displayOnly: false },
+  { listZone: 'mall' },
+)
+
+const listEyebrow = computed(() =>
+  props.listZone === 'installment' ? 'Installment' : 'Mall',
+)
+const listTitle = computed(() =>
+  props.listZone === 'installment' ? '先享后付' : '商城精选',
+)
+
+const isBnplZone = computed(() => props.listZone === 'installment')
+
+const ctaLabel = computed(() =>
+  isBnplZone.value ? '先享后付' : '购买',
 )
 
 const route = useRoute()
@@ -23,10 +27,6 @@ const { smartNavigate } = useCustomRouting(route)
 const { ensureRegistered } = useMallAuth()
 
 async function handleBuy(item: TeaProduct) {
-  if (props.displayOnly) {
-    ElMessage.info('该商品仅供展示，请前往分期专区页面选购可下单商品')
-    return
-  }
   const passed = await ensureRegistered()
   if (!passed) {
     return
@@ -43,11 +43,14 @@ async function handleBuy(item: TeaProduct) {
     <div class="app-content">
       <div class="mb-6 flex items-end justify-between">
         <div>
-          <p class="text-sm tracking-[0.2em] uppercase text-[var(--theme-color)] mb-2">
-            Tea Mall
+          <p
+            class="mb-2 text-sm tracking-[0.2em] uppercase"
+            :class="isBnplZone ? 'text-[#e85a7a]' : 'text-[#ff5f47]'"
+          >
+            {{ listEyebrow }}
           </p>
           <h3 class="text-2xl font-semibold">
-            {{ props.displayOnly ? '商城精选 · 展示专区' : '高端茶叶精选' }}
+            {{ listTitle }}
           </h3>
         </div>
       </div>
@@ -66,6 +69,10 @@ async function handleBuy(item: TeaProduct) {
             :src="item.image"
             :alt="item.name"
             class="h-56 w-full object-cover pointer-events-none"
+            loading="lazy"
+            decoding="async"
+            referrerpolicy="no-referrer"
+            @error="onMallProductImageError($event, item.name)"
           >
           <div class="p-5">
             <p class="text-xs text-black/50 mb-2">
@@ -81,12 +88,16 @@ async function handleBuy(item: TeaProduct) {
               {{ item.description }}
             </p>
             <div class="flex items-center justify-between">
-              <span class="text-xl font-semibold text-[var(--theme-color)]">￥{{ item.price }}</span>
               <span
-                class="px-4 py-2 rounded-lg bg-[var(--theme-color)] text-white text-sm pointer-events-none"
+                class="text-xl font-semibold"
+                :class="isBnplZone ? 'text-[#e85a7a]' : 'text-[#ff5f47]'"
+              >￥{{ item.price }}</span>
+              <span
+                class="px-4 py-2 rounded-lg text-white text-sm pointer-events-none shadow-sm"
+                :class="isBnplZone ? 'card-cta-bnpl' : 'card-cta-mall'"
                 aria-hidden="true"
               >
-                {{ props.displayOnly ? '仅展示' : '立即购买' }}
+                {{ ctaLabel }}
               </span>
             </div>
           </div>
@@ -95,3 +106,13 @@ async function handleBuy(item: TeaProduct) {
     </div>
   </section>
 </template>
+
+<style scoped>
+.card-cta-bnpl {
+  background: linear-gradient(135deg, #ff8fb3, #ff6e92);
+}
+
+.card-cta-mall {
+  background: linear-gradient(135deg, #ff8a5b, #ff5f6b);
+}
+</style>

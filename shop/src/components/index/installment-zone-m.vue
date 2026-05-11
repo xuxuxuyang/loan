@@ -5,9 +5,21 @@ import {
   resolveMallCreditQuota,
 } from '~/composables/mallCreditQuota'
 
-defineProps<{
+const props = defineProps<{
   products: TeaProduct[]
 }>()
+
+/** 按订单金额（展示价 price）升序 */
+const sortedProducts = computed(() => {
+  const list = props.products ?? []
+  return [...list].sort((a, b) => {
+    const pa = Number(a.price)
+    const pb = Number(b.price)
+    const na = Number.isFinite(pa) ? pa : 0
+    const nb = Number.isFinite(pb) ? pb : 0
+    return na - nb
+  })
+})
 
 const { smartNavigate } = useCustomRouting(useRoute())
 const { ensureRegistered, profile, syncFromStorage } = useMallAuth()
@@ -50,7 +62,7 @@ if (!import.meta.env.SSR) {
     </div>
 
     <div
-      v-if="products.length === 0"
+      v-if="sortedProducts.length === 0"
       class="rounded-xl border border-dashed border-black/12 bg-white/90 px-4 py-8 text-center text-xs text-black/45"
     >
       暂无商品
@@ -61,7 +73,7 @@ if (!import.meta.env.SSR) {
       class="grid grid-cols-2 gap-3"
     >
       <article
-        v-for="item in products"
+        v-for="item in sortedProducts"
         :key="item.id"
         :tabindex="isOverCredit(item) ? -1 : 0"
         :class="[
@@ -76,6 +88,10 @@ if (!import.meta.env.SSR) {
           :src="item.image"
           :alt="item.name"
           class="pointer-events-none h-28 w-full object-cover"
+          loading="lazy"
+          decoding="async"
+          referrerpolicy="no-referrer"
+          @error="onMallProductImageError($event, item.name)"
         >
         <div class="p-3">
           <h4 class="line-clamp-2 text-sm font-semibold leading-snug">

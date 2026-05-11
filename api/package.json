@@ -5,8 +5,8 @@
   "main": "src/index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "dev": "nodemon --watch src --ext js,json src/index.js",
-    "start": "node src/index.js",
+    "dev": "cross-env NODE_ENV=development nodemon --watch src --ext js,json src/index.js",
+    "start": "cross-env NODE_ENV=production node src/index.js",
     "import:mongo-local": "node scripts/import-local-to-mongo.js",
     "mongo:fresh": "node scripts/mongo-bootstrap-only.js"
   },
@@ -17,12 +17,17 @@
   "dependencies": {
     "@koa/cors": "^5.0.0",
     "@koa/router": "^15.5.0",
+    "@sparticuz/chromium": "^131.0.1",
     "dotenv": "^17.4.2",
     "koa": "^3.2.0",
     "koa-bodyparser": "^4.4.1",
-    "mongodb": "^7.2.0"
+    "koa-mount": "^4.2.0",
+    "koa-static": "^5.0.0",
+    "mongodb": "^7.2.0",
+    "puppeteer-core": "^24.43.1"
   },
   "devDependencies": {
+    "cross-env": "^7.0.3",
     "nodemon": "^3.1.14"
   }
 }

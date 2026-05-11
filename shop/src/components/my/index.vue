@@ -1,9 +1,21 @@
 <script setup lang="ts">
-const products = useTeaProducts()
+import type { TeaProduct } from '~/composables/useTeaProducts'
+
 const route = useRoute()
 const { smartNavigate } = useCustomRouting(route)
-const { isLoggedIn, loginPhone, profile, syncFromStorage, logout } = useMallAuth()
+const { isLoggedIn, loginPhone, profile, syncFromStorage, logout, ensureRegistered } = useMallAuth()
 const { summary, fetchSummary, cardPackages, fetchCardPackages } = useMallMy()
+const recommendProducts = useTeaProducts()
+
+/** 「我的」页先享后付推荐：按订单展示价（price）升序，再取前 4 个 */
+const sortedRecommendProducts = computed(() => {
+  const list = recommendProducts.value ?? []
+  return [...list].sort((a, b) => {
+    const pa = Number(a.price)
+    const pb = Number(b.price)
+    return (Number.isFinite(pa) ? pa : 0) - (Number.isFinite(pb) ? pb : 0)
+  })
+})
 
 const orderStatus = [
   { title: '审核中', icon: '⏱️', key: 'reviewing' },
@@ -49,6 +61,7 @@ const displayOrderStatus = computed(() => {
 
 if (!import.meta.env.SSR) {
   syncFromStorage()
+  void ensureMallProductsLoaded()
   if (isLoggedIn.value) {
     void fetchSummary(loginPhone.value)
     void fetchCardPackages(loginPhone.value)
@@ -64,10 +77,15 @@ watch([isLoggedIn, loginPhone], async ([loggedIn, phone]) => {
   await fetchCardPackages(phone)
 })
 
-function formatRecommendSubtitle(text: string) {
-  return text
-    .replace(/分期可下单/g, '仅供浏览')
-    .replace(/可下单/g, '仅供浏览')
+async function handleRecommendBuy(item: TeaProduct) {
+  const passed = await ensureRegistered()
+  if (!passed) {
+    return
+  }
+  await smartNavigate({
+    path: '/order-create',
+    query: { productId: String(item.id), productName: item.name },
+  })
 }
 
 async function handleGoRegister() {
@@ -269,41 +287,53 @@ async function handleService(key: string) {
         </div>
       </div>
 
-      <div>
-        <div class="mb-4 text-center">
-          <h3 class="text-4xl font-semibold text-black/85">
-            推荐商品
-          </h3>
-          <div class="mx-auto mt-2 h-1 w-20 rounded-full bg-[#79d2c7]" />
-          <p class="mx-auto mt-3 max-w-md text-sm text-black/45">
-            仅供浏览；下单请前往首页「先享后付」专区
+      <div class="normal-font">
+        <div class="mb-6 md:mb-8">
+          <p class="mb-2 text-sm uppercase tracking-[0.2em] text-[#e85a7a]">
+            Installment
           </p>
+          <h3 class="text-2xl font-semibold text-black/85 md:text-3xl">
+            先享后付
+          </h3>
         </div>
-        <div class="grid grid-cols-2 gap-4">
+        <div class="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
           <article
-            v-for="item in products.slice(0, 4)"
+            v-for="item in sortedRecommendProducts.slice(0, 4)"
             :key="item.id"
-            class="overflow-hidden rounded-2xl bg-white shadow-sm"
+            role="button"
+            tabindex="0"
+            class="cursor-pointer overflow-hidden rounded-2xl border border-black/10 bg-white transition hover:-translate-y-1 hover:shadow-xl"
+            @click="handleRecommendBuy(item)"
+            @keydown.enter.prevent="handleRecommendBuy(item)"
           >
             <img
               :src="item.image"
               :alt="item.name"
-              class="h-44 w-full object-cover"
+              class="pointer-events-none h-56 w-full object-cover"
+              loading="lazy"
+              decoding="async"
+              referrerpolicy="no-referrer"
+              @error="onMallProductImageError($event, item.name)"
             >
-            <div class="p-3">
-              <p class="line-clamp-1 text-base font-semibold text-black/85">
+            <div class="p-5">
+              <p class="mb-2 text-xs text-black/50">
+                产地：{{ item.origin }}
+              </p>
+              <h4 class="mb-1 text-lg font-semibold text-black/85">
                 {{ item.name }}
+              </h4>
+              <p class="mb-3 text-sm text-black/70">
+                {{ item.subtitle }}
               </p>
-              <p class="mt-1 text-sm text-black/55">
-                {{ formatRecommendSubtitle(item.subtitle) }}
+              <p class="mb-4 line-clamp-2 min-h-10 text-sm text-black/60">
+                {{ item.description }}
               </p>
-              <div class="mt-2 flex items-center justify-between">
-                <p class="text-base font-semibold text-[#d45a33]">
-                  ￥{{ item.price }}
-                </p>
+              <div class="flex items-center justify-between">
+                <span class="text-xl font-semibold text-[#e85a7a]">￥{{ item.price }}</span>
                 <span
-                  class="rounded-md bg-black/6 px-3 py-1.5 text-xs font-medium text-black/45"
-                >仅展示</span>
+                  class="pointer-events-none rounded-lg bg-gradient-to-br from-[#ff8fb3] to-[#ff6e92] px-4 py-2 text-sm font-medium text-white shadow-sm"
+                  aria-hidden="true"
+                >先享后付</span>
               </div>
             </div>
           </article>
@@ -312,3 +342,9 @@ async function handleService(key: string) {
     </div>
   </section>
 </template>
+
+<style scoped>
+.normal-font {
+  font-family: "PingFang SC", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
+}
+</style>

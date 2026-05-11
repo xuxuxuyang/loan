@@ -7,7 +7,7 @@ const { bankCards: cards, fetchBankCards, createBankCard, deleteBankCard } = use
 
 const tips = [
   '为保障资金安全，修改银行卡前需进行短信验证。',
-  '分期订单优先使用默认银行卡自动扣款。',
+  '先享后付订单优先使用默认银行卡自动扣款。',
   '银行卡有效期临近时请提前更新，避免还款失败。',
 ]
 

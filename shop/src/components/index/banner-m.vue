@@ -1,25 +1,33 @@
 <script setup lang="ts">
 import type { MallCategoryItem, MallCategoryKey, TeaProduct } from '~/composables/useTeaProducts'
 
-defineProps<{
+const props = defineProps<{
   previewProducts: TeaProduct[]
   categories: MallCategoryItem[]
   activeCategory: MallCategoryKey
+  /** 首页当前展示的商品分区：默认先享后付；点「商城专区」切为 mall */
+  homeProductZone: 'installment' | 'mall'
 }>()
 
 const emit = defineEmits<{
   'select-category': [category: MallCategoryKey]
-  'go-mall-zone': []
+  'select-zone': [zone: 'installment' | 'mall']
 }>()
 
 const route = useRoute()
 const { smartNavigate } = useCustomRouting(route)
 
-function goToInstallmentPage() {
-  void smartNavigate('/installment')
-}
+const featuredPillText = computed(() =>
+  props.homeProductZone === 'installment'
+    ? '信誉购物 早下单早享受'
+    : '品类齐全 省钱省心',
+)
 
 function openMallListFor(item: TeaProduct) {
+  if (props.homeProductZone === 'installment') {
+    void smartNavigate('/installment')
+    return
+  }
   void smartNavigate({
     path: '/list',
     query: { category: item.category },
@@ -36,7 +44,7 @@ function openMallListFor(item: TeaProduct) {
           size="0.875rem"
           class="mr-2 rotate-90"
         />
-        一站式购生活好物
+        一站式购手机数码家电美妆
       </div>
       <div class="service-pill flex h-9 w-9 items-center justify-center rounded-full text-sm">
         客服
@@ -48,15 +56,34 @@ function openMallListFor(item: TeaProduct) {
         <p class="text-base font-semibold text-[#2c3140]">
           购物专享
         </p>
-        <span class="tag-pill rounded-full px-2 py-0.5 text-[10px] text-white">灵活分期 轻松购物</span>
+        <span class="tag-pill rounded-full px-2 py-0.5 text-[10px] text-white">正品保障 极速发货</span>
       </div>
       <div class="grid grid-cols-2 gap-2">
         <article
           role="button"
           tabindex="0"
-          class="quick-entry quick-entry-mall rounded-xl p-3 text-center cursor-pointer"
-          @click="emit('go-mall-zone')"
-          @keydown.enter.prevent="emit('go-mall-zone')"
+          class="quick-entry quick-entry-installment rounded-xl p-3 text-center cursor-pointer transition"
+          :class="homeProductZone === 'installment' ? 'ring-2 ring-[#f06b81] ring-offset-2 ring-offset-[#fff6f3]' : ''"
+          @click="emit('select-zone', 'installment')"
+          @keydown.enter.prevent="emit('select-zone', 'installment')"
+        >
+          <p class="mb-1 text-sm font-semibold text-[#444]">
+            先享后付
+          </p>
+          <div class="quick-entry-icon mx-auto flex h-10 w-10 items-center justify-center rounded-lg text-white">
+            <Icon
+              name="tabler:wallet"
+              size="1rem"
+            />
+          </div>
+        </article>
+        <article
+          role="button"
+          tabindex="0"
+          class="quick-entry quick-entry-mall rounded-xl p-3 text-center cursor-pointer transition"
+          :class="homeProductZone === 'mall' ? 'ring-2 ring-[#ff5f6b] ring-offset-2 ring-offset-[#fff6f3]' : ''"
+          @click="emit('select-zone', 'mall')"
+          @keydown.enter.prevent="emit('select-zone', 'mall')"
         >
           <p class="mb-1 text-sm font-semibold text-[#444]">
             商城专区
@@ -68,27 +95,13 @@ function openMallListFor(item: TeaProduct) {
             />
           </div>
         </article>
-        <article
-          role="button"
-          tabindex="0"
-          class="quick-entry quick-entry-installment rounded-xl p-3 text-center cursor-pointer"
-          @click="goToInstallmentPage"
-          @keydown.enter.prevent="goToInstallmentPage"
-        >
-          <p class="mb-1 text-sm font-semibold text-[#444]">
-            分期专区
-          </p>
-          <div class="quick-entry-icon mx-auto flex h-10 w-10 items-center justify-center rounded-lg text-white">
-            <Icon
-              name="tabler:wallet"
-              size="1rem"
-            />
-          </div>
-        </article>
       </div>
     </div>
 
-    <div class="mb-3 grid grid-cols-4 gap-2 rounded-2xl bg-[#edf5fb] px-1 py-2">
+    <div
+      v-if="homeProductZone === 'mall'"
+      class="mb-3 grid grid-cols-4 gap-2 rounded-2xl bg-[#edf5fb] px-1 py-2"
+    >
       <button
         v-for="item in categories"
         :key="item.name"
@@ -114,7 +127,10 @@ function openMallListFor(item: TeaProduct) {
         <p class="text-base font-semibold text-[#2c3140]">
           精选好物
         </p>
-        <span class="tag-pill rounded-full px-2 py-0.5 text-[10px] text-white">精选额度精选购物</span>
+        <span
+          class="rounded-full px-2 py-0.5 text-[10px] text-white"
+          :class="homeProductZone === 'installment' ? 'tag-pill' : 'tag-pill-mall'"
+        >{{ featuredPillText }}</span>
       </div>
       <div class="grid grid-cols-4 gap-2">
         <article
@@ -130,8 +146,15 @@ function openMallListFor(item: TeaProduct) {
             :src="item.image"
             :alt="item.name"
             class="h-14 w-full object-cover"
+            loading="lazy"
+            decoding="async"
+            referrerpolicy="no-referrer"
+            @error="onMallProductImageError($event, item.name)"
           >
-          <p class="bg-[#ff6c54] px-1 py-0.5 text-center text-[10px] font-semibold leading-4 text-white">
+          <p
+            class="px-1 py-0.5 text-center text-[10px] font-semibold leading-4 text-white"
+            :class="homeProductZone === 'installment' ? 'preview-price-bnpl' : 'preview-price-mall'"
+          >
             ￥{{ item.price }}
           </p>
         </article>
@@ -167,6 +190,19 @@ function openMallListFor(item: TeaProduct) {
 
 .tag-pill {
   background: linear-gradient(90deg, #ff7b87, #ff6a9e);
+}
+
+.tag-pill-mall {
+  background: linear-gradient(135deg, #ff8a5b, #ff5f6b);
+}
+
+/* 精选好物价格条：与分区主色一致 */
+.preview-price-bnpl {
+  background: linear-gradient(135deg, #ff8fb3, #ff6e92);
+}
+
+.preview-price-mall {
+  background: linear-gradient(135deg, #ff8a5b, #ff5f6b);
 }
 
 .quick-entry {

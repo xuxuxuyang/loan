@@ -13,7 +13,7 @@ const store = require('../src/store')
 
 async function main() {
   if (!mongoConfig.isMongoConfigured()) {
-    console.error('[fresh] 未配置 MONGODB_URI')
+    console.error('[fresh] 未配置 MONGODB_URI，请在 api/.env.development / .env.production（或 api/.env）中设置')
     process.exit(1)
   }
   await mongo.connectMongo()

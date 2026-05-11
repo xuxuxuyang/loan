@@ -1,6 +1,12 @@
+import { clearPendingRegisterChannel, getPendingRegisterChannel, resolveChannelFromRouteQuery } from './useRegisterChannel'
+
 export interface RegisterPayload {
   name: string
   phone: string
+  /** 注册短信验证码，6 位；与 `POST /auth/register` 一致 */
+  smsCode: string
+  /** 可选；与 H5 `?channel=` 一致，须在后台流量管理中已配置 */
+  channel?: string
   /** 二代身份证号；注册提交时必填，写入库供风控使用 */
   idNumber?: string
   idCardFront: string
@@ -27,6 +33,8 @@ interface MallUserProfile extends RegisterPayload {
   registerAt?: string
   orderCount?: number
   totalAmount?: number
+  /** 为 true 时商城应禁止提交新订单（后台拉黑） */
+  orderBlacklisted?: boolean
 }
 
 function resolveMallApiBase() {
@@ -103,10 +111,28 @@ export function useMallAuth() {
     }
   }
 
+  const sendRegisterSms = async (phone: string) => {
+    const normalizedPhone = normalizeMallAccount(phone)
+    try {
+      await $fetch<{ success: boolean }>(`${resolveMallApiBase()}/auth/register/sms/send`, {
+        method: 'POST',
+        body: { phone: normalizedPhone },
+      })
+    }
+    catch (err: unknown) {
+      throw new Error(readRegisterApiErrorMessage(err))
+    }
+  }
+
   const register = async (payload: RegisterPayload) => {
     const normalizedPayload = {
       ...payload,
       phone: normalizeMallAccount(payload.phone),
+    }
+    const pendingCh = getPendingRegisterChannel()
+      || resolveChannelFromRouteQuery(route.query as Record<string, unknown>)
+    if (pendingCh) {
+      normalizedPayload.channel = pendingCh
     }
     try {
       const response = await $fetch<{ success: boolean, data: MallUserProfile }>(`${resolveMallApiBase()}/auth/register`, {
@@ -115,6 +141,7 @@ export function useMallAuth() {
       })
       profile.value = response.data
       registerCookie.value = '1'
+      clearPendingRegisterChannel()
       /** 注册成功即视为已登录（与登录接口一致写入会话） */
       loginPhone.value = normalizedPayload.phone
       loginCookie.value = normalizedPayload.phone
@@ -190,6 +217,7 @@ export function useMallAuth() {
     isLoggedIn,
     profile,
     loginPhone,
+    sendRegisterSms,
     register,
     loginByPhone,
     loginByPassword,

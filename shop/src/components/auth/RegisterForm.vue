@@ -1,32 +1,64 @@
 <script setup lang="ts">
 import type { UploadProps } from 'element-plus'
+import { captureRegisterChannelFromRoute } from '../../composables/useRegisterChannel'
 
 interface RegisterFormModel {
   name: string
   phone: string
+  smsCode: string
+  password: string
+  passwordConfirm: string
   idNumber: string
   idCardFront: string
   idCardBack: string
+  idCardHandheld: string
 }
 
 const route = useRoute()
 const { smartNavigate } = useCustomRouting(route)
-const { register } = useMallAuth()
+const { register, sendRegisterSms } = useMallAuth()
+
+/** 与 API `MALL_REGISTER_SKIP_SMS` 联调：为 true 时隐藏短信并跳过校验（须在 api/.env 同步开启） */
+const skipRegisterSms = computed(() => {
+  const v = String(import.meta.env.VITE_MALL_REGISTER_SKIP_SMS || '').toLowerCase()
+  return v === '1' || v === 'true' || v === 'yes'
+})
 
 const submitting = ref(false)
+const smsSending = ref(false)
+const smsCooldown = ref(0)
+let smsTimer: ReturnType<typeof setInterval> | null = null
+
+onUnmounted(() => {
+  if (smsTimer) {
+    clearInterval(smsTimer)
+    smsTimer = null
+  }
+})
+
 const form = ref<RegisterFormModel>({
   name: '',
   phone: '',
+  smsCode: '',
+  password: '',
+  passwordConfirm: '',
   idNumber: '',
   idCardFront: '',
   idCardBack: '',
+  idCardHandheld: '',
 })
 
-const uploadTips = '请上传清晰证件正反面；将自动压缩后上传，仅用于实名核验'
+const uploadTips = '请上传身份证正面、反面及手持身份证照片；将自动压缩后上传，仅用于实名核验'
 
 if (!import.meta.env.SSR && typeof route.query.phone === 'string') {
   form.value.phone = route.query.phone
 }
+
+onMounted(() => {
+  if (!import.meta.env.SSR) {
+    captureRegisterChannelFromRoute(route.query as Record<string, unknown>)
+  }
+})
 
 /** 证件照：限制长边、转 JPEG，避免 base64 撑爆请求体（413） */
 const ID_CARD_IMAGE_MAX_EDGE = 1280
@@ -130,6 +162,19 @@ const onBackUpload: UploadProps['onChange'] = async (uploadFile) => {
   }
 }
 
+const onHandheldUpload: UploadProps['onChange'] = async (uploadFile) => {
+  const rawFile = uploadFile.raw
+  if (!rawFile) {
+    return
+  }
+  try {
+    form.value.idCardHandheld = await processIdCardUpload(rawFile)
+  }
+  catch {
+    ElMessage.error('手持身份证照片处理失败，请重选图片')
+  }
+}
+
 const phoneReg = /^1\d{10}$/
 const idCardReg = /^[1-9]\d{5}(18|19|20)\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])\d{3}[\dXx]$/
 
@@ -140,6 +185,19 @@ function validateForm() {
   }
   if (!phoneReg.test(form.value.phone.trim())) {
     ElMessage.warning('请输入正确的手机号')
+    return false
+  }
+  if (!skipRegisterSms.value && !/^\d{6}$/.test(form.value.smsCode.trim())) {
+    ElMessage.warning('请输入 6 位短信验证码')
+    return false
+  }
+  const pwd = form.value.password.trim()
+  if (pwd.length < 6) {
+    ElMessage.warning('登录密码至少 6 位')
+    return false
+  }
+  if (pwd !== form.value.passwordConfirm.trim()) {
+    ElMessage.warning('两次输入的密码不一致')
     return false
   }
   const idUpper = form.value.idNumber.trim().toUpperCase()
@@ -159,6 +217,10 @@ function validateForm() {
     ElMessage.warning('请上传身份证反面')
     return false
   }
+  if (!form.value.idCardHandheld) {
+    ElMessage.warning('请上传手持身份证照片')
+    return false
+  }
   return true
 }
 
@@ -168,12 +230,16 @@ async function handleSubmit() {
   }
 
   submitting.value = true
+  const pwdSubmit = form.value.password.trim()
   const payload = {
     name: form.value.name.trim(),
     phone: form.value.phone.trim(),
+    smsCode: skipRegisterSms.value ? '000000' : form.value.smsCode.trim(),
+    password: pwdSubmit,
     idNumber: form.value.idNumber.trim().toUpperCase(),
     idCardFront: form.value.idCardFront,
     idCardBack: form.value.idCardBack,
+    idCardHandheld: form.value.idCardHandheld,
   }
 
   try {
@@ -198,6 +264,45 @@ async function handleSubmit() {
   }
   finally {
     submitting.value = false
+  }
+}
+
+async function handleSendSms() {
+  const p = form.value.phone.trim()
+  if (!phoneReg.test(p)) {
+    ElMessage.warning('请先填写正确的手机号')
+    return
+  }
+  if (smsCooldown.value > 0 || smsSending.value) {
+    return
+  }
+  smsSending.value = true
+  try {
+    await sendRegisterSms(p)
+    ElMessage.success('验证码已发送')
+    smsCooldown.value = 60
+    if (smsTimer) {
+      clearInterval(smsTimer)
+    }
+    smsTimer = setInterval(() => {
+      smsCooldown.value -= 1
+      if (smsCooldown.value <= 0 && smsTimer) {
+        clearInterval(smsTimer)
+        smsTimer = null
+      }
+    }, 1000)
+  }
+  catch (e) {
+    const text = (e as Error).message || '发送失败，请稍后重试'
+    if (text.includes('已注册')) {
+      ElMessage.warning(text)
+    }
+    else {
+      ElMessage.error(text)
+    }
+  }
+  finally {
+    smsSending.value = false
   }
 }
 
@@ -231,7 +336,13 @@ async function goLogin() {
         用户注册
       </h1>
       <p class="text-sm text-white/85">
-        先完成实名注册，再开启商城购买与分期服务。
+        先完成实名注册，再开启商城购买与先享后付服务。
+      </p>
+      <p
+        v-if="skipRegisterSms"
+        class="mt-2 text-xs text-amber-100/95"
+      >
+        测试模式：已跳过短信验证；上线前请在商城与 API 关闭跳过开关并接入真实短信。
       </p>
     </div>
 
@@ -258,6 +369,61 @@ async function goLogin() {
               v-model="form.phone"
               placeholder="请输入11位手机号"
               maxlength="11"
+              clearable
+              size="large"
+            />
+          </div>
+
+          <div v-if="!skipRegisterSms">
+            <p class="mb-2 text-sm font-medium text-black/75">
+              短信验证码
+            </p>
+            <div class="flex gap-2">
+              <el-input
+                v-model="form.smsCode"
+                class="min-w-0 flex-1"
+                placeholder="6 位验证码"
+                maxlength="6"
+                clearable
+                size="large"
+              />
+              <el-button
+                type="primary"
+                size="large"
+                class="shrink-0"
+                :disabled="smsSending || smsCooldown > 0"
+                @click="handleSendSms"
+              >
+                {{ smsCooldown > 0 ? `${smsCooldown}s` : (smsSending ? '发送中…' : '获取验证码') }}
+              </el-button>
+            </div>
+          </div>
+
+          <div>
+            <p class="mb-2 text-sm font-medium text-black/75">
+              登录密码
+            </p>
+            <el-input
+              v-model="form.password"
+              type="password"
+              show-password
+              placeholder="至少 6 位，用于商城密码登录"
+              autocomplete="new-password"
+              clearable
+              size="large"
+            />
+          </div>
+
+          <div>
+            <p class="mb-2 text-sm font-medium text-black/75">
+              确认密码
+            </p>
+            <el-input
+              v-model="form.passwordConfirm"
+              type="password"
+              show-password
+              placeholder="请再次输入登录密码"
+              autocomplete="new-password"
               clearable
               size="large"
             />
@@ -290,7 +456,7 @@ async function goLogin() {
             {{ uploadTips }}
           </p>
 
-          <div class="mx-auto grid w-full max-w-[300px] grid-cols-2 gap-3">
+          <div class="mx-auto grid w-full max-w-[340px] grid-cols-2 gap-3">
             <el-upload
               class="id-upload-slot w-full"
               :show-file-list="false"
@@ -339,6 +505,32 @@ async function goLogin() {
                   class="relative flex h-24 w-full items-center justify-center px-2 text-xs text-black/60"
                 >
                   上传身份证反面
+                </div>
+              </button>
+            </el-upload>
+
+            <el-upload
+              class="id-upload-slot col-span-2 w-full"
+              :show-file-list="false"
+              :auto-upload="false"
+              accept="image/*"
+              @change="onHandheldUpload"
+            >
+              <button
+                type="button"
+                class="relative block h-28 w-full overflow-hidden rounded-xl border border-dashed border-black/20 bg-[#fafafa] text-left"
+              >
+                <img
+                  v-if="form.idCardHandheld"
+                  :src="form.idCardHandheld"
+                  alt="手持身份证"
+                  class="absolute inset-0 h-full w-full object-cover"
+                >
+                <div
+                  v-else
+                  class="relative flex h-28 w-full items-center justify-center px-3 py-3 text-center text-xs leading-snug text-black/60"
+                >
+                  上传手持身份证照片（人像与证件清晰可辨）
                 </div>
               </button>
             </el-upload>

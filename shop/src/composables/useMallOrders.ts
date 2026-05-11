@@ -30,7 +30,7 @@ interface CreateOrderPayload {
   name: string
   spec: string
   totalAmount: number
-  /** 购买数量；分期订单服务端应还总额与商品小计一致 */
+  /** 购买数量；先享后付订单服务端应还总额与商品小计一致 */
   quantity?: number
   status: MallOrderStatus
   paid: boolean
@@ -44,7 +44,7 @@ interface CreateOrderPayload {
   idNumber?: string
   idCardFront?: string
   idCardBack?: string
-  /** 分期：已在浏览器侧完成 7 步风控 wave，下单时由服务端核销，避免重复调上游 */
+  /** 先享后付：已在浏览器侧完成 7 步风控 wave，下单时由服务端核销，避免重复调上游 */
   installmentRiskWaveId?: string
 }
 

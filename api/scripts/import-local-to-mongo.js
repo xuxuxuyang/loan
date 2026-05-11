@@ -13,7 +13,7 @@ const store = require('../src/store')
 
 async function main() {
   if (!mongoConfig.isMongoConfigured()) {
-    console.error('[import] 未配置 MONGODB_URI，请在 api/.env 或项目根 .env 中设置')
+    console.error('[import] 未配置 MONGODB_URI，请在 api/.env.development / .env.production（或 api/.env、项目根 .env）中设置')
     process.exit(1)
   }
 

@@ -324,7 +324,10 @@ function postClSmsNotify(data) {
   return postSignedUpstream(clSmsNotifyPath(), data)
 }
 
-/** 通道层：HTTP 可达且信封层未明确声明失败（不等同于「信誉通过」，结论仅看各 judge） */
+/**
+ * 通道层：HTTP 可达且信封层未明确声明失败（不等同于「信誉通过」，结论仅看各 judge）。
+ * 供内部直接调用 postSignedUpstream / postClSmsSend 等结果解析复用。
+ */
 function orderRiskChannelAndEnvelopeOk(res) {
   if (!res || res.ok === false) {
     return { ok: false, reason: `请求失败（HTTP ${res && res.status != null ? res.status : '--'}）` }
@@ -333,19 +336,31 @@ function orderRiskChannelAndEnvelopeOk(res) {
   if (j == null || typeof j !== 'object') {
     return { ok: false, reason: '响应非 JSON，无法读取信誉结论' }
   }
+  if (Object.prototype.hasOwnProperty.call(j, 'success') && j.success === true) {
+    return { ok: true, reason: '' }
+  }
   if (Object.prototype.hasOwnProperty.call(j, 'success') && j.success === false) {
-    return { ok: false, reason: String(j.msg || j.message || j.Message || '上游 success:false') }
+    return { ok: false, reason: String(j.msg || j.message || j.Message || j.info || j.Info || '上游 success:false') }
   }
   const c = j.code ?? j.Code ?? j.errCode
   if (c !== undefined && c !== null && String(c).trim() !== '') {
     const cn = Number(c)
+    const msgcodeSuffix = (() => {
+      const mc = j.msgcode ?? j.msgCode
+      if (mc === undefined || mc === null || String(mc).trim() === '') {
+        return ''
+      }
+      return ` msgcode=${String(mc).trim()}`
+    })()
     if (!Number.isNaN(cn) && cn >= 400) {
-      return { ok: false, reason: String(j.msg || j.message || `上游业务码 ${c}`) }
+      const base = String(j.msg || j.message || j.Message || j.info || j.Info || '').trim()
+      return { ok: false, reason: base ? `${base}${msgcodeSuffix}` : `上游业务码 ${c}${msgcodeSuffix}` }
     }
     const cs = String(c).trim().toLowerCase()
     const badStr = new Set(['fail', 'false', 'error', '-1'])
     if (badStr.has(cs)) {
-      return { ok: false, reason: String(j.msg || j.message || `上游业务码 ${c}`) }
+      const base = String(j.msg || j.message || j.Message || j.info || j.Info || '').trim()
+      return { ok: false, reason: base ? `${base}${msgcodeSuffix}` : `上游业务码 ${c}${msgcodeSuffix}` }
     }
   }
   return { ok: true, reason: '' }
@@ -544,7 +559,7 @@ function judgeProbeCEncPass(json) {
   return { ok: true }
 }
 
-/** 分期下单七步校验顺序（与 runOrderSubmitUpstreamRiskPack 一致） */
+/** 先享后付下单七步校验顺序（与 runOrderSubmitUpstreamRiskPack 一致） */
 const ORDER_INSTALLMENT_RISK_STEP_KEYS = Object.freeze([
   'mobile2',
   'ds_phone_time',
@@ -566,7 +581,7 @@ const ORDER_INSTALLMENT_RISK_STEP_LABELS = {
 }
 
 /**
- * 执行单步分期下单风控（供商城分步请求与 pack 共用）。
+ * 执行单步先享后付下单风控（供商城分步请求与 pack 共用）。
  * @param {string} stepKey
  * @param {{ userName: string, phoneNumber: string, idNumber: string }} params
  * @returns {Promise<{ ok: boolean, step: Record<string, unknown> }>}
@@ -777,6 +792,7 @@ async function runOrderSubmitUpstreamRiskPack(params) {
 module.exports = {
   isRiskUpstreamConfigured,
   isUpstreamCourtDetailConfigured,
+  orderRiskChannelAndEnvelopeOk,
   postSignedUpstream,
   postCourtDetailPro,
   postExecutionPro,

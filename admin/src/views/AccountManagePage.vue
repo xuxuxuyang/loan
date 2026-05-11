@@ -4,7 +4,7 @@ import { ElMessage } from 'element-plus'
 import { withAdminAuthHeaders } from '../composables/useAdminApi'
 import { donePageProgress, startPageProgress } from '../utils/progress'
 
-type AccountRole = 'super_admin' | 'reviewer' | 'customer_service'
+type AccountRole = 'super_admin' | 'reviewer' | 'customer_service' | 'collector'
 type AccountStatus = 'active' | 'disabled'
 
 interface AdminAccountItem {
@@ -74,7 +74,17 @@ function formatDateTime(value: string) {
 function getRoleClass(role: AccountRole) {
   if (role === 'super_admin') return 'role-chip role-super-admin'
   if (role === 'reviewer') return 'role-chip role-reviewer'
+  if (role === 'collector') return 'role-chip role-collector'
   return 'role-chip role-customer-service'
+}
+
+function formatRoleCell(item: AdminAccountItem): string {
+  if (item.roleLabel?.trim())
+    return item.roleLabel
+  if (item.role === 'super_admin') return '超级管理员'
+  if (item.role === 'reviewer') return '审核员'
+  if (item.role === 'collector') return '催收员'
+  return '客服'
 }
 
 async function fetchAccounts() {
@@ -369,7 +379,7 @@ onMounted(() => {
           <td>{{ item.phone }}</td>
           <td>
             <span :class="getRoleClass(item.role)">
-              {{ item.roleLabel || (item.role === 'super_admin' ? '超级管理员' : (item.role === 'reviewer' ? '审核员' : '客服')) }}
+              {{ formatRoleCell(item) }}
             </span>
           </td>
           <td>
@@ -512,6 +522,7 @@ onMounted(() => {
           >
             <el-option label="审核员" value="reviewer" />
             <el-option label="客服" value="customer_service" />
+            <el-option label="催收员" value="collector" />
           </el-select>
         </label>
       </div>
@@ -555,6 +566,7 @@ onMounted(() => {
             <el-option label="超级管理员" value="super_admin" />
             <el-option label="审核员" value="reviewer" />
             <el-option label="客服" value="customer_service" />
+            <el-option label="催收员" value="collector" />
           </el-select>
         </label>
       </div>
@@ -734,6 +746,11 @@ onMounted(() => {
 .role-customer-service {
   color: #0f766e;
   background: #ccfbf1;
+}
+
+.role-collector {
+  color: #9a3412;
+  background: #ffedd5;
 }
 
 .delete-wrap {

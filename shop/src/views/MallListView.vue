@@ -34,7 +34,6 @@ function handleSelectCategory(category: MallCategoryKey) {
       :products="filteredProducts"
       :categories="categories"
       :active-category="selectedCategory"
-      display-only
       @select-category="handleSelectCategory"
     />
     <ListIndex
@@ -42,7 +41,6 @@ function handleSelectCategory(category: MallCategoryKey) {
       :products="filteredProducts"
       :categories="categories"
       :active-category="selectedCategory"
-      display-only
       @select-category="handleSelectCategory"
     />
     <AppTabbar />
