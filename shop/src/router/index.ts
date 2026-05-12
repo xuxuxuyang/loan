@@ -15,6 +15,7 @@ const router = createRouter({
     { path: '/my', name: 'my', component: () => import('../views/MallMyView.vue') },
     { path: '/login', name: 'login', component: () => import('../views/MallLoginView.vue') },
     { path: '/register', name: 'register', component: () => import('../views/MallRegisterView.vue') },
+    { path: '/product/:id', name: 'product-detail', component: () => import('../views/MallProductDetailView.vue') },
     { path: '/order-create', name: 'order-create', component: () => import('../views/MallOrderCreateView.vue') },
     { path: '/orders', name: 'orders', component: () => import('../views/MallOrdersView.vue') },
     { path: '/bank-card', name: 'bank-card', component: () => import('../views/MallBankCardView.vue') },

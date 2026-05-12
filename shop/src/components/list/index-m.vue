@@ -13,19 +13,10 @@ const emit = defineEmits<{
 
 const route = useRoute()
 const { smartNavigate } = useCustomRouting(route)
-const { ensureRegistered } = useMallAuth()
 
-async function handleBuy(item: TeaProduct) {
-  const passed = await ensureRegistered()
-  if (!passed) {
-    return
-  }
+async function openProductDetail(item: TeaProduct) {
   await smartNavigate({
-    path: '/order-create',
-    query: {
-      productId: String(item.id),
-      productName: item.name,
-    },
+    path: `/product/${item.id}`,
   })
 }
 </script>
@@ -64,8 +55,8 @@ async function handleBuy(item: TeaProduct) {
         role="button"
         tabindex="0"
         class="product-card flex gap-3 rounded-xl p-3 cursor-pointer transition active:scale-[0.99]"
-        @click="handleBuy(item)"
-        @keydown.enter.prevent="handleBuy(item)"
+        @click="openProductDetail(item)"
+        @keydown.enter.prevent="openProductDetail(item)"
       >
         <img
           :src="item.image"

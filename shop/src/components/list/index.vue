@@ -29,17 +29,9 @@ async function handleCart(productName: string) {
   ElMessage.success(`已加入购物车：${productName}`)
 }
 
-async function handleBuy(productId: number, productName: string) {
-  const passed = await ensureRegistered()
-  if (!passed) {
-    return
-  }
+async function openProductDetail(productId: number) {
   await smartNavigate({
-    path: '/order-create',
-    query: {
-      productId: String(productId),
-      productName,
-    },
+    path: `/product/${productId}`,
   })
 }
 </script>
@@ -97,8 +89,8 @@ async function handleBuy(productId: number, productName: string) {
           role="button"
           tabindex="0"
           class="product-card overflow-hidden rounded-2xl transition hover:-translate-y-1 cursor-pointer"
-          @click="handleBuy(item.id, item.name)"
-          @keydown.enter.prevent="handleBuy(item.id, item.name)"
+          @click="openProductDetail(item.id)"
+          @keydown.enter.prevent="openProductDetail(item.id)"
         >
           <img
             :src="item.image"

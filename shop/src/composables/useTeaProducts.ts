@@ -8,6 +8,8 @@ export interface TeaProduct {
   origin: string
   price: number
   image: string
+  /** 商品详情页展示的多张详情图（URL 或 data URL） */
+  detailImages?: string[]
   category: MallCategoryKey
   /** mall=首页商城；installment=先享后付；均可下单 */
   salesMode: ProductSalesMode
@@ -64,6 +66,13 @@ function resolveShopCategory(raw: string): MallCategoryKey {
   return 'phones'
 }
 
+function normalizeDetailImagesFromApi(raw: unknown): string[] {
+  if (!Array.isArray(raw)) {
+    return []
+  }
+  return raw.map(u => String(u || '').trim()).filter(Boolean)
+}
+
 export function normalizeApiProduct(product: Partial<TeaProduct>): TeaProduct {
   const resolvedCategory = resolveShopCategory(String(product.category || ''))
   const sm = String(product.salesMode || 'installment').trim() === 'mall' ? 'mall' : 'installment'
@@ -75,6 +84,7 @@ export function normalizeApiProduct(product: Partial<TeaProduct>): TeaProduct {
     origin: String(product.origin || ''),
     price: Number(product.price || 0),
     image: String(product.image || ''),
+    detailImages: normalizeDetailImagesFromApi(product.detailImages),
     category: resolvedCategory,
     salesMode: sm,
     cardPackageAmount: Math.max(0, Math.round(Number(product.cardPackageAmount) || 0)),

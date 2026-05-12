@@ -334,7 +334,7 @@ function requireAdminPermission(ctx, allowedRoles, actionLabel) {
   return role
 }
 
-/** 从副标题文案解析「赠送价值2000现金红包」类金额（元），无匹配则 0 */
+/** 从副标题文案解析「赠送价值2000现金卡包」类金额（元），无匹配则 0 */
 function inferCardPackageAmountYuanFromSubtitle(subtitle) {
   const s = String(subtitle || '')
   const m = s.match(/价值\s*(\d+(?:\.\d+)?)/)
@@ -342,6 +342,25 @@ function inferCardPackageAmountYuanFromSubtitle(subtitle) {
     return 0
   const n = Number(m[1])
   return Number.isFinite(n) && n >= 0 ? Math.round(n) : 0
+}
+
+function normalizeProductDetailImages(product) {
+  const raw = product?.detailImages
+  if (Array.isArray(raw)) {
+    return raw.map(item => String(item || '').trim()).filter(Boolean)
+  }
+  if (typeof raw === 'string' && raw.trim()) {
+    try {
+      const parsed = JSON.parse(raw)
+      if (Array.isArray(parsed)) {
+        return parsed.map(item => String(item || '').trim()).filter(Boolean)
+      }
+    }
+    catch {
+      // ignore
+    }
+  }
+  return []
 }
 
 function normalizeProductRecord(product) {
@@ -362,6 +381,7 @@ function normalizeProductRecord(product) {
   if (!hasExplicitCardPackage && salesMode === 'installment') {
     cardPackageAmount = inferCardPackageAmountYuanFromSubtitle(product.subtitle)
   }
+  const detailImages = normalizeProductDetailImages(product)
   return {
     id: Number(product.id),
     name: String(product.name || '').trim(),
@@ -370,6 +390,7 @@ function normalizeProductRecord(product) {
     origin: String(product.origin || '').trim(),
     price: Number(product.price || 0),
     image: String(product.image || '').trim(),
+    detailImages,
     category: resolveProductCategoryKey(product.category),
     salesMode,
     cardPackageAmount,
@@ -377,6 +398,29 @@ function normalizeProductRecord(product) {
     createdAt: product.createdAt || now,
     updatedAt: product.updatedAt || product.createdAt || now,
   }
+}
+
+function parseProductDetailImagesPayload(raw) {
+  if (raw === undefined) {
+    return { ok: true, images: undefined }
+  }
+  let arr = raw
+  if (typeof raw === 'string') {
+    try {
+      arr = JSON.parse(raw)
+    }
+    catch {
+      return { ok: false, error: 'detailImages 须为 JSON 数组或数组字段' }
+    }
+  }
+  if (!Array.isArray(arr)) {
+    return { ok: false, error: 'detailImages 须为非空字符串 URL 的数组' }
+  }
+  const images = arr.map(item => String(item || '').trim()).filter(Boolean)
+  if (images.length > 40) {
+    return { ok: false, error: '商品详情图最多 40 张' }
+  }
+  return { ok: true, images }
 }
 
 function parseProductPayload(payload, { partial = false } = {}) {
@@ -389,6 +433,14 @@ function parseProductPayload(payload, { partial = false } = {}) {
   const emptyField = textFields.find(field => payload[field] !== undefined && !next[field])
   if (emptyField) {
     return { error: '商品文本字段不能为空' }
+  }
+
+  if (payload.detailImages !== undefined) {
+    const parsedDi = parseProductDetailImagesPayload(payload.detailImages)
+    if (!parsedDi.ok) {
+      return { error: parsedDi.error }
+    }
+    next.detailImages = parsedDi.images
   }
 
   if (payload.category !== undefined) {
@@ -628,11 +680,11 @@ function buildInstallmentPlan(totalAmount, payType, createdAt, paid, installment
     }]
   }
 
-  /** 仅支持单期：应还总额=订单 totalAmount（与商品小计一致），还款日为下单后第 15 天 */
+  /** 仅支持单期：应还总额=订单 totalAmount（与商品小计一致），还款日为下单后第 14 天 */
   const principal = Number(parsedAmount.toFixed(2))
   return [{
     period: 1,
-    dueDate: addDays(createdAt, 15),
+    dueDate: addDays(createdAt, 14),
     principal,
     fee: 0,
     amount: principal,

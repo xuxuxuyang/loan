@@ -222,10 +222,10 @@ const canSubmitOrder = computed(() =>
   ),
 )
 
-/** 按规则首期还款为下单后第 15 天；未下单前展示为自今日起第 15 天（预计） */
+/** 按规则首期还款为下单后第 14 天；未下单前展示为自今日起第 14 天（预计） */
 const estimatedRepayDateYmd = computed(() => {
   const d = new Date()
-  d.setDate(d.getDate() + 15)
+  d.setDate(d.getDate() + 14)
   const y = d.getFullYear()
   const m = `${d.getMonth() + 1}`.padStart(2, '0')
   const day = `${d.getDate()}`.padStart(2, '0')

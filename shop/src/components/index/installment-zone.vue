@@ -10,7 +10,7 @@ defineProps<{
 }>()
 
 const { smartNavigate } = useCustomRouting(useRoute())
-const { ensureRegistered, profile, syncFromStorage } = useMallAuth()
+const { profile, syncFromStorage } = useMallAuth()
 
 const creditQuota = computed(() => resolveMallCreditQuota(profile.value))
 
@@ -18,20 +18,9 @@ function isOverCredit(item: TeaProduct) {
   return computeMallCreditOrderPrincipal(item.price, 1) > creditQuota.value
 }
 
-async function handleBuy(item: TeaProduct) {
-  if (isOverCredit(item)) {
-    ElMessage.warning(
-      `该商品金额（￥${computeMallCreditOrderPrincipal(item.price, 1).toFixed(2)}）已超过您的授信额度（￥${creditQuota.value}）`,
-    )
-    return
-  }
-  const passed = await ensureRegistered()
-  if (!passed) {
-    return
-  }
+async function openProductDetail(item: TeaProduct) {
   await smartNavigate({
-    path: '/order-create',
-    query: { productId: String(item.id), productName: item.name },
+    path: `/product/${item.id}`,
   })
 }
 
@@ -64,14 +53,14 @@ if (!import.meta.env.SSR) {
         <article
           v-for="item in products"
           :key="item.id"
-          :tabindex="isOverCredit(item) ? -1 : 0"
+          tabindex="0"
           :class="[
-            'overflow-hidden rounded-2xl border border-black/10 bg-white transition',
-            isOverCredit(item) ? 'cursor-not-allowed opacity-80' : 'cursor-pointer hover:-translate-y-1 hover:shadow-xl',
+            'cursor-pointer overflow-hidden rounded-2xl border border-black/10 bg-white transition hover:-translate-y-1 hover:shadow-xl',
+            isOverCredit(item) ? 'opacity-90' : '',
           ]"
           role="button"
-          @click="handleBuy(item)"
-          @keydown.enter.prevent="handleBuy(item)"
+          @click="openProductDetail(item)"
+          @keydown.enter.prevent="openProductDetail(item)"
         >
           <img
             :src="item.image"

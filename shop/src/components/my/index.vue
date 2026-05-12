@@ -3,7 +3,7 @@ import type { TeaProduct } from '~/composables/useTeaProducts'
 
 const route = useRoute()
 const { smartNavigate } = useCustomRouting(route)
-const { isLoggedIn, loginPhone, profile, syncFromStorage, logout, ensureRegistered } = useMallAuth()
+const { isLoggedIn, loginPhone, profile, syncFromStorage, logout } = useMallAuth()
 const { summary, fetchSummary, cardPackages, fetchCardPackages } = useMallMy()
 const recommendProducts = useTeaProducts()
 
@@ -77,14 +77,9 @@ watch([isLoggedIn, loginPhone], async ([loggedIn, phone]) => {
   await fetchCardPackages(phone)
 })
 
-async function handleRecommendBuy(item: TeaProduct) {
-  const passed = await ensureRegistered()
-  if (!passed) {
-    return
-  }
+async function openProductDetail(item: TeaProduct) {
   await smartNavigate({
-    path: '/order-create',
-    query: { productId: String(item.id), productName: item.name },
+    path: `/product/${item.id}`,
   })
 }
 
@@ -303,8 +298,8 @@ async function handleService(key: string) {
             role="button"
             tabindex="0"
             class="cursor-pointer overflow-hidden rounded-2xl border border-black/10 bg-white transition hover:-translate-y-1 hover:shadow-xl"
-            @click="handleRecommendBuy(item)"
-            @keydown.enter.prevent="handleRecommendBuy(item)"
+            @click="openProductDetail(item)"
+            @keydown.enter.prevent="openProductDetail(item)"
           >
             <img
               :src="item.image"

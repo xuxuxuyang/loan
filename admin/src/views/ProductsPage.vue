@@ -19,6 +19,8 @@ interface ProductItem {
   origin: string
   price: number
   image: string
+  /** 商品详情页长图/多图 */
+  detailImages: string[]
   category: ProductCategory
   salesMode: SalesMode
   /** 先享后付卡包/现金礼金额（元），与副标题中「价值xxxx」对应 */
@@ -40,6 +42,7 @@ interface ProductPayload {
   origin: string
   price: number
   image: string
+  detailImages: string[]
   category: ProductCategory
   onSale: boolean
   salesMode: SalesMode
@@ -64,6 +67,8 @@ const products = ref<ProductItem[]>([])
 const loading = ref(false)
 const submitting = ref(false)
 const imageCompressing = ref(false)
+const PRODUCT_DETAIL_IMAGE_MAX = 24
+const detailImageCompressing = ref(false)
 
 /** 商品主图：限制长边、转 JPEG，避免 base64 过大导致保存失败 */
 const PRODUCT_IMAGE_MAX_EDGE = 1600
@@ -155,6 +160,32 @@ const onProductCoverChange: UploadProps['onChange'] = async (uploadFile) => {
   }
 }
 
+const onDetailImagesChange: UploadProps['onChange'] = async (uploadFile) => {
+  const raw = uploadFile.raw
+  if (!raw) {
+    return
+  }
+  if (form.detailImages.length >= PRODUCT_DETAIL_IMAGE_MAX) {
+    ElMessage.warning(`商品详情图最多 ${PRODUCT_DETAIL_IMAGE_MAX} 张`)
+    return
+  }
+  detailImageCompressing.value = true
+  try {
+    const dataUrl = await processProductCoverFile(raw)
+    form.detailImages.push(dataUrl)
+  }
+  catch {
+    ElMessage.error('详情图处理失败，请重新选择')
+  }
+  finally {
+    detailImageCompressing.value = false
+  }
+}
+
+function removeDetailImage(index: number) {
+  form.detailImages.splice(index, 1)
+}
+
 function clearProductCover() {
   form.image = ''
 }
@@ -180,6 +211,7 @@ const form = reactive<ProductPayload>({
   origin: '',
   price: 0,
   image: '',
+  detailImages: [],
   category: 'phones',
   onSale: true,
   salesMode: 'mall',
@@ -226,6 +258,9 @@ function normalizeProduct(item: Partial<ProductItem>): ProductItem {
     origin: String(item.origin || ''),
     price: Number(item.price || 0),
     image: String(item.image || ''),
+    detailImages: Array.isArray(item.detailImages)
+      ? item.detailImages.map(s => String(s || '').trim()).filter(Boolean)
+      : [],
     category,
     salesMode: item.salesMode === 'mall' ? 'mall' : 'installment',
     cardPackageAmount: Math.max(0, Math.round(Number(item.cardPackageAmount) || 0)),
@@ -242,6 +277,7 @@ function resetForm() {
   form.origin = ''
   form.price = 0
   form.image = ''
+  form.detailImages.splice(0, form.detailImages.length)
   form.category = 'phones'
   form.onSale = true
   form.salesMode = salesMode.value
@@ -262,6 +298,7 @@ function openEdit(item: ProductItem) {
   form.origin = item.origin
   form.price = item.price
   form.image = item.image
+  form.detailImages = [...(item.detailImages || [])]
   form.category = item.category
   form.onSale = item.onSale
   form.salesMode = item.salesMode
@@ -278,7 +315,7 @@ function closeEditor() {
 /** 先享后付副标题固定格式（与卡包金额联动） */
 function buildInstallmentGiftSubtitle(amount: number): string {
   const n = Math.max(0, Math.round(Number(amount) || 0))
-  return `赠送价值${n}现金红包`
+  return `赠送价值${n}现金卡包`
 }
 
 function syncInstallmentGiftSubtitle() {
@@ -322,6 +359,7 @@ function buildPayload(): ProductPayload {
     description: form.description.trim(),
     origin: form.origin.trim(),
     image: form.image.trim(),
+    detailImages: [...form.detailImages],
     price: Number(form.price),
     category: form.category,
     onSale: form.onSale,
@@ -569,6 +607,12 @@ watch(salesMode, () => {
             </p>
             <p class="sub">
               产地：{{ item.origin }}
+            </p>
+            <p
+              v-if="item.detailImages?.length"
+              class="sub"
+            >
+              详情图：{{ item.detailImages.length }} 张
             </p>
           </td>
           <td>{{ salesMode === 'installment' ? '先享后付' : categoryLabelMap[item.category] }}</td>
@@ -823,6 +867,56 @@ watch(salesMode, () => {
           </div>
         </label>
         <label class="full">
+          商品详情图（可多选，自动压缩为 JPEG）
+          <div class="cover-upload-row">
+            <el-upload
+              class="cover-upload"
+              :auto-upload="false"
+              accept="image/jpeg,image/png,image/webp,image/gif"
+              :show-file-list="false"
+              multiple
+              :disabled="detailImageCompressing || form.detailImages.length >= PRODUCT_DETAIL_IMAGE_MAX"
+              @change="onDetailImagesChange"
+            >
+              <el-button
+                type="primary"
+                plain
+                :loading="detailImageCompressing"
+                :disabled="form.detailImages.length >= PRODUCT_DETAIL_IMAGE_MAX"
+              >
+                {{ detailImageCompressing ? '处理中…' : '添加详情图' }}
+              </el-button>
+            </el-upload>
+            <span class="detail-count-hint">已选 {{ form.detailImages.length }} / {{ PRODUCT_DETAIL_IMAGE_MAX }} 张</span>
+          </div>
+          <p class="cover-upload-hint">
+            用于前台商品详情页展示；可与主图相同或补充长图说明。
+          </p>
+          <div
+            v-if="form.detailImages.length"
+            class="detail-preview-grid"
+          >
+            <div
+              v-for="(url, idx) in form.detailImages"
+              :key="`${idx}-${url.slice(0, 24)}`"
+              class="detail-preview-cell"
+            >
+              <img
+                :src="url"
+                :alt="`详情图 ${idx + 1}`"
+                class="detail-preview-img"
+              >
+              <button
+                type="button"
+                class="btn btn-ghost detail-preview-remove"
+                @click="removeDetailImage(idx)"
+              >
+                移除
+              </button>
+            </div>
+          </div>
+        </label>
+        <label class="full">
           商品描述
           <el-input
             v-model="form.description"
@@ -837,7 +931,7 @@ watch(salesMode, () => {
         <button
           class="btn btn-primary"
           type="button"
-          :disabled="submitting || imageCompressing"
+          :disabled="submitting || imageCompressing || detailImageCompressing"
           @click="submitForm"
         >
           {{ submitting ? '保存中...' : '保存' }}
@@ -1189,5 +1283,40 @@ watch(salesMode, () => {
   max-height: 220px;
   object-fit: contain;
   border-radius: 6px;
+}
+
+.detail-count-hint {
+  font-size: 13px;
+  color: #64748b;
+  align-self: center;
+}
+
+.detail-preview-grid {
+  margin-top: 10px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 10px;
+}
+
+.detail-preview-cell {
+  position: relative;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 6px;
+  background: #f9fafb;
+}
+
+.detail-preview-img {
+  display: block;
+  width: 100%;
+  height: 100px;
+  object-fit: contain;
+  border-radius: 4px;
+}
+
+.detail-preview-remove {
+  margin-top: 6px;
+  width: 100%;
+  font-size: 12px;
 }
 </style>
