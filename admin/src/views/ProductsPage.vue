@@ -21,6 +21,8 @@ interface ProductItem {
   image: string
   category: ProductCategory
   salesMode: SalesMode
+  /** 先享后付卡包/现金礼金额（元），与副标题中「价值xxxx」对应 */
+  cardPackageAmount: number
   onSale: boolean
   createdAt?: string
   updatedAt?: string
@@ -41,6 +43,7 @@ interface ProductPayload {
   category: ProductCategory
   onSale: boolean
   salesMode: SalesMode
+  cardPackageAmount: number
 }
 
 const MALL_API_BASE = `${(import.meta.env.VITE_MALL_API_BASE || 'http://localhost:3110/api').replace(/\/$/, '')}`
@@ -180,6 +183,7 @@ const form = reactive<ProductPayload>({
   category: 'phones',
   onSale: true,
   salesMode: 'mall',
+  cardPackageAmount: 0,
 })
 
 const categoryLabelMap = computed(() => {
@@ -201,7 +205,8 @@ const filteredProducts = computed(() => {
     if (!searchKey) {
       return true
     }
-    return item.name.includes(searchKey) || item.subtitle.includes(searchKey) || item.origin.includes(searchKey)
+    const capStr = String(item.cardPackageAmount ?? '')
+    return item.name.includes(searchKey) || item.subtitle.includes(searchKey) || item.origin.includes(searchKey) || capStr.includes(searchKey)
   })
   if (salesMode.value === 'installment') {
     return [...list].sort((a, b) => a.price - b.price)
@@ -223,6 +228,7 @@ function normalizeProduct(item: Partial<ProductItem>): ProductItem {
     image: String(item.image || ''),
     category,
     salesMode: item.salesMode === 'mall' ? 'mall' : 'installment',
+    cardPackageAmount: Math.max(0, Math.round(Number(item.cardPackageAmount) || 0)),
     onSale: typeof item.onSale === 'boolean' ? item.onSale : true,
     createdAt: item.createdAt || '',
     updatedAt: item.updatedAt || '',
@@ -239,6 +245,7 @@ function resetForm() {
   form.category = 'phones'
   form.onSale = true
   form.salesMode = salesMode.value
+  form.cardPackageAmount = 0
 }
 
 function openCreate() {
@@ -258,6 +265,7 @@ function openEdit(item: ProductItem) {
   form.category = item.category
   form.onSale = item.onSale
   form.salesMode = item.salesMode
+  form.cardPackageAmount = item.cardPackageAmount ?? 0
   showEditor.value = true
 }
 
@@ -266,6 +274,23 @@ function closeEditor() {
   editingId.value = null
   resetForm()
 }
+
+/** 先享后付副标题固定格式（与卡包金额联动） */
+function buildInstallmentGiftSubtitle(amount: number): string {
+  const n = Math.max(0, Math.round(Number(amount) || 0))
+  return `赠送价值${n}现金红包`
+}
+
+function syncInstallmentGiftSubtitle() {
+  if (salesMode.value !== 'installment' || !showEditor.value)
+    return
+  form.subtitle = buildInstallmentGiftSubtitle(form.cardPackageAmount)
+}
+
+watch(
+  () => [showEditor.value, salesMode.value, form.cardPackageAmount] as const,
+  () => syncInstallmentGiftSubtitle(),
+)
 
 function validateForm() {
   if (!form.name.trim() || !form.subtitle.trim() || !form.description.trim() || !form.origin.trim() || !form.image.trim()) {
@@ -276,13 +301,24 @@ function validateForm() {
     ElMessage.warning('价格必须大于 0')
     return false
   }
+  if (salesMode.value === 'installment') {
+    const cap = Number(form.cardPackageAmount)
+    if (!Number.isFinite(cap) || cap < 0) {
+      ElMessage.warning('卡包金额须为非负整数（元）')
+      return false
+    }
+  }
   return true
 }
 
 function buildPayload(): ProductPayload {
+  const cap = Math.max(0, Math.round(Number(form.cardPackageAmount) || 0))
+  const subtitleOut = salesMode.value === 'installment'
+    ? buildInstallmentGiftSubtitle(cap)
+    : form.subtitle.trim()
   return {
     name: form.name.trim(),
-    subtitle: form.subtitle.trim(),
+    subtitle: subtitleOut,
     description: form.description.trim(),
     origin: form.origin.trim(),
     image: form.image.trim(),
@@ -290,6 +326,7 @@ function buildPayload(): ProductPayload {
     category: form.category,
     onSale: form.onSale,
     salesMode: salesMode.value,
+    cardPackageAmount: salesMode.value === 'installment' ? cap : 0,
   }
 }
 
@@ -435,7 +472,7 @@ watch(salesMode, () => {
       <el-input
         v-model="keyword"
         class="toolbar-input"
-        placeholder="搜索商品名称 / 副标题 / 产地"
+        placeholder="搜索商品名称 / 副标题 / 产地 / 卡包金额"
         clearable
       />
       <el-select
@@ -502,6 +539,9 @@ watch(salesMode, () => {
           <th>商品信息</th>
           <th>{{ salesMode === 'installment' ? '专区' : '分类' }}</th>
           <th>价格</th>
+          <th v-if="salesMode === 'installment'">
+            卡包金额
+          </th>
           <th>状态</th>
           <th>更新时间</th>
           <th>操作</th>
@@ -533,6 +573,9 @@ watch(salesMode, () => {
           </td>
           <td>{{ salesMode === 'installment' ? '先享后付' : categoryLabelMap[item.category] }}</td>
           <td>¥ {{ item.price.toFixed(2) }}</td>
+          <td v-if="salesMode === 'installment'">
+            ¥ {{ item.cardPackageAmount.toFixed(0) }}
+          </td>
           <td>
             <span :class="item.onSale ? 'badge badge-on' : 'badge badge-off'">
               {{ item.onSale ? '已上架' : '已下架' }}
@@ -594,7 +637,7 @@ watch(salesMode, () => {
         </tr>
         <tr v-if="!loading && filteredProducts.length === 0">
           <td
-            colspan="8"
+            :colspan="salesMode === 'installment' ? 9 : 8"
             style="text-align: center; color: #9ca3af;"
           >
             暂无商品数据
@@ -630,12 +673,24 @@ watch(salesMode, () => {
             clearable
           />
         </label>
-        <label>
+        <label v-if="salesMode === 'mall'">
           副标题
           <el-input
             v-model="form.subtitle"
             class="form-input"
             clearable
+          />
+        </label>
+        <label
+          v-else
+          class="subtitle-auto-label"
+        >
+          副标题（随卡包金额自动生成）
+          <el-input
+            :model-value="form.subtitle"
+            class="form-input subtitle-generated"
+            disabled
+            readonly
           />
         </label>
         <label v-if="salesMode === 'mall'">
@@ -669,16 +724,44 @@ watch(salesMode, () => {
             clearable
           />
         </label>
-        <label>
-          价格
-          <el-input-number
-            v-model="form.price"
-            class="form-input-number"
-            min="0"
-            step="0.01"
-            controls-position="right"
-          />
-        </label>
+        <template v-if="salesMode === 'mall'">
+          <label>
+            价格
+            <el-input-number
+              v-model="form.price"
+              class="form-input-number form-input-number--fill"
+              min="0"
+              step="0.01"
+              :controls="false"
+            />
+          </label>
+        </template>
+        <div
+          v-else
+          class="installment-price-row"
+        >
+          <label class="form-field-compact">
+            价格
+            <el-input-number
+              v-model="form.price"
+              class="form-input-number form-input-number--fill"
+              min="0"
+              step="0.01"
+              :controls="false"
+            />
+          </label>
+          <label class="form-field-compact">
+            卡包金额（元）
+            <el-input-number
+              v-model="form.cardPackageAmount"
+              class="form-input-number form-input-number--fill"
+              :min="0"
+              :step="1"
+              :precision="0"
+              :controls="false"
+            />
+          </label>
+        </div>
         <label>
           上架状态
           <el-select
@@ -1017,6 +1100,51 @@ watch(salesMode, () => {
 
 .form-input-number {
   width: 100%;
+}
+
+.form-input-number--fill {
+  width: 100%;
+}
+
+.form-input-number--fill :deep(.el-input-number) {
+  width: 100%;
+}
+
+.form-input-number--fill :deep(.el-input-number .el-input__wrapper) {
+  width: 100%;
+}
+
+.installment-price-row {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  align-items: start;
+}
+
+.installment-price-row .form-field-compact {
+  display: grid;
+  gap: 6px;
+  font-size: 14px;
+  color: #6b7280;
+  min-width: 0;
+}
+
+.subtitle-generated :deep(.el-input__wrapper) {
+  background-color: #f9fafb;
+  box-shadow: 0 0 0 1px #e5e7eb inset;
+}
+
+.subtitle-auto-label .field-hint {
+  margin-top: 4px;
+}
+
+.field-hint {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  color: #9ca3af;
+  line-height: 1.45;
 }
 
 .form-grid textarea {

@@ -15,6 +15,8 @@ const reviewingId = ref('')
 const deletingOrderId = ref('')
 const userRiskDialogVisible = ref(false)
 const riskDialogUserId = ref<string | null>(null)
+/** 从「风控结果」列打开时为 true：弹窗仅展示下单七项 + 雷达；从「用户」列打开为 false：含基本信息 */
+const riskDetailHideBasicInfoTab = ref(false)
 const resolvingRiskOrderId = ref<string | null>(null)
 const riskFilter = ref<'全部' | OrderItem['riskStatus']>('全部')
 const userFilter = ref('')
@@ -122,7 +124,7 @@ function onRiskDialogUserUpdated(_user: UserItem) {
   void fetchOrders({ status: '待审核' }).catch(() => {})
 }
 
-async function openRiskDetail(order: OrderItem) {
+async function openRiskDetail(order: OrderItem, entry: 'user' | 'risk') {
   const digits = normalizePhone(order.receiverPhone || '')
   if (digits.length !== 11) {
     ElMessage.error('订单无有效收货手机号，无法打开用户风控档案')
@@ -131,6 +133,7 @@ async function openRiskDetail(order: OrderItem) {
   if (resolvingRiskOrderId.value) {
     return
   }
+  riskDetailHideBasicInfoTab.value = entry === 'risk'
   resolvingRiskOrderId.value = order.id
   try {
     const url = `${MALL_API_BASE}/users/by-phone?phone=${encodeURIComponent(digits)}`
@@ -206,12 +209,12 @@ onMounted(() => {
         <tr>
           <th>订单号</th>
           <th>用户</th>
+          <th>备注</th>
           <th>商品</th>
+          <th>下单时间</th>
           <th>总金额</th>
           <th>风控结果</th>
-          <th>当前期数</th>
-          <th>下次还款日</th>
-          <th>下单时间</th>
+          <th>还款到期日</th>
           <th>操作</th>
         </tr>
       </thead>
@@ -221,8 +224,30 @@ onMounted(() => {
           :key="item.id"
         >
           <td>{{ item.id }}</td>
-          <td>{{ item.user }}</td>
+          <td class="td-user-risk">
+            <el-tag
+              type="info"
+              effect="light"
+              round
+              size="small"
+              class="order-user-risk-tag"
+              :disabled="resolvingRiskOrderId === item.id"
+              @click="openRiskDetail(item, 'user')"
+            >
+              {{ item.user }}
+            </el-tag>
+          </td>
+          <td class="td-user-remark">
+            <p
+              class="order-user-remark-text"
+              :class="{ 'order-user-remark-text--empty': !(item.userRemark || '').trim() }"
+              :title="(item.userRemark || '').trim() ? item.userRemark : ''"
+            >
+              {{ (item.userRemark || '').trim() ? item.userRemark : '—' }}
+            </p>
+          </td>
           <td>{{ item.product }}</td>
+          <td>{{ item.createdAt }}</td>
           <td>¥ {{ item.totalAmount }}</td>
           <td class="td-credit-status">
             <el-tag
@@ -232,14 +257,13 @@ onMounted(() => {
               size="small"
               class="credit-status-tag"
               :disabled="resolvingRiskOrderId === item.id"
-              @click="openRiskDetail(item)"
+              @click="openRiskDetail(item, 'risk')"
             >
               {{ item.riskStatus === 'passed' ? '风控通过' : '风控未通过' }}
             </el-tag>
           </td>
-          <td>{{ item.currentPeriod }} / {{ item.periods }}</td>
           <td>{{ item.nextRepayDate }}</td>
-          <td>{{ item.createdAt }}</td>
+          
           <td>
             <div class="review-actions">
               <button
@@ -280,6 +304,8 @@ onMounted(() => {
     <UserRiskDetailDialog
       v-model="userRiskDialogVisible"
       :user-id="riskDialogUserId"
+      basic-tab-order-context
+      :hide-basic-info-tab="riskDetailHideBasicInfoTab"
       @user-updated="onRiskDialogUserUpdated"
     />
   </div>
@@ -380,5 +406,47 @@ onMounted(() => {
 .toolbar-select {
   width: 160px;
   max-width: 100%;
+}
+
+.td-user-risk {
+  vertical-align: middle;
+}
+
+.td-user-remark {
+  vertical-align: middle;
+}
+
+.order-user-remark-text {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.45;
+  word-break: break-word;
+  overflow: hidden;
+  display: block;
+  width: 100%;
+  max-height: 4.35em;
+  color: #f10202;
+  font-weight: 500;
+}
+
+.order-user-remark-text--empty {
+  color: #9ca3af;
+  font-weight: 400;
+}
+
+.order-user-risk-tag {
+  cursor: pointer;
+  user-select: none;
+  font-weight: 600;
+  max-width: 220px;
+  transition: filter 0.15s ease, transform 0.12s ease;
+}
+
+.order-user-risk-tag:hover:not(.is-disabled) {
+  filter: brightness(0.96);
+}
+
+.order-user-risk-tag:active:not(.is-disabled) {
+  transform: scale(0.98);
 }
 </style>

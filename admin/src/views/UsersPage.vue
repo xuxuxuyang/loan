@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { CircleCheck, CircleClose, Minus, Picture } from '@element-plus/icons-vue'
+import { CircleCheck, CircleClose, CirclePlus, EditPen, Minus, Picture } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { withAdminAuthHeaders } from '../composables/useAdminApi'
 import { getAdminSession } from '../composables/useAdminAuth'
+import TrafficChannelNameTag from '../components/TrafficChannelNameTag.vue'
 import UserRiskDetailDialog, {
   type UserItem,
   type UserRiskSnapshot,
@@ -15,6 +16,8 @@ import {
   INSTALLMENT_ORDER_RISK_STEP_LABELS,
 } from '../constants/installmentOrderRisk'
 import { donePageProgress, startPageProgress } from '../utils/progress'
+import { trafficChannelDisplayKey } from '../utils/trafficChannelTagStyle'
+import { groupRadarV4FactsForTables, chunkRadarFactPairs } from '../utils/radarV4ReputationFacts'
 import { getRiskFactLines, type RiskFactLine } from '../utils/riskRowFactLines'
 
 const DEFAULT_USER_QUOTA = 3000
@@ -92,7 +95,6 @@ const createForm = reactive({
   name: '',
   phone: '',
   idNumber: '',
-  creditStatus: '良好' as UserItem['creditStatus'],
   /** 可选；至少 6 位才会写入商城登录密码 */
   initialPassword: '',
 })
@@ -108,7 +110,6 @@ const editForm = reactive({
   name: '',
   phone: '',
   idNumber: '',
-  creditStatus: '良好' as UserItem['creditStatus'],
   /** 留空则不修改；填写则更新商城登录密码，至少 6 位 */
   newPassword: '',
 })
@@ -178,9 +179,12 @@ function formatDateTime(value?: string) {
 }
 
 function creditStatusTagType(status: DisplayCreditStatus | UserItem['creditStatus']): 'success' | 'warning' | 'info' | 'danger' {
-  if (status === '优秀') return 'success'
-  if (status === '良好') return 'info'
-  if (status === '一般') return 'warning'
+  if (status === '良好') {
+    return 'info'
+  }
+  if (status === '待风控') {
+    return 'warning'
+  }
   return 'danger'
 }
 
@@ -296,7 +300,7 @@ function buildOrderSubmitSevenPanel(snapshot: UserRiskSnapshot | null | undefine
 
   let summary = ''
   if (tested.length === 0) {
-    summary = '档案中尚无下单七项与全景雷达的实测结果（多为占位「无执行记录」）。用户先享后付下单并完成系统审核后，接口结论会写入档案；也可点击「查看风控详情」手动单条核查。'
+    summary = '档案中尚无下单七项与全景雷达的实测结果（多为占位「无执行记录」）。用户先享后付下单并完成系统审核后，接口结论会写入档案；也可在本弹窗「下单七项」页签手动单条核查。'
   }
   else {
     summary = `八项中已有 ${tested.length} 项有明确结论：通过 ${passN}，未通过 ${failN}，跳过 ${skipN}；未写入/占位 ${emptyN} 项。`
@@ -321,37 +325,45 @@ function buildOrderSubmitSevenPanel(snapshot: UserRiskSnapshot | null | undefine
 
 const previewOrderRiskPanel = computed(() => buildOrderSubmitSevenPanel(previewUser.value?.riskControlSnapshot))
 
-/** 列表/预览展示用：八项风控任一为「未通过」→ 风险，否则良好（与档案实测结论一致，不读库内 creditStatus 字段） */
-type DisplayCreditStatus = '风险' | '良好'
+const previewRadarV4FactsGrouped = computed(() =>
+  groupRadarV4FactsForTables(previewOrderRiskPanel.value.radarStep.facts),
+)
 
-function riskSnapshotHasAnyFailedSlot(snapshot: UserRiskSnapshot | null | undefined): boolean {
+/** 用户预览里雷达表每行并排组数（与风控详情弹窗一致） */
+const PREVIEW_RADAR_PAIR_COLUMNS = 3
+const PREVIEW_RADAR_TABLE_COLSPAN = PREVIEW_RADAR_PAIR_COLUMNS * 2
+const previewRadarPairHeadIndexes = Array.from({ length: PREVIEW_RADAR_PAIR_COLUMNS }, (_, i) => i)
+
+/** 列表/预览/入库展示用：仅依据先享后付下单七项快照——任一项未通过→风险，七项均为通过→良好，否则待风控（不采用人工修改） */
+type DisplayCreditStatus = '良好' | '待风控' | '风险'
+
+function displayCreditStatusFromOrderSevenSnapshot(snapshot: UserRiskSnapshot | null | undefined): DisplayCreditStatus {
   if (!snapshot || !Array.isArray(snapshot.fourteenRows)) {
-    return false
+    return '待风控'
   }
-  const keys: string[] = [...INSTALLMENT_ORDER_RISK_STEP_KEYS, RADAR_SLOT_KEY]
-  for (const key of keys) {
-    const row = findFourteenRow(snapshot.fourteenRows, key)
+  const rows = snapshot.fourteenRows
+  for (const key of INSTALLMENT_ORDER_RISK_STEP_KEYS) {
+    const row = findFourteenRow(rows, key)
     if (row?.state === 'fail') {
-      return true
+      return '风险'
     }
   }
-  return false
+  for (const key of INSTALLMENT_ORDER_RISK_STEP_KEYS) {
+    const row = findFourteenRow(rows, key)
+    if (!row || row.state !== 'ok') {
+      return '待风控'
+    }
+  }
+  return '良好'
 }
 
 function displayCreditStatusFromRisk(user: ListedUser | null | undefined): DisplayCreditStatus {
-  if (!user) {
-    return '良好'
-  }
-  if (riskSnapshotHasAnyFailedSlot(user.riskControlSnapshot)) {
-    return '风险'
-  }
-  return '良好'
+  return displayCreditStatusFromOrderSevenSnapshot(user?.riskControlSnapshot)
 }
 
 const previewDisplayCreditStatus = computed(() => displayCreditStatusFromRisk(previewUser.value))
 
 function mapApiUser(user: ApiUserItem): ListedUser {
-  const creditStatus = user.creditStatus || '良好'
   const quotaRaw = user.quota
   const quota = Number.isFinite(Number(quotaRaw)) && Number(quotaRaw) >= 0
     ? Math.round(Number(quotaRaw))
@@ -376,7 +388,7 @@ function mapApiUser(user: ApiUserItem): ListedUser {
           ? user.idNumber.trim().toUpperCase()
           : undefined)
       : undefined,
-    creditStatus,
+    creditStatus: displayCreditStatusFromOrderSevenSnapshot(user.riskControlSnapshot),
     riskControlSnapshot: user.riskControlSnapshot ?? undefined,
     riskUpstreamConfigured: user.riskUpstreamConfigured,
     adminPasswordPlain: typeof user.adminPasswordPlain === 'string' ? user.adminPasswordPlain : undefined,
@@ -431,7 +443,6 @@ function startEdit(user: ListedUser) {
   editForm.name = user.name
   editForm.phone = user.phone
   editForm.idNumber = user.idNumber || ''
-  editForm.creditStatus = user.creditStatus
   const echo = typeof user.adminPasswordPlain === 'string' ? user.adminPasswordPlain : ''
   editForm.newPassword = echo
   editPasswordBaseline.value = echo
@@ -443,7 +454,6 @@ function openCreateDialog() {
   createForm.name = ''
   createForm.phone = ''
   createForm.idNumber = ''
-  createForm.creditStatus = '良好'
   createForm.initialPassword = ''
 }
 
@@ -480,7 +490,6 @@ async function createUser() {
       body: JSON.stringify({
         name: createForm.name.trim(),
         phone: createForm.phone.trim(),
-        creditStatus: createForm.creditStatus,
         ...(idRawCreate ? { idNumber: idRawCreate } : {}),
         ...(initPwd.length >= 6 ? { initialPassword: initPwd } : {}),
       }),
@@ -533,7 +542,6 @@ async function saveEdit() {
       body: JSON.stringify({
         name: editForm.name.trim(),
         phone: editForm.phone.trim(),
-        creditStatus: editForm.creditStatus,
         idNumber: idRaw,
         ...(pwd.length >= 6 && pwd !== editPasswordBaseline.value ? { newPassword: pwd } : {}),
       }),
@@ -611,9 +619,12 @@ watch(users, () => {
 })
 
 function getStatusClass(status: DisplayCreditStatus | UserItem['creditStatus']) {
-  if (status === '优秀') return 'credit-badge badge-good'
-  if (status === '良好') return 'credit-badge badge-ok'
-  if (status === '一般') return 'credit-badge badge-mid'
+  if (status === '良好') {
+    return 'credit-badge badge-ok'
+  }
+  if (status === '待风控') {
+    return 'credit-badge badge-pending'
+  }
   return 'credit-badge badge-risk'
 }
 
@@ -774,8 +785,9 @@ async function toggleBlacklist(user: ListedUser) {
           <th>信誉状态</th>
           <th>额度</th>
           <th>订单数</th>
+           <th>备注</th>
           <th>操作</th>
-          <th>备注</th>
+         
         </tr>
       </thead>
       <tbody>
@@ -786,7 +798,11 @@ async function toggleBlacklist(user: ListedUser) {
           <td>{{ isOrderingUsersView ? formatDateTime(item.lastOrderAt) : item.registerAt }}</td>
           <td>{{ item.name }}</td>
           <td>{{ item.phone }}</td>
-          <td>{{ item.registerChannelLabel || item.registerChannelName || item.registerChannelCode || '—' }}</td>
+          <td class="td-register-channel">
+            <TrafficChannelNameTag
+              :display-key="trafficChannelDisplayKey(item.registerChannelLabel, item.registerChannelName, item.registerChannelCode)"
+            />
+          </td>
           <td class="td-credit-status">
             <el-tag
               :type="creditStatusTagType(displayCreditStatusFromRisk(item))"
@@ -814,6 +830,52 @@ async function toggleBlacklist(user: ListedUser) {
             >¥ {{ item.quota }}</span>
           </td>
           <td>{{ item.orderCount }}</td>
+          <td class="td-remark">
+            <button
+              v-if="canManageUsers"
+              type="button"
+              class="remark-cell remark-cell--clickable"
+              :title="item.adminRemark?.trim() ? '点击编辑备注' : '点击添加备注'"
+              @click="openRemarkDialog(item)"
+            >
+              <span class="remark-cell__icon-wrap" aria-hidden="true">
+                <el-icon
+                  class="remark-cell__icon"
+                  :class="item.adminRemark?.trim() ? 'remark-cell__icon--edit' : 'remark-cell__icon--add'"
+                  :size="17"
+                >
+                  <EditPen v-if="item.adminRemark?.trim()" />
+                  <CirclePlus v-else />
+                </el-icon>
+              </span>
+              <span
+                class="remark-cell__text remark-preview"
+                :class="{ 'remark-preview--empty': !item.adminRemark?.trim() }"
+              >{{ item.adminRemark?.trim() ? item.adminRemark : '—' }}</span>
+            </button>
+            <div
+              v-else
+              class="remark-cell"
+            >
+              <span class="remark-cell__icon-wrap" aria-hidden="true">
+                <el-icon
+                  class="remark-cell__icon"
+                  :class="item.adminRemark?.trim() ? 'remark-cell__icon--edit' : 'remark-cell__icon--add'"
+                  :size="17"
+                >
+                  <EditPen v-if="item.adminRemark?.trim()" />
+                  <CirclePlus v-else />
+                </el-icon>
+              </span>
+              <p
+                class="remark-cell__text remark-preview"
+                :class="{ 'remark-preview--empty': !item.adminRemark?.trim() }"
+                :title="item.adminRemark?.trim() ? item.adminRemark : ''"
+              >
+                {{ item.adminRemark?.trim() ? item.adminRemark : '—' }}
+              </p>
+            </div>
+          </td>
           <td>
             <div class="actions">
               <button
@@ -830,14 +892,6 @@ async function toggleBlacklist(user: ListedUser) {
                 @click="startEdit(item)"
               >
                 修改
-              </button>
-              <button
-                v-if="canManageUsers"
-                type="button"
-                class="btn btn-ghost"
-                @click="openRemarkDialog(item)"
-              >
-                {{ item.adminRemark?.trim() ? '编辑备注' : '添加备注' }}
               </button>
               <button
                 v-if="canManageUsers"
@@ -894,14 +948,6 @@ async function toggleBlacklist(user: ListedUser) {
               </div>
             </div>
           </td>
-          <td class="td-remark">
-            <p
-              class="remark-preview"
-              :title="item.adminRemark?.trim() ? item.adminRemark : ''"
-            >
-              {{ item.adminRemark?.trim() ? item.adminRemark : '—' }}
-            </p>
-          </td>
         </tr>
         <tr v-if="!loading && tableUsers.length === 0">
           <td colspan="8" style="text-align: center; color: #9ca3af;">
@@ -955,18 +1001,6 @@ async function toggleBlacklist(user: ListedUser) {
             clearable
             placeholder="18 位大陆身份证号，风控 B 类接口必填；可留空"
           />
-        </label>
-        <label class="full">
-          信誉状态
-          <el-select
-            v-model="createForm.creditStatus"
-            class="form-select"
-          >
-            <el-option label="优秀" value="优秀" />
-            <el-option label="良好" value="良好" />
-            <el-option label="一般" value="一般" />
-            <el-option label="风险" value="风险" />
-          </el-select>
         </label>
         <label class="full">
           初始登录密码（可选）
@@ -1154,19 +1188,13 @@ async function toggleBlacklist(user: ListedUser) {
               />
             </label>
             <label class="user-preview-field user-preview-field--full">
-              <span class="user-preview-field__label">信誉状态（入库）</span>
-              <el-select
-                v-model="editForm.creditStatus"
-                class="form-select"
-              >
-                <el-option label="优秀" value="优秀" />
-                <el-option label="良好" value="良好" />
-                <el-option label="一般" value="一般" />
-                <el-option label="风险" value="风险" />
-              </el-select>
-              <p class="user-preview-field__hint">
-                列表与预览角标按风控档案自动显示为「良好」或「风险」（下单七项 + 全景雷达任一条未通过即为风险）。
-              </p>
+              <span class="user-preview-field__label">信誉状态</span>
+              <div class="user-preview-credit-readonly">
+                <span :class="getStatusClass(previewDisplayCreditStatus)">{{ previewDisplayCreditStatus }}</span>
+                <p class="user-preview-field__hint">
+                  由先享后付下单七项接口结果自动判定（七项均为通过为「良好」，任一项未通过为「风险」，尚无结论或未测完为「待风控」），不可手动修改。
+                </p>
+              </div>
             </label>
             <label class="user-preview-field user-preview-field--full">
               <span class="user-preview-field__label">登录密码</span>
@@ -1187,7 +1215,11 @@ async function toggleBlacklist(user: ListedUser) {
               </div>
               <div class="user-preview-edit-readonly__cell">
                 <span class="user-preview-edit-readonly__k">注册渠道</span>
-                <span class="user-preview-edit-readonly__v">{{ previewUser.registerChannelLabel || previewUser.registerChannelName || previewUser.registerChannelCode || '—' }}</span>
+                <span class="user-preview-edit-readonly__v">
+                  <TrafficChannelNameTag
+                    :display-key="trafficChannelDisplayKey(previewUser.registerChannelLabel, previewUser.registerChannelName, previewUser.registerChannelCode)"
+                  />
+                </span>
               </div>
               <div class="user-preview-edit-readonly__cell">
                 <span class="user-preview-edit-readonly__k">额度</span>
@@ -1213,10 +1245,7 @@ async function toggleBlacklist(user: ListedUser) {
                 v-if="canManageUsers"
                 label="登录密码"
               >
-                <template v-if="previewUser.adminPasswordPlain">
-                  <span>已设置</span>
-                  <span class="user-preview-meta__muted user-preview-pwd-hint"> · 点击「编辑」可查看或重置</span>
-                </template>
+                <span v-if="previewUser.adminPasswordPlain">{{ previewUser.adminPasswordPlain }}</span>
                 <span
                   v-else
                   class="user-preview-meta__muted"
@@ -1236,7 +1265,9 @@ async function toggleBlacklist(user: ListedUser) {
                 {{ previewUser.registerAt }}
               </el-descriptions-item>
               <el-descriptions-item label="注册渠道">
-                {{ previewUser.registerChannelLabel || previewUser.registerChannelName || previewUser.registerChannelCode || '—' }}
+                <TrafficChannelNameTag
+                  :display-key="trafficChannelDisplayKey(previewUser.registerChannelLabel, previewUser.registerChannelName, previewUser.registerChannelCode)"
+                />
               </el-descriptions-item>
               <el-descriptions-item label="额度">
                 <span class="user-preview-quota">¥ {{ previewUser.quota }}</span>
@@ -1245,18 +1276,9 @@ async function toggleBlacklist(user: ListedUser) {
                 label="信誉状态"
                 :span="2"
               >
-                <div class="user-preview-credit-row">
-                  <span :class="getStatusClass(previewDisplayCreditStatus)">
-                    {{ previewDisplayCreditStatus }}
-                  </span>
-                  <button
-                    type="button"
-                    class="user-preview-link-risk"
-                    @click="openUserRiskDetail(previewUser)"
-                  >
-                    查看风控详情
-                  </button>
-                </div>
+                <span :class="getStatusClass(previewDisplayCreditStatus)">
+                  {{ previewDisplayCreditStatus }}
+                </span>
               </el-descriptions-item>
             </el-descriptions>
           </template>
@@ -1384,51 +1406,56 @@ async function toggleBlacklist(user: ListedUser) {
               <article
                 v-for="step in previewOrderRiskPanel.steps"
                 :key="step.slotKey"
-                class="user-preview-risk-step"
+                class="user-preview-risk-step user-preview-risk-step--compact"
               >
-                <p class="user-preview-risk-step__label">
-                  {{ step.label }}
-                </p>
-                <div class="user-preview-risk-step__row">
-                  <template v-if="step.outcome === 'pass'">
-                    <el-icon class="user-preview-risk-icon user-preview-risk-icon--ok" aria-hidden="true">
-                      <CircleCheck />
-                    </el-icon>
-                    <span class="user-preview-risk-outcome">通过</span>
-                  </template>
-                  <template v-else-if="step.outcome === 'fail'">
-                    <el-icon class="user-preview-risk-icon user-preview-risk-icon--bad" aria-hidden="true">
-                      <CircleClose />
-                    </el-icon>
-                    <span class="user-preview-risk-outcome user-preview-risk-outcome--bad">未通过</span>
-                  </template>
-                  <template v-else-if="step.outcome === 'skip'">
-                    <el-icon class="user-preview-risk-icon user-preview-risk-icon--skip" aria-hidden="true">
-                      <Minus />
-                    </el-icon>
-                    <span class="user-preview-risk-outcome user-preview-risk-outcome--skip">已跳过</span>
-                  </template>
-                  <template v-else>
-                    <el-icon class="user-preview-risk-icon user-preview-risk-icon--muted" aria-hidden="true">
-                      <Minus />
-                    </el-icon>
-                    <span class="user-preview-risk-outcome user-preview-risk-outcome--muted">暂无</span>
-                  </template>
+                <div class="user-preview-risk-step__head">
+                  <p class="user-preview-risk-step__label">
+                    {{ step.label }}
+                  </p>
+                  <div class="user-preview-risk-step__row">
+                    <template v-if="step.outcome === 'pass'">
+                      <el-icon class="user-preview-risk-icon user-preview-risk-icon--ok" aria-hidden="true">
+                        <CircleCheck />
+                      </el-icon>
+                      <span class="user-preview-risk-outcome">通过</span>
+                    </template>
+                    <template v-else-if="step.outcome === 'fail'">
+                      <el-icon class="user-preview-risk-icon user-preview-risk-icon--bad" aria-hidden="true">
+                        <CircleClose />
+                      </el-icon>
+                      <span class="user-preview-risk-outcome user-preview-risk-outcome--bad">未通过</span>
+                    </template>
+                    <template v-else-if="step.outcome === 'skip'">
+                      <el-icon class="user-preview-risk-icon user-preview-risk-icon--skip" aria-hidden="true">
+                        <Minus />
+                      </el-icon>
+                      <span class="user-preview-risk-outcome user-preview-risk-outcome--skip">已跳过</span>
+                    </template>
+                    <template v-else>
+                      <el-icon class="user-preview-risk-icon user-preview-risk-icon--muted" aria-hidden="true">
+                        <Minus />
+                      </el-icon>
+                      <span class="user-preview-risk-outcome user-preview-risk-outcome--muted">暂无</span>
+                    </template>
+                  </div>
                 </div>
-                <ul
+                <div
                   v-if="step.facts.length"
-                  class="user-preview-risk-facts"
+                  class="user-preview-risk-step__facts"
                 >
-                  <li
+                  <div
                     v-for="(line, fi) in step.facts"
                     :key="fi"
-                    class="user-preview-risk-facts__line"
-                    :class="{ 'user-preview-risk-facts__line--emph': line.emphasis }"
+                    class="user-preview-risk-fact"
                   >
-                    <span class="user-preview-risk-facts__k">{{ line.label }}</span>
-                    <span class="user-preview-risk-facts__v">{{ line.value }}</span>
-                  </li>
-                </ul>
+                    <span class="user-preview-risk-fact__k">{{ line.label }}</span>
+                    <span
+                      class="user-preview-risk-fact__v"
+                      :class="{ 'user-preview-risk-fact__v--emph': line.emphasis }"
+                      :title="`${line.label}：${line.value}`"
+                    >{{ line.value }}</span>
+                  </div>
+                </div>
                 <p
                   v-if="step.detail"
                   class="user-preview-risk-step__detail"
@@ -1440,50 +1467,236 @@ async function toggleBlacklist(user: ListedUser) {
             </div>
 
             <div class="user-preview-risk-radar">
-              <article class="user-preview-risk-step user-preview-risk-step--radar">
-                <p class="user-preview-risk-step__label">
-                  {{ previewOrderRiskPanel.radarStep.label }}
-                </p>
-                <div class="user-preview-risk-step__row">
-                  <template v-if="previewOrderRiskPanel.radarStep.outcome === 'pass'">
-                    <el-icon class="user-preview-risk-icon user-preview-risk-icon--ok" aria-hidden="true">
-                      <CircleCheck />
-                    </el-icon>
-                    <span class="user-preview-risk-outcome">通过</span>
-                  </template>
-                  <template v-else-if="previewOrderRiskPanel.radarStep.outcome === 'fail'">
-                    <el-icon class="user-preview-risk-icon user-preview-risk-icon--bad" aria-hidden="true">
-                      <CircleClose />
-                    </el-icon>
-                    <span class="user-preview-risk-outcome user-preview-risk-outcome--bad">未通过</span>
-                  </template>
-                  <template v-else-if="previewOrderRiskPanel.radarStep.outcome === 'skip'">
-                    <el-icon class="user-preview-risk-icon user-preview-risk-icon--skip" aria-hidden="true">
-                      <Minus />
-                    </el-icon>
-                    <span class="user-preview-risk-outcome user-preview-risk-outcome--skip">已跳过</span>
+              <article class="user-preview-risk-step user-preview-risk-step--compact user-preview-risk-step--radar">
+                <div class="user-preview-risk-step__head">
+                  <p class="user-preview-risk-step__label">
+                    {{ previewOrderRiskPanel.radarStep.label }}
+                  </p>
+                  <div class="user-preview-risk-step__row">
+                    <template v-if="previewOrderRiskPanel.radarStep.outcome === 'pass'">
+                      <el-icon class="user-preview-risk-icon user-preview-risk-icon--ok" aria-hidden="true">
+                        <CircleCheck />
+                      </el-icon>
+                      <span class="user-preview-risk-outcome">通过</span>
+                    </template>
+                    <template v-else-if="previewOrderRiskPanel.radarStep.outcome === 'fail'">
+                      <el-icon class="user-preview-risk-icon user-preview-risk-icon--bad" aria-hidden="true">
+                        <CircleClose />
+                      </el-icon>
+                      <span class="user-preview-risk-outcome user-preview-risk-outcome--bad">未通过</span>
+                    </template>
+                    <template v-else-if="previewOrderRiskPanel.radarStep.outcome === 'skip'">
+                      <el-icon class="user-preview-risk-icon user-preview-risk-icon--skip" aria-hidden="true">
+                        <Minus />
+                      </el-icon>
+                      <span class="user-preview-risk-outcome user-preview-risk-outcome--skip">已跳过</span>
+                    </template>
+                    <template v-else>
+                      <el-icon class="user-preview-risk-icon user-preview-risk-icon--muted" aria-hidden="true">
+                        <Minus />
+                      </el-icon>
+                      <span class="user-preview-risk-outcome user-preview-risk-outcome--muted">暂无</span>
+                    </template>
+                  </div>
+                </div>
+                <div
+                  v-if="previewOrderRiskPanel.radarStep.facts.length"
+                  class="user-preview-radar-facts-wrap"
+                >
+                  <template
+                    v-if="previewRadarV4FactsGrouped.sections.length > 0 || previewRadarV4FactsGrouped.reportNote"
+                  >
+                    <p
+                      v-if="previewRadarV4FactsGrouped.reportNote"
+                      class="user-preview-radar-report-note"
+                    >
+                      {{ previewRadarV4FactsGrouped.reportNote }}
+                    </p>
+                    <div
+                      v-for="(sec, si) in previewRadarV4FactsGrouped.sections"
+                      :key="si"
+                      class="user-preview-radar-sec"
+                    >
+                      <div class="user-preview-radar-sec__head">
+                        <h4 class="user-preview-radar-sec__title">
+                          {{ sec.title }}
+                        </h4>
+                        <p
+                          v-if="sec.subtitle"
+                          class="user-preview-radar-sec__sub"
+                        >
+                          {{ sec.subtitle }}
+                        </p>
+                      </div>
+                      <div class="user-preview-radar-table-scroll">
+                        <table
+                          class="user-preview-radar-table user-preview-radar-table--multi"
+                          :aria-label="`${sec.title}指标`"
+                        >
+                          <thead>
+                            <tr>
+                              <template
+                                v-for="hi in previewRadarPairHeadIndexes"
+                                :key="hi"
+                              >
+                                <th scope="col">
+                                  指标
+                                </th>
+                                <th scope="col">
+                                  取值
+                                </th>
+                              </template>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            <tr v-if="!sec.rows.length">
+                              <td
+                                :colspan="PREVIEW_RADAR_TABLE_COLSPAN"
+                                class="user-preview-radar-table__empty"
+                              >
+                                暂无该项返回数据
+                              </td>
+                            </tr>
+                            <template v-else>
+                              <tr
+                                v-for="(chunk, ci) in chunkRadarFactPairs(sec.rows, PREVIEW_RADAR_PAIR_COLUMNS)"
+                                :key="ci"
+                              >
+                                <template
+                                  v-for="(cell, idx) in chunk"
+                                  :key="idx"
+                                >
+                                  <td class="user-preview-radar-table__label">
+                                    {{ cell.label }}
+                                  </td>
+                                  <td
+                                    class="user-preview-radar-table__value"
+                                    :class="{ 'user-preview-radar-table__value--emphasis': cell.emphasis }"
+                                  >
+                                    {{ cell.value }}
+                                  </td>
+                                </template>
+                                <td
+                                  v-if="chunk.length < PREVIEW_RADAR_PAIR_COLUMNS"
+                                  :colspan="(PREVIEW_RADAR_PAIR_COLUMNS - chunk.length) * 2"
+                                  class="user-preview-radar-table__pad"
+                                ></td>
+                              </tr>
+                            </template>
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                    <div
+                      v-if="previewRadarV4FactsGrouped.extras.length"
+                      class="user-preview-radar-sec"
+                    >
+                      <div class="user-preview-radar-sec__head">
+                        <h4 class="user-preview-radar-sec__title">
+                          其它信息
+                        </h4>
+                      </div>
+                      <div class="user-preview-radar-table-scroll">
+                        <table
+                          class="user-preview-radar-table user-preview-radar-table--multi"
+                          aria-label="其它信息"
+                        >
+                          <thead>
+                            <tr>
+                              <template
+                                v-for="hi in previewRadarPairHeadIndexes"
+                                :key="hi"
+                              >
+                                <th scope="col">
+                                  项目
+                                </th>
+                                <th scope="col">
+                                  内容
+                                </th>
+                              </template>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            <tr
+                              v-for="(chunk, ci) in chunkRadarFactPairs(previewRadarV4FactsGrouped.extras, PREVIEW_RADAR_PAIR_COLUMNS)"
+                              :key="ci"
+                            >
+                              <template
+                                v-for="(ex, idx) in chunk"
+                                :key="idx"
+                              >
+                                <td class="user-preview-radar-table__label">
+                                  {{ ex.label }}
+                                </td>
+                                <td
+                                  class="user-preview-radar-table__value"
+                                  :class="{ 'user-preview-radar-table__value--emphasis': ex.emphasis }"
+                                >
+                                  {{ ex.value }}
+                                </td>
+                              </template>
+                              <td
+                                v-if="chunk.length < PREVIEW_RADAR_PAIR_COLUMNS"
+                                :colspan="(PREVIEW_RADAR_PAIR_COLUMNS - chunk.length) * 2"
+                                class="user-preview-radar-table__pad"
+                              ></td>
+                            </tr>
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
                   </template>
                   <template v-else>
-                    <el-icon class="user-preview-risk-icon user-preview-risk-icon--muted" aria-hidden="true">
-                      <Minus />
-                    </el-icon>
-                    <span class="user-preview-risk-outcome user-preview-risk-outcome--muted">暂无</span>
+                    <div class="user-preview-radar-table-scroll">
+                      <table
+                        class="user-preview-radar-table user-preview-radar-table--multi"
+                        aria-label="全景雷达数据"
+                      >
+                        <thead>
+                          <tr>
+                            <template
+                              v-for="hi in previewRadarPairHeadIndexes"
+                              :key="hi"
+                            >
+                              <th scope="col">
+                                项目
+                              </th>
+                              <th scope="col">
+                                内容
+                              </th>
+                            </template>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <tr
+                            v-for="(chunk, ci) in chunkRadarFactPairs(previewOrderRiskPanel.radarStep.facts, PREVIEW_RADAR_PAIR_COLUMNS)"
+                            :key="ci"
+                          >
+                            <template
+                              v-for="(fl, idx) in chunk"
+                              :key="idx"
+                            >
+                              <td class="user-preview-radar-table__label">
+                                {{ fl.label }}
+                              </td>
+                              <td
+                                class="user-preview-radar-table__value"
+                                :class="{ 'user-preview-radar-table__value--emphasis': fl.emphasis }"
+                              >
+                                {{ fl.value }}
+                              </td>
+                            </template>
+                            <td
+                              v-if="chunk.length < PREVIEW_RADAR_PAIR_COLUMNS"
+                              :colspan="(PREVIEW_RADAR_PAIR_COLUMNS - chunk.length) * 2"
+                              class="user-preview-radar-table__pad"
+                            ></td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
                   </template>
                 </div>
-                <ul
-                  v-if="previewOrderRiskPanel.radarStep.facts.length"
-                  class="user-preview-risk-facts user-preview-risk-facts--radar"
-                >
-                  <li
-                    v-for="(line, fi) in previewOrderRiskPanel.radarStep.facts"
-                    :key="fi"
-                    class="user-preview-risk-facts__line"
-                    :class="{ 'user-preview-risk-facts__line--emph': line.emphasis }"
-                  >
-                    <span class="user-preview-risk-facts__k">{{ line.label }}</span>
-                    <span class="user-preview-risk-facts__v">{{ line.value }}</span>
-                  </li>
-                </ul>
                 <p
                   v-if="previewOrderRiskPanel.radarStep.detail"
                   class="user-preview-risk-step__detail user-preview-risk-step__detail--radar"
@@ -1494,9 +1707,7 @@ async function toggleBlacklist(user: ListedUser) {
               </article>
             </div>
 
-            <p class="user-preview-risk-summary">
-              {{ previewOrderRiskPanel.summary }}
-            </p>
+            
           </div>
         </section>
       </div>
@@ -1608,7 +1819,7 @@ async function toggleBlacklist(user: ListedUser) {
 .remark-preview {
   margin: 0;
   font-size: 13px;
-  color: #374151;
+  color: #f10202;
   line-height: 1.45;
   max-height: 4.35em;
   overflow: hidden;
@@ -1616,6 +1827,71 @@ async function toggleBlacklist(user: ListedUser) {
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
   word-break: break-word;
+}
+
+.remark-preview--empty {
+  color: #000;
+}
+
+.remark-cell {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+  max-width: 100%;
+  text-align: left;
+}
+
+.remark-cell__icon-wrap {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  padding-top: 2px;
+}
+
+.remark-cell__icon {
+  vertical-align: middle;
+}
+
+.remark-cell__icon--add {
+  color: #059669;
+}
+
+.remark-cell__icon--edit {
+  color: #64748b;
+}
+
+.remark-cell__text {
+  flex: 1;
+  min-width: 0;
+}
+
+.remark-cell--clickable {
+  margin: 0;
+  border: none;
+  background: transparent;
+  padding: 2px 6px 2px 2px;
+  font: inherit;
+  cursor: pointer;
+  border-radius: 6px;
+  transition: background-color 0.12s ease;
+}
+
+.remark-cell--clickable:hover {
+  background-color: #f1f5f9;
+}
+
+.remark-cell--clickable:focus-visible {
+  outline: 2px solid #6366f1;
+  outline-offset: 2px;
+}
+
+.remark-cell--clickable:hover .remark-cell__icon--add {
+  color: #047857;
+}
+
+.remark-cell--clickable:hover .remark-cell__icon--edit {
+  color: #475569;
 }
 
 .quota-label.full {
@@ -1675,7 +1951,7 @@ async function toggleBlacklist(user: ListedUser) {
 }
 
 .user-preview-panel {
-  width: min(820px, 100%);
+  width: min(960px, 100%);
   max-height: min(92vh, 900px);
   display: flex;
   flex-direction: column;
@@ -1721,6 +1997,10 @@ async function toggleBlacklist(user: ListedUser) {
 .user-preview-meta__id {
   font-family: ui-monospace, monospace;
   font-size: 12px;
+  color: #94a3b8;
+}
+
+.user-preview-meta__muted {
   color: #94a3b8;
 }
 
@@ -1776,29 +2056,6 @@ async function toggleBlacklist(user: ListedUser) {
   font-weight: 700;
   color: #0f766e;
   font-variant-numeric: tabular-nums;
-}
-
-.user-preview-credit-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 12px;
-}
-
-.user-preview-link-risk {
-  padding: 0;
-  border: none;
-  background: none;
-  font-size: 13px;
-  font-weight: 600;
-  color: #4f46e5;
-  cursor: pointer;
-  text-decoration: underline;
-  text-underline-offset: 3px;
-}
-
-.user-preview-link-risk:hover {
-  color: #4338ca;
 }
 
 .user-preview-edit-grid {
@@ -1964,21 +2221,44 @@ async function toggleBlacklist(user: ListedUser) {
 
 .user-preview-risk-seven {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+@media (max-width: 720px) {
+  .user-preview-risk-seven {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 .user-preview-risk-step {
   background: #fff;
   border: 1px solid #e2e8f0;
   border-radius: 10px;
-  padding: 10px 12px;
+  padding: 8px 10px;
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
 }
 
+.user-preview-risk-step--compact {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.user-preview-risk-step__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 6px 8px;
+  flex-wrap: wrap;
+}
+
 .user-preview-risk-step__label {
-  margin: 0 0 8px;
-  font-size: 12px;
+  margin: 0;
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
   font-weight: 600;
   color: #334155;
   line-height: 1.35;
@@ -1987,12 +2267,19 @@ async function toggleBlacklist(user: ListedUser) {
 .user-preview-risk-step__row {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
-  gap: 6px;
+  flex-wrap: nowrap;
+  gap: 4px;
+  flex-shrink: 0;
 }
 
 .user-preview-risk-icon {
-  font-size: 18px;
+  font-size: 16px;
+}
+
+.user-preview-risk-outcome {
+  font-size: 11px;
+  font-weight: 600;
+  color: #15803d;
 }
 
 .user-preview-risk-icon--ok {
@@ -2011,12 +2298,6 @@ async function toggleBlacklist(user: ListedUser) {
   color: #94a3b8;
 }
 
-.user-preview-risk-outcome {
-  font-size: 12px;
-  font-weight: 600;
-  color: #15803d;
-}
-
 .user-preview-risk-outcome--bad {
   color: #b91c1c;
 }
@@ -2030,44 +2311,167 @@ async function toggleBlacklist(user: ListedUser) {
   color: #64748b;
 }
 
-.user-preview-risk-facts {
-  margin: 8px 0 0;
-  padding: 0;
-  list-style: none;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.user-preview-risk-facts__line {
+.user-preview-risk-step__facts {
   display: grid;
-  grid-template-columns: minmax(0, 0.42fr) minmax(0, 1fr);
-  gap: 8px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 3px 8px;
+  margin-top: 2px;
   font-size: 11px;
-  line-height: 1.45;
-  color: #475569;
+  line-height: 1.35;
 }
 
-.user-preview-risk-facts__line--emph .user-preview-risk-facts__v {
+.user-preview-risk-fact {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: baseline;
+  gap: 3px 5px;
+  min-width: 0;
+}
+
+.user-preview-risk-fact__k {
+  flex-shrink: 0;
+  color: #64748b;
+  white-space: nowrap;
+}
+
+.user-preview-risk-fact__v {
+  flex: 1;
+  min-width: 0;
+  color: #475569;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.user-preview-risk-fact__v--emph {
   font-weight: 600;
   color: #0f172a;
 }
 
-.user-preview-risk-facts__k {
-  color: #64748b;
-  word-break: break-word;
-}
-
-.user-preview-risk-facts__v {
-  word-break: break-word;
-}
-
-.user-preview-risk-facts--radar .user-preview-risk-facts__line {
-  grid-template-columns: minmax(0, 0.36fr) minmax(0, 1fr);
-}
-
 .user-preview-risk-radar {
   margin-top: 10px;
+}
+
+.user-preview-radar-facts-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.user-preview-radar-report-note {
+  margin: 0;
+  padding: 8px 10px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: #334155;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+}
+
+.user-preview-radar-sec {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.user-preview-radar-sec__head {
+  padding: 0 2px;
+}
+
+.user-preview-radar-sec__title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 700;
+  color: #0f172a;
+  letter-spacing: 0.02em;
+}
+
+.user-preview-radar-sec__sub {
+  margin: 2px 0 0;
+  font-size: 11px;
+  line-height: 1.45;
+  color: #64748b;
+}
+
+.user-preview-radar-table-scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  border-radius: 8px;
+  border: 1px solid #e2e8f0;
+}
+
+.user-preview-radar-table {
+  width: 100%;
+  min-width: 640px;
+  border-collapse: collapse;
+  font-size: 11px;
+  background: #fff;
+}
+
+.user-preview-radar-table--multi {
+  table-layout: fixed;
+  min-width: 720px;
+}
+
+.user-preview-radar-table--multi .user-preview-radar-table__label {
+  width: 15%;
+  max-width: none;
+}
+
+.user-preview-radar-table__pad {
+  border-bottom: 1px solid #f1f5f9;
+  background: #fafbfc;
+}
+
+.user-preview-radar-table thead th {
+  text-align: left;
+  padding: 6px 10px;
+  font-weight: 600;
+  color: #475569;
+  background: linear-gradient(180deg, #f1f5f9 0%, #e8eef5 100%);
+  border-bottom: 1px solid #cbd5e1;
+  white-space: nowrap;
+}
+
+.user-preview-radar-table tbody td {
+  padding: 6px 10px;
+  border-bottom: 1px solid #f1f5f9;
+  vertical-align: top;
+}
+
+.user-preview-radar-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.user-preview-radar-table tbody tr:nth-child(even) td {
+  background: #fafbfc;
+}
+
+.user-preview-radar-table__label {
+  width: 46%;
+  max-width: 260px;
+  color: #334155;
+  font-weight: 500;
+  word-break: break-word;
+}
+
+.user-preview-radar-table__value {
+  color: #0f172a;
+  word-break: break-word;
+}
+
+.user-preview-radar-table__value--emphasis {
+  font-weight: 700;
+  color: #1d4ed8;
+}
+
+.user-preview-radar-table__empty {
+  text-align: center;
+  color: #94a3b8;
+  font-size: 11px;
+  padding: 12px 10px;
 }
 
 .user-preview-risk-step__detail--radar {
@@ -2205,17 +2609,12 @@ async function toggleBlacklist(user: ListedUser) {
   font-weight: 600;
 }
 
-.badge-good {
-  color: #047857;
-  background: #d1fae5;
-}
-
 .badge-ok {
   color: #1d4ed8;
   background: #dbeafe;
 }
 
-.badge-mid {
+.badge-pending {
   color: #b45309;
   background: #fef3c7;
 }
@@ -2223,6 +2622,10 @@ async function toggleBlacklist(user: ListedUser) {
 .badge-risk {
   color: #b91c1c;
   background: #fee2e2;
+}
+
+.td-register-channel {
+  vertical-align: middle;
 }
 
 .td-credit-status {

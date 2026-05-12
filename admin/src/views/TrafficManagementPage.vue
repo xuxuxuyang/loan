@@ -1,9 +1,11 @@
 <script setup lang="ts">
-import { CopyDocument, Delete, EditPen, Plus, Refresh } from '@element-plus/icons-vue'
+import { CirclePlus, CopyDocument, Delete, EditPen, Loading, Plus, Refresh } from '@element-plus/icons-vue'
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
+import TrafficChannelNameTag from '../components/TrafficChannelNameTag.vue'
 import { withAdminAuthHeaders } from '../composables/useAdminApi'
 import { donePageProgress, startPageProgress } from '../utils/progress'
+import { trafficChannelDisplayKey } from '../utils/trafficChannelTagStyle'
 
 interface TrafficChannelRow {
   id: string
@@ -36,6 +38,13 @@ const h5BaseForLink = computed(() => {
   return ''
 })
 
+/** 与待收明细等页 `el-table` 表头风格一致 */
+const tableHeaderCellStyle = {
+  background: 'var(--el-fill-color-light)',
+  color: 'var(--el-text-color-primary)',
+  fontWeight: 600 as const,
+}
+
 const loading = ref(false)
 const rows = ref<TrafficChannelRow[]>([])
 const showCreate = ref(false)
@@ -45,6 +54,14 @@ const deleteTarget = ref<TrafficChannelRow | null>(null)
 const showDeleteDialog = ref(false)
 const deleting = ref(false)
 const errorMessage = ref('')
+
+const remarkDialogVisible = ref(false)
+const remarkSaving = ref(false)
+const remarkTarget = ref<TrafficChannelRow | null>(null)
+const remarkDraft = ref('')
+
+/** 正在 PATCH 状态的渠道 id，用于行内状态标签 loading */
+const statusBusyId = ref<string | null>(null)
 
 const createForm = reactive({
   code: '',
@@ -57,7 +74,6 @@ const editForm = reactive({
   id: '',
   name: '',
   remark: '',
-  disabled: false,
 })
 
 function promotionPathAndQuery(code: string) {
@@ -147,7 +163,6 @@ function openEdit(row: TrafficChannelRow) {
   editForm.id = row.id
   editForm.name = row.name
   editForm.remark = row.remark || ''
-  editForm.disabled = row.disabled
   errorMessage.value = ''
 }
 
@@ -202,7 +217,6 @@ async function submitEdit() {
       body: JSON.stringify({
         name: editForm.name.trim(),
         remark: editForm.remark.trim(),
-        disabled: editForm.disabled,
       }),
     })
     const payload = await response.json() as { msg?: string }
@@ -222,6 +236,37 @@ async function submitEdit() {
   }
 }
 
+async function toggleChannelDisabled(row: TrafficChannelRow) {
+  if (statusBusyId.value === row.id)
+    return
+  const nextDisabled = !row.disabled
+  statusBusyId.value = row.id
+  try {
+    const response = await fetch(`${MALL_API_BASE}/admin/traffic-channels/${encodeURIComponent(row.id)}`, {
+      method: 'PATCH',
+      headers: withAdminAuthHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ disabled: nextDisabled }),
+    })
+    const payload = await response.json() as { msg?: string; data?: TrafficChannelRow }
+    if (!response.ok) {
+      throw new Error(payload.msg || `操作失败: ${response.status}`)
+    }
+    const data = payload.data
+    if (data) {
+      const idx = rows.value.findIndex(r => r.id === row.id)
+      if (idx >= 0)
+        rows.value[idx] = { ...rows.value[idx], ...data }
+    }
+    ElMessage.success(nextDisabled ? '已停用' : '已启用')
+  }
+  catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '操作失败')
+  }
+  finally {
+    statusBusyId.value = null
+  }
+}
+
 function openDelete(row: TrafficChannelRow) {
   deleteTarget.value = row
   showDeleteDialog.value = true
@@ -232,6 +277,59 @@ function closeDelete() {
     return
   showDeleteDialog.value = false
   deleteTarget.value = null
+}
+
+function openRemarkDialog(row: TrafficChannelRow) {
+  remarkTarget.value = row
+  remarkDraft.value = typeof row.remark === 'string' ? row.remark : ''
+  remarkDialogVisible.value = true
+}
+
+function resetRemarkDialog() {
+  remarkDialogVisible.value = false
+  remarkTarget.value = null
+  remarkDraft.value = ''
+}
+
+function closeRemarkDialog() {
+  if (remarkSaving.value)
+    return
+  resetRemarkDialog()
+}
+
+function remarkDialogBeforeClose(done: () => void) {
+  if (remarkSaving.value)
+    return
+  remarkTarget.value = null
+  remarkDraft.value = ''
+  done()
+}
+
+async function saveChannelRemark() {
+  if (!remarkTarget.value || remarkSaving.value)
+    return
+  const row = remarkTarget.value
+  remarkSaving.value = true
+  try {
+    const response = await fetch(`${MALL_API_BASE}/admin/traffic-channels/${encodeURIComponent(row.id)}`, {
+      method: 'PATCH',
+      headers: withAdminAuthHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ remark: remarkDraft.value.trim() }),
+    })
+    const payload = await response.json() as { msg?: string }
+    if (!response.ok) {
+      throw new Error(payload.msg || `保存备注失败: ${response.status}`)
+    }
+    ElMessage.success('备注已保存')
+    resetRemarkDialog()
+    await fetchChannels()
+  }
+  catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '保存备注失败')
+  }
+  finally {
+    remarkSaving.value = false
+  }
 }
 
 async function doDelete() {
@@ -333,24 +431,51 @@ onMounted(() => {
       {{ errorMessage }}
     </el-alert>
 
-    <div
-      v-loading="loading"
-      class="table-wrap"
+    <el-card
+      class="traffic-table-card"
+      shadow="hover"
     >
-      <el-table
-        :data="rows"
-        stripe
-        border
-        size="small"
-        class="traffic-table"
-        empty-text=""
-      >
-        <template #empty>
-          <el-empty
-            description="暂无渠道，点击「新建渠道」添加"
-            :image-size="72"
-          />
-        </template>
+      <template #header>
+        <div class="traffic-table-card-header">
+          <span class="traffic-table-card-title">渠道列表</span>
+          <el-tag
+            v-if="rows.length"
+            type="info"
+            effect="plain"
+            size="small"
+          >
+            共 {{ rows.length }} 个
+          </el-tag>
+        </div>
+      </template>
+
+      <div class="traffic-table-wrap">
+        <el-table
+          v-loading="loading"
+          :data="rows"
+          stripe
+          border
+          size="default"
+          class="traffic-table"
+          :header-cell-style="tableHeaderCellStyle"
+          :highlight-current-row="true"
+          empty-text=""
+        >
+          <template #empty>
+            <el-empty
+              description="暂无渠道，点击「新建渠道」添加"
+              :image-size="88"
+            />
+          </template>
+
+        <el-table-column
+          label="创建时间"
+          width="156"
+        >
+          <template #default="{ row }">
+            {{ formatDateTime(row.createdAt) }}
+          </template>
+        </el-table-column>
 
         <el-table-column
           label="渠道标识"
@@ -368,11 +493,17 @@ onMounted(() => {
         </el-table-column>
 
         <el-table-column
-          prop="name"
           label="名称"
-          min-width="100"
+          min-width="120"
           show-overflow-tooltip
-        />
+        >
+          <template #default="{ row }">
+            <TrafficChannelNameTag
+              :display-key="trafficChannelDisplayKey(undefined, row.name, row.code)"
+              size="default"
+            />
+          </template>
+        </el-table-column>
 
         <el-table-column
           prop="registerCount"
@@ -383,18 +514,39 @@ onMounted(() => {
 
         <el-table-column
           label="状态"
-          width="88"
+          width="100"
           align="center"
         >
           <template #default="{ row }">
-            <el-tag
-              :type="row.disabled ? 'info' : 'success'"
-              effect="light"
-              round
-              size="small"
+            <el-tooltip
+              :content="row.disabled ? '点击启用' : '点击停用'"
+              placement="top"
+              :show-after="400"
             >
-              {{ row.disabled ? '已停用' : '启用' }}
-            </el-tag>
+              <el-tag
+                role="button"
+                tabindex="0"
+                :type="row.disabled ? 'info' : 'success'"
+                effect="light"
+                round
+                size="small"
+                class="status-tag-clickable"
+                :class="{ 'status-tag-clickable--busy': statusBusyId === row.id }"
+                @click="toggleChannelDisabled(row)"
+                @keydown.enter.prevent="toggleChannelDisabled(row)"
+                @keydown.space.prevent="toggleChannelDisabled(row)"
+              >
+                <el-icon
+                  v-if="statusBusyId === row.id"
+                  class="status-tag-clickable__spin"
+                >
+                  <Loading />
+                </el-icon>
+                <template v-else>
+                  {{ row.disabled ? '已停用' : '启用' }}
+                </template>
+              </el-tag>
+            </el-tooltip>
           </template>
         </el-table-column>
 
@@ -430,22 +582,38 @@ onMounted(() => {
         </el-table-column>
 
         <el-table-column
-          prop="remark"
           label="备注"
-          min-width="120"
-          show-overflow-tooltip
+          min-width="160"
+          class-name="traffic-remark-col"
         >
           <template #default="{ row }">
-            {{ row.remark || '—' }}
-          </template>
-        </el-table-column>
-
-        <el-table-column
-          label="创建时间"
-          width="156"
-        >
-          <template #default="{ row }">
-            {{ formatDateTime(row.createdAt) }}
+            <el-button
+              type="primary"
+              link
+              class="remark-table-trigger"
+              :title="row.remark?.trim() ? '点击编辑备注' : '点击添加备注'"
+              @click="openRemarkDialog(row)"
+            >
+              <span class="remark-cell">
+                <span
+                  class="remark-cell__icon-wrap"
+                  aria-hidden="true"
+                >
+                  <el-icon
+                    class="remark-cell__icon"
+                    :class="row.remark?.trim() ? 'remark-cell__icon--edit' : 'remark-cell__icon--add'"
+                    :size="17"
+                  >
+                    <EditPen v-if="row.remark?.trim()" />
+                    <CirclePlus v-else />
+                  </el-icon>
+                </span>
+                <span
+                  class="remark-cell__text remark-preview"
+                  :class="{ 'remark-preview--empty': !row.remark?.trim() }"
+                >{{ row.remark?.trim() ? row.remark : '—' }}</span>
+              </span>
+            </el-button>
           </template>
         </el-table-column>
 
@@ -475,6 +643,7 @@ onMounted(() => {
                 size="small"
                 :icon="Delete"
                 :disabled="row.registerCount > 0"
+                :title="row.registerCount > 0 ? `已有 ${row.registerCount} 人通过该渠道注册，为保留统计归因不可删除；可先停用渠道` : '删除渠道'"
                 @click="openDelete(row)"
               >
                 删除
@@ -483,7 +652,8 @@ onMounted(() => {
           </template>
         </el-table-column>
       </el-table>
-    </div>
+      </div>
+    </el-card>
 
     <el-dialog
       v-model="showCreate"
@@ -595,14 +765,14 @@ onMounted(() => {
             show-word-limit
           />
         </el-form-item>
-        <el-form-item label="停用渠道">
-          <el-switch
-            v-model="editForm.disabled"
-            inline-prompt
-            active-text="停"
-            inactive-text="启"
-          />
-        </el-form-item>
+        <el-alert
+          type="info"
+          :closable="false"
+          show-icon
+          class="dialog-tip dialog-tip--compact"
+        >
+          启用 / 停用请在列表「状态」列点击标签切换。
+        </el-alert>
       </el-form>
       <template #footer>
         <el-button @click="closeEdit">
@@ -612,6 +782,57 @@ onMounted(() => {
           type="primary"
           :loading="submitting"
           @click="submitEdit"
+        >
+          保存
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog
+      v-model="remarkDialogVisible"
+      title="渠道备注"
+      width="480px"
+      destroy-on-close
+      align-center
+      class="traffic-dialog"
+      :close-on-click-modal="!remarkSaving"
+      :close-on-press-escape="!remarkSaving"
+      :before-close="remarkDialogBeforeClose"
+    >
+      <p
+        v-if="remarkTarget"
+        class="remark-dialog-hint"
+      >
+        {{ remarkTarget.name }}
+        <el-tag
+          type="info"
+          effect="plain"
+          size="small"
+          class="remark-dialog-code"
+        >
+          {{ remarkTarget.code }}
+        </el-tag>
+      </p>
+      <el-input
+        v-model="remarkDraft"
+        type="textarea"
+        :rows="4"
+        maxlength="200"
+        show-word-limit
+        placeholder="选填，仅后台可见"
+        :disabled="remarkSaving"
+      />
+      <template #footer>
+        <el-button
+          :disabled="remarkSaving"
+          @click="closeRemarkDialog"
+        >
+          取消
+        </el-button>
+        <el-button
+          type="primary"
+          :loading="remarkSaving"
+          @click="saveChannelRemark"
         >
           保存
         </el-button>
@@ -706,13 +927,43 @@ onMounted(() => {
   border-radius: 8px;
 }
 
-.table-wrap {
-  min-height: 160px;
+.traffic-table-card {
+  border-radius: 8px;
+}
+
+.traffic-table-card :deep(.el-card__header) {
+  padding: 14px 18px;
+}
+
+.traffic-table-card :deep(.el-card__body) {
+  padding: 0 18px 18px;
+}
+
+.traffic-table-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.traffic-table-card-title {
+  font-weight: 600;
+  font-size: 15px;
+  color: var(--el-text-color-primary);
+}
+
+.traffic-table-wrap {
+  min-height: 120px;
+  overflow-x: auto;
 }
 
 .traffic-table {
   width: 100%;
-  font-size: 13px;
+  min-width: 880px;
+}
+
+.traffic-table :deep(.el-table__row:hover > td) {
+  background-color: var(--el-fill-color-lighter) !important;
 }
 
 .code-tag {
@@ -730,13 +981,51 @@ onMounted(() => {
 .link-cell__url {
   flex: 1;
   min-width: 0;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--el-text-color-secondary);
 }
 
 .dialog-tip {
   margin-bottom: 16px;
   border-radius: 8px;
+}
+
+.dialog-tip--compact {
+  margin-top: 8px;
+  margin-bottom: 0;
+}
+
+.status-tag-clickable {
+  cursor: pointer;
+  user-select: none;
+  transition: opacity 0.15s ease, transform 0.12s ease;
+}
+
+.status-tag-clickable:hover:not(.status-tag-clickable--busy) {
+  filter: brightness(0.97);
+}
+
+.status-tag-clickable:focus-visible {
+  outline: 2px solid var(--el-color-primary);
+  outline-offset: 2px;
+}
+
+.status-tag-clickable--busy {
+  cursor: wait;
+  pointer-events: none;
+  opacity: 0.88;
+}
+
+.status-tag-clickable__spin {
+  display: block;
+  font-size: 14px;
+  animation: traffic-status-spin 0.9s linear infinite;
+}
+
+@keyframes traffic-status-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .traffic-form {
@@ -755,5 +1044,94 @@ onMounted(() => {
 
 .panel :deep(.traffic-table .el-table__cell) {
   vertical-align: middle;
+}
+
+.panel :deep(.traffic-table .traffic-remark-col) {
+  vertical-align: top;
+}
+
+.remark-dialog-hint {
+  margin: 0 0 12px;
+  font-size: 13px;
+  color: var(--el-text-color-regular);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.remark-dialog-code {
+  font-family: ui-monospace, monospace;
+}
+
+.remark-preview {
+  margin: 0;
+  font-size: 13px;
+  color: #f10202;
+  line-height: 1.45;
+  max-height: 4.35em;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  word-break: break-word;
+}
+
+.remark-preview--empty {
+  color: #000;
+}
+
+.remark-cell {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+  max-width: 100%;
+  text-align: left;
+}
+
+.remark-cell__icon-wrap {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  padding-top: 2px;
+}
+
+.remark-cell__icon {
+  vertical-align: middle;
+}
+
+.remark-cell__icon--add {
+  color: #059669;
+}
+
+.remark-cell__icon--edit {
+  color: #64748b;
+}
+
+.remark-table-trigger {
+  height: auto;
+  padding: 2px 6px 2px 2px;
+  margin: 0;
+  justify-content: flex-start;
+  max-width: 100%;
+  font-weight: inherit;
+}
+
+.remark-table-trigger :deep(.el-button__inner) {
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-start;
+  width: 100%;
+  min-width: 0;
+}
+
+.remark-table-trigger:hover .remark-cell__icon--add {
+  color: #047857;
+}
+
+.remark-table-trigger:hover .remark-cell__icon--edit {
+  color: #475569;
 }
 </style>

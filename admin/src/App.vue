@@ -42,27 +42,8 @@ const session = ref<AdminSession | null>(getAdminSession())
 const isLoginPage = computed(() => route.name === 'login')
 
 const allMenus: MenuEntry[] = [
-  {
-    label: '用户管理',
-    path: '/users',
-    icon: User,
-    roles: ['super_admin'],
-    children: [
-      { label: '注册用户', path: '/users', icon: User },
-      { label: '下单用户', path: '/users/ordering', icon: ShoppingCart },
-    ],
-  },
-  { label: '账号管理', path: '/accounts', icon: Avatar, roles: ['super_admin'] },
-  {
-    label: '产品管理',
-    path: '/products/mall',
-    icon: Goods,
-    roles: ['super_admin'],
-    children: [
-      { label: '商城产品', path: '/products/mall', icon: Goods },
-      { label: '先享后付产品', path: '/products/installment', icon: Goods },
-    ],
-  },
+{ label: '客服消息', path: '/cs-messages', icon: ChatDotRound, roles: ['super_admin', 'reviewer'] },
+  
   {
     label: '订单管理',
     path: '/orders',
@@ -86,9 +67,30 @@ const allMenus: MenuEntry[] = [
       { label: '明日待收', path: '/orders/receivable/tomorrow', icon: Calendar, roles: ['super_admin', 'collector'] },
     ],
   },
-  { label: '客服消息', path: '/cs-messages', icon: ChatDotRound, roles: ['super_admin', 'customer_service'] },
-  { label: '财务报表', path: '/dashboard', icon: DataAnalysis, roles: ['super_admin'] },
+  {
+    label: '用户管理',
+    path: '/users',
+    icon: User,
+    roles: ['super_admin'],
+    children: [
+      { label: '注册用户', path: '/users', icon: User },
+      { label: '下单用户', path: '/users/ordering', icon: ShoppingCart },
+    ],
+  },
+  {
+    label: '产品管理',
+    path: '/products/mall',
+    icon: Goods,
+    roles: ['super_admin'],
+    children: [
+      { label: '商城产品', path: '/products/mall', icon: Goods },
+      { label: '先享后付产品', path: '/products/installment', icon: Goods },
+    ],
+  },
+  { label: '账号管理', path: '/accounts', icon: Avatar, roles: ['super_admin'] },
   { label: '流量管理', path: '/traffic', icon: Promotion, roles: ['super_admin'] },
+  { label: '财务报表', path: '/dashboard', icon: DataAnalysis, roles: ['super_admin'] },
+
 ]
 
 const menus = computed(() => {
@@ -135,7 +137,6 @@ function submenuIndex(item: MenuEntry) {
 function roleText(role?: AdminSession['role']) {
   if (role === 'super_admin') return '超级管理员'
   if (role === 'reviewer') return '审核员'
-  if (role === 'customer_service') return '客服'
   if (role === 'collector') return '催收员'
   return '访客'
 }

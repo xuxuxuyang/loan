@@ -2,7 +2,7 @@
 
 服务前缀：`/api`，完整示例：`http://localhost:3110/api/...`。
 
-**后台鉴权（需权限的接口）：** 请求头常带 `x-admin-role: super_admin | reviewer | customer_service`，或使用 `Authorization: Bearer mock-token-手机号`（该手机号在 `adminAccounts` 中有记录时可解析角色）。细节见 `api/src/index.js` 中 `resolveAdminRole`。
+**后台鉴权（需权限的接口）：** 请求头常带 `x-admin-role: super_admin | reviewer | collector`，或使用 `Authorization: Bearer mock-token-手机号`（该手机号在 `adminAccounts` 中有记录时可解析角色）。细节见 `api/src/index.js` 中 `resolveAdminRole`。
 
 ---
 
@@ -370,7 +370,7 @@ location ~ ^/api/card-packages/[^/]+/contract-download {
 - **传参（Body）：**
   - `username`：4–21 位，字母开头。
   - `password`：至少 4 位。
-  - `role`：仅 `reviewer` 或 `customer_service`（新建时）。
+  - `role`：仅 `reviewer` 或 `collector`（新建时；审核员含在线客服进线权限）。
   - `phone`：11 位；`name`：可选。
 
 ---

@@ -15,8 +15,6 @@ import UsersPage from '../views/UsersPage.vue'
 function adminHomeRoute(session: AdminSession | null) {
   if (session?.role === 'reviewer' || session?.role === 'collector')
     return { name: 'orders' as const }
-  if (session?.role === 'customer_service')
-    return { name: 'cs-messages' as const }
   return { name: 'dashboard-overview' as const }
 }
 
@@ -121,7 +119,7 @@ const router = createRouter({
       path: '/cs-messages',
       name: 'cs-messages',
       component: CsMessagesPage,
-      meta: { title: '客服消息', roles: ['super_admin', 'customer_service'] },
+      meta: { title: '客服消息', roles: ['super_admin', 'reviewer'] },
     },
   ],
 })

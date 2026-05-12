@@ -316,6 +316,7 @@ function postDownloadContract(data) {
   return postSignedUpstream(downloadContractPath(), data)
 }
 
+/** 验证码类短信：data 为 { phone, msg }（msg 为完整正文，含签名；商城注册见 mallRegisterSms） */
 function postClSmsSend(data) {
   return postSignedUpstream(clSmsSendPath(), data)
 }

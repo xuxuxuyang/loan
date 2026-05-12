@@ -44,7 +44,6 @@ const {
 const {
   sendRegisterVerificationSms,
   verifyAndConsumeRegisterSms,
-  isRegisterSmsSkipped,
 } = require('./mallRegisterSms')
 
 const { buildCardPackageContractViewHtml } = require('./cardPackageContractViewHtml')
@@ -83,7 +82,6 @@ function resolveProductCategoryKey(raw) {
 const ADMIN_ROLES = {
   SUPER: 'super_admin',
   REVIEWER: 'reviewer',
-  SERVICE: 'customer_service',
   COLLECTOR: 'collector',
 }
 const ADMIN_ROLE_SET = new Set(Object.values(ADMIN_ROLES))
@@ -194,11 +192,16 @@ function normalizeAdminRole(role) {
   if (value === 'super_admin' || value === 'super-admin' || value === 'superadmin' || value === '超级管理员') {
     return ADMIN_ROLES.SUPER
   }
-  if (value === 'reviewer' || value === 'auditor' || value === '审核员') {
+  if (
+    value === 'reviewer'
+    || value === 'auditor'
+    || value === '审核员'
+    || value === 'customer_service'
+    || value === 'customer-service'
+    || value === 'customerservice'
+    || value === '客服'
+  ) {
     return ADMIN_ROLES.REVIEWER
-  }
-  if (value === 'customer_service' || value === 'customer-service' || value === 'customerservice' || value === '客服') {
-    return ADMIN_ROLES.SERVICE
   }
   if (value === 'collector' || value === 'debt_collector' || value === 'collection' || value === '催收' || value === '催收员') {
     return ADMIN_ROLES.COLLECTOR
@@ -209,7 +212,6 @@ function normalizeAdminRole(role) {
 function getRoleLabel(role) {
   if (role === ADMIN_ROLES.SUPER) return '超级管理员'
   if (role === ADMIN_ROLES.REVIEWER) return '审核员'
-  if (role === ADMIN_ROLES.SERVICE) return '客服'
   if (role === ADMIN_ROLES.COLLECTOR) return '催收员'
   return '未知角色'
 }
@@ -226,10 +228,10 @@ function normalizeAdminAccount(account) {
   const now = new Date().toISOString()
   const normalizedRole = normalizeAdminRole(account.role)
   const uname = String(account.username || '').trim()
-  /** 避免 super_admin 写成空/脏数据时被降级为客服，导致 /admin/accounts 403 */
+  /** 避免 super_admin 写成空/脏数据时被降级为审核员，导致 /admin/accounts 403 */
   const fallbackRole = uname === DEFAULT_SUPER_ADMIN_USERNAME
     ? ADMIN_ROLES.SUPER
-    : ADMIN_ROLES.SERVICE
+    : ADMIN_ROLES.REVIEWER
   const role = normalizedRole || fallbackRole
   const status = ADMIN_ACCOUNT_STATUS_SET.has(String(account.status || '').trim()) ? String(account.status).trim() : 'active'
   return {
@@ -320,7 +322,7 @@ function requireAdminPermission(ctx, allowedRoles, actionLabel) {
   if (!role) {
     fail(
       ctx,
-      `未提供后台角色信息，无法执行${actionLabel}。请在请求头传 x-admin-role: super_admin / reviewer / customer_service / collector`,
+      `未提供后台角色信息，无法执行${actionLabel}。请在请求头传 x-admin-role: super_admin / reviewer / collector`,
       401,
     )
     return ''
@@ -332,10 +334,34 @@ function requireAdminPermission(ctx, allowedRoles, actionLabel) {
   return role
 }
 
+/** 从副标题文案解析「赠送价值2000现金红包」类金额（元），无匹配则 0 */
+function inferCardPackageAmountYuanFromSubtitle(subtitle) {
+  const s = String(subtitle || '')
+  const m = s.match(/价值\s*(\d+(?:\.\d+)?)/)
+  if (!m)
+    return 0
+  const n = Number(m[1])
+  return Number.isFinite(n) && n >= 0 ? Math.round(n) : 0
+}
+
 function normalizeProductRecord(product) {
   const now = new Date().toISOString()
   const rawMode = String(product.salesMode || '').trim()
   const salesMode = PRODUCT_SALES_MODES.has(rawMode) ? rawMode : 'installment'
+  const hasExplicitCardPackage = Object.prototype.hasOwnProperty.call(product, 'cardPackageAmount')
+    && product.cardPackageAmount !== null
+    && product.cardPackageAmount !== undefined
+    && (typeof product.cardPackageAmount !== 'string' || String(product.cardPackageAmount).trim() !== '')
+  let cardPackageAmount = Number(product.cardPackageAmount)
+  if (!Number.isFinite(cardPackageAmount) || cardPackageAmount < 0) {
+    cardPackageAmount = 0
+  }
+  else {
+    cardPackageAmount = Math.round(cardPackageAmount)
+  }
+  if (!hasExplicitCardPackage && salesMode === 'installment') {
+    cardPackageAmount = inferCardPackageAmountYuanFromSubtitle(product.subtitle)
+  }
   return {
     id: Number(product.id),
     name: String(product.name || '').trim(),
@@ -346,6 +372,7 @@ function normalizeProductRecord(product) {
     image: String(product.image || '').trim(),
     category: resolveProductCategoryKey(product.category),
     salesMode,
+    cardPackageAmount,
     onSale: typeof product.onSale === 'boolean' ? product.onSale : true,
     createdAt: product.createdAt || now,
     updatedAt: product.updatedAt || product.createdAt || now,
@@ -378,6 +405,14 @@ function parseProductPayload(payload, { partial = false } = {}) {
       return { error: '价格必须大于 0' }
     }
     next.price = Number(price.toFixed(2))
+  }
+
+  if (payload.cardPackageAmount !== undefined) {
+    const cap = Number(payload.cardPackageAmount)
+    if (!Number.isFinite(cap) || cap < 0) {
+      return { error: '卡包金额须为非负数字' }
+    }
+    next.cardPackageAmount = Math.round(cap)
   }
 
   if (payload.onSale !== undefined) {
@@ -760,6 +795,9 @@ function reconcileInstallmentCompletionAcrossDb(db) {
   }
   for (const order of db.orders) {
     ensureOrderInstallmentPlan(order)
+    if (ensureOrderCardPackageAmountFromProduct(db, order)) {
+      changed = true
+    }
     if (persistLegacyInstallmentFirstPaidIfOrderPaid(order)) {
       changed = true
     }
@@ -770,6 +808,41 @@ function reconcileInstallmentCompletionAcrossDb(db) {
   if (changed) {
     writeDb(db)
   }
+}
+
+/**
+ * 订单卡包金额（元）：已落库则规范化；否则按商品卡包金额 × 数量回填（幂等，供对账写库）。
+ * @returns {boolean} 是否写入了与之前不同的值
+ */
+function ensureOrderCardPackageAmountFromProduct(db, order) {
+  const qty = Math.max(1, Math.floor(Number(order.quantity)) || 1)
+  let resolved = 0
+  const pid = String(order.productId || '').trim()
+  if (pid) {
+    const raw = (Array.isArray(db.products) ? db.products : []).find(p => p && String(p.id) === pid)
+    if (raw) {
+      const product = normalizeProductRecord(raw)
+      resolved = Math.max(0, Math.round(Number(product.cardPackageAmount) || 0)) * qty
+    }
+  }
+  if (order.cardPackageAmount !== undefined && order.cardPackageAmount !== null) {
+    const n = Number(order.cardPackageAmount)
+    if (Number.isFinite(n) && n >= 0) {
+      const rounded = Math.round(n)
+      if (rounded !== Number(order.cardPackageAmount)) {
+        order.cardPackageAmount = rounded
+        return true
+      }
+      order.cardPackageAmount = rounded
+      return false
+    }
+  }
+  if (Number(order.cardPackageAmount) === resolved) {
+    order.cardPackageAmount = resolved
+    return false
+  }
+  order.cardPackageAmount = resolved
+  return true
 }
 
 function ensureOrderCardPackage(order) {
@@ -1131,11 +1204,6 @@ function isOrderCardPackageEligible(order) {
   return ['shipping', 'receiving', 'enjoying'].includes(order.status)
 }
 
-function computeOrderCardPackageAmount(order) {
-  const base = Number(order.totalAmount || 0)
-  return Number((Math.min(888, Math.max(18, base * 0.05))).toFixed(2))
-}
-
 function fail(ctx, msg, code = 400) {
   ctx.status = code
   ctx.body = { success: false, code, msg, data: null }
@@ -1143,6 +1211,170 @@ function fail(ctx, msg, code = 400) {
 
 function normalizePhone(phone) {
   return String(phone || '').trim()
+}
+
+function ensureCsSessions(db) {
+  if (!Array.isArray(db.csSessions)) {
+    db.csSessions = []
+  }
+}
+
+/** 客服会话展示名：已登录商城用户显示库内姓名全称（不脱敏） */
+function csMallUserFullDisplayName(name) {
+  const s = String(name || '').trim()
+  return s || '用户'
+}
+
+/** 列表/详情/响应用：有 mallUserId 时始终以 users 当前姓名为准 */
+function resolveCsSessionDisplayName(db, session) {
+  if (!session) {
+    return ''
+  }
+  if (session.mallUserId) {
+    const u = db.users.find(x => x && x.id === session.mallUserId)
+    if (u) {
+      const n = String(u.name || '').trim()
+      if (n) {
+        return n
+      }
+    }
+  }
+  return String(session.displayName || '').trim() || '访客'
+}
+
+function csNewMsgId() {
+  return `m_${Date.now()}_${crypto.randomBytes(5).toString('hex')}`
+}
+
+function csAppendMessage(session, role, text, extras = {}) {
+  const trimmed = String(text || '').trim()
+  if (!trimmed) {
+    return null
+  }
+  if (!Array.isArray(session.messages)) {
+    session.messages = []
+  }
+  const now = new Date().toISOString()
+  const msg = {
+    id: csNewMsgId(),
+    role,
+    text: trimmed.slice(0, 2000),
+    createdAt: now,
+    agentName: role === 'agent' ? String(extras.agentName || '').trim() : '',
+  }
+  session.messages.push(msg)
+  session.updatedAt = now
+  session.lastMessagePreview = msg.text.slice(0, 120)
+  if (role === 'user') {
+    session.unreadAgent = Number(session.unreadAgent || 0) + 1
+  }
+  else {
+    session.unreadUser = Number(session.unreadUser || 0) + 1
+  }
+  return msg
+}
+
+function findCsSessionForMall(db, mallUserId) {
+  ensureCsSessions(db)
+  return db.csSessions.find(s => s && s.mallUserId === mallUserId) || null
+}
+
+function findCsSessionByVisitorKey(db, visitorKey) {
+  ensureCsSessions(db)
+  const key = String(visitorKey || '').trim()
+  if (!key) {
+    return null
+  }
+  return db.csSessions.find(s => s && s.visitorKey === key) || null
+}
+
+function findCsSessionById(db, id) {
+  ensureCsSessions(db)
+  return db.csSessions.find(s => s && s.id === id) || null
+}
+
+function resolveCsMallSession(ctx, db, { requireExisting = false } = {}) {
+  ensureCsSessions(db)
+  const sid = String(ctx.headers['x-cs-session-id'] || '').trim()
+  const sec = String(ctx.headers['x-cs-secret'] || '').trim()
+  if (sid && sec) {
+    const s = findCsSessionById(db, sid)
+    if (!s || s.authSecret !== sec) {
+      return { error: '客服会话无效，请从首页重新进入客服' }
+    }
+    return { session: s }
+  }
+  const phone = normalizePhone(parsePhoneFromToken(ctx.headers.authorization))
+  if (phone && /^1\d{10}$/.test(phone)) {
+    const user = db.users.find(u => u.phone === phone)
+    if (!user) {
+      return { error: '请先登录商城后再使用在线客服' }
+    }
+    const s = findCsSessionForMall(db, user.id)
+    if (!s && requireExisting) {
+      return { error: '请先开启客服会话' }
+    }
+    return { session: s, mallUser: user }
+  }
+  if (requireExisting) {
+    return { error: '请先开启客服会话（访客请从客服页发起会话）' }
+  }
+  return {}
+}
+
+function createCsSessionRecord({ mallUser, visitorKey }) {
+  const now = new Date().toISOString()
+  const id = `cs_${crypto.randomBytes(10).toString('hex')}`
+  const authSecret = crypto.randomBytes(18).toString('hex')
+  if (mallUser) {
+    return {
+      id,
+      mallUserId: mallUser.id,
+      visitorKey: null,
+      authSecret,
+      displayName: csMallUserFullDisplayName(mallUser.name),
+      messages: [],
+      unreadAgent: 0,
+      unreadUser: 0,
+      lastMessagePreview: '',
+      updatedAt: now,
+      userOnlineAt: now,
+    }
+  }
+  const vk = visitorKey || `v_${crypto.randomBytes(10).toString('hex')}`
+  const hexish = vk.replace(/[^a-fA-F0-9]/g, '')
+  const tail = (hexish.slice(-4) || '0000').padStart(4, '0')
+  return {
+    id,
+    mallUserId: null,
+    visitorKey: vk,
+    authSecret,
+    displayName: `访客_${tail}`,
+    messages: [],
+    unreadAgent: 0,
+    unreadUser: 0,
+    lastMessagePreview: '',
+    updatedAt: now,
+    userOnlineAt: now,
+  }
+}
+
+function resolveCsAgentName(ctx, db) {
+  ensureAdminAccounts(db)
+  const phone = normalizePhone(ctx.headers['x-admin-phone'] || parsePhoneFromToken(ctx.headers.authorization))
+  if (!phone) {
+    return '客服'
+  }
+  const acc = db.adminAccounts.find(a => a.phone === phone && a.status === 'active')
+  if (acc) {
+    return String(acc.name || acc.username || '客服').trim() || '客服'
+  }
+  return '客服'
+}
+
+function csUserOnline(session) {
+  const t = new Date(session.userOnlineAt || 0).getTime()
+  return Number.isFinite(t) && (Date.now() - t < 90_000)
 }
 
 /**
@@ -1214,7 +1446,7 @@ function createMallUserFromRegisterPayload(db, payload) {
     locationText: payload.locationText || '',
     latitude: typeof payload.latitude === 'number' ? payload.latitude : 0,
     longitude: typeof payload.longitude === 'number' ? payload.longitude : 0,
-    creditStatus: payload.creditStatus || '良好',
+    creditStatus: '待风控',
     registerAt: new Date().toISOString(),
     quota: normalizeUserQuota(payload.quota),
     adminRemark: '',
@@ -1520,6 +1752,7 @@ router.get('/products', (ctx) => {
         return true
       }
       return item.name.includes(searchKey) || item.subtitle.includes(searchKey) || item.origin.includes(searchKey)
+        || String(item.cardPackageAmount ?? '').includes(searchKey)
     })
     .sort((a, b) => Number(b.id) - Number(a.id))
   ctx.body = success(list)
@@ -1628,10 +1861,6 @@ router.post('/auth/register/sms/send', async (ctx) => {
     fail(ctx, '该手机号已注册，请直接登录', 409)
     return
   }
-  if (isRegisterSmsSkipped()) {
-    ctx.body = success({ skipped: true })
-    return
-  }
   try {
     await sendRegisterVerificationSms(phone)
     ctx.body = success({})
@@ -1682,12 +1911,10 @@ router.post('/auth/register', (ctx) => {
     return
   }
 
-  if (!isRegisterSmsSkipped()) {
-    const smsCheck = verifyAndConsumeRegisterSms(phone, payload.smsCode)
-    if (!smsCheck.ok) {
-      fail(ctx, smsCheck.reason)
-      return
-    }
+  const smsCheck = verifyAndConsumeRegisterSms(phone, payload.smsCode)
+  if (!smsCheck.ok) {
+    fail(ctx, smsCheck.reason)
+    return
   }
 
   const user = createMallUserFromRegisterPayload(db, payload)
@@ -1780,7 +2007,7 @@ function handleAdminLogin(ctx) {
       locationText: '系统管理员账号',
       latitude: 0,
       longitude: 0,
-      creditStatus: '良好',
+      creditStatus: '待风控',
       registerAt: new Date().toISOString(),
       quota: DEFAULT_USER_QUOTA,
     })
@@ -1850,8 +2077,8 @@ router.post('/admin/accounts', (ctx) => {
     fail(ctx, '密码长度至少为4位')
     return
   }
-  if (![ADMIN_ROLES.REVIEWER, ADMIN_ROLES.SERVICE, ADMIN_ROLES.COLLECTOR].includes(role)) {
-    fail(ctx, '仅允许新增审核员、客服或催收员账号')
+  if (![ADMIN_ROLES.REVIEWER, ADMIN_ROLES.COLLECTOR].includes(role)) {
+    fail(ctx, '仅允许新增审核员或催收员账号（审核员含原客服进线与订单审核权限）')
     return
   }
   if (!/^1\d{10}$/.test(phone)) {
@@ -2336,19 +2563,12 @@ router.post('/users', (ctx) => {
   const phone = normalizePhone(payload.phone)
   const name = String(payload.name || '').trim()
   const locationText = String(payload.locationText || '').trim()
-  const creditStatus = String(payload.creditStatus || '良好').trim()
-  const allowedCreditStatus = new Set(['优秀', '良好', '一般', '风险'])
-
   if (!/^1\d{10}$/.test(phone)) {
     fail(ctx, '手机号格式不正确')
     return
   }
   if (!name) {
     fail(ctx, '姓名不能为空')
-    return
-  }
-  if (!allowedCreditStatus.has(creditStatus)) {
-    fail(ctx, '信誉状态不正确')
     return
   }
 
@@ -2375,7 +2595,7 @@ router.post('/users', (ctx) => {
     locationText,
     latitude: typeof payload.latitude === 'number' ? payload.latitude : 0,
     longitude: typeof payload.longitude === 'number' ? payload.longitude : 0,
-    creditStatus,
+    creditStatus: '待风控',
     registerAt: now,
     quota: normalizeUserQuota(payload.quota),
     adminRemark: '',
@@ -2422,7 +2642,7 @@ router.get('/card-packages', (ctx) => {
         title: item.name,
         spec: item.spec || '',
         totalAmount: Number(item.totalAmount || 0),
-        packageAmount: computeOrderCardPackageAmount(item),
+        packageAmount: Math.max(0, Math.round(Number(item.cardPackageAmount) || 0)),
         cardPackageIssued: item.cardPackageIssued,
         orderStatus: item.status,
         createdAt: item.createdAt,
@@ -3073,9 +3293,6 @@ router.patch('/users/:id', (ctx) => {
   if (typeof payload.locationText === 'string') {
     target.locationText = payload.locationText.trim()
   }
-  if (typeof payload.creditStatus === 'string') {
-    target.creditStatus = payload.creditStatus
-  }
   if (typeof payload.idCardFront === 'string' && payload.idCardFront) {
     target.idCardFront = payload.idCardFront
   }
@@ -3378,6 +3595,7 @@ router.post('/orders', async (ctx) => {
     totalAmount = itemSubtotal
   }
 
+  const cardPackageUnit = Math.max(0, Math.round(Number(productRow.cardPackageAmount) || 0))
   const nextOrder = {
     id: `OD${Date.now()}`,
     productId: payload.productId,
@@ -3385,6 +3603,7 @@ router.post('/orders', async (ctx) => {
     spec: payload.spec,
     totalAmount,
     quantity,
+    cardPackageAmount: cardPackageUnit * quantity,
     createdAt: new Date().toISOString(),
     status: payload.status || 'reviewing',
     paid: Boolean(payload.paid),
@@ -3644,6 +3863,25 @@ router.patch('/orders/:id/status', (ctx) => {
       fail(ctx, '该订单风控未通过，不能审核通过')
       return
     }
+    if (status === 'shipping') {
+      ensureOrderShipment(target)
+      const tn = String(target.trackingNumber || '').trim()
+      if (tn) {
+        fail(ctx, '已填写快递单号时不可将订单改回待发货，请先在「快递单号」中清空单号', 400)
+        return
+      }
+    }
+    if (status === 'receiving') {
+      const tnRecv = String(target.trackingNumber || '').trim()
+      if (!tnRecv) {
+        fail(ctx, '请填写快递单号后再将订单改为待收货', 400)
+        return
+      }
+    }
+    if (status === 'enjoying' && !target.cardPackageIssued) {
+      fail(ctx, '卡包未发放时不可将订单标记为已完成，请先在「卡包发放」中标记已发放', 400)
+      return
+    }
     target.status = status
     if (status === 'reviewing') {
       target.trackingNumber = ''
@@ -3796,6 +4034,178 @@ router.delete('/orders/:id', (ctx) => {
   db.orders.splice(idx, 1)
   writeDb(db)
   ctx.body = success({ id })
+})
+
+/** ---------- 商城 / 管理端：在线客服（持久化 csSessions，轮询拉取） ---------- */
+
+router.post('/mall/cs/session/open', (ctx) => {
+  const db = readDb()
+  ensureCsSessions(db)
+  const body = ctx.request.body || {}
+  const visitorKeyBody = String(body.visitorKey || '').trim()
+  const phone = normalizePhone(parsePhoneFromToken(ctx.headers.authorization))
+  const mallUser = phone && /^1\d{10}$/.test(phone) ? db.users.find(u => u.phone === phone) : null
+
+  if (mallUser) {
+    let s = findCsSessionForMall(db, mallUser.id)
+    if (!s) {
+      s = createCsSessionRecord({ mallUser })
+      db.csSessions.push(s)
+    }
+    const resolvedName = resolveCsSessionDisplayName(db, s)
+    if (resolvedName && s.displayName !== resolvedName) {
+      s.displayName = resolvedName
+    }
+    s.userOnlineAt = new Date().toISOString()
+    writeDb(db)
+    ctx.body = success({
+      sessionId: s.id,
+      visitorKey: s.visitorKey || '',
+      displayName: resolveCsSessionDisplayName(db, s),
+      messages: Array.isArray(s.messages) ? s.messages : [],
+      auth: 'mall_token',
+    })
+    return
+  }
+
+  let s = visitorKeyBody ? findCsSessionByVisitorKey(db, visitorKeyBody) : null
+  const isNew = !s
+  if (!s) {
+    s = createCsSessionRecord({ mallUser: null, visitorKey: visitorKeyBody || undefined })
+    db.csSessions.push(s)
+  }
+  s.userOnlineAt = new Date().toISOString()
+  writeDb(db)
+  const payload = {
+    sessionId: s.id,
+    visitorKey: s.visitorKey,
+    displayName: s.displayName,
+    messages: Array.isArray(s.messages) ? s.messages : [],
+    auth: 'visitor_headers',
+  }
+  if (isNew) {
+    payload.secret = s.authSecret
+  }
+  ctx.body = success(payload)
+})
+
+router.get('/mall/cs/session', (ctx) => {
+  const db = readDb()
+  const r = resolveCsMallSession(ctx, db, { requireExisting: true })
+  if (r.error) {
+    fail(ctx, r.error, 401)
+    return
+  }
+  const s = r.session
+  const resolvedName = resolveCsSessionDisplayName(db, s)
+  if (s.mallUserId && resolvedName && s.displayName !== resolvedName) {
+    s.displayName = resolvedName
+  }
+  s.userOnlineAt = new Date().toISOString()
+  s.unreadUser = 0
+  writeDb(db)
+  ctx.body = success({
+    sessionId: s.id,
+    visitorKey: s.visitorKey || '',
+    displayName: resolvedName,
+    messages: Array.isArray(s.messages) ? s.messages : [],
+  })
+})
+
+router.post('/mall/cs/messages', (ctx) => {
+  const db = readDb()
+  const r = resolveCsMallSession(ctx, db, { requireExisting: true })
+  if (r.error) {
+    fail(ctx, r.error, 401)
+    return
+  }
+  const body = ctx.request.body || {}
+  const text = String(body.text || '').trim()
+  if (!text) {
+    fail(ctx, '消息内容不能为空')
+    return
+  }
+  const s = r.session
+  csAppendMessage(s, 'user', text)
+  s.userOnlineAt = new Date().toISOString()
+  writeDb(db)
+  ctx.body = success({
+    ok: true,
+    messages: Array.isArray(s.messages) ? s.messages : [],
+  })
+})
+
+router.get('/admin/cs/sessions', (ctx) => {
+  if (!requireAdminPermission(ctx, [ADMIN_ROLES.SUPER, ADMIN_ROLES.REVIEWER], '查看客服会话')) {
+    return
+  }
+  const db = readDb()
+  ensureCsSessions(db)
+  const list = [...db.csSessions]
+    .filter(Boolean)
+    .sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')))
+    .map(s => ({
+      id: s.id,
+      userName: resolveCsSessionDisplayName(db, s),
+      lastMessage: String(s.lastMessagePreview || (Array.isArray(s.messages) && s.messages.length
+        ? s.messages[s.messages.length - 1].text
+        : '') || ''),
+      lastAt: s.updatedAt || '',
+      online: csUserOnline(s),
+      unread: Number(s.unreadAgent || 0),
+      mallUserId: s.mallUserId || '',
+      visitorKey: s.visitorKey || '',
+    }))
+  ctx.body = success(list)
+})
+
+router.get('/admin/cs/sessions/:sessionId', (ctx) => {
+  if (!requireAdminPermission(ctx, [ADMIN_ROLES.SUPER, ADMIN_ROLES.REVIEWER], '查看客服会话详情')) {
+    return
+  }
+  const db = readDb()
+  const s = findCsSessionById(db, ctx.params.sessionId)
+  if (!s) {
+    fail(ctx, '会话不存在', 404)
+    return
+  }
+  const markRead = !['0', 'false', 'no'].includes(String(ctx.query.read || '1').toLowerCase())
+  if (markRead) {
+    s.unreadAgent = 0
+    writeDb(db)
+  }
+  ctx.body = success({
+    id: s.id,
+    displayName: resolveCsSessionDisplayName(db, s),
+    online: csUserOnline(s),
+    messages: Array.isArray(s.messages) ? s.messages : [],
+    mallUserId: s.mallUserId || '',
+  })
+})
+
+router.post('/admin/cs/sessions/:sessionId/messages', (ctx) => {
+  if (!requireAdminPermission(ctx, [ADMIN_ROLES.SUPER, ADMIN_ROLES.REVIEWER], '回复客服会话')) {
+    return
+  }
+  const db = readDb()
+  const s = findCsSessionById(db, ctx.params.sessionId)
+  if (!s) {
+    fail(ctx, '会话不存在', 404)
+    return
+  }
+  const body = ctx.request.body || {}
+  const text = String(body.text || '').trim()
+  if (!text) {
+    fail(ctx, '消息内容不能为空')
+    return
+  }
+  const agentName = resolveCsAgentName(ctx, db)
+  csAppendMessage(s, 'agent', text, { agentName })
+  writeDb(db)
+  ctx.body = success({
+    ok: true,
+    messages: Array.isArray(s.messages) ? s.messages : [],
+  })
 })
 
 app.use(cors())

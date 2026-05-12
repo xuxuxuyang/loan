@@ -21,6 +21,7 @@ const router = createRouter({
     { path: '/bill', name: 'bill', component: () => import('../views/MallBillView.vue') },
     { path: '/address', name: 'address', component: () => import('../views/MallAddressView.vue') },
     { path: '/card-package', name: 'card-package', component: () => import('../views/MallCardPackageView.vue') },
+    { path: '/cs-chat', name: 'cs-chat', component: () => import('../views/MallCsChatView.vue') },
     // 兜底：未知路径交给首页底部 Tab 的体验更一致（亦可改为 404）
     { path: '/:pathMatch(.*)*', name: 'not-found', redirect: '/' },
   ],

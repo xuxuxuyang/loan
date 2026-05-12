@@ -1,4 +1,4 @@
-export type AdminRole = 'super_admin' | 'reviewer' | 'customer_service' | 'collector'
+export type AdminRole = 'super_admin' | 'reviewer' | 'collector'
 
 export interface AdminSession {
   username: string
@@ -15,10 +15,17 @@ function safeParseSession(value: string | null): AdminSession | null {
     const parsed = JSON.parse(value) as Partial<AdminSession>
     if (!parsed || typeof parsed !== 'object') return null
     if (!parsed.token || !parsed.username || !parsed.role || !parsed.loginAt) return null
+    let r = String(parsed.role).trim()
+    /** 历史「客服」角色已并入审核员 */
+    if (r === 'customer_service' || r === 'customer-service') {
+      r = 'reviewer'
+    }
+    if (r !== 'super_admin' && r !== 'reviewer' && r !== 'collector') return null
+    const role = r as AdminRole
     return {
       token: String(parsed.token),
       username: String(parsed.username),
-      role: parsed.role as AdminRole,
+      role,
       loginAt: String(parsed.loginAt),
     }
   }

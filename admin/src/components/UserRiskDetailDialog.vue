@@ -1,15 +1,16 @@
 <script setup lang="ts">
-import { CircleCheck, CircleClose, Clock, Cpu, DataAnalysis, Document, Minus, User } from '@element-plus/icons-vue'
+import { CircleCheck, CircleClose, DataAnalysis, Minus } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { computed, ref, watch } from 'vue'
 import { withAdminAuthHeaders } from '../composables/useAdminApi'
+import { getAdminSession } from '../composables/useAdminAuth'
 import {
   INSTALLMENT_ORDER_RISK_STEP_KEYS,
   INSTALLMENT_ORDER_RISK_STEP_LABELS,
-  INSTALLMENT_ORDER_RISK_STEP_COUNT,
 } from '../constants/installmentOrderRisk'
 import type { OrderRiskDetail, RiskDetailRule } from '../stores/useOrdersStore'
 import { getRiskFactLines, type RiskFactLine } from '../utils/riskRowFactLines'
+import { groupRadarV4FactsForTables, chunkRadarFactPairs } from '../utils/radarV4ReputationFacts'
 
 export interface RiskProductRow {
   slotKey: string
@@ -115,7 +116,7 @@ export interface UserItem {
   idCardHandheld: string
   /** 18 位身份证号码（风控、下单用） */
   idNumber?: string
-  creditStatus: '优秀' | '良好' | '一般' | '风险'
+  creditStatus: '良好' | '待风控' | '风险'
   /** 库内风控快照（管理端列表/详情接口可能返回） */
   riskControlSnapshot?: UserRiskSnapshot | null
   riskUpstreamConfigured?: boolean
@@ -125,6 +126,10 @@ export interface UserItem {
   adminRemark?: string
   /** 仅管理端写入；商城接口仅返回布尔结果供前端拦截下单 */
   orderBlacklisted?: boolean
+  /** 注册渠道（与 UsersPage 用户预览一致） */
+  registerChannelCode?: string
+  registerChannelName?: string
+  registerChannelLabel?: string
 }
 
 interface ApiUserItem {
@@ -145,14 +150,26 @@ interface ApiUserItem {
   riskControlSnapshot?: UserRiskSnapshot | null
   riskUpstreamConfigured?: boolean
   adminPasswordPlain?: string
+  registerChannelCode?: string
+  registerChannelName?: string
+  registerChannelLabel?: string
 }
 
 const MALL_API_BASE = `${(import.meta.env.VITE_MALL_API_BASE || 'http://localhost:3110/api').replace(/\/$/, '')}`
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   modelValue: boolean
   userId: string | null
-}>()
+  /**
+   * 从订单列表/待审核打开时：基本信息不展示登录密码。
+   */
+  basicTabOrderContext?: boolean
+  /** 为 true 时隐藏「基本信息」页签（仅保留下单七项、雷达风控），并默认打开下单七项。 */
+  hideBasicInfoTab?: boolean
+}>(), {
+  basicTabOrderContext: false,
+  hideBasicInfoTab: false,
+})
 
 const emit = defineEmits<{
   'update:modelValue': [value: boolean]
@@ -166,7 +183,8 @@ const fullRiskCheckLoading = ref(false)
 const userRiskError = ref('')
 const manualRiskSlotLoading = ref<string | null>(null)
 const userRiskSnapshot = ref<UserRiskSnapshot | null>(null)
-const riskDialogMainTab = ref<'order7' | 'radar'>('order7')
+type RiskDialogMainTab = 'basic' | 'order7' | 'radar'
+const riskDialogMainTab = ref<RiskDialogMainTab>('basic')
 
 function buildRiskSnapshotFromView(rv: ApiRiskView): UserRiskSnapshot {
   const snap = rv.snapshot
@@ -210,44 +228,6 @@ function formatDateTime(value?: string) {
   const hh = `${date.getHours()}`.padStart(2, '0')
   const min = `${date.getMinutes()}`.padStart(2, '0')
   return `${yyyy}-${mm}-${dd} ${hh}:${min}`
-}
-
-function riskOpenPlatformTagType(detail: OrderRiskDetail): 'success' | 'danger' | 'warning' | 'info' {
-  const t = detail.testedSlotCount ?? 0
-  const ok = detail.okSlotCount ?? 0
-  const fail = detail.failSlotCount ?? 0
-  if (t === 0)
-    return 'info'
-  if (fail === 0)
-    return 'success'
-  if (ok === 0)
-    return 'danger'
-  return 'warning'
-}
-
-function riskOpenPlatformHeroToneClass(detail: OrderRiskDetail): string {
-  const t = riskOpenPlatformTagType(detail)
-  if (t === 'success')
-    return 'risk-hero--tone-success'
-  if (t === 'danger')
-    return 'risk-hero--tone-danger'
-  if (t === 'warning')
-    return 'risk-hero--tone-warning'
-  return 'risk-hero--tone-neutral'
-}
-
-/** 已测项进度条：部分失败用 warning 呈橙色，与主标签一致 */
-function riskTestedProgressStatus(detail: OrderRiskDetail): 'success' | 'exception' | 'warning' | undefined {
-  const t = detail.testedSlotCount ?? 0
-  const ok = detail.okSlotCount ?? 0
-  const fail = detail.failSlotCount ?? 0
-  if (t === 0)
-    return undefined
-  if (fail === 0)
-    return 'success'
-  if (ok === 0)
-    return 'exception'
-  return 'warning'
 }
 
 function formatRiskFactsPlain(row: RiskProductRow): string {
@@ -309,6 +289,66 @@ const radarV4CardItem = computed((): RiskSlotCardItem => {
   }
 })
 
+const radarV4FactsGrouped = computed(() => groupRadarV4FactsForTables(radarV4CardItem.value.facts))
+
+/** 雷达分类表每行并排展示的「指标+取值」组数（减少纵向占用） */
+const RADAR_FACT_PAIR_COLUMNS = 3
+
+const RADAR_TABLE_COLSPAN = RADAR_FACT_PAIR_COLUMNS * 2
+const radarPairHeadIndexes = Array.from({ length: RADAR_FACT_PAIR_COLUMNS }, (_, i) => i)
+
+function findFourteenRowForBasic(rows: RiskProductRow[] | undefined, slotKey: string): RiskProductRow | null {
+  if (!Array.isArray(rows)) {
+    return null
+  }
+  return rows.find(r => r.slotKey === slotKey) || null
+}
+
+type DisplayCreditStatusBasic = '良好' | '待风控' | '风险'
+
+/** 与 UsersPage 一致：仅看先享后付下单七项；任一项 fail→风险，七项均为 ok→良好，否则待风控 */
+function displayCreditFromSnapshotBasic(snapshot: UserRiskSnapshot | null): DisplayCreditStatusBasic {
+  if (!snapshot || !Array.isArray(snapshot.fourteenRows)) {
+    return '待风控'
+  }
+  for (const key of INSTALLMENT_ORDER_RISK_STEP_KEYS) {
+    const row = findFourteenRowForBasic(snapshot.fourteenRows, key)
+    if (row?.state === 'fail') {
+      return '风险'
+    }
+  }
+  for (const key of INSTALLMENT_ORDER_RISK_STEP_KEYS) {
+    const row = findFourteenRowForBasic(snapshot.fourteenRows, key)
+    if (!row || row.state !== 'ok') {
+      return '待风控'
+    }
+  }
+  return '良好'
+}
+
+const riskBasicDisplayCredit = computed(() => displayCreditFromSnapshotBasic(userRiskSnapshot.value))
+
+const riskBasicCanSeePasswordRow = computed(() => getAdminSession()?.role === 'super_admin')
+
+const riskBasicShowPasswordRow = computed(
+  () => riskBasicCanSeePasswordRow.value && !props.basicTabOrderContext,
+)
+
+/** 与 UsersPage 信誉角标配色一致 */
+function riskBasicCreditBadgeClass(status: DisplayCreditStatusBasic) {
+  if (status === '良好') {
+    return 'credit-badge badge-ok'
+  }
+  if (status === '待风控') {
+    return 'credit-badge badge-pending'
+  }
+  return 'credit-badge badge-risk'
+}
+
+function registerChannelLine(u: UserItem) {
+  return u.registerChannelLabel || u.registerChannelName || u.registerChannelCode || '—'
+}
+
 function truncateText(s: string, max: number) {
   if (s.length <= max) {
     return s
@@ -338,7 +378,7 @@ function buildUserRiskDetailFromSnapshot(user: UserItem, snap: UserRiskSnapshot)
   let decision = '尚未写入先享后付下单七项接口的实测结果'
   let riskStatus: 'passed' | 'failed' = 'passed'
   if (testedCount === 0) {
-    decision = '尚无成功或失败记录（打开时已加载库内档案；可点「手动查询」或底部「一键查询七项」）'
+    decision = '尚无成功或失败记录（打开时已加载库内档案；可点「手动查询」或标题旁「一键查询七项」）'
     riskStatus = 'passed'
   }
   else if (failCount > 0) {
@@ -427,7 +467,7 @@ async function loadUserRiskDialogById(userId: string) {
     const snap = buildRiskSnapshotFromView(rv)
     userRiskSnapshot.value = snap
     displayedUserRiskDetail.value = buildUserRiskDetailFromSnapshot(mapped, snap)
-    riskDialogMainTab.value = 'order7'
+    riskDialogMainTab.value = props.hideBasicInfoTab ? 'order7' : 'basic'
     emit('userUpdated', mapped)
   }
   catch (error) {
@@ -608,10 +648,10 @@ function onUserRiskDialogClosed() {
   userRiskSnapshot.value = null
   userRiskError.value = ''
   manualRiskSlotLoading.value = null
-  riskDialogMainTab.value = 'order7'
+  riskDialogMainTab.value = 'basic'
 }
 function mapApiUser(user: ApiUserItem): UserItem {
-  const creditStatus = user.creditStatus || '良好'
+  const creditStatus = displayCreditFromSnapshotBasic(user.riskControlSnapshot ?? null)
   const quotaRaw = user.quota
   const quota = Number.isFinite(Number(quotaRaw)) && Number(quotaRaw) >= 0
     ? Math.round(Number(quotaRaw))
@@ -638,6 +678,9 @@ function mapApiUser(user: ApiUserItem): UserItem {
     riskControlSnapshot: user.riskControlSnapshot ?? undefined,
     riskUpstreamConfigured: user.riskUpstreamConfigured,
     adminPasswordPlain: typeof user.adminPasswordPlain === 'string' ? user.adminPasswordPlain : undefined,
+    registerChannelCode: typeof user.registerChannelCode === 'string' ? user.registerChannelCode.trim() : undefined,
+    registerChannelName: typeof user.registerChannelName === 'string' ? user.registerChannelName.trim() : undefined,
+    registerChannelLabel: typeof user.registerChannelLabel === 'string' ? user.registerChannelLabel.trim() : undefined,
   }
 }
 
@@ -650,6 +693,7 @@ watch(
   () => [props.modelValue, props.userId] as const,
   ([open, uid]) => {
     if (open && uid) {
+      riskDialogMainTab.value = props.hideBasicInfoTab ? 'order7' : 'basic'
       void loadUserRiskDialogById(uid)
     }
     else if (open && !uid) {
@@ -669,7 +713,7 @@ function handleUserRiskDialogClosed() {
 <template>
   <el-dialog
     v-model="dialogVisible"
-    width="820px"
+    width="960px"
     append-to-body
     align-center
     class="risk-detail-dialog user-risk-dialog"
@@ -714,6 +758,79 @@ function handleUserRiskDialogClosed() {
       class="risk-detail-body"
     >
       <el-tabs v-model="riskDialogMainTab" class="user-risk-body-tabs">
+        <el-tab-pane
+          v-if="!hideBasicInfoTab"
+          label="基本信息"
+          name="basic"
+        >
+          <div class="user-risk-tab-pane-inner user-risk-basic-tab">
+            <header class="user-risk-basic-head">
+              <p class="user-risk-basic-meta">
+                <span>{{ selectedUserForRisk.name }}</span>
+                <span class="user-risk-basic-meta__sep">·</span>
+                <span>{{ selectedUserForRisk.phone }}</span>
+                <span class="user-risk-basic-meta__sep">·</span>
+                <span class="user-risk-basic-meta__id">{{ selectedUserForRisk.id }}</span>
+              </p>
+            </header>
+            <section class="user-risk-basic-block">
+              <h4 class="user-risk-basic-block__title">
+                <span class="user-risk-basic-block__bar" />
+                基本信息
+              </h4>
+              <el-descriptions
+                :column="2"
+                border
+                size="default"
+                class="user-risk-basic-preview-desc"
+              >
+                <el-descriptions-item label="姓名">
+                  {{ selectedUserForRisk.name }}
+                </el-descriptions-item>
+                <el-descriptions-item label="手机号">
+                  {{ selectedUserForRisk.phone }}
+                </el-descriptions-item>
+                <el-descriptions-item
+                  v-if="riskBasicShowPasswordRow"
+                  label="登录密码"
+                >
+                  <span v-if="selectedUserForRisk.adminPasswordPlain">{{ selectedUserForRisk.adminPasswordPlain }}</span>
+                  <span
+                    v-else
+                    class="user-risk-basic-muted"
+                  >未设置</span>
+                </el-descriptions-item>
+                <el-descriptions-item label="身份证号码">
+                  <span
+                    v-if="selectedUserForRisk.idNumber?.trim()"
+                    class="user-risk-basic-id-number"
+                  >{{ selectedUserForRisk.idNumber }}</span>
+                  <span
+                    v-else
+                    class="user-risk-basic-muted"
+                  >未填写</span>
+                </el-descriptions-item>
+                <el-descriptions-item label="注册时间">
+                  {{ selectedUserForRisk.registerAt || '—' }}
+                </el-descriptions-item>
+                <el-descriptions-item label="注册渠道">
+                  {{ registerChannelLine(selectedUserForRisk) }}
+                </el-descriptions-item>
+                <el-descriptions-item label="额度">
+                  <span class="user-risk-basic-quota">¥ {{ selectedUserForRisk.quota }}</span>
+                </el-descriptions-item>
+                <el-descriptions-item
+                  label="信誉状态"
+                  :span="2"
+                >
+                  <span :class="riskBasicCreditBadgeClass(riskBasicDisplayCredit)">
+                    {{ riskBasicDisplayCredit }}
+                  </span>
+                </el-descriptions-item>
+              </el-descriptions>
+            </section>
+          </div>
+        </el-tab-pane>
         <el-tab-pane label="下单七项" name="order7">
           <div class="user-risk-tab-pane-inner">
             <el-alert
@@ -725,218 +842,144 @@ function handleUserRiskDialogClosed() {
             >
               正在依次批量调用先享后付下单 7 项接口（与单条「手动查询」相同），请稍候…
             </el-alert>
-            <div
-              class="risk-hero risk-hero--real"
-              :class="riskOpenPlatformHeroToneClass(displayedUserRiskDetail)"
+
+            <el-alert
+              v-if="String(userRiskSnapshot.summaryMessage || '').trim()"
+              class="risk-reason-alert"
+              :type="displayedUserRiskDetail.riskStatus === 'failed' ? 'error' : 'warning'"
+              :closable="false"
+              show-icon
             >
-        <div class="risk-hero__main risk-hero__main--stack">
-          <span class="risk-hero__label">先享后付下单接口档案（7 项）</span>
-          <el-tag
-            :type="riskOpenPlatformTagType(displayedUserRiskDetail)"
-            effect="dark"
-            round
-            size="large"
-            class="risk-hero__decision-tag"
-          >
-            {{ displayedUserRiskDetail.decision }}
-          </el-tag>
-        </div>
-        <div
-          v-if="displayedUserRiskDetail.testedSlotCount != null"
-          class="risk-real-chips"
-        >
-          <el-tag
-            type="info"
-            effect="plain"
-            round
-          >
-            已测 {{ displayedUserRiskDetail.testedSlotCount }} / {{ INSTALLMENT_ORDER_RISK_STEP_COUNT }}
-          </el-tag>
-          <el-tag
-            type="success"
-            effect="plain"
-            round
-          >
-            成功 {{ displayedUserRiskDetail.okSlotCount }}
-          </el-tag>
-          <el-tag
-            v-if="(displayedUserRiskDetail.failSlotCount ?? 0) > 0"
-            type="danger"
-            effect="plain"
-            round
-          >
-            失败 {{ displayedUserRiskDetail.failSlotCount }}
-          </el-tag>
-        </div>
-        <div
-          v-if="(displayedUserRiskDetail.testedSlotCount ?? 0) > 0"
-          class="risk-success-rate"
-        >
-          <span class="risk-success-rate__label">已测项成功率</span>
-          <el-progress
-            :percentage="displayedUserRiskDetail.riskScore"
-            :status="riskTestedProgressStatus(displayedUserRiskDetail)"
-            :stroke-width="10"
-            striped
-          />
-        </div>
-      </div>
+              <template #title>
+                后端汇总说明
+              </template>
+              {{ userRiskSnapshot.summaryMessage }}
+            </el-alert>
 
-      <el-descriptions
-        :column="2"
-        border
-        size="small"
-        class="risk-desc-table"
-      >
-        <el-descriptions-item>
-          <template #label>
-            <span class="risk-desc-label"><el-icon><Document /></el-icon>用户编号</span>
-          </template>
-          {{ displayedUserRiskDetail.orderId }}
-        </el-descriptions-item>
-        <el-descriptions-item>
-          <template #label>
-            <span class="risk-desc-label"><el-icon><User /></el-icon>用户</span>
-          </template>
-          {{ selectedUserForRisk.name }}（{{ selectedUserForRisk.phone }}）
-        </el-descriptions-item>
-        <el-descriptions-item>
-          <template #label>
-            <span class="risk-desc-label"><el-icon><Cpu /></el-icon>模型版本</span>
-          </template>
-          {{ displayedUserRiskDetail.modelVersion }}
-        </el-descriptions-item>
-        <el-descriptions-item>
-          <template #label>
-            <span class="risk-desc-label"><el-icon><Clock /></el-icon>检查时间</span>
-          </template>
-          {{ displayedUserRiskDetail.checkedAt }}
-        </el-descriptions-item>
-      </el-descriptions>
+            <el-alert
+              v-else-if="String(displayedUserRiskDetail.reason || '').trim()"
+              class="risk-reason-alert"
+              type="info"
+              :closable="false"
+              show-icon
+            >
+              <template #title>
+                提示
+              </template>
+              {{ displayedUserRiskDetail.reason }}
+            </el-alert>
 
-      <el-alert
-        v-if="String(userRiskSnapshot.summaryMessage || '').trim()"
-        class="risk-reason-alert"
-        :type="displayedUserRiskDetail.riskStatus === 'failed' ? 'error' : 'warning'"
-        :closable="false"
-        show-icon
-      >
-        <template #title>
-          后端汇总说明
-        </template>
-        {{ userRiskSnapshot.summaryMessage }}
-      </el-alert>
+            <el-alert
+              v-if="!userRiskSnapshot.configured"
+              type="warning"
+              :closable="false"
+              show-icon
+              class="user-risk-config-hint"
+            >
+              当前<strong>未配置</strong>风控上游（<code>RISK_UPSTREAM_*</code>）。手动查询与全量核查均无法请求真实开放平台；请先配置环境变量并重启 API。
+            </el-alert>
 
-      <el-alert
-        v-else-if="String(displayedUserRiskDetail.reason || '').trim()"
-        class="risk-reason-alert"
-        type="info"
-        :closable="false"
-        show-icon
-      >
-        <template #title>
-          提示
-        </template>
-        {{ displayedUserRiskDetail.reason }}
-      </el-alert>
-
-      <el-alert
-        v-if="!userRiskSnapshot.configured"
-        type="warning"
-        :closable="false"
-        show-icon
-        class="user-risk-config-hint"
-      >
-        当前<strong>未配置</strong>风控上游（<code>RISK_UPSTREAM_*</code>）。手动查询与全量核查均无法请求真实开放平台；请先配置环境变量并重启 API。
-      </el-alert>
-
-      <div class="user-risk-flat-section user-risk-flat-section--simple">
-        <div class="user-risk-flat-section__head user-risk-flat-section__head--simple">
-          <span class="user-risk-flat-section__title">先享后付下单风控（7 项）</span>
-        </div>
-        <p class="user-risk-simple-hint">
-          库内档案；单条可「手动查询」刷新。全景雷达见「雷达风控」页签。
-        </p>
-        <ul class="user-risk-simple-list">
-          <li
-            v-for="item in orderSevenCardItems"
-            :key="`${item.row.slotKey}-${item.globalIdx}`"
-            class="user-risk-simple-row"
-          >
-            <span class="user-risk-simple-row__icon-wrap" aria-hidden="true">
-              <el-icon
-                v-if="item.row.state === 'ok'"
-                class="user-risk-simple-row__icon user-risk-simple-row__icon--ok"
-                :size="22"
-              >
-                <CircleCheck />
-              </el-icon>
-              <el-icon
-                v-else-if="item.row.state === 'fail'"
-                class="user-risk-simple-row__icon user-risk-simple-row__icon--fail"
-                :size="22"
-              >
-                <CircleClose />
-              </el-icon>
-              <el-icon
-                v-else
-                class="user-risk-simple-row__icon user-risk-simple-row__icon--muted"
-                :size="22"
-              >
-                <Minus />
-              </el-icon>
-            </span>
-            <div class="user-risk-simple-row__body">
-              <div class="user-risk-simple-row__title-line">
-                <span class="user-risk-simple-row__title">{{ item.globalIdx }}. {{ item.row.productLabel }}</span>
+            <div class="user-risk-flat-section user-risk-flat-section--simple">
+              <div class="user-risk-flat-section__head user-risk-flat-section__head--simple">
+                <span class="user-risk-flat-section__title">先享后付下单风控（7 项）</span>
+                <el-button
+                  type="warning"
+                  plain
+                  class="user-risk-order7-batch-btn"
+                  :loading="fullRiskCheckLoading"
+                  :disabled="riskDialogBootLoading || manualRiskSlotLoading !== null || !userRiskSnapshot?.configured"
+                  @click="runFullUserRiskCheck"
+                >
+                  一键查询七项
+                </el-button>
               </div>
-              <p
-                v-if="item.row.state === 'skipped' && item.row.skippedReason"
-                class="user-risk-simple-row__note"
-              >
-                {{ item.row.skippedReason }}
-              </p>
-              <p
-                v-if="item.row.error"
-                class="user-risk-simple-row__err"
-              >
-                {{ item.row.error }}
+              <p class="user-risk-simple-hint">
+                库内档案；单条可「手动查询」刷新。全景雷达见「雷达风控」页签。七项以多列卡片展示，便于一屏浏览。
               </p>
               <div
-                v-if="item.row.state !== 'skipped' && item.facts.length > 0"
-                class="user-risk-simple-row__facts"
+                class="user-risk-order7-grid"
+                role="list"
+                aria-label="先享后付下单风控七项"
               >
-                <div
-                  v-for="(fl, fli) in item.facts"
-                  :key="fli"
-                  class="user-risk-simple-fact"
+                <article
+                  v-for="item in orderSevenCardItems"
+                  :key="`${item.row.slotKey}-${item.globalIdx}`"
+                  class="user-risk-order7-card"
+                  role="listitem"
                 >
-                  <span class="user-risk-simple-fact__label">{{ fl.label }}</span>
-                  <span
-                    class="user-risk-simple-fact__value"
-                    :class="{ 'user-risk-simple-fact__value--emphasis': fl.emphasis }"
-                  >{{ fl.value }}</span>
-                </div>
+                  <header class="user-risk-order7-card__head">
+                    <span class="user-risk-simple-row__icon-wrap" aria-hidden="true">
+                      <el-icon
+                        v-if="item.row.state === 'ok'"
+                        class="user-risk-simple-row__icon user-risk-simple-row__icon--ok"
+                        :size="20"
+                      >
+                        <CircleCheck />
+                      </el-icon>
+                      <el-icon
+                        v-else-if="item.row.state === 'fail'"
+                        class="user-risk-simple-row__icon user-risk-simple-row__icon--fail"
+                        :size="20"
+                      >
+                        <CircleClose />
+                      </el-icon>
+                      <el-icon
+                        v-else
+                        class="user-risk-simple-row__icon user-risk-simple-row__icon--muted"
+                        :size="20"
+                      >
+                        <Minus />
+                      </el-icon>
+                    </span>
+                    <span class="user-risk-order7-card__title">{{ item.globalIdx }}. {{ item.row.productLabel }}</span>
+                  </header>
+                  <p
+                    v-if="item.row.state === 'skipped' && item.row.skippedReason"
+                    class="user-risk-order7-card__note"
+                  >
+                    {{ item.row.skippedReason }}
+                  </p>
+                  <p
+                    v-if="item.row.error"
+                    class="user-risk-order7-card__err"
+                  >
+                    {{ item.row.error }}
+                  </p>
+                  <div
+                    v-if="item.row.state !== 'skipped' && item.facts.length > 0"
+                    class="user-risk-order7-card__facts"
+                  >
+                    <div
+                      v-for="(fl, fli) in item.facts"
+                      :key="fli"
+                      class="user-risk-order7-fact"
+                    >
+                      <span class="user-risk-order7-fact__label">{{ fl.label }}</span>
+                      <span
+                        class="user-risk-order7-fact__value"
+                        :class="{ 'user-risk-order7-fact__value--emphasis': fl.emphasis }"
+                        :title="`${fl.label}：${fl.value}`"
+                      >{{ fl.value }}</span>
+                    </div>
+                  </div>
+                  <footer
+                    v-if="riskSlotManualQueryEnabled(item.row.slotKey)"
+                    class="user-risk-order7-card__foot"
+                  >
+                    <el-button
+                      type="primary"
+                      size="small"
+                      class="user-risk-order7-card__btn"
+                      :loading="manualRiskSlotLoading === item.row.slotKey"
+                      :disabled="(manualRiskSlotLoading !== null && manualRiskSlotLoading !== item.row.slotKey) || fullRiskCheckLoading || !userRiskSnapshot.configured"
+                      @click.stop="invokeManualRiskSlot(item.row)"
+                    >
+                      手动查询更新
+                    </el-button>
+                  </footer>
+                </article>
               </div>
             </div>
-            <div
-              v-if="riskSlotManualQueryEnabled(item.row.slotKey)"
-              class="user-risk-simple-row__action-wrap"
-            >
-              <el-button
-                type="primary"
-                size="default"
-                class="user-risk-simple-row__action-btn"
-                :loading="manualRiskSlotLoading === item.row.slotKey"
-                :disabled="(manualRiskSlotLoading !== null && manualRiskSlotLoading !== item.row.slotKey) || fullRiskCheckLoading || !userRiskSnapshot.configured"
-                @click.stop="invokeManualRiskSlot(item.row)"
-              >
-                手动查询更新
-              </el-button>
-            </div>
-          </li>
-        </ul>
-      </div>
           </div>
         </el-tab-pane>
         <el-tab-pane label="雷达风控" name="radar">
@@ -993,19 +1036,196 @@ function handleUserRiskDialogClosed() {
                 </p>
                 <div
                   v-if="radarV4CardItem.row.state !== 'skipped' && radarV4CardItem.facts.length > 0"
-                  class="user-risk-simple-row__facts"
+                  class="user-risk-radar-facts-wrap"
                 >
-                  <div
-                    v-for="(fl, fli) in radarV4CardItem.facts"
-                    :key="fli"
-                    class="user-risk-simple-fact"
+                  <template
+                    v-if="radarV4FactsGrouped.sections.length > 0 || radarV4FactsGrouped.reportNote"
                   >
-                    <span class="user-risk-simple-fact__label">{{ fl.label }}</span>
-                    <span
-                      class="user-risk-simple-fact__value"
-                      :class="{ 'user-risk-simple-fact__value--emphasis': fl.emphasis }"
-                    >{{ fl.value }}</span>
-                  </div>
+                  
+                    <div
+                      v-for="(sec, si) in radarV4FactsGrouped.sections"
+                      :key="si"
+                      class="user-risk-radar-sec"
+                    >
+                      <div class="user-risk-radar-sec__head">
+                        <h4 class="user-risk-radar-sec__title">
+                          {{ sec.title }}
+                        </h4>
+                        <p
+                          v-if="sec.subtitle"
+                          class="user-risk-radar-sec__sub"
+                        >
+                          {{ sec.subtitle }}
+                        </p>
+                      </div>
+                      <div class="user-risk-radar-table-scroll">
+                        <table
+                          class="user-risk-radar-table user-risk-radar-table--multi"
+                          :aria-label="`${sec.title}指标`"
+                        >
+                          <thead>
+                            <tr>
+                              <template
+                                v-for="hi in radarPairHeadIndexes"
+                                :key="hi"
+                              >
+                                <th scope="col">
+                                  指标
+                                </th>
+                                <th scope="col">
+                                  取值
+                                </th>
+                              </template>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            <tr v-if="!sec.rows.length">
+                              <td
+                                :colspan="RADAR_TABLE_COLSPAN"
+                                class="user-risk-radar-table__empty"
+                              >
+                                暂无该项返回数据
+                              </td>
+                            </tr>
+                            <template v-else>
+                              <tr
+                                v-for="(chunk, ci) in chunkRadarFactPairs(sec.rows, RADAR_FACT_PAIR_COLUMNS)"
+                                :key="ci"
+                              >
+                                <template
+                                  v-for="(cell, idx) in chunk"
+                                  :key="idx"
+                                >
+                                  <td class="user-risk-radar-table__label">
+                                    {{ cell.label }}
+                                  </td>
+                                  <td
+                                    class="user-risk-radar-table__value"
+                                    :class="{ 'user-risk-radar-table__value--emphasis': cell.emphasis }"
+                                  >
+                                    {{ cell.value }}
+                                  </td>
+                                </template>
+                                <td
+                                  v-if="chunk.length < RADAR_FACT_PAIR_COLUMNS"
+                                  :colspan="(RADAR_FACT_PAIR_COLUMNS - chunk.length) * 2"
+                                  class="user-risk-radar-table__pad"
+                                ></td>
+                              </tr>
+                            </template>
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                    <div
+                      v-if="radarV4FactsGrouped.extras.length"
+                      class="user-risk-radar-sec"
+                    >
+                      <div class="user-risk-radar-sec__head">
+                        <h4 class="user-risk-radar-sec__title">
+                          其它信息
+                        </h4>
+                      </div>
+                      <div class="user-risk-radar-table-scroll">
+                        <table
+                          class="user-risk-radar-table user-risk-radar-table--multi"
+                          aria-label="其它信息"
+                        >
+                          <thead>
+                            <tr>
+                              <template
+                                v-for="hi in radarPairHeadIndexes"
+                                :key="hi"
+                              >
+                                <th scope="col">
+                                  项目
+                                </th>
+                                <th scope="col">
+                                  内容
+                                </th>
+                              </template>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            <tr
+                              v-for="(chunk, ci) in chunkRadarFactPairs(radarV4FactsGrouped.extras, RADAR_FACT_PAIR_COLUMNS)"
+                              :key="ci"
+                            >
+                              <template
+                                v-for="(ex, idx) in chunk"
+                                :key="idx"
+                              >
+                                <td class="user-risk-radar-table__label">
+                                  {{ ex.label }}
+                                </td>
+                                <td
+                                  class="user-risk-radar-table__value"
+                                  :class="{ 'user-risk-radar-table__value--emphasis': ex.emphasis }"
+                                >
+                                  {{ ex.value }}
+                                </td>
+                              </template>
+                              <td
+                                v-if="chunk.length < RADAR_FACT_PAIR_COLUMNS"
+                                :colspan="(RADAR_FACT_PAIR_COLUMNS - chunk.length) * 2"
+                                class="user-risk-radar-table__pad"
+                              ></td>
+                            </tr>
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  </template>
+                  <template v-else>
+                    <div class="user-risk-radar-table-scroll">
+                      <table
+                        class="user-risk-radar-table user-risk-radar-table--multi"
+                        aria-label="全景雷达数据"
+                      >
+                        <thead>
+                          <tr>
+                            <template
+                              v-for="hi in radarPairHeadIndexes"
+                              :key="hi"
+                            >
+                              <th scope="col">
+                                项目
+                              </th>
+                              <th scope="col">
+                                内容
+                              </th>
+                            </template>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <tr
+                            v-for="(chunk, ci) in chunkRadarFactPairs(radarV4CardItem.facts, RADAR_FACT_PAIR_COLUMNS)"
+                            :key="ci"
+                          >
+                            <template
+                              v-for="(fl, idx) in chunk"
+                              :key="idx"
+                            >
+                              <td class="user-risk-radar-table__label">
+                                {{ fl.label }}
+                              </td>
+                              <td
+                                class="user-risk-radar-table__value"
+                                :class="{ 'user-risk-radar-table__value--emphasis': fl.emphasis }"
+                              >
+                                {{ fl.value }}
+                              </td>
+                            </template>
+                            <td
+                              v-if="chunk.length < RADAR_FACT_PAIR_COLUMNS"
+                              :colspan="(RADAR_FACT_PAIR_COLUMNS - chunk.length) * 2"
+                              class="user-risk-radar-table__pad"
+                            ></td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </template>
                 </div>
               </div>
             </div>
@@ -1016,24 +1236,12 @@ function handleUserRiskDialogClosed() {
 
     <template #footer>
       <div
-        v-if="riskDialogMainTab !== 'radar'"
+        v-if="riskDialogMainTab === 'order7'"
         class="user-risk-dialog-footer"
       >
-        <p class="user-risk-dialog-footer__hint">
-          「一键查询七项」将按顺序依次调用与先享后付下单一致的 7 个 <code>risk-slot</code>（运营商二要素、在网时长、运营商状态、法院、被执行人、三要素、探针 C），写入库内风控快照；与预审「全量」或全景雷达无关。单条仍可用列表内「手动查询」；雷达请在「雷达风控」页签操作。
-        </p>
         <div class="user-risk-dialog-footer__actions">
           <el-button @click="dialogVisible = false">
             关闭
-          </el-button>
-          <el-button
-            type="warning"
-            plain
-            :loading="fullRiskCheckLoading"
-            :disabled="riskDialogBootLoading || manualRiskSlotLoading !== null || !userRiskSnapshot?.configured"
-            @click="runFullUserRiskCheck"
-          >
-            一键查询七项
           </el-button>
         </div>
       </div>
@@ -1072,6 +1280,51 @@ function handleUserRiskDialogClosed() {
   display: flex;
   flex-direction: column;
   gap: 16px;
+}
+
+.user-risk-basic-tab {
+  gap: 12px;
+}
+
+.user-risk-basic-intro {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: #64748b;
+}
+
+.user-risk-basic-desc {
+  margin-top: 0;
+}
+
+.user-risk-basic-quota {
+  font-weight: 600;
+  color: #15803d;
+}
+
+.credit-badge {
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  border-radius: 999px;
+  padding: 0 10px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.badge-ok {
+  color: #1d4ed8;
+  background: #dbeafe;
+}
+
+.badge-pending {
+  color: #b45309;
+  background: #fef3c7;
+}
+
+.badge-risk {
+  color: #b91c1c;
+  background: #fee2e2;
 }
 
 .user-risk-api-card__slot-key {
@@ -1134,76 +1387,122 @@ function handleUserRiskDialogClosed() {
   margin-top: 0;
 }
 
-.risk-hero {
-  display: grid;
-  gap: 14px;
-  padding: 14px 16px;
-  border-radius: 12px;
-  background: linear-gradient(135deg, #f8fafc 0%, #eef2ff 48%, #faf5ff 100%);
-  border: 1px solid rgba(99, 102, 241, 0.18);
-}
-
-.risk-hero.risk-hero--tone-neutral {
-  background: linear-gradient(135deg, #f8fafc 0%, #eef2ff 48%, #faf5ff 100%);
-  border-color: rgba(99, 102, 241, 0.18);
-}
-
-.risk-hero.risk-hero--tone-success {
-  background: linear-gradient(135deg, #ecfdf5 0%, #d1fae5 42%, #f0fdf4 100%);
-  border-color: rgba(16, 185, 129, 0.4);
-}
-
-.risk-hero.risk-hero--tone-danger {
-  background: linear-gradient(135deg, #fef2f2 0%, #fee2e2 42%, #fff1f2 100%);
-  border-color: rgba(239, 68, 68, 0.42);
-}
-
-.risk-hero.risk-hero--tone-warning {
-  background: linear-gradient(135deg, #fffbeb 0%, #fef3c7 42%, #fff7ed 100%);
-  border-color: rgba(245, 158, 11, 0.48);
-}
-
-.risk-hero__decision-tag {
-  font-weight: 600;
-}
-
-.risk-hero__main {
+.user-risk-radar-facts-wrap {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 10px 12px;
-}
-
-.risk-hero__label {
-  font-size: 13px;
-  color: #64748b;
-  font-weight: 500;
-}
-
-.risk-hero__status {
-  margin-left: 4px;
-}
-
-.risk-hero__main--stack {
   flex-direction: column;
-  align-items: flex-start;
+  gap: 16px;
 }
 
-.risk-real-chips {
+.user-risk-radar-report-note {
+  margin: 0;
+  padding: 10px 12px;
+  font-size: 13px;
+  line-height: 1.55;
+  color: #334155;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+}
+
+.user-risk-radar-sec {
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
   gap: 8px;
 }
 
-.risk-success-rate {
-  width: 100%;
+.user-risk-radar-sec__head {
+  padding: 0 2px;
 }
 
-.risk-success-rate__label {
-  display: block;
+.user-risk-radar-sec__title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+  color: #0f172a;
+  letter-spacing: 0.02em;
+}
+
+.user-risk-radar-sec__sub {
+  margin: 4px 0 0;
   font-size: 12px;
+  line-height: 1.45;
   color: #64748b;
-  margin-bottom: 6px;
+}
+
+.user-risk-radar-table-scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  border-radius: 8px;
+  border: 1px solid #e2e8f0;
+}
+
+.user-risk-radar-table {
+  width: 100%;
+  min-width: 720px;
+  border-collapse: collapse;
+  font-size: 12px;
+  background: #fff;
+}
+
+.user-risk-radar-table--multi {
+  table-layout: fixed;
+}
+
+.user-risk-radar-table--multi .user-risk-radar-table__label {
+  width: 15%;
+  max-width: none;
+}
+
+.user-risk-radar-table__pad {
+  border-bottom: 1px solid #f1f5f9;
+  background: #fafbfc;
+}
+.user-risk-radar-table thead th {
+  text-align: left;
+  padding: 8px 12px;
+  font-weight: 600;
+  color: #475569;
+  background: linear-gradient(180deg, #f1f5f9 0%, #e8eef5 100%);
+  border-bottom: 1px solid #cbd5e1;
+  white-space: nowrap;
+}
+
+.user-risk-radar-table tbody td {
+  padding: 8px 12px;
+  border-bottom: 1px solid #f1f5f9;
+  vertical-align: top;
+}
+
+.user-risk-radar-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.user-risk-radar-table tbody tr:nth-child(even) td {
+  background: #fafbfc;
+}
+
+.user-risk-radar-table__label {
+  width: 46%;
+  max-width: 280px;
+  color: #334155;
+  font-weight: 500;
+}
+
+.user-risk-radar-table__value {
+  color: #0f172a;
+  word-break: break-word;
+}
+
+.user-risk-radar-table__value--emphasis {
+  font-weight: 700;
+  color: #1d4ed8;
+}
+
+.user-risk-radar-table__empty {
+  text-align: center;
+  color: #94a3b8;
+  font-size: 13px;
+  padding: 16px 12px;
 }
 
 .risk-desc-table {
@@ -1511,6 +1810,15 @@ function handleUserRiskDialogClosed() {
 
 .user-risk-flat-section__head--simple {
   margin-bottom: 0;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.user-risk-order7-batch-btn {
+  flex-shrink: 0;
 }
 
 .user-risk-simple-hint {
@@ -1518,6 +1826,112 @@ function handleUserRiskDialogClosed() {
   font-size: 12px;
   color: #64748b;
   line-height: 1.45;
+}
+
+.user-risk-order7-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+@media (min-width: 1100px) {
+  .user-risk-order7-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .user-risk-order7-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.user-risk-order7-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #fff;
+}
+
+.user-risk-order7-card__head {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+}
+
+.user-risk-order7-card__title {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+  font-size: 13px;
+  line-height: 1.35;
+  color: #0f172a;
+}
+
+.user-risk-order7-card__note {
+  margin: 0;
+  font-size: 11px;
+  color: #64748b;
+  line-height: 1.4;
+}
+
+.user-risk-order7-card__err {
+  margin: 0;
+  font-size: 11px;
+  color: #b91c1c;
+  line-height: 1.4;
+}
+
+.user-risk-order7-card__facts {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 4px 10px;
+  margin-top: 2px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.user-risk-order7-fact {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: baseline;
+  gap: 4px 6px;
+  min-width: 0;
+}
+
+.user-risk-order7-fact__label {
+  flex-shrink: 0;
+  color: #64748b;
+  white-space: nowrap;
+}
+
+.user-risk-order7-fact__value {
+  flex: 1;
+  min-width: 0;
+  color: #334155;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.user-risk-order7-fact__value--emphasis {
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.user-risk-order7-card__foot {
+  margin-top: auto;
+  padding-top: 4px;
+}
+
+.user-risk-order7-card__btn {
+  width: 100%;
+  font-weight: 600;
 }
 
 .user-risk-simple-list {
@@ -2091,6 +2505,7 @@ function handleUserRiskDialogClosed() {
 .risk-detail-dialog.el-dialog {
   border-radius: 14px;
   overflow: hidden;
+  max-width: min(960px, calc(100vw - 24px));
 }
 
 .risk-detail-dialog .el-dialog__header {

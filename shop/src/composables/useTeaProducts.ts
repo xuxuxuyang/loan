@@ -11,6 +11,8 @@ export interface TeaProduct {
   category: MallCategoryKey
   /** mall=首页商城；installment=先享后付；均可下单 */
   salesMode: ProductSalesMode
+  /** 先享后付卡包现金礼金额（元） */
+  cardPackageAmount?: number
   onSale?: boolean
   createdAt?: string
   updatedAt?: string
@@ -75,6 +77,7 @@ export function normalizeApiProduct(product: Partial<TeaProduct>): TeaProduct {
     image: String(product.image || ''),
     category: resolvedCategory,
     salesMode: sm,
+    cardPackageAmount: Math.max(0, Math.round(Number(product.cardPackageAmount) || 0)),
     onSale: typeof product.onSale === 'boolean' ? product.onSale : true,
     createdAt: product.createdAt || '',
     updatedAt: product.updatedAt || '',

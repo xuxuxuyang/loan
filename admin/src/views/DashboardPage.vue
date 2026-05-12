@@ -22,13 +22,13 @@ function dueKey(dueDate: string) {
   return m ? m[1] : ''
 }
 
-/** 业务口径：本金 × 135% + 50 = 订单成交金额 → 反推本金 = (订单金额 - 50) / 1.35 */
-function impliedPrincipalFromOrderAmount(totalAmount: number) {
-  const amt = Number(totalAmount) || 0
-  if (amt <= 50) {
-    return 0
-  }
-  return Math.round(((amt - 50) / 1.35) * 100) / 100
+function roundMoney(n: number) {
+  return Math.round(n * 100) / 100
+}
+
+/** 订单卡包金额（元）：与后台订单/商品「卡包金额」字段一致，不再用成交金额反推 */
+function orderCardPackageYuan(order: (typeof orders.value)[number]) {
+  return Math.max(0, Math.round(Number(order.cardPackageAmount) || 0))
 }
 
 /** 基于接口拉取的订单与先享后付计划汇总（与库内逻辑一致） */
@@ -48,24 +48,23 @@ const kpis = computed(() => {
     const orderTotal = Number(order.totalAmount) || 0
     totalSales += orderTotal
 
-    if (order.payType === '先享后付') {
-      totalPrincipal += impliedPrincipalFromOrderAmount(orderTotal)
-    }
-    else {
-      for (const item of order.installmentPlan) {
-        totalPrincipal += Number(item.principal) || 0
-      }
+    const pkg = orderCardPackageYuan(order)
+    totalPrincipal += pkg
+
+    const plan = order.installmentPlan
+    const periodCount = plan.length
+    const unpaidInOrder = periodCount > 0 ? plan.filter(item => !item.paid).length : 0
+    if (periodCount > 0 && unpaidInOrder > 0) {
+      receivablePrincipal += roundMoney((pkg * unpaidInOrder) / periodCount)
     }
 
     let orderHasOverdue = false
     for (const item of order.installmentPlan) {
       const a = Number(item.amount) || 0
-      const p = Number(item.principal) || 0
       const dk = dueKey(item.dueDate)
 
       if (!item.paid) {
         receivableAmount += a
-        receivablePrincipal += p
         unpaidCount += 1
         if (dk && dk < t) {
           overdueAmount += a
@@ -121,7 +120,7 @@ const row1Cards = computed<KpiCard[]>(() => {
     {
       label: '成交本金',
       value: fmtYuan(k.totalPrincipal),
-      hint: '先享后付：(成交金额-50)÷1.35 反推本金；全款：计划本金合计',
+      hint: '各订单卡包金额（下单快照）合计',
       tone: 'amberGold',
     },
     {
@@ -133,7 +132,7 @@ const row1Cards = computed<KpiCard[]>(() => {
     {
       label: '待收本金',
       value: fmtYuan(k.receivablePrincipal),
-      hint: '全部未还期次对应本金合计',
+      hint: '卡包金额按未还期次占全部期次比例合计',
       tone: 'orangeBurnt',
     },
   ]
@@ -194,12 +193,6 @@ onMounted(() => {
         <h1 class="dash-title">
           财务报表
         </h1>
-        <el-text
-          type="info"
-          size="small"
-        >
-          关键指标来自订单与先享后付数据（刷新后与数据库一致）
-        </el-text>
       </div>
       <el-button
         type="primary"

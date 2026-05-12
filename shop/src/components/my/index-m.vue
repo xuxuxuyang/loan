@@ -132,6 +132,10 @@ async function handleService(key: string) {
     await smartNavigate('/address')
     return
   }
+  if (key === 'service') {
+    await smartNavigate('/cs-chat')
+    return
+  }
   ElMessage.info('该功能开发中')
 }
 </script>

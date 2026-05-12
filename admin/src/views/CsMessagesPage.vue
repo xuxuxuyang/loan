@@ -1,9 +1,12 @@
 <script setup lang="ts">
-import { computed, reactive, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { ChatDotRound } from '@element-plus/icons-vue'
+import { ElMessage } from 'element-plus'
+import { withAdminAuthHeaders } from '../composables/useAdminApi'
 
-/** 模拟会话列表（后续可对接真实在线用户与消息接口） */
-interface MockSession {
+const MALL_API_BASE = `${(import.meta.env.VITE_MALL_API_BASE || 'http://localhost:3110/api').replace(/\/$/, '')}`
+
+interface SessionRow {
   id: string
   userName: string
   lastMessage: string
@@ -12,89 +15,198 @@ interface MockSession {
   unread: number
 }
 
-interface MockMsg {
+interface ChatMessage {
   id: string
-  from: 'user' | 'agent'
+  role: 'user' | 'agent'
   text: string
-  time: string
+  createdAt: string
+  agentName?: string
 }
 
-const sessions = ref<MockSession[]>([
-  {
-    id: 's1',
-    userName: '访客_8921',
-    lastMessage: '先享后付审核大概要多久？',
-    lastAt: '14:32',
-    online: true,
-    unread: 2,
-  },
-  {
-    id: 's2',
-    userName: '李**',
-    lastMessage: '好的，谢谢',
-    lastAt: '昨天',
-    online: false,
-    unread: 0,
-  },
-  {
-    id: 's3',
-    userName: '王**',
-    lastMessage: '物流单号能改吗',
-    lastAt: '周一',
-    online: true,
-    unread: 0,
-  },
-])
-
-const messagesBySession = reactive<Record<string, MockMsg[]>>({
-  s1: [
-    { id: 'm1', from: 'user', text: '你好，我想问下先享后付审核大概要多久？', time: '14:28' },
-    { id: 'm2', from: 'agent', text: '您好，人工审核一般 1 个工作日内完成，请耐心等待。', time: '14:30' },
-    { id: 'm3', from: 'user', text: '如果补充材料是发到哪个邮箱？', time: '14:31' },
-  ],
-  s2: [
-    { id: 'm1', from: 'user', text: '还款日可以调整吗？', time: '昨天 10:12' },
-    { id: 'm2', from: 'agent', text: '目前还款日按合同约定执行，暂不支持单独调整。', time: '昨天 10:18' },
-    { id: 'm3', from: 'user', text: '好的，谢谢', time: '昨天 10:20' },
-  ],
-  s3: [
-    { id: 'm1', from: 'user', text: '物流单号能改吗', time: '周一 09:05' },
-  ],
-})
-
-const activeId = ref(sessions.value[0]?.id ?? '')
+const sessions = ref<SessionRow[]>([])
+const activeId = ref('')
 const draft = ref('')
+const detailMessages = ref<ChatMessage[]>([])
+const detailTitle = ref('')
+const detailOnline = ref(false)
+const loadingList = ref(false)
+const loadingDetail = ref(false)
+const sending = ref(false)
+let pollTimer: ReturnType<typeof setInterval> | null = null
 
 const activeSession = computed(() => sessions.value.find(s => s.id === activeId.value))
-const currentMessages = computed(() => messagesBySession[activeId.value] ?? [])
+
+function formatListTime(iso: string) {
+  if (!iso) {
+    return ''
+  }
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) {
+    return iso
+  }
+  const now = new Date()
+  const sameDay = d.toDateString() === now.toDateString()
+  if (sameDay) {
+    return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+  }
+  const yest = new Date(now)
+  yest.setDate(yest.getDate() - 1)
+  if (d.toDateString() === yest.toDateString()) {
+    return '昨天'
+  }
+  return d.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+}
+
+function formatMsgTime(iso: string) {
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) {
+    return ''
+  }
+  return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+}
+
+async function fetchSessions() {
+  loadingList.value = true
+  try {
+    const response = await fetch(`${MALL_API_BASE}/admin/cs/sessions`, {
+      method: 'GET',
+      headers: withAdminAuthHeaders(),
+    })
+    const payload = await response.json() as {
+      success?: boolean
+      msg?: string
+      data?: SessionRow[]
+    }
+    if (!response.ok || payload.success === false) {
+      throw new Error(payload.msg || `加载失败 (${response.status})`)
+    }
+    const list = Array.isArray(payload.data) ? payload.data : []
+    sessions.value = list.map(s => ({
+      ...s,
+      lastAt: formatListTime(s.lastAt),
+    }))
+    if (!activeId.value && list.length) {
+      activeId.value = list[0].id
+    }
+    else if (activeId.value && !list.some(s => s.id === activeId.value)) {
+      activeId.value = list[0]?.id ?? ''
+    }
+  }
+  catch (e) {
+    console.error(e)
+  }
+  finally {
+    loadingList.value = false
+  }
+}
+
+async function fetchDetail(id: string) {
+  if (!id) {
+    detailMessages.value = []
+    return
+  }
+  loadingDetail.value = true
+  try {
+    const response = await fetch(
+      `${MALL_API_BASE}/admin/cs/sessions/${encodeURIComponent(id)}?read=1`,
+      { method: 'GET', headers: withAdminAuthHeaders() },
+    )
+    const payload = await response.json() as {
+      success?: boolean
+      msg?: string
+      data?: { displayName?: string, online?: boolean, messages?: ChatMessage[] }
+    }
+    if (!response.ok || payload.success === false) {
+      throw new Error(payload.msg || `加载会话失败 (${response.status})`)
+    }
+    const d = payload.data
+    detailTitle.value = String(d?.displayName || '')
+    detailOnline.value = Boolean(d?.online)
+    detailMessages.value = Array.isArray(d?.messages) ? d.messages : []
+  }
+  catch (e) {
+    console.error(e)
+    ElMessage.error(e instanceof Error ? e.message : '加载会话失败')
+  }
+  finally {
+    loadingDetail.value = false
+  }
+}
 
 function selectSession(id: string) {
   activeId.value = id
   const s = sessions.value.find(x => x.id === id)
-  if (s && s.unread > 0)
+  if (s && s.unread > 0) {
     s.unread = 0
+  }
+  void fetchDetail(id).then(() => fetchSessions())
 }
 
-function mockSend() {
+async function sendReply() {
   const t = draft.value.trim()
-  if (!t || !activeId.value)
+  if (!t || !activeId.value || sending.value) {
     return
-  const list = messagesBySession[activeId.value]
-  if (!list)
-    return
-  list.push({
-    id: `local-${Date.now()}`,
-    from: 'agent',
-    text: t,
-    time: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }),
-  })
-  draft.value = ''
-  const s = sessions.value.find(x => x.id === activeId.value)
-  if (s) {
-    s.lastMessage = t
-    s.lastAt = '刚刚'
+  }
+  sending.value = true
+  try {
+    const response = await fetch(
+      `${MALL_API_BASE}/admin/cs/sessions/${encodeURIComponent(activeId.value)}/messages`,
+      {
+        method: 'POST',
+        headers: withAdminAuthHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ text: t }),
+      },
+    )
+    const payload = await response.json() as {
+      success?: boolean
+      msg?: string
+      data?: { messages?: ChatMessage[] }
+    }
+    if (!response.ok || payload.success === false) {
+      throw new Error(payload.msg || '发送失败')
+    }
+    draft.value = ''
+    if (payload.data?.messages) {
+      detailMessages.value = payload.data.messages
+    }
+    await fetchSessions()
+  }
+  catch (e) {
+    ElMessage.error(e instanceof Error ? e.message : '发送失败')
+  }
+  finally {
+    sending.value = false
   }
 }
+
+function startPolling() {
+  stopPolling()
+  pollTimer = setInterval(() => {
+    void fetchSessions()
+    if (activeId.value) {
+      void fetchDetail(activeId.value)
+    }
+  }, 2500)
+}
+
+function stopPolling() {
+  if (pollTimer) {
+    clearInterval(pollTimer)
+    pollTimer = null
+  }
+}
+
+onMounted(async () => {
+  await fetchSessions()
+  if (activeId.value) {
+    await fetchDetail(activeId.value)
+  }
+  startPolling()
+})
+
+onUnmounted(() => {
+  stopPolling()
+})
 </script>
 
 <template>
@@ -108,7 +220,7 @@ function mockSend() {
           客服消息
         </h2>
         <p class="cs-banner-desc">
-          以下为模拟界面：左侧会话、右侧聊天记录与输入区。后续可接入 WebSocket / 轮询与真实用户体系。
+          与商城 H5 在线客服实时互通：用户从首页「客服」进入聊天；本页轮询拉取会话与回复。超级管理员与审核员可访问。
         </p>
       </div>
     </div>
@@ -117,7 +229,7 @@ function mockSend() {
       <aside class="cs-sessions">
         <div class="cs-sessions-head">
           会话列表
-          <span class="cs-sessions-hint">演示数据</span>
+          <span class="cs-sessions-hint">{{ loadingList ? '加载中…' : `${sessions.length} 个` }}</span>
         </div>
         <ul class="cs-session-list">
           <li
@@ -146,62 +258,77 @@ function mockSend() {
               class="cs-unread"
             >{{ s.unread > 99 ? '99+' : s.unread }}</span>
           </li>
+          <li
+            v-if="!sessions.length && !loadingList"
+            class="cs-empty-list"
+          >
+            暂无用户进线
+          </li>
         </ul>
       </aside>
 
       <section class="cs-chat">
         <header
-          v-if="activeSession"
+          v-if="activeSession || detailTitle"
           class="cs-chat-head"
         >
           <div>
-            <strong>{{ activeSession.userName }}</strong>
+            <strong>{{ detailTitle || activeSession?.userName || '—' }}</strong>
             <span
               class="cs-status-pill"
-              :class="activeSession.online ? 'is-online' : 'is-offline'"
+              :class="detailOnline ? 'is-online' : 'is-offline'"
             >
-              {{ activeSession.online ? '在线' : '离线' }}
+              {{ detailOnline ? '在线' : '离线' }}
             </span>
           </div>
-          <span class="cs-chat-sub">会话 ID：{{ activeSession.id }}（模拟）</span>
+          <span class="cs-chat-sub">会话 ID：{{ activeSession?.id || activeId || '—' }}</span>
         </header>
         <div class="cs-messages">
-          <div
-            v-for="m in currentMessages"
-            :key="m.id"
-            class="cs-msg"
-            :class="m.from === 'user' ? 'cs-msg--user' : 'cs-msg--agent'"
-          >
-            <div class="cs-msg-bubble">
-              {{ m.text }}
+          <template v-if="loadingDetail && !detailMessages.length">
+            <p class="cs-empty">
+              加载中…
+            </p>
+          </template>
+          <template v-else>
+            <div
+              v-for="m in detailMessages"
+              :key="m.id"
+              class="cs-msg"
+              :class="m.role === 'user' ? 'cs-msg--user' : 'cs-msg--agent'"
+            >
+              <div class="cs-msg-bubble">
+                {{ m.text }}
+              </div>
+              <div class="cs-msg-meta">
+                {{ m.role === 'user' ? '客户' : (m.agentName || '客服') }} · {{ formatMsgTime(m.createdAt) }}
+              </div>
             </div>
-            <div class="cs-msg-meta">
-              {{ m.from === 'user' ? '客户' : '客服' }} · {{ m.time }}
-            </div>
-          </div>
-          <p
-            v-if="!currentMessages.length"
-            class="cs-empty"
-          >
-            暂无消息
-          </p>
+            <p
+              v-if="!detailMessages.length"
+              class="cs-empty"
+            >
+              暂无消息
+            </p>
+          </template>
         </div>
         <footer class="cs-composer">
           <el-input
             v-model="draft"
             type="textarea"
             :rows="2"
-            maxlength="500"
+            maxlength="2000"
             show-word-limit
-            placeholder="输入回复（仅前端演示，不会真实发送）"
-            @keydown.enter.exact.prevent="mockSend"
+            placeholder="输入回复后发送给用户"
+            :disabled="!activeId"
+            @keydown.enter.exact.prevent="sendReply"
           />
           <el-button
             type="primary"
-            :disabled="!draft.trim()"
-            @click="mockSend"
+            :loading="sending"
+            :disabled="!draft.trim() || !activeId"
+            @click="sendReply"
           >
-            发送（模拟）
+            发送
           </el-button>
         </footer>
       </section>
@@ -306,6 +433,13 @@ function mockSend() {
 
 .cs-session-item.is-active {
   background: #e0e7ff;
+}
+
+.cs-empty-list {
+  padding: 24px 12px;
+  text-align: center;
+  font-size: 13px;
+  color: #9ca3af;
 }
 
 .cs-online-dot {

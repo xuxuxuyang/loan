@@ -93,6 +93,7 @@ declare global {
   const useLink: typeof import('vue-router').useLink
   const useMallAuth: typeof import('./composables/useMallAuth').useMallAuth
   const useMallCategories: typeof import('./composables/useTeaProducts').useMallCategories
+  const useMallCsChat: typeof import('./composables/useMallCsChat').useMallCsChat
   const useMallMy: typeof import('./composables/useMallMy').useMallMy
   const useMallOrders: typeof import('./composables/useMallOrders').useMallOrders
   const useMallShowcaseProducts: typeof import('./composables/useTeaProducts').useMallShowcaseProducts
@@ -117,6 +118,9 @@ declare global {
   // @ts-ignore
   export type { RegisterPayload } from './composables/useMallAuth'
   import('./composables/useMallAuth')
+  // @ts-ignore
+  export type { CsChatMessage, CsOpenPayload } from './composables/useMallCsChat'
+  import('./composables/useMallCsChat')
   // @ts-ignore
   export type { MallMySummary, MallAddressItem, MallAddressPayload, MallBankCardItem, MallBillItem, MallBillSummary } from './composables/useMallMy'
   import('./composables/useMallMy')
@@ -220,6 +224,7 @@ declare module 'vue' {
     readonly useLink: UnwrapRef<typeof import('vue-router')['useLink']>
     readonly useMallAuth: UnwrapRef<typeof import('./composables/useMallAuth')['useMallAuth']>
     readonly useMallCategories: UnwrapRef<typeof import('./composables/useTeaProducts')['useMallCategories']>
+    readonly useMallCsChat: UnwrapRef<typeof import('./composables/useMallCsChat')['useMallCsChat']>
     readonly useMallMy: UnwrapRef<typeof import('./composables/useMallMy')['useMallMy']>
     readonly useMallOrders: UnwrapRef<typeof import('./composables/useMallOrders')['useMallOrders']>
     readonly useMallShowcaseProducts: UnwrapRef<typeof import('./composables/useTeaProducts')['useMallShowcaseProducts']>

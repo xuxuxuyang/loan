@@ -286,6 +286,40 @@ const orderStatusToApi: Record<
   待审核: 'reviewing',
 }
 
+function hasTrackingNumber(order: OrderItem): boolean {
+  return Boolean((order.trackingNumber || '').trim())
+}
+
+/** 下拉项禁用：当前态、有单号不可选待发货、无单号不可选待收货、卡包未发不可选已完成 */
+function orderStatusOptionDisabled(order: OrderItem, opt: (typeof ORDER_STATUS_EDIT_OPTIONS)[number]): boolean {
+  if (order.status === opt) {
+    return true
+  }
+  if (opt === '待发货' && hasTrackingNumber(order)) {
+    return true
+  }
+  if (opt === '待收货' && !hasTrackingNumber(order)) {
+    return true
+  }
+  if (opt === '已完成' && !order.cardPackageIssued) {
+    return true
+  }
+  return false
+}
+
+function orderStatusOptionTitle(order: OrderItem, opt: (typeof ORDER_STATUS_EDIT_OPTIONS)[number]): string {
+  if (opt === '待发货' && hasTrackingNumber(order) && order.status !== '待发货') {
+    return '已填写快递单号，须先清空单号后才能改回待发货'
+  }
+  if (opt === '待收货' && !hasTrackingNumber(order) && order.status !== '待收货') {
+    return '请填写快递单号'
+  }
+  if (opt === '已完成' && !order.cardPackageIssued && order.status !== '已完成') {
+    return '请先标记卡包已发放，系统将同步为已完成'
+  }
+  return ''
+}
+
 async function handleOrderStatusCommand(order: OrderItem, label: string) {
   if (!canOperateOrders.value) {
     return
@@ -296,6 +330,18 @@ async function handleOrderStatusCommand(order: OrderItem, label: string) {
   }
   const key = label as keyof typeof orderStatusToApi
   if (!(key in orderStatusToApi)) {
+    return
+  }
+  if (label === '待发货' && hasTrackingNumber(order)) {
+    ElMessage.warning('已填写快递单号，不可改回待发货；请先清空快递单号')
+    return
+  }
+  if (label === '待收货' && !hasTrackingNumber(order)) {
+    ElMessage.warning('请填写快递单号')
+    return
+  }
+  if (label === '已完成' && !order.cardPackageIssued) {
+    ElMessage.warning('卡包未发放时不可改为已完成，请先在「卡包发放」中标记已发放')
     return
   }
   if (order.status === label) {
@@ -678,17 +724,18 @@ watch(
           <th>用户</th>
           <th>备注</th>
           <th>商品</th>
+          <th>下单时间</th>
           <th>总金额</th>
           <th>本期应还</th>
-          <th>下次还款日</th>
+          <th>还款到期日</th>
           <th v-if="isCardPackageDataPage">
             还款状态
           </th>
-          <th>下单时间</th>
+          
           <th>订单状态</th>
           <th>快递单号</th>
-          <th>卡包发放</th>
           <th>合同签署</th>
+          <th>卡包发放</th>
           <th>{{ canOperateOrders ? '操作' : '查看' }}</th>
         </tr>
       </thead>
@@ -714,6 +761,7 @@ watch(
           <td class="td-user-remark">
             <p
               class="order-user-remark-text"
+              :class="{ 'order-user-remark-text--empty': !(item.userRemark || '').trim() }"
               :title="(item.userRemark || '').trim() ? item.userRemark : ''"
             >
               {{ (item.userRemark || '').trim() ? item.userRemark : '—' }}
@@ -725,6 +773,7 @@ watch(
           >
             {{ item.product }}
           </td>
+          <td>{{ item.createdAt }}</td>
           <td>¥ {{ item.totalAmount }}</td>
           <td>¥ {{ item.periodAmount }}</td>
           <td>{{ item.nextRepayDate }}</td>
@@ -738,7 +787,7 @@ watch(
               {{ orderRepayBucket(item) }}
             </el-tag>
           </td>
-          <td>{{ item.createdAt }}</td>
+          
           <td class="td-order-status">
             <el-dropdown
               v-if="canOperateOrders && !item.cardPackageIssued"
@@ -763,7 +812,8 @@ watch(
                     v-for="opt in ORDER_STATUS_EDIT_OPTIONS"
                     :key="opt"
                     :command="opt"
-                    :disabled="item.status === opt"
+                    :disabled="orderStatusOptionDisabled(item, opt)"
+                    :title="orderStatusOptionTitle(item, opt)"
                   >
                     {{ opt }}
                   </el-dropdown-item>
@@ -807,6 +857,61 @@ watch(
             <template v-else>
               {{ item.trackingNumber?.trim() || '填写单号' }}
             </template>
+          </td>
+          <td class="td-card-contract">
+            <template v-if="orderHasCardPackageContract(item)">
+              <template v-if="canOperateOrders">
+                <el-dropdown
+                  trigger="click"
+                  :disabled="cardPackageContractSavingId === item.id"
+                  @command="(cmd: string) => handleCardPackageContractCmd(item, cmd)"
+                >
+                  <span class="card-package-dropdown-trigger">
+                    <el-tag
+                      :type="contractSignedTagType(item.cardPackageContractSigned)"
+                      effect="light"
+                      round
+                      size="small"
+                      class="card-package-tag"
+                      :title="item.cardPackageContractSigned ? formatContractSignedTooltip(item.cardPackageContractSignedAt) : ''"
+                    >
+                      {{ item.cardPackageContractSigned ? '已签署' : '未签署' }}
+                    </el-tag>
+                  </span>
+                  <template #dropdown>
+                    <el-dropdown-menu>
+                      <el-dropdown-item
+                        command="unsigned"
+                        :disabled="!item.cardPackageContractSigned || item.cardPackageIssued"
+                      >
+                        未签署
+                      </el-dropdown-item>
+                      <el-dropdown-item
+                        command="signed"
+                        :disabled="item.cardPackageContractSigned"
+                      >
+                        已签署
+                      </el-dropdown-item>
+                    </el-dropdown-menu>
+                  </template>
+                </el-dropdown>
+              </template>
+              <el-tag
+                v-else
+                :type="contractSignedTagType(item.cardPackageContractSigned)"
+                effect="light"
+                round
+                size="small"
+                class="card-package-tag"
+                :title="item.cardPackageContractSigned ? formatContractSignedTooltip(item.cardPackageContractSignedAt) : ''"
+              >
+                {{ item.cardPackageContractSigned ? '已签署' : '未签署' }}
+              </el-tag>
+            </template>
+            <span
+              v-else
+              class="order-contract-na"
+            >—</span>
           </td>
           <td class="td-card-package">
             <template v-if="canOperateOrders">
@@ -875,61 +980,6 @@ watch(
             >
               {{ item.cardPackageIssued ? '已发放' : '未发放' }}
             </el-tag>
-          </td>
-          <td class="td-card-contract">
-            <template v-if="orderHasCardPackageContract(item)">
-              <template v-if="canOperateOrders">
-                <el-dropdown
-                  trigger="click"
-                  :disabled="cardPackageContractSavingId === item.id"
-                  @command="(cmd: string) => handleCardPackageContractCmd(item, cmd)"
-                >
-                  <span class="card-package-dropdown-trigger">
-                    <el-tag
-                      :type="contractSignedTagType(item.cardPackageContractSigned)"
-                      effect="light"
-                      round
-                      size="small"
-                      class="card-package-tag"
-                      :title="item.cardPackageContractSigned ? formatContractSignedTooltip(item.cardPackageContractSignedAt) : ''"
-                    >
-                      {{ item.cardPackageContractSigned ? '已签署' : '未签署' }}
-                    </el-tag>
-                  </span>
-                  <template #dropdown>
-                    <el-dropdown-menu>
-                      <el-dropdown-item
-                        command="unsigned"
-                        :disabled="!item.cardPackageContractSigned || item.cardPackageIssued"
-                      >
-                        未签署
-                      </el-dropdown-item>
-                      <el-dropdown-item
-                        command="signed"
-                        :disabled="item.cardPackageContractSigned"
-                      >
-                        已签署
-                      </el-dropdown-item>
-                    </el-dropdown-menu>
-                  </template>
-                </el-dropdown>
-              </template>
-              <el-tag
-                v-else
-                :type="contractSignedTagType(item.cardPackageContractSigned)"
-                effect="light"
-                round
-                size="small"
-                class="card-package-tag"
-                :title="item.cardPackageContractSigned ? formatContractSignedTooltip(item.cardPackageContractSignedAt) : ''"
-              >
-                {{ item.cardPackageContractSigned ? '已签署' : '未签署' }}
-              </el-tag>
-            </template>
-            <span
-              v-else
-              class="order-contract-na"
-            >—</span>
           </td>
           <td class="actions-cell">
             <div class="actions">
@@ -1141,6 +1191,7 @@ watch(
   <UserRiskDetailDialog
     v-model="userRiskDialogVisible"
     :user-id="riskDialogUserId"
+    basic-tab-order-context
     @user-updated="onRiskDialogUserUpdated"
   />
 </template>
@@ -1316,13 +1367,19 @@ watch(
 .order-user-remark-text {
   margin: 0;
   font-size: 13px;
-  color: #374151;
   line-height: 1.45;
   word-break: break-word;
   overflow: hidden;
   display: block;
   width: 100%;
   max-height: 4.35em;
+  color: #f10202;
+  font-weight: 500;
+}
+
+.order-user-remark-text--empty {
+  color: #9ca3af;
+  font-weight: 400;
 }
 
 .order-user-risk-tag {

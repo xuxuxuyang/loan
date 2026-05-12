@@ -15,7 +15,12 @@ const emit = defineEmits<{
 }>()
 
 const route = useRoute()
+const router = useRouter()
 const { smartNavigate } = useCustomRouting(route)
+
+function goCustomerService() {
+  void router.push('/cs-chat')
+}
 
 const featuredPillText = computed(() =>
   props.homeProductZone === 'installment'
@@ -47,9 +52,14 @@ function openMallListFor(item: TeaProduct) {
           />
           一站式购手机数码家电美妆
         </div>
-        <div class="service-pill flex h-11 w-11 items-center justify-center rounded-full text-sm">
+        <button
+          type="button"
+          class="service-pill flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-sm cursor-pointer transition active:opacity-85"
+          aria-label="在线客服"
+          @click="goCustomerService"
+        >
           客服
-        </div>
+        </button>
       </div>
 
       <div class="feature-card mb-5 rounded-3xl p-5">

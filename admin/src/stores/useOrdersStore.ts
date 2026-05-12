@@ -18,6 +18,8 @@ export interface OrderItem {
   /** 收货人手机号；用于关联商城用户并打开与用户页一致的风控档案 */
   receiverPhone: string
   product: string
+  /** 卡包金额（元）：下单时商品卡包 × 数量快照；对账回填后随 GET 订单返回 */
+  cardPackageAmount: number
   totalAmount: number
   periods: number
   periodAmount: number
@@ -87,6 +89,8 @@ interface MallOrderPayload {
   receiverPhone?: string
   receiverAddress?: string
   installmentPlan?: InstallmentItem[]
+  /** 卡包金额（元），与商品卡包配置一致并对账落库 */
+  cardPackageAmount?: number
   cardPackageIssued?: boolean
   cardPackageContractSignedAt?: string | null
   trackingNumber?: string
@@ -220,6 +224,7 @@ function mapMallOrderToAdminOrder(order: MallOrderPayload): OrderItem {
     receiverAddress: String(order.receiverAddress || '').trim(),
     receiverPhone: String(order.receiverPhone || '').trim(),
     product: order.name,
+    cardPackageAmount: Math.max(0, Math.round(Number(order.cardPackageAmount ?? 0))),
     totalAmount: Number(order.totalAmount.toFixed(2)),
     periods,
     periodAmount,

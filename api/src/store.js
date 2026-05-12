@@ -49,6 +49,8 @@ function buildEmptyRaw() {
     bills: [],
     /** 推广渠道（H5 ?channel= 与注册归因） */
     trafficChannels: [],
+    /** 商城客服会话（用户↔客服消息，与 users 可选关联） */
+    csSessions: [],
   }
 }
 
@@ -113,6 +115,7 @@ function shapeDbFromParsed(parsed) {
     bankCards: Array.isArray(parsed.bankCards) ? parsed.bankCards : [],
     bills: Array.isArray(parsed.bills) ? parsed.bills : [],
     trafficChannels: Array.isArray(parsed.trafficChannels) ? parsed.trafficChannels : [],
+    csSessions: Array.isArray(parsed.csSessions) ? parsed.csSessions : [],
   }
   db.users = dedupeUsersById(ensureAdminUser(db.users))
   db.adminAccounts = ensureAdminAccounts(db.adminAccounts)
@@ -126,6 +129,7 @@ function shapeDbFromParsed(parsed) {
     bankCards: db.bankCards,
     bills: db.bills,
     trafficChannels: db.trafficChannels,
+    csSessions: db.csSessions,
   }
 }
 
@@ -152,6 +156,7 @@ function clonePayloadForMongo(db) {
     bankCards: db.bankCards,
     bills: db.bills,
     trafficChannels: Array.isArray(db.trafficChannels) ? db.trafficChannels : [],
+    csSessions: Array.isArray(db.csSessions) ? db.csSessions : [],
   }
   return JSON.parse(JSON.stringify(payload))
 }
@@ -300,6 +305,7 @@ async function importLocalSnapshotToMongo() {
     addresses: snapshot.addresses.length,
     bankCards: snapshot.bankCards.length,
     bills: snapshot.bills.length,
+    csSessions: Array.isArray(snapshot.csSessions) ? snapshot.csSessions.length : 0,
   }
   return { source: sourceUsed, counts }
 }

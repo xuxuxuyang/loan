@@ -35,7 +35,7 @@ const repayDeadlineText = computed(() => {
 
 const billItems = computed(() => [
   { label: '待还金额', value: `￥${pendingRepayTotal.value.toFixed(2)}` },
-  { label: '最晚还款日', value: repayDeadlineText.value },
+  { label: '还款到期日', value: repayDeadlineText.value },
 ])
 async function goBack() {
   await smartNavigate('/my')

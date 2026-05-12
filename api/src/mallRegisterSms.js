@@ -10,23 +10,6 @@ const registerSmsByPhone = new Map()
 const TTL_MS = Number(process.env.MALL_REGISTER_SMS_TTL_MS || 5 * 60 * 1000)
 const RESEND_MS = Number(process.env.MALL_REGISTER_SMS_RESEND_MS || 60 * 1000)
 
-function isProductionLike() {
-  const n = String(process.env.NODE_ENV || '').toLowerCase()
-  return n === 'production' || n === 'prod'
-}
-
-function readMockFlag() {
-  return ['1', 'true', 'yes'].includes(String(process.env.MALL_REGISTER_SMS_MOCK || '').toLowerCase())
-}
-
-/** 未接入真实短信时本地联调用：跳过注册短信校验（生产环境强制关闭） */
-function isRegisterSmsSkipped() {
-  if (isProductionLike()) {
-    return false
-  }
-  return ['1', 'true', 'yes'].includes(String(process.env.MALL_REGISTER_SKIP_SMS || '').toLowerCase())
-}
-
 function pruneStaleEntries() {
   const now = Date.now()
   for (const [phone, row] of registerSmsByPhone.entries()) {
@@ -45,8 +28,9 @@ function buildRegisterSmsMsg(code) {
   const signBracket = String(process.env.MALL_REGISTER_SMS_SIGN_BRACKET || '').trim()
 
   if (!tpl) {
-    const sign = signBracket || '商城'
-    tpl = `【${sign}】您的注册验证码为{code}，5分钟内有效。`
+    // 与运营商备案一致（可整体覆盖：MALL_REGISTER_SMS_MSG_TEMPLATE）
+    const sign = signBracket || '宁波海曙文硕'
+    tpl = `【${sign}】您的注册验证码为{code}，5分钟内有效`
   }
   else if (!/【[^】]+】/.test(tpl) && signBracket) {
     tpl = `【${signBracket}】${tpl}`
@@ -109,22 +93,6 @@ async function sendRegisterVerificationSms(phone) {
     throw err
   }
 
-  if (readMockFlag()) {
-    if (isProductionLike()) {
-      const err = new Error('生产环境禁止 MALL_REGISTER_SMS_MOCK')
-      err.httpStatus = 503
-      throw err
-    }
-    const code = generateCode()
-    registerSmsByPhone.set(phone, {
-      code,
-      expiresAt: now + TTL_MS,
-      lastSentAt: now,
-    })
-    console.info(`[MALL_REGISTER_SMS_MOCK] phone=${phone} code=${code}`)
-    return { mock: true }
-  }
-
   if (!isRiskUpstreamConfigured()) {
     const err = new Error('未配置风控上游（RISK_UPSTREAM_* 或 HD_CLOUD_BASE_URL / HD_CLOUD_APP_ID / HD_CLOUD_APP_KEY）')
     err.httpStatus = 503
@@ -158,7 +126,6 @@ async function sendRegisterVerificationSms(phone) {
     expiresAt: now + TTL_MS,
     lastSentAt: now,
   })
-  return { mock: false }
 }
 
 /**
@@ -190,5 +157,4 @@ function verifyAndConsumeRegisterSms(phone, inputCode) {
 module.exports = {
   sendRegisterVerificationSms,
   verifyAndConsumeRegisterSms,
-  isRegisterSmsSkipped,
 }

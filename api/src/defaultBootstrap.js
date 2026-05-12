@@ -18,7 +18,7 @@ const BOOTSTRAP_ADMIN_USER = {
   locationText: '',
   latitude: 0,
   longitude: 0,
-  creditStatus: '良好',
+  creditStatus: '待风控',
   registerAt: new Date().toISOString(),
   quota: 3000,
   /** 与 API mall pepper + DEFAULT_SUPER_ADMIN_BACKOFFICE_PASSWORD 生成的哈希一致（默认明文 123456） */

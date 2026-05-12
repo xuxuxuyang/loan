@@ -2,8 +2,6 @@
 
 interface ImportMetaEnv {
   readonly VITE_MALL_API_BASE?: string
-  /** 与后端 MALL_REGISTER_SKIP_SMS 联调；生产构建勿设 */
-  readonly VITE_MALL_REGISTER_SKIP_SMS?: string
 }
 
 interface ImportMeta {

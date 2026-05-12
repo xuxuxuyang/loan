@@ -18,12 +18,6 @@ const route = useRoute()
 const { smartNavigate } = useCustomRouting(route)
 const { register, sendRegisterSms } = useMallAuth()
 
-/** 与 API `MALL_REGISTER_SKIP_SMS` 联调：为 true 时隐藏短信并跳过校验（须在 api/.env 同步开启） */
-const skipRegisterSms = computed(() => {
-  const v = String(import.meta.env.VITE_MALL_REGISTER_SKIP_SMS || '').toLowerCase()
-  return v === '1' || v === 'true' || v === 'yes'
-})
-
 const submitting = ref(false)
 const smsSending = ref(false)
 const smsCooldown = ref(0)
@@ -187,7 +181,7 @@ function validateForm() {
     ElMessage.warning('请输入正确的手机号')
     return false
   }
-  if (!skipRegisterSms.value && !/^\d{6}$/.test(form.value.smsCode.trim())) {
+  if (!/^\d{6}$/.test(form.value.smsCode.trim())) {
     ElMessage.warning('请输入 6 位短信验证码')
     return false
   }
@@ -234,7 +228,7 @@ async function handleSubmit() {
   const payload = {
     name: form.value.name.trim(),
     phone: form.value.phone.trim(),
-    smsCode: skipRegisterSms.value ? '000000' : form.value.smsCode.trim(),
+    smsCode: form.value.smsCode.trim(),
     password: pwdSubmit,
     idNumber: form.value.idNumber.trim().toUpperCase(),
     idCardFront: form.value.idCardFront,
@@ -338,12 +332,6 @@ async function goLogin() {
       <p class="text-sm text-white/85">
         先完成实名注册，再开启商城购买与先享后付服务。
       </p>
-      <p
-        v-if="skipRegisterSms"
-        class="mt-2 text-xs text-amber-100/95"
-      >
-        测试模式：已跳过短信验证；上线前请在商城与 API 关闭跳过开关并接入真实短信。
-      </p>
     </div>
 
     <div class="-mt-4 px-4 pb-8">
@@ -374,7 +362,7 @@ async function goLogin() {
             />
           </div>
 
-          <div v-if="!skipRegisterSms">
+          <div>
             <p class="mb-2 text-sm font-medium text-black/75">
               短信验证码
             </p>

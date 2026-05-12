@@ -27,7 +27,7 @@ interface MallUserProfile extends RegisterPayload {
   id: string
   /** 实名身份证号（若后端已存储则用于信誉初审） */
   idNumber?: string
-  creditStatus?: '优秀' | '良好' | '一般' | '风险'
+  creditStatus?: '良好' | '待风控' | '风险'
   /** 授信额度（元）：可下单「商品总额」上限；注册默认见后端 `DEFAULT_USER_QUOTA` */
   quota?: number
   registerAt?: string

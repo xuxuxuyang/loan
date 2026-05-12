@@ -4,7 +4,7 @@ import { ElMessage } from 'element-plus'
 import { withAdminAuthHeaders } from '../composables/useAdminApi'
 import { donePageProgress, startPageProgress } from '../utils/progress'
 
-type AccountRole = 'super_admin' | 'reviewer' | 'customer_service' | 'collector'
+type AccountRole = 'super_admin' | 'reviewer' | 'collector'
 type AccountStatus = 'active' | 'disabled'
 
 interface AdminAccountItem {
@@ -75,7 +75,7 @@ function getRoleClass(role: AccountRole) {
   if (role === 'super_admin') return 'role-chip role-super-admin'
   if (role === 'reviewer') return 'role-chip role-reviewer'
   if (role === 'collector') return 'role-chip role-collector'
-  return 'role-chip role-customer-service'
+  return 'role-chip role-reviewer'
 }
 
 function formatRoleCell(item: AdminAccountItem): string {
@@ -84,7 +84,7 @@ function formatRoleCell(item: AdminAccountItem): string {
   if (item.role === 'super_admin') return '超级管理员'
   if (item.role === 'reviewer') return '审核员'
   if (item.role === 'collector') return '催收员'
-  return '客服'
+  return '审核员'
 }
 
 async function fetchAccounts() {
@@ -521,7 +521,6 @@ onMounted(() => {
             class="form-select"
           >
             <el-option label="审核员" value="reviewer" />
-            <el-option label="客服" value="customer_service" />
             <el-option label="催收员" value="collector" />
           </el-select>
         </label>
@@ -565,7 +564,6 @@ onMounted(() => {
           >
             <el-option label="超级管理员" value="super_admin" />
             <el-option label="审核员" value="reviewer" />
-            <el-option label="客服" value="customer_service" />
             <el-option label="催收员" value="collector" />
           </el-select>
         </label>
