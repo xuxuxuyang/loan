@@ -83,8 +83,8 @@ const allMenus: MenuEntry[] = [
     icon: Goods,
     roles: ['super_admin'],
     children: [
-      { label: '商城产品', path: '/products/mall', icon: Goods },
       { label: '先享后付产品', path: '/products/installment', icon: Goods },
+      { label: '商城产品', path: '/products/mall', icon: Goods },
     ],
   },
   { label: '账号管理', path: '/accounts', icon: Avatar, roles: ['super_admin'] },

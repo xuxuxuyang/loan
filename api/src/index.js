@@ -44,6 +44,8 @@ const {
 const {
   sendRegisterVerificationSms,
   verifyAndConsumeRegisterSms,
+  sendLoginVerificationSms,
+  verifyAndConsumeLoginSms,
 } = require('./mallRegisterSms')
 
 const { buildCardPackageContractViewHtml } = require('./cardPackageContractViewHtml')
@@ -724,7 +726,7 @@ function ensureOrderInstallmentPlan(order) {
 
 /**
  * 历史数据：旧版在内存中把「订单已付 + 先享后付」的首期标为已还，但未写库，导致用户端与后台、与持久化不一致。
- * 若库里 order.paid 为 true 且先享后付计划里没有任何一期 paid，则把第 1 期写入 paid（幂等，只补缺）。
+ * 若库里 order.paid 为 true 且还款详情里没有任何一期 paid，则把第 1 期写入 paid（幂等，只补缺）。
  * 若已对应用 installmentScheduleExplicit（见 PATCH installments pay），则说明先享后付状态以人工/接口为准，不再回填首期。
  * @returns {boolean} 是否修改了该订单
  */
@@ -1925,6 +1927,32 @@ router.post('/auth/register/sms/send', async (ctx) => {
   }
 })
 
+/** 已注册用户：发送登录短信验证码（与注册短信分桶存储） */
+router.post('/auth/login/sms/send', async (ctx) => {
+  const payload = ctx.request.body || {}
+  const phone = normalizePhone(payload.phone)
+  if (!/^1\d{10}$/.test(phone)) {
+    fail(ctx, '手机号格式不正确')
+    return
+  }
+  const db = readDb()
+  const user = db.users.find(item => item.phone === phone)
+  if (!user) {
+    fail(ctx, '该手机号未注册，请先完成注册', 404)
+    return
+  }
+  try {
+    await sendLoginVerificationSms(phone)
+    ctx.body = success({})
+  }
+  catch (e) {
+    const status = Number(e.httpStatus) >= 400 && Number(e.httpStatus) < 600
+      ? Number(e.httpStatus)
+      : 500
+    fail(ctx, e.message || '短信发送失败', status)
+  }
+})
+
 router.post('/auth/register', (ctx) => {
   const db = readDb()
   const payload = ctx.request.body || {}
@@ -2021,6 +2049,12 @@ router.post('/auth/login', (ctx) => {
   }
   if (!user) {
     fail(ctx, '该手机号未注册，请先完成注册', 404)
+    return
+  }
+
+  const smsCheck = verifyAndConsumeLoginSms(phone, verifyCode)
+  if (!smsCheck.ok) {
+    fail(ctx, smsCheck.reason)
     return
   }
 
@@ -3480,7 +3514,7 @@ router.get('/orders', (ctx) => {
   ctx.body = success(enriched)
 })
 
-/** 先享后付计划中未还且应还日等于指定日期的明细（用于后台待收列表） */
+/** 还款详情中未还且应还日等于指定日期的明细（用于后台待收列表） */
 function normalizeInstallmentDueDateKey(dueDate) {
   if (dueDate == null || dueDate === '') {
     return ''

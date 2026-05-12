@@ -462,7 +462,7 @@ function closeDialog() {
               item.cardPackageIssued ? 'font-medium text-[#0f766e]' : 'text-[#b45309]',
             ]"
           >
-            {{ item.cardPackageIssued ? '平台已登记发放' : '请联系客服领取现金礼' }}
+            {{ item.cardPackageIssued ? '平台已登记发放' : '请联系客服领取' }}
           </p>
           <p
             class="pt-0.5 font-semibold tabular-nums text-[#c0354a]"

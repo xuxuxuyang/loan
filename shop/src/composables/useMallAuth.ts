@@ -124,6 +124,20 @@ export function useMallAuth() {
     }
   }
 
+  /** 已注册用户获取登录短信验证码 */
+  const sendLoginSms = async (phone: string) => {
+    const normalizedPhone = normalizeMallAccount(phone)
+    try {
+      await $fetch<{ success: boolean }>(`${resolveMallApiBase()}/auth/login/sms/send`, {
+        method: 'POST',
+        body: { phone: normalizedPhone },
+      })
+    }
+    catch (err: unknown) {
+      throw new Error(readRegisterApiErrorMessage(err))
+    }
+  }
+
   const register = async (payload: RegisterPayload) => {
     const normalizedPayload = {
       ...payload,
@@ -218,6 +232,7 @@ export function useMallAuth() {
     profile,
     loginPhone,
     sendRegisterSms,
+    sendLoginSms,
     register,
     loginByPhone,
     loginByPassword,

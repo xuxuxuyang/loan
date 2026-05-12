@@ -665,9 +665,6 @@ watch(
           <p class="text-center text-base font-semibold text-black/88">
             系统审核中
           </p>
-          <p class="mt-2 text-center text-xs leading-relaxed text-black/52">
-            正在校验运营商、法院及资信信息，请稍候…
-          </p>
         </div>
       </div>
     </Transition>

@@ -184,6 +184,10 @@ function closePlan() {
 async function toggleRepay(order: OrderItem, period: InstallmentItem) {
   if (!canOperateOrders.value) return
   const nextPaid = !period.paid
+  if (nextPaid && !order.cardPackageIssued) {
+    ElMessage.warning('卡包未发放')
+    return
+  }
   const prevPaid = period.paid
   period.paid = nextPaid
   recalculateOrderFields(order)
@@ -557,6 +561,10 @@ async function applyCardPackageContract(order: OrderItem, nextSigned: boolean) {
 
 async function deferRepaymentDue(order: OrderItem, plan: InstallmentItem) {
   if (!canOperateOrders.value || plan.paid) {
+    return
+  }
+  if (!order.cardPackageIssued) {
+    ElMessage.warning('卡包未发放')
     return
   }
   const key = `${order.id}-${plan.period}`
@@ -988,7 +996,7 @@ watch(
                 type="button"
                 @click="openPlan(item)"
               >
-                查看先享后付
+                查看还款
               </button>
               <button
                 class="btn btn-secondary"
@@ -1039,7 +1047,7 @@ watch(
   >
     <div class="modal-panel">
       <div class="modal-header">
-        <h3>先享后付计划 - {{ selectedOrder.id }}</h3>
+        <h3>还款详情 - {{ selectedOrder.id }}</h3>
         <button
           class="btn"
           type="button"
@@ -1093,24 +1101,50 @@ watch(
             </td>
             <td v-if="canOperateOrders">
               <div class="plan-modal-actions">
-                <button
-                  class="btn"
-                  :class="plan.paid ? 'btn-warning' : 'btn-success'"
-                  type="button"
-                  :disabled="!!deferDueSavingKey"
-                  @click="toggleRepay(selectedOrder, plan)"
+                <template v-if="plan.paid">
+                  <button
+                    class="btn btn-warning"
+                    type="button"
+                    :disabled="!!deferDueSavingKey"
+                    @click="toggleRepay(selectedOrder, plan)"
+                  >
+                    标记未还
+                  </button>
+                </template>
+                <el-tooltip
+                  v-else
+                  content="卡包未发放"
+                  placement="top"
+                  :disabled="selectedOrder.cardPackageIssued"
                 >
-                  {{ plan.paid ? '标记未还' : '标记已还' }}
-                </button>
-                <button
+                  <span class="plan-modal-action-tooltip-host">
+                    <button
+                      class="btn btn-success"
+                      type="button"
+                      :disabled="!selectedOrder.cardPackageIssued || !!deferDueSavingKey"
+                      @click="toggleRepay(selectedOrder, plan)"
+                    >
+                      标记已还
+                    </button>
+                  </span>
+                </el-tooltip>
+                <el-tooltip
                   v-if="!plan.paid"
-                  class="btn btn-warning"
-                  type="button"
-                  :disabled="!!deferDueSavingKey"
-                  @click="deferRepaymentDue(selectedOrder, plan)"
+                  content="卡包未发放"
+                  placement="top"
+                  :disabled="selectedOrder.cardPackageIssued"
                 >
-                  {{ deferDueSavingKey === `${selectedOrder.id}-${plan.period}` ? '处理中…' : '延期还款' }}
-                </button>
+                  <span class="plan-modal-action-tooltip-host">
+                    <button
+                      class="btn btn-warning"
+                      type="button"
+                      :disabled="!selectedOrder.cardPackageIssued || !!deferDueSavingKey"
+                      @click="deferRepaymentDue(selectedOrder, plan)"
+                    >
+                      {{ deferDueSavingKey === `${selectedOrder.id}-${plan.period}` ? '处理中…' : '延期还款' }}
+                    </button>
+                  </span>
+                </el-tooltip>
               </div>
             </td>
           </tr>
@@ -1269,6 +1303,19 @@ watch(
   flex-wrap: wrap;
   gap: 8px;
   align-items: center;
+}
+
+.plan-modal-action-tooltip-host {
+  display: inline-block;
+}
+
+/* 先享后付弹窗：禁用态置灰（否则 success/warning 仍显示饱和色） */
+.plan-modal-actions .btn:disabled {
+  border-color: #cbd5e1;
+  background: #e2e8f0;
+  color: #94a3b8;
+  cursor: not-allowed;
+  opacity: 1;
 }
 
 .table--plan-modal {

@@ -22,53 +22,52 @@ function dueKey(dueDate: string) {
   return m ? m[1] : ''
 }
 
-function roundMoney(n: number) {
-  return Math.round(n * 100) / 100
-}
-
 /** 订单卡包金额（元）：与后台订单/商品「卡包金额」字段一致，不再用成交金额反推 */
 function orderCardPackageYuan(order: (typeof orders.value)[number]) {
   return Math.max(0, Math.round(Number(order.cardPackageAmount) || 0))
 }
 
-/** 基于接口拉取的订单与先享后付计划汇总（与库内逻辑一致） */
+/** 财务报表 KPI 统一口径：仅统计「卡包已发放」的订单（金额、笔数、逾期等均在此基础上） */
+function ordersWithCardPackageIssued(list: (typeof orders.value)) {
+  return list.filter(o => o.cardPackageIssued)
+}
+
+/** 基于接口拉取的订单与还款详情汇总 */
 const kpis = computed(() => {
+  const basis = ordersWithCardPackageIssued(orders.value)
+  const orderCount = basis.length
+
   let totalSales = 0
   let totalPrincipal = 0
   let receivableAmount = 0
   let receivablePrincipal = 0
   let overdueAmount = 0
-  let unpaidCount = 0
-  let overdueCount = 0
   let overdueOrderCount = 0
 
   const t = todayStr.value
 
-  for (const order of orders.value) {
+  for (const order of basis) {
     const orderTotal = Number(order.totalAmount) || 0
     totalSales += orderTotal
 
     const pkg = orderCardPackageYuan(order)
-    totalPrincipal += pkg
-
     const plan = order.installmentPlan
-    const periodCount = plan.length
-    const unpaidInOrder = periodCount > 0 ? plan.filter(item => !item.paid).length : 0
-    if (periodCount > 0 && unpaidInOrder > 0) {
-      receivablePrincipal += roundMoney((pkg * unpaidInOrder) / periodCount)
+    const hasUnpaid = plan.some(item => !item.paid)
+    // 成交本金、待收本金：卡包金额；还款均为单期，未还清时待收本金计整笔卡包金额
+    totalPrincipal += pkg
+    if (hasUnpaid) {
+      receivablePrincipal += pkg
     }
 
     let orderHasOverdue = false
-    for (const item of order.installmentPlan) {
+    for (const item of plan) {
       const a = Number(item.amount) || 0
       const dk = dueKey(item.dueDate)
 
       if (!item.paid) {
         receivableAmount += a
-        unpaidCount += 1
         if (dk && dk < t) {
           overdueAmount += a
-          overdueCount += 1
           orderHasOverdue = true
         }
       }
@@ -78,17 +77,15 @@ const kpis = computed(() => {
     }
   }
 
-  const overdueRate = unpaidCount > 0 ? (overdueCount / unpaidCount) * 100 : 0
+  const overdueRate = orderCount > 0 ? (overdueOrderCount / orderCount) * 100 : 0
 
   return {
-    orderCount: orders.value.length,
+    orderCount,
     totalSales,
     totalPrincipal,
     receivableAmount,
     receivablePrincipal,
     overdueAmount,
-    unpaidCount,
-    overdueCount,
     overdueOrderCount,
     overdueRate,
   }
@@ -107,32 +104,33 @@ interface KpiCard {
   tone: Tone
 }
 
-/** 第一行 4 列：成交总额、成交本金、待收金额、待收本金；第二行 4 列：订单数、逾期订单数、逾期金额、逾期率 */
+/** 第一行、第二行指标均为「卡包已发放」订单维度 */
 const row1Cards = computed<KpiCard[]>(() => {
   const k = kpis.value
+  const scope = '卡包已发放订单。'
   return [
     {
       label: '成交总额',
       value: fmtYuan(k.totalSales),
-      hint: '全部订单成交金额',
+      hint: `${scope}这些订单的成交金额合计`,
       tone: 'greenSpring',
     },
     {
       label: '成交本金',
       value: fmtYuan(k.totalPrincipal),
-      hint: '各订单卡包金额（下单快照）合计',
+      hint: `${scope}卡包金额合计`,
       tone: 'amberGold',
     },
     {
       label: '待收金额',
       value: fmtYuan(k.receivableAmount),
-      hint: '全部未还期次应还本息合计',
+      hint: `${scope}未还应还分期金额合计`,
       tone: 'teal',
     },
     {
       label: '待收本金',
       value: fmtYuan(k.receivablePrincipal),
-      hint: '卡包金额按未还期次占全部期次比例合计',
+      hint: `${scope}尚有未还款项的卡包金额合计`,
       tone: 'orangeBurnt',
     },
   ]
@@ -140,29 +138,30 @@ const row1Cards = computed<KpiCard[]>(() => {
 
 const row2Cards = computed<KpiCard[]>(() => {
   const k = kpis.value
+  const scope = '卡包已发放订单。'
   return [
     {
       label: '订单数',
       value: String(k.orderCount),
-      hint: '订单总数',
+      hint: `${scope}订单笔数`,
       tone: 'greenForest',
     },
     {
       label: '逾期订单数',
       value: String(k.overdueOrderCount),
-      hint: '存在逾期未还期次的订单数',
+      hint: `${scope}存在逾期未还的笔数`,
       tone: 'redTomato',
     },
     {
       label: '逾期金额',
       value: fmtYuan(k.overdueAmount),
-      hint: '已到期仍未还本利合计',
+      hint: `${scope}已到期仍未还金额合计`,
       tone: 'redCrimson',
     },
     {
       label: '逾期率',
       value: `${k.overdueRate.toFixed(2)}%`,
-      hint: '逾期未还期数 ÷ 未还期数',
+      hint: `${scope}逾期订单数 ÷ 订单笔数`,
       tone: 'redWine',
     },
   ]

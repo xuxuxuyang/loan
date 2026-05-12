@@ -3,7 +3,7 @@ import { normalizeMallAccount } from '~/composables/useMallAuth'
 
 const route = useRoute()
 const { smartNavigate } = useCustomRouting(route)
-const { syncFromStorage, loginByPhone, loginByPassword } = useMallAuth()
+const { syncFromStorage, loginByPhone, loginByPassword, sendLoginSms } = useMallAuth()
 
 type LoginMode = 'sms' | 'password'
 const loginMode = ref<LoginMode>('sms')
@@ -14,11 +14,23 @@ const password = ref('')
 const showPassword = ref(false)
 const agree = ref(true)
 const countdown = ref(0)
+const smsSending = ref(false)
+let smsTimer: ReturnType<typeof setInterval> | null = null
+
+onUnmounted(() => {
+  if (smsTimer) {
+    clearInterval(smsTimer)
+    smsTimer = null
+  }
+})
 
 const phoneReg = /^1\d{10}$/
 const submitting = ref(false)
 
 const codeButtonText = computed(() => {
+  if (smsSending.value) {
+    return '发送中…'
+  }
   return countdown.value > 0 ? `${countdown.value}s` : '获取验证码'
 })
 
@@ -28,7 +40,7 @@ const canSubmit = computed(() => {
     return false
   }
   if (loginMode.value === 'sms') {
-    return !!verifyCode.value.trim()
+    return /^\d{6}$/.test(verifyCode.value.trim())
   }
   return password.value.trim().length >= 6
 })
@@ -49,19 +61,38 @@ function validatePhone() {
   return true
 }
 
-function sendCode() {
-  if (!validatePhone() || countdown.value > 0) {
+async function handleSendLoginSms() {
+  if (!validatePhone() || countdown.value > 0 || smsSending.value) {
     return
   }
-
-  ElMessage.success('验证码已发送（演示环境：任意非空验证码均可登录已注册用户）')
-  countdown.value = 60
-  const timer = window.setInterval(() => {
-    countdown.value -= 1
-    if (countdown.value <= 0) {
-      window.clearInterval(timer)
+  smsSending.value = true
+  try {
+    await sendLoginSms(normalizeMallAccount(phone.value))
+    ElMessage.success('验证码已发送')
+    countdown.value = 60
+    if (smsTimer) {
+      clearInterval(smsTimer)
     }
-  }, 1000)
+    smsTimer = setInterval(() => {
+      countdown.value -= 1
+      if (countdown.value <= 0 && smsTimer) {
+        clearInterval(smsTimer)
+        smsTimer = null
+      }
+    }, 1000)
+  }
+  catch (e) {
+    const text = (e as Error).message || '发送失败，请稍后重试'
+    if (text.includes('未注册')) {
+      ElMessage.warning(text)
+    }
+    else {
+      ElMessage.error(text)
+    }
+  }
+  finally {
+    smsSending.value = false
+  }
 }
 
 async function goRegister() {
@@ -93,8 +124,8 @@ async function submitLogin() {
     return
   }
   if (loginMode.value === 'sms') {
-    if (!verifyCode.value.trim()) {
-      ElMessage.warning('请输入验证码')
+    if (!/^\d{6}$/.test(verifyCode.value.trim())) {
+      ElMessage.warning('请输入 6 位短信验证码')
       return
     }
   }
@@ -213,8 +244,8 @@ async function submitLogin() {
             <button
               type="button"
               class="h-[52px] shrink-0 rounded-full bg-gradient-to-r from-[#ff8594] to-[#f56a7d] px-4 text-sm font-semibold text-white transition hover:brightness-105 disabled:opacity-70"
-              :disabled="countdown > 0"
-              @click="sendCode"
+              :disabled="countdown > 0 || smsSending"
+              @click="handleSendLoginSms"
             >
               {{ codeButtonText }}
             </button>
