@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { ChatDotRound } from '@element-plus/icons-vue'
+import { ChatDotRound, Picture } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { withAdminAuthHeaders } from '../composables/useAdminApi'
 
@@ -21,11 +21,14 @@ interface ChatMessage {
   text: string
   createdAt: string
   agentName?: string
+  type?: 'text' | 'image'
+  imageUrl?: string
 }
 
 const sessions = ref<SessionRow[]>([])
 const activeId = ref('')
 const draft = ref('')
+const agentImageInputRef = ref<HTMLInputElement | null>(null)
 const detailMessages = ref<ChatMessage[]>([])
 const detailTitle = ref('')
 const detailOnline = ref(false)
@@ -63,6 +66,71 @@ function formatMsgTime(iso: string) {
     return ''
   }
   return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+}
+
+function resolveCsImageUrl(pathOrUrl: string): string {
+  const s = String(pathOrUrl || '').trim()
+  if (!s) {
+    return ''
+  }
+  if (/^https?:\/\//i.test(s)) {
+    return s
+  }
+  const base = MALL_API_BASE.replace(/\/$/, '')
+  if (base.startsWith('http')) {
+    try {
+      const origin = new URL(base).origin
+      return `${origin}${s.startsWith('/') ? s : `/${s}`}`
+    }
+    catch {
+      return s
+    }
+  }
+  return s.startsWith('/') ? s : `/${s}`
+}
+
+function isCsImageMessage(m: ChatMessage): boolean {
+  return m.type === 'image' || Boolean(String(m.imageUrl || '').trim())
+}
+
+function pickAgentImage() {
+  agentImageInputRef.value?.click()
+}
+
+async function onAgentImageSelected(ev: Event) {
+  const el = ev.target as HTMLInputElement
+  const file = el.files?.[0]
+  el.value = ''
+  if (!file || !activeId.value || sending.value) {
+    return
+  }
+  sending.value = true
+  try {
+    const fd = new FormData()
+    fd.append('image', file)
+    const response = await fetch(
+      `${MALL_API_BASE}/admin/cs/sessions/${encodeURIComponent(activeId.value)}/messages/image`,
+      { method: 'POST', headers: withAdminAuthHeaders(), body: fd },
+    )
+    const payload = await response.json() as {
+      success?: boolean
+      msg?: string
+      data?: { messages?: ChatMessage[] }
+    }
+    if (!response.ok || payload.success === false) {
+      throw new Error(payload.msg || '发送失败')
+    }
+    if (payload.data?.messages) {
+      detailMessages.value = payload.data.messages
+    }
+    await fetchSessions()
+  }
+  catch (e) {
+    ElMessage.error(e instanceof Error ? e.message : '图片发送失败')
+  }
+  finally {
+    sending.value = false
+  }
 }
 
 async function fetchSessions() {
@@ -297,7 +365,16 @@ onUnmounted(() => {
               :class="m.role === 'user' ? 'cs-msg--user' : 'cs-msg--agent'"
             >
               <div class="cs-msg-bubble">
-                {{ m.text }}
+                <img
+                  v-if="isCsImageMessage(m)"
+                  :src="resolveCsImageUrl(m.imageUrl || '')"
+                  alt=""
+                  class="cs-msg-img"
+                  loading="lazy"
+                >
+                <template v-else>
+                  {{ m.text }}
+                </template>
               </div>
               <div class="cs-msg-meta">
                 {{ m.role === 'user' ? '客户' : (m.agentName || '客服') }} · {{ formatMsgTime(m.createdAt) }}
@@ -312,6 +389,15 @@ onUnmounted(() => {
           </template>
         </div>
         <footer class="cs-composer">
+          <input
+            ref="agentImageInputRef"
+            type="file"
+            accept="image/jpeg,image/png,image/webp,image/gif"
+            class="cs-hidden-file"
+            tabindex="-1"
+            aria-hidden="true"
+            @change="onAgentImageSelected"
+          >
           <el-input
             v-model="draft"
             type="textarea"
@@ -322,6 +408,14 @@ onUnmounted(() => {
             :disabled="!activeId"
             @keydown.enter.exact.prevent="sendReply"
           />
+          <el-button
+            circle
+            :disabled="!activeId || sending"
+            aria-label="发送图片"
+            @click="pickAgentImage"
+          >
+            <el-icon><Picture /></el-icon>
+          </el-button>
           <el-button
             type="primary"
             :loading="sending"
@@ -612,6 +706,22 @@ onUnmounted(() => {
   margin: auto;
   font-size: 13px;
   color: #9ca3af;
+}
+
+.cs-msg-img {
+  display: block;
+  max-width: min(100%, 320px);
+  max-height: 280px;
+  border-radius: 8px;
+  vertical-align: middle;
+}
+
+.cs-hidden-file {
+  position: absolute;
+  width: 0;
+  height: 0;
+  opacity: 0;
+  overflow: hidden;
 }
 
 .cs-composer {

@@ -12,6 +12,7 @@ const MALL_API_BASE = `${(import.meta.env.VITE_MALL_API_BASE || 'http://localhos
 
 const loading = ref(false)
 const reviewingId = ref('')
+const rejectingId = ref('')
 const deletingOrderId = ref('')
 const userRiskDialogVisible = ref(false)
 const riskDialogUserId = ref<string | null>(null)
@@ -20,7 +21,7 @@ const riskDetailHideBasicInfoTab = ref(false)
 const resolvingRiskOrderId = ref<string | null>(null)
 const riskFilter = ref<'全部' | OrderItem['riskStatus']>('全部')
 const userFilter = ref('')
-const { orders, fetchOrders, updateOrderStatus, deleteOrder } = useOrdersStore()
+const { orders, fetchOrders, updateOrderStatus, rejectOrderReview, deleteOrder } = useOrdersStore()
 
 const canDeleteOrder = computed(() => getAdminSession()?.role === 'super_admin')
 
@@ -66,7 +67,7 @@ async function loadReviewOrders() {
 }
 
 async function approveOrder(order: OrderItem) {
-  if (reviewingId.value) {
+  if (reviewingId.value || rejectingId.value) {
     return
   }
   if (order.riskStatus !== 'passed') {
@@ -85,8 +86,43 @@ async function approveOrder(order: OrderItem) {
   }
 }
 
+async function rejectOrder(order: OrderItem) {
+  if (reviewingId.value || rejectingId.value) {
+    return
+  }
+  if (order.payType !== '先享后付' || order.riskStatus !== 'passed') {
+    return
+  }
+  try {
+    await ElMessageBox.confirm(
+      `确定将订单 ${order.id} 标记为审核不通过？提交后该单将视为风控未通过，无法审核通过发货。`,
+      '审核不通过',
+      {
+        confirmButtonText: '确定',
+        cancelButtonText: '取消',
+        type: 'warning',
+      },
+    )
+  }
+  catch {
+    return
+  }
+  rejectingId.value = order.id
+  try {
+    await rejectOrderReview(order.id)
+    ElMessage.success('已标记审核不通过')
+    await loadReviewOrders()
+  }
+  catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '审核不通过失败，请稍后重试')
+  }
+  finally {
+    rejectingId.value = ''
+  }
+}
+
 async function handleDeleteOrder(order: OrderItem) {
-  if (!canDeleteOrder.value || deletingOrderId.value) {
+  if (!canDeleteOrder.value || deletingOrderId.value || reviewingId.value || rejectingId.value) {
     return
   }
   try {
@@ -269,7 +305,7 @@ onMounted(() => {
               <button
                 :class="['btn', item.riskStatus === 'passed' ? 'btn-success' : 'btn-danger']"
                 type="button"
-                :disabled="reviewingId === item.id || item.riskStatus !== 'passed'"
+                :disabled="reviewingId === item.id || rejectingId === item.id || item.riskStatus !== 'passed'"
                 @click="approveOrder(item)"
               >
                 {{
@@ -279,10 +315,19 @@ onMounted(() => {
                 }}
               </button>
               <button
+                v-if="item.payType === '先享后付' && item.riskStatus === 'passed'"
+                class="btn btn-danger"
+                type="button"
+                :disabled="reviewingId === item.id || rejectingId === item.id || deletingOrderId === item.id"
+                @click="rejectOrder(item)"
+              >
+                {{ rejectingId === item.id ? '提交中...' : '审核不通过' }}
+              </button>
+              <button
                 v-if="canDeleteOrder"
                 class="btn btn-outline-danger"
                 type="button"
-                :disabled="deletingOrderId === item.id || reviewingId === item.id"
+                :disabled="deletingOrderId === item.id || reviewingId === item.id || rejectingId === item.id"
                 @click="handleDeleteOrder(item)"
               >
                 {{ deletingOrderId === item.id ? '删除中...' : '删除订单' }}
@@ -304,7 +349,6 @@ onMounted(() => {
     <UserRiskDetailDialog
       v-model="userRiskDialogVisible"
       :user-id="riskDialogUserId"
-      basic-tab-order-context
       :hide-basic-info-tab="riskDetailHideBasicInfoTab"
       @user-updated="onRiskDialogUserUpdated"
     />

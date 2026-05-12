@@ -14,7 +14,9 @@ const { readDb, writeDb, resetDb, hydrateFromMongoAfterConnect, isMongoPersisten
 const { DEFAULT_SUPER_ADMIN_USERNAME, BOOTSTRAP_ADMIN_ACCOUNTS } = require('./defaultBootstrap')
 const crypto = require('node:crypto')
 const path = require('node:path')
+const fs = require('node:fs')
 const fsp = require('node:fs/promises')
+const multer = require('@koa/multer')
 const mount = require('koa-mount')
 const serve = require('koa-static')
 
@@ -56,6 +58,37 @@ const router = new Router({ prefix: '/api' })
 const PORT = Number(process.env.PORT || 3110)
 /** GET /static/* → api/public/*（卡包合同模板 PDF 等，供电子签上游按 URL 拉取；本地 mock 下载 PDF 由程序按订单动态生成，不读该目录） */
 const API_PUBLIC_DIR = path.join(__dirname, '..', 'public')
+
+const csChatImageUpload = multer({
+  storage: multer.diskStorage({
+    destination(_req, _file, cb) {
+      const dir = path.join(API_PUBLIC_DIR, 'uploads', 'cs')
+      try {
+        fs.mkdirSync(dir, { recursive: true })
+      }
+      catch (err) {
+        cb(err)
+        return
+      }
+      cb(null, dir)
+    },
+    filename(_req, file, cb) {
+      const ext = path.extname(file.originalname || '').toLowerCase()
+      const allowed = new Set(['.jpg', '.jpeg', '.png', '.webp', '.gif'])
+      const e = allowed.has(ext) ? ext : '.jpg'
+      cb(null, `cs_${Date.now()}_${crypto.randomBytes(6).toString('hex')}${e}`)
+    },
+  }),
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter(_req, file, cb) {
+    if (/^image\/(jpeg|png|webp|gif)$/i.test(file.mimetype || '')) {
+      cb(null, true)
+    }
+    else {
+      cb(new Error('仅支持 JPG、PNG、WebP、GIF 图片'))
+    }
+  },
+})
 const MALL_PASSWORD_PEPPER = 'mall-local-pepper-v1'
 const PRODUCT_CATEGORIES = new Set(['phone', 'digital', 'appliance', 'cosmetics'])
 /** 历史数据中的旧分类键 → 新分类（仅读库归一化，新建商品请用新分类） */
@@ -1301,24 +1334,49 @@ function csNewMsgId() {
 }
 
 function csAppendMessage(session, role, text, extras = {}) {
-  const trimmed = String(text || '').trim()
-  if (!trimmed) {
-    return null
-  }
+  const isImage = extras.type === 'image'
+  let msg
+  const now = new Date().toISOString()
+  const agentName = role === 'agent' ? String(extras.agentName || '').trim() : ''
   if (!Array.isArray(session.messages)) {
     session.messages = []
   }
-  const now = new Date().toISOString()
-  const msg = {
-    id: csNewMsgId(),
-    role,
-    text: trimmed.slice(0, 2000),
-    createdAt: now,
-    agentName: role === 'agent' ? String(extras.agentName || '').trim() : '',
+  if (isImage) {
+    const imageUrl = String(extras.imageUrl || '').trim()
+    if (!imageUrl) {
+      return null
+    }
+    msg = {
+      id: csNewMsgId(),
+      role,
+      type: 'image',
+      text: '',
+      imageUrl,
+      createdAt: now,
+      agentName,
+    }
+    session.messages.push(msg)
+    session.updatedAt = now
+    session.lastMessagePreview = '[图片]'
   }
-  session.messages.push(msg)
-  session.updatedAt = now
-  session.lastMessagePreview = msg.text.slice(0, 120)
+  else {
+    const trimmed = String(text || '').trim()
+    if (!trimmed) {
+      return null
+    }
+    msg = {
+      id: csNewMsgId(),
+      role,
+      type: 'text',
+      text: trimmed.slice(0, 2000),
+      imageUrl: '',
+      createdAt: now,
+      agentName,
+    }
+    session.messages.push(msg)
+    session.updatedAt = now
+    session.lastMessagePreview = msg.text.slice(0, 120)
+  }
   if (role === 'user') {
     session.unreadAgent = Number(session.unreadAgent || 0) + 1
   }
@@ -3930,12 +3988,34 @@ router.patch('/orders/:id/status', (ctx) => {
   }
   const db = readDb()
   const { id } = ctx.params
-  const { status } = ctx.request.body || {}
+  const body = ctx.request.body || {}
+  const { status } = body
   const target = db.orders.find(item => item.id === id)
 
   if (!target) {
     ctx.status = 404
     ctx.body = { success: false, code: 404, msg: '订单不存在', data: null }
+    return
+  }
+
+  /** 人工审核不通过：保持 reviewing，仅将先享后付风控标为未通过（与系统风控失败同列展示逻辑） */
+  if (body.riskStatus === 'failed') {
+    ensureOrderRiskState(target)
+    if (target.payType !== 'installment') {
+      fail(ctx, '仅先享后付订单可操作审核不通过', 400)
+      return
+    }
+    if (target.status !== 'reviewing') {
+      fail(ctx, '仅待审核中的订单可标记审核不通过', 400)
+      return
+    }
+    const customReason = typeof body.riskReason === 'string' ? body.riskReason.trim() : ''
+    target.riskStatus = 'failed'
+    target.riskReason = customReason || '人工审核不通过'
+    target.riskCheckedAt = new Date().toISOString()
+    ensureOrderCardPackage(target)
+    writeDb(db)
+    ctx.body = success(target)
     return
   }
 
@@ -4221,6 +4301,54 @@ router.post('/mall/cs/messages', (ctx) => {
   })
 })
 
+router.post('/mall/cs/messages/image', async (ctx) => {
+  try {
+    await csChatImageUpload.single('image')(ctx, async () => {
+      const db = readDb()
+      const r = resolveCsMallSession(ctx, db, { requireExisting: true })
+      const file = ctx.file
+      if (r.error) {
+        if (file?.path) {
+          await fsp.unlink(file.path).catch(() => {})
+        }
+        fail(ctx, r.error, 401)
+        return
+      }
+      if (!file || !file.filename) {
+        if (file?.path) {
+          await fsp.unlink(file.path).catch(() => {})
+        }
+        fail(ctx, '请选择图片文件')
+        return
+      }
+      const imageUrl = `/static/uploads/cs/${file.filename}`
+      const s = r.session
+      csAppendMessage(s, 'user', '', { type: 'image', imageUrl })
+      s.userOnlineAt = new Date().toISOString()
+      writeDb(db)
+      ctx.body = success({
+        ok: true,
+        messages: Array.isArray(s.messages) ? s.messages : [],
+      })
+    })
+  }
+  catch (err) {
+    const code = err && typeof err === 'object' ? err.code : ''
+    const raw = String(err?.message || err || '')
+    let msg = '上传失败'
+    if (code === 'LIMIT_FILE_SIZE' || raw.includes('LIMIT_FILE_SIZE') || raw.includes('too large')) {
+      msg = '图片不能超过 5MB'
+    }
+    else if (raw.includes('仅支持')) {
+      msg = raw
+    }
+    else if (raw && raw !== 'Error') {
+      msg = raw
+    }
+    fail(ctx, msg, 400)
+  }
+})
+
 router.get('/admin/cs/sessions', (ctx) => {
   if (!requireAdminPermission(ctx, [ADMIN_ROLES.SUPER, ADMIN_ROLES.REVIEWER], '查看客服会话')) {
     return
@@ -4234,7 +4362,16 @@ router.get('/admin/cs/sessions', (ctx) => {
       id: s.id,
       userName: resolveCsSessionDisplayName(db, s),
       lastMessage: String(s.lastMessagePreview || (Array.isArray(s.messages) && s.messages.length
-        ? s.messages[s.messages.length - 1].text
+        ? (() => {
+            const lm = s.messages[s.messages.length - 1]
+            if (!lm) {
+              return ''
+            }
+            if (lm.type === 'image' || lm.imageUrl) {
+              return '[图片]'
+            }
+            return lm.text || ''
+          })()
         : '') || ''),
       lastAt: s.updatedAt || '',
       online: csUserOnline(s),
@@ -4292,6 +4429,56 @@ router.post('/admin/cs/sessions/:sessionId/messages', (ctx) => {
     ok: true,
     messages: Array.isArray(s.messages) ? s.messages : [],
   })
+})
+
+router.post('/admin/cs/sessions/:sessionId/messages/image', async (ctx) => {
+  if (!requireAdminPermission(ctx, [ADMIN_ROLES.SUPER, ADMIN_ROLES.REVIEWER], '回复客服会话')) {
+    return
+  }
+  try {
+    await csChatImageUpload.single('image')(ctx, async () => {
+      const db = readDb()
+      const s = findCsSessionById(db, ctx.params.sessionId)
+      const file = ctx.file
+      if (!s) {
+        if (file?.path) {
+          await fsp.unlink(file.path).catch(() => {})
+        }
+        fail(ctx, '会话不存在', 404)
+        return
+      }
+      if (!file || !file.filename) {
+        if (file?.path) {
+          await fsp.unlink(file.path).catch(() => {})
+        }
+        fail(ctx, '请选择图片文件')
+        return
+      }
+      const imageUrl = `/static/uploads/cs/${file.filename}`
+      const agentName = resolveCsAgentName(ctx, db)
+      csAppendMessage(s, 'agent', '', { type: 'image', imageUrl, agentName })
+      writeDb(db)
+      ctx.body = success({
+        ok: true,
+        messages: Array.isArray(s.messages) ? s.messages : [],
+      })
+    })
+  }
+  catch (err) {
+    const code = err && typeof err === 'object' ? err.code : ''
+    const raw = String(err?.message || err || '')
+    let msg = '上传失败'
+    if (code === 'LIMIT_FILE_SIZE' || raw.includes('LIMIT_FILE_SIZE') || raw.includes('too large')) {
+      msg = '图片不能超过 5MB'
+    }
+    else if (raw.includes('仅支持')) {
+      msg = raw
+    }
+    else if (raw && raw !== 'Error') {
+      msg = raw
+    }
+    fail(ctx, msg, 400)
+  }
 })
 
 app.use(cors())

@@ -16,6 +16,11 @@ export default defineConfig({
         target: process.env.SHOP_API_PROXY_TARGET || 'http://127.0.0.1:3110',
         changeOrigin: true,
       },
+      /** 客服图片等静态资源由 mall-api 提供（与 /api 同源部署时生产环境走网关即可） */
+      '/static': {
+        target: process.env.SHOP_API_PROXY_TARGET || 'http://127.0.0.1:3110',
+        changeOrigin: true,
+      },
     },
   },
   plugins: [

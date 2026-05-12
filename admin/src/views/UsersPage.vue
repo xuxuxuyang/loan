@@ -1,24 +1,22 @@
 <script setup lang="ts">
-import { CircleCheck, CircleClose, CirclePlus, EditPen, Minus, Picture } from '@element-plus/icons-vue'
+import { CirclePlus, EditPen } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { withAdminAuthHeaders } from '../composables/useAdminApi'
 import { getAdminSession } from '../composables/useAdminAuth'
 import TrafficChannelNameTag from '../components/TrafficChannelNameTag.vue'
+import UserRegistrationInfoScroll from '../components/UserRegistrationInfoScroll.vue'
 import UserRiskDetailDialog, {
   type UserItem,
   type UserRiskSnapshot,
-  type RiskProductRow,
 } from '../components/UserRiskDetailDialog.vue'
-import {
-  INSTALLMENT_ORDER_RISK_STEP_KEYS,
-  INSTALLMENT_ORDER_RISK_STEP_LABELS,
-} from '../constants/installmentOrderRisk'
 import { donePageProgress, startPageProgress } from '../utils/progress'
 import { trafficChannelDisplayKey } from '../utils/trafficChannelTagStyle'
-import { groupRadarV4FactsForTables, chunkRadarFactPairs } from '../utils/radarV4ReputationFacts'
-import { getRiskFactLines, type RiskFactLine } from '../utils/riskRowFactLines'
+import {
+  displayCreditStatusFromOrderSevenSnapshot,
+  type DisplayCreditStatus,
+} from '../utils/orderSubmitSevenPanel'
 
 const DEFAULT_USER_QUOTA = 3000
 
@@ -215,148 +213,7 @@ watch(userRiskDialogVisible, (open) => {
     riskDialogUserId.value = null
 })
 
-function isMockImgSrc(src: string) {
-  const s = String(src || '').trim()
-  return !s || s.startsWith('mock://')
-}
-
-function findFourteenRow(rows: RiskProductRow[] | undefined, slotKey: string): RiskProductRow | null {
-  if (!Array.isArray(rows)) {
-    return null
-  }
-  return rows.find(r => r.slotKey === slotKey) || null
-}
-
-/** 占位槽「无执行记录」与真实跳过区分展示 */
-function isRiskRowPlaceholderSkipped(row: RiskProductRow): boolean {
-  return row.state === 'skipped'
-    && (String(row.skippedReason || '').includes('无执行记录') || !String(row.skippedReason || '').trim())
-}
-
-type OrderRiskStepDisplay = {
-  slotKey: string
-  label: string
-  row: RiskProductRow | null
-  /** 通过 | 未通过 | 已跳过 | 暂无 */
-  outcome: 'pass' | 'fail' | 'skip' | 'empty'
-  detail: string
-  /** 与风控详情弹窗一致的结构化摘要行 */
-  facts: RiskFactLine[]
-}
-
-const RADAR_SLOT_KEY = 'radar_v4_enc'
-
-function buildOrderRiskPreviewStep(
-  slotKey: string,
-  defaultLabel: string,
-  row: RiskProductRow | null,
-): OrderRiskStepDisplay {
-  let outcome: OrderRiskStepDisplay['outcome'] = 'empty'
-  let detail = ''
-  if (row) {
-    if (row.state === 'ok') {
-      outcome = 'pass'
-    }
-    else if (row.state === 'fail') {
-      outcome = 'fail'
-      detail = String(row.error || '').trim()
-    }
-    else if (isRiskRowPlaceholderSkipped(row)) {
-      outcome = 'empty'
-      detail = ''
-    }
-    else {
-      outcome = 'skip'
-      detail = String(row.skippedReason || '').trim()
-    }
-  }
-  const label = row?.productLabel?.trim() || defaultLabel
-  const facts = row ? getRiskFactLines(row) : []
-  return { slotKey, label, row, outcome, detail, facts }
-}
-
-function buildOrderSubmitSevenPanel(snapshot: UserRiskSnapshot | null | undefined): {
-  steps: OrderRiskStepDisplay[]
-  radarStep: OrderRiskStepDisplay
-  summary: string
-  checkedAt: string
-} {
-  const steps: OrderRiskStepDisplay[] = []
-  for (const key of INSTALLMENT_ORDER_RISK_STEP_KEYS) {
-    const defaultLabel = INSTALLMENT_ORDER_RISK_STEP_LABELS[key] || key
-    const row = snapshot ? findFourteenRow(snapshot.fourteenRows, key) : null
-    steps.push(buildOrderRiskPreviewStep(key, defaultLabel, row))
-  }
-
-  const radarRow = snapshot ? findFourteenRow(snapshot.fourteenRows, RADAR_SLOT_KEY) : null
-  const radarStep = buildOrderRiskPreviewStep(RADAR_SLOT_KEY, '风控雷达（全景雷达-MD5）', radarRow)
-
-  const slots = [...steps, radarStep]
-  const tested = slots.filter(s => s.outcome !== 'empty')
-  const passN = slots.filter(s => s.outcome === 'pass').length
-  const failN = slots.filter(s => s.outcome === 'fail').length
-  const skipN = slots.filter(s => s.outcome === 'skip').length
-  const emptyN = slots.filter(s => s.outcome === 'empty').length
-
-  let summary = ''
-  if (tested.length === 0) {
-    summary = '档案中尚无下单七项与全景雷达的实测结果（多为占位「无执行记录」）。用户先享后付下单并完成系统审核后，接口结论会写入档案；也可在本弹窗「下单七项」页签手动单条核查。'
-  }
-  else {
-    summary = `八项中已有 ${tested.length} 项有明确结论：通过 ${passN}，未通过 ${failN}，跳过 ${skipN}；未写入/占位 ${emptyN} 项。`
-    if (snapshot?.passed === false || failN > 0) {
-      summary += ' 存在未通过项时，请结合订单与人工审核处理。'
-    }
-    else if (failN === 0 && passN === slots.length) {
-      summary += ' 八项均已通过。'
-    }
-    else if (failN === 0 && passN === INSTALLMENT_ORDER_RISK_STEP_KEYS.length && radarStep.outcome === 'empty') {
-      summary += ' 下单七项均已通过；全景雷达尚未写入结论。'
-    }
-    const sm = typeof snapshot?.summaryMessage === 'string' ? snapshot.summaryMessage.trim() : ''
-    if (sm) {
-      summary += ` ${sm}`
-    }
-  }
-
-  const checkedAt = snapshot?.checkedAt ? formatDateTime(snapshot.checkedAt) : ''
-  return { steps, radarStep, summary, checkedAt }
-}
-
-const previewOrderRiskPanel = computed(() => buildOrderSubmitSevenPanel(previewUser.value?.riskControlSnapshot))
-
-const previewRadarV4FactsGrouped = computed(() =>
-  groupRadarV4FactsForTables(previewOrderRiskPanel.value.radarStep.facts),
-)
-
-/** 用户预览里雷达表每行并排组数（与风控详情弹窗一致） */
-const PREVIEW_RADAR_PAIR_COLUMNS = 3
-const PREVIEW_RADAR_TABLE_COLSPAN = PREVIEW_RADAR_PAIR_COLUMNS * 2
-const previewRadarPairHeadIndexes = Array.from({ length: PREVIEW_RADAR_PAIR_COLUMNS }, (_, i) => i)
-
 /** 列表/预览/入库展示用：仅依据先享后付下单七项快照——任一项未通过→风险，七项均为通过→良好，否则待风控（不采用人工修改） */
-type DisplayCreditStatus = '良好' | '待风控' | '风险'
-
-function displayCreditStatusFromOrderSevenSnapshot(snapshot: UserRiskSnapshot | null | undefined): DisplayCreditStatus {
-  if (!snapshot || !Array.isArray(snapshot.fourteenRows)) {
-    return '待风控'
-  }
-  const rows = snapshot.fourteenRows
-  for (const key of INSTALLMENT_ORDER_RISK_STEP_KEYS) {
-    const row = findFourteenRow(rows, key)
-    if (row?.state === 'fail') {
-      return '风险'
-    }
-  }
-  for (const key of INSTALLMENT_ORDER_RISK_STEP_KEYS) {
-    const row = findFourteenRow(rows, key)
-    if (!row || row.state !== 'ok') {
-      return '待风控'
-    }
-  }
-  return '良好'
-}
-
 function displayCreditStatusFromRisk(user: ListedUser | null | undefined): DisplayCreditStatus {
   return displayCreditStatusFromOrderSevenSnapshot(user?.riskControlSnapshot)
 }
@@ -1151,14 +1008,16 @@ async function toggleBlacklist(user: ListedUser) {
       </header>
 
       <div class="user-preview-scroll">
-        <section class="user-preview-block">
+        <section
+          v-if="editingUserId === previewUser.id && canManageUsers"
+          class="user-preview-block"
+        >
           <h4 class="user-preview-block__title">
             <span class="user-preview-block__bar" />
             基本信息
           </h4>
 
           <div
-            v-if="editingUserId === previewUser.id && canManageUsers"
             class="user-preview-edit-grid"
           >
             <label class="user-preview-field">
@@ -1227,489 +1086,23 @@ async function toggleBlacklist(user: ListedUser) {
               </div>
             </div>
           </div>
-
-          <template v-else>
-            <el-descriptions
-              :column="2"
-              border
-              size="default"
-              class="user-preview-desc"
-            >
-              <el-descriptions-item label="姓名">
-                {{ previewUser.name }}
-              </el-descriptions-item>
-              <el-descriptions-item label="手机号">
-                {{ previewUser.phone }}
-              </el-descriptions-item>
-              <el-descriptions-item
-                v-if="canManageUsers"
-                label="登录密码"
-              >
-                <span v-if="previewUser.adminPasswordPlain">{{ previewUser.adminPasswordPlain }}</span>
-                <span
-                  v-else
-                  class="user-preview-meta__muted"
-                >未设置</span>
-              </el-descriptions-item>
-              <el-descriptions-item label="身份证号码">
-                <span
-                  v-if="previewUser.idNumber"
-                  class="user-preview-id-number"
-                >{{ previewUser.idNumber }}</span>
-                <span
-                  v-else
-                  class="user-preview-meta__muted"
-                >未填写</span>
-              </el-descriptions-item>
-              <el-descriptions-item label="注册时间">
-                {{ previewUser.registerAt }}
-              </el-descriptions-item>
-              <el-descriptions-item label="注册渠道">
-                <TrafficChannelNameTag
-                  :display-key="trafficChannelDisplayKey(previewUser.registerChannelLabel, previewUser.registerChannelName, previewUser.registerChannelCode)"
-                />
-              </el-descriptions-item>
-              <el-descriptions-item label="额度">
-                <span class="user-preview-quota">¥ {{ previewUser.quota }}</span>
-              </el-descriptions-item>
-              <el-descriptions-item
-                label="信誉状态"
-                :span="2"
-              >
-                <span :class="getStatusClass(previewDisplayCreditStatus)">
-                  {{ previewDisplayCreditStatus }}
-                </span>
-              </el-descriptions-item>
-            </el-descriptions>
-          </template>
         </section>
 
-        <section class="user-preview-block">
-          <h4 class="user-preview-block__title">
-            <span class="user-preview-block__bar" />
-            证件照片
-          </h4>
-          <div class="user-preview-id-grid">
-            <div class="user-preview-id-cell">
-              <p class="user-preview-id-label">
-                身份证正面
-              </p>
-              <div class="user-preview-id-frame">
-                <template v-if="isMockImgSrc(previewUser.idCardFront)">
-                  <div class="user-preview-id-placeholder">
-                    <el-icon class="user-preview-id-placeholder__icon"><Picture /></el-icon>
-                    <span>模拟证件 · 无图片</span>
-                  </div>
-                </template>
-                <el-image
-                  v-else
-                  :src="previewUser.idCardFront"
-                  fit="cover"
-                  class="user-preview-el-image"
-                  :preview-src-list="[previewUser.idCardFront]"
-                  preview-teleported
-                >
-                  <template #error>
-                    <div class="user-preview-id-placeholder user-preview-id-placeholder--error">
-                      <el-icon><Picture /></el-icon>
-                      <span>加载失败</span>
-                    </div>
-                  </template>
-                </el-image>
-              </div>
-            </div>
-            <div class="user-preview-id-cell">
-              <p class="user-preview-id-label">
-                身份证反面
-              </p>
-              <div class="user-preview-id-frame">
-                <template v-if="isMockImgSrc(previewUser.idCardBack)">
-                  <div class="user-preview-id-placeholder">
-                    <el-icon class="user-preview-id-placeholder__icon"><Picture /></el-icon>
-                    <span>模拟证件 · 无图片</span>
-                  </div>
-                </template>
-                <el-image
-                  v-else
-                  :src="previewUser.idCardBack"
-                  fit="cover"
-                  class="user-preview-el-image"
-                  :preview-src-list="[previewUser.idCardBack]"
-                  preview-teleported
-                >
-                  <template #error>
-                    <div class="user-preview-id-placeholder user-preview-id-placeholder--error">
-                      <el-icon><Picture /></el-icon>
-                      <span>加载失败</span>
-                    </div>
-                  </template>
-                </el-image>
-              </div>
-            </div>
-            <div class="user-preview-id-cell">
-              <p class="user-preview-id-label">
-                手持身份证
-              </p>
-              <div class="user-preview-id-frame">
-                <template v-if="!String(previewUser.idCardHandheld || '').trim()">
-                  <div class="user-preview-id-placeholder">
-                    <el-icon class="user-preview-id-placeholder__icon"><Picture /></el-icon>
-                    <span>未上传</span>
-                  </div>
-                </template>
-                <template v-else-if="isMockImgSrc(previewUser.idCardHandheld)">
-                  <div class="user-preview-id-placeholder">
-                    <el-icon class="user-preview-id-placeholder__icon"><Picture /></el-icon>
-                    <span>模拟证件 · 无图片</span>
-                  </div>
-                </template>
-                <el-image
-                  v-else
-                  :src="previewUser.idCardHandheld"
-                  fit="cover"
-                  class="user-preview-el-image"
-                  :preview-src-list="[previewUser.idCardHandheld]"
-                  preview-teleported
-                >
-                  <template #error>
-                    <div class="user-preview-id-placeholder user-preview-id-placeholder--error">
-                      <el-icon><Picture /></el-icon>
-                      <span>加载失败</span>
-                    </div>
-                  </template>
-                </el-image>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        <section class="user-preview-block user-preview-block--risk">
-          <div class="user-preview-risk-card">
-            <div class="user-preview-risk-card__head">
-              <div>
-                <h4 class="user-preview-risk-card__title">
-                  信誉报告
-                </h4>
-                <p class="user-preview-risk-card__sub">
-                  <template v-if="previewOrderRiskPanel.checkedAt">
-                    档案更新时间 {{ previewOrderRiskPanel.checkedAt }} ·
-                  </template>
-                  先享后付下单七项与全景雷达（共八项，与商城档案写入口径一致）
-                </p>
-              </div>
-              <span :class="getStatusClass(previewDisplayCreditStatus)">
-                {{ previewDisplayCreditStatus }}
-              </span>
-            </div>
-
-            <div class="user-preview-risk-seven">
-              <article
-                v-for="step in previewOrderRiskPanel.steps"
-                :key="step.slotKey"
-                class="user-preview-risk-step user-preview-risk-step--compact"
-              >
-                <div class="user-preview-risk-step__head">
-                  <p class="user-preview-risk-step__label">
-                    {{ step.label }}
-                  </p>
-                  <div class="user-preview-risk-step__row">
-                    <template v-if="step.outcome === 'pass'">
-                      <el-icon class="user-preview-risk-icon user-preview-risk-icon--ok" aria-hidden="true">
-                        <CircleCheck />
-                      </el-icon>
-                      <span class="user-preview-risk-outcome">通过</span>
-                    </template>
-                    <template v-else-if="step.outcome === 'fail'">
-                      <el-icon class="user-preview-risk-icon user-preview-risk-icon--bad" aria-hidden="true">
-                        <CircleClose />
-                      </el-icon>
-                      <span class="user-preview-risk-outcome user-preview-risk-outcome--bad">未通过</span>
-                    </template>
-                    <template v-else-if="step.outcome === 'skip'">
-                      <el-icon class="user-preview-risk-icon user-preview-risk-icon--skip" aria-hidden="true">
-                        <Minus />
-                      </el-icon>
-                      <span class="user-preview-risk-outcome user-preview-risk-outcome--skip">已跳过</span>
-                    </template>
-                    <template v-else>
-                      <el-icon class="user-preview-risk-icon user-preview-risk-icon--muted" aria-hidden="true">
-                        <Minus />
-                      </el-icon>
-                      <span class="user-preview-risk-outcome user-preview-risk-outcome--muted">暂无</span>
-                    </template>
-                  </div>
-                </div>
-                <div
-                  v-if="step.facts.length"
-                  class="user-preview-risk-step__facts"
-                >
-                  <div
-                    v-for="(line, fi) in step.facts"
-                    :key="fi"
-                    class="user-preview-risk-fact"
-                  >
-                    <span class="user-preview-risk-fact__k">{{ line.label }}</span>
-                    <span
-                      class="user-preview-risk-fact__v"
-                      :class="{ 'user-preview-risk-fact__v--emph': line.emphasis }"
-                      :title="`${line.label}：${line.value}`"
-                    >{{ line.value }}</span>
-                  </div>
-                </div>
-                <p
-                  v-if="step.detail"
-                  class="user-preview-risk-step__detail"
-                  :title="step.detail"
-                >
-                  {{ step.detail }}
-                </p>
-              </article>
-            </div>
-
-            <div class="user-preview-risk-radar">
-              <article class="user-preview-risk-step user-preview-risk-step--compact user-preview-risk-step--radar">
-                <div class="user-preview-risk-step__head">
-                  <p class="user-preview-risk-step__label">
-                    {{ previewOrderRiskPanel.radarStep.label }}
-                  </p>
-                  <div class="user-preview-risk-step__row">
-                    <template v-if="previewOrderRiskPanel.radarStep.outcome === 'pass'">
-                      <el-icon class="user-preview-risk-icon user-preview-risk-icon--ok" aria-hidden="true">
-                        <CircleCheck />
-                      </el-icon>
-                      <span class="user-preview-risk-outcome">通过</span>
-                    </template>
-                    <template v-else-if="previewOrderRiskPanel.radarStep.outcome === 'fail'">
-                      <el-icon class="user-preview-risk-icon user-preview-risk-icon--bad" aria-hidden="true">
-                        <CircleClose />
-                      </el-icon>
-                      <span class="user-preview-risk-outcome user-preview-risk-outcome--bad">未通过</span>
-                    </template>
-                    <template v-else-if="previewOrderRiskPanel.radarStep.outcome === 'skip'">
-                      <el-icon class="user-preview-risk-icon user-preview-risk-icon--skip" aria-hidden="true">
-                        <Minus />
-                      </el-icon>
-                      <span class="user-preview-risk-outcome user-preview-risk-outcome--skip">已跳过</span>
-                    </template>
-                    <template v-else>
-                      <el-icon class="user-preview-risk-icon user-preview-risk-icon--muted" aria-hidden="true">
-                        <Minus />
-                      </el-icon>
-                      <span class="user-preview-risk-outcome user-preview-risk-outcome--muted">暂无</span>
-                    </template>
-                  </div>
-                </div>
-                <div
-                  v-if="previewOrderRiskPanel.radarStep.facts.length"
-                  class="user-preview-radar-facts-wrap"
-                >
-                  <template
-                    v-if="previewRadarV4FactsGrouped.sections.length > 0 || previewRadarV4FactsGrouped.reportNote"
-                  >
-                    <p
-                      v-if="previewRadarV4FactsGrouped.reportNote"
-                      class="user-preview-radar-report-note"
-                    >
-                      {{ previewRadarV4FactsGrouped.reportNote }}
-                    </p>
-                    <div
-                      v-for="(sec, si) in previewRadarV4FactsGrouped.sections"
-                      :key="si"
-                      class="user-preview-radar-sec"
-                    >
-                      <div class="user-preview-radar-sec__head">
-                        <h4 class="user-preview-radar-sec__title">
-                          {{ sec.title }}
-                        </h4>
-                        <p
-                          v-if="sec.subtitle"
-                          class="user-preview-radar-sec__sub"
-                        >
-                          {{ sec.subtitle }}
-                        </p>
-                      </div>
-                      <div class="user-preview-radar-table-scroll">
-                        <table
-                          class="user-preview-radar-table user-preview-radar-table--multi"
-                          :aria-label="`${sec.title}指标`"
-                        >
-                          <thead>
-                            <tr>
-                              <template
-                                v-for="hi in previewRadarPairHeadIndexes"
-                                :key="hi"
-                              >
-                                <th scope="col">
-                                  指标
-                                </th>
-                                <th scope="col">
-                                  取值
-                                </th>
-                              </template>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            <tr v-if="!sec.rows.length">
-                              <td
-                                :colspan="PREVIEW_RADAR_TABLE_COLSPAN"
-                                class="user-preview-radar-table__empty"
-                              >
-                                暂无该项返回数据
-                              </td>
-                            </tr>
-                            <template v-else>
-                              <tr
-                                v-for="(chunk, ci) in chunkRadarFactPairs(sec.rows, PREVIEW_RADAR_PAIR_COLUMNS)"
-                                :key="ci"
-                              >
-                                <template
-                                  v-for="(cell, idx) in chunk"
-                                  :key="idx"
-                                >
-                                  <td class="user-preview-radar-table__label">
-                                    {{ cell.label }}
-                                  </td>
-                                  <td
-                                    class="user-preview-radar-table__value"
-                                    :class="{ 'user-preview-radar-table__value--emphasis': cell.emphasis }"
-                                  >
-                                    {{ cell.value }}
-                                  </td>
-                                </template>
-                                <td
-                                  v-if="chunk.length < PREVIEW_RADAR_PAIR_COLUMNS"
-                                  :colspan="(PREVIEW_RADAR_PAIR_COLUMNS - chunk.length) * 2"
-                                  class="user-preview-radar-table__pad"
-                                ></td>
-                              </tr>
-                            </template>
-                          </tbody>
-                        </table>
-                      </div>
-                    </div>
-                    <div
-                      v-if="previewRadarV4FactsGrouped.extras.length"
-                      class="user-preview-radar-sec"
-                    >
-                      <div class="user-preview-radar-sec__head">
-                        <h4 class="user-preview-radar-sec__title">
-                          其它信息
-                        </h4>
-                      </div>
-                      <div class="user-preview-radar-table-scroll">
-                        <table
-                          class="user-preview-radar-table user-preview-radar-table--multi"
-                          aria-label="其它信息"
-                        >
-                          <thead>
-                            <tr>
-                              <template
-                                v-for="hi in previewRadarPairHeadIndexes"
-                                :key="hi"
-                              >
-                                <th scope="col">
-                                  项目
-                                </th>
-                                <th scope="col">
-                                  内容
-                                </th>
-                              </template>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            <tr
-                              v-for="(chunk, ci) in chunkRadarFactPairs(previewRadarV4FactsGrouped.extras, PREVIEW_RADAR_PAIR_COLUMNS)"
-                              :key="ci"
-                            >
-                              <template
-                                v-for="(ex, idx) in chunk"
-                                :key="idx"
-                              >
-                                <td class="user-preview-radar-table__label">
-                                  {{ ex.label }}
-                                </td>
-                                <td
-                                  class="user-preview-radar-table__value"
-                                  :class="{ 'user-preview-radar-table__value--emphasis': ex.emphasis }"
-                                >
-                                  {{ ex.value }}
-                                </td>
-                              </template>
-                              <td
-                                v-if="chunk.length < PREVIEW_RADAR_PAIR_COLUMNS"
-                                :colspan="(PREVIEW_RADAR_PAIR_COLUMNS - chunk.length) * 2"
-                                class="user-preview-radar-table__pad"
-                              ></td>
-                            </tr>
-                          </tbody>
-                        </table>
-                      </div>
-                    </div>
-                  </template>
-                  <template v-else>
-                    <div class="user-preview-radar-table-scroll">
-                      <table
-                        class="user-preview-radar-table user-preview-radar-table--multi"
-                        aria-label="全景雷达数据"
-                      >
-                        <thead>
-                          <tr>
-                            <template
-                              v-for="hi in previewRadarPairHeadIndexes"
-                              :key="hi"
-                            >
-                              <th scope="col">
-                                项目
-                              </th>
-                              <th scope="col">
-                                内容
-                              </th>
-                            </template>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          <tr
-                            v-for="(chunk, ci) in chunkRadarFactPairs(previewOrderRiskPanel.radarStep.facts, PREVIEW_RADAR_PAIR_COLUMNS)"
-                            :key="ci"
-                          >
-                            <template
-                              v-for="(fl, idx) in chunk"
-                              :key="idx"
-                            >
-                              <td class="user-preview-radar-table__label">
-                                {{ fl.label }}
-                              </td>
-                              <td
-                                class="user-preview-radar-table__value"
-                                :class="{ 'user-preview-radar-table__value--emphasis': fl.emphasis }"
-                              >
-                                {{ fl.value }}
-                              </td>
-                            </template>
-                            <td
-                              v-if="chunk.length < PREVIEW_RADAR_PAIR_COLUMNS"
-                              :colspan="(PREVIEW_RADAR_PAIR_COLUMNS - chunk.length) * 2"
-                              class="user-preview-radar-table__pad"
-                            ></td>
-                          </tr>
-                        </tbody>
-                      </table>
-                    </div>
-                  </template>
-                </div>
-                <p
-                  v-if="previewOrderRiskPanel.radarStep.detail"
-                  class="user-preview-risk-step__detail user-preview-risk-step__detail--radar"
-                  :title="previewOrderRiskPanel.radarStep.detail"
-                >
-                  {{ previewOrderRiskPanel.radarStep.detail }}
-                </p>
-              </article>
-            </div>
-
-            
-          </div>
-        </section>
+        <UserRegistrationInfoScroll
+          v-if="!(editingUserId === previewUser.id && canManageUsers)"
+          embedded-in-parent-scroll
+          :user="previewUser"
+          :snapshot="previewUser.riskControlSnapshot ?? null"
+          :can-manage-users="canManageUsers"
+        />
+        <UserRegistrationInfoScroll
+          v-else
+          photos-and-risk-only
+          embedded-in-parent-scroll
+          :user="previewUser"
+          :snapshot="previewUser.riskControlSnapshot ?? null"
+          :can-manage-users="canManageUsers"
+        />
       </div>
 
       <div class="user-preview-footer">

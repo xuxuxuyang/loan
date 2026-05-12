@@ -418,6 +418,28 @@ async function updateOrderStatus(orderId: string, status: MallOrderPayload['stat
   orders.value = orders.value.map(item => (item.id === mapped.id ? mergeOrderAfterPatch(item, mapped) : item))
 }
 
+/** 审核页「审核不通过」：订单仍为 reviewing，仅 riskStatus 置为 failed */
+async function rejectOrderReview(orderId: string, riskReason?: string) {
+  const response = await fetch(`${MALL_ORDERS_ENDPOINT}/${encodeURIComponent(orderId)}/status`, {
+    method: 'PATCH',
+    headers: withAdminAuthHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({
+      riskStatus: 'failed',
+      ...(typeof riskReason === 'string' && riskReason.trim() ? { riskReason: riskReason.trim() } : {}),
+    }),
+  })
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({})) as { msg?: string }
+    throw new Error(payload.msg || `审核不通过失败: ${response.status}`)
+  }
+  const payload = await response.json() as { success?: boolean, data?: MallOrderPayload }
+  if (!payload.data) {
+    return
+  }
+  const mapped = mapMallOrderToAdminOrder(payload.data)
+  orders.value = orders.value.map(item => (item.id === mapped.id ? mergeOrderAfterPatch(item, mapped) : item))
+}
+
 async function fetchOrderRiskDetail(orderId: string): Promise<OrderRiskDetail> {
   const response = await fetch(riskDetailUrl(orderId), {
     method: 'GET',
@@ -502,6 +524,7 @@ export function useOrdersStore() {
     updateInstallmentDueDate,
     updateOrderShipment,
     updateOrderStatus,
+    rejectOrderReview,
     updateOrderCardPackage,
     updateOrderCardPackageContract,
     fetchOrderRiskDetail,

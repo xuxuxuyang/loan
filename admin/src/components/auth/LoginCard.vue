@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { reactive, ref, watch } from 'vue'
 
+const loginBgUrl = `${import.meta.env.BASE_URL}login-mall-bg.jpg`
+
 const props = defineProps<{
   loading: boolean
   error: string
@@ -41,102 +43,182 @@ function handleSubmit() {
 </script>
 
 <template>
-  <div
-    class="login-shell"
-    :class="{ 'login-shell--shake': shakeCard, 'login-shell--success': props.success }"
-  >
-    <div class="login-shell__ring" aria-hidden="true" />
-    <div class="login-card">
-      <div class="login-card__shine" aria-hidden="true" />
-      <div class="login-card__glow login-card__glow--a" />
-      <div class="login-card__glow login-card__glow--b" />
+  <div class="login-scene">
+    <div
+      class="login-scene__photo"
+      :style="{ backgroundImage: `url(${loginBgUrl})` }"
+      aria-hidden="true"
+    />
+    <div class="login-scene__tint" aria-hidden="true" />
+    <div class="login-scene__grid" aria-hidden="true" />
+    <div class="login-scene__scan" aria-hidden="true" />
 
-      <div class="login-card__header">
-        <h1>后台登录</h1>
-        <p>琥珀商城管理中台 · 安全接入</p>
-      </div>
+    <div
+      class="login-shell"
+      :class="{ 'login-shell--shake': shakeCard, 'login-shell--success': props.success }"
+    >
+      <div class="login-shell__ring" aria-hidden="true" />
+      <div class="login-card">
+        <div class="login-card__shine" aria-hidden="true" />
+        <div class="login-card__glow login-card__glow--a" />
+        <div class="login-card__glow login-card__glow--b" />
 
-      <label class="login-field">
-        <span>账号</span>
-        <div class="login-field__input-wrap">
-          <span class="login-field__icon" aria-hidden="true">
-            <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <path
-                d="M12 11.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"
-                stroke="currentColor"
-                stroke-width="1.6"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              />
-              <path
-                d="M5 20.5v-.5a5 5 0 0 1 5-5h4a5 5 0 0 1 5 5v.5"
-                stroke="currentColor"
-                stroke-width="1.6"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              />
-            </svg>
-          </span>
-          <input
-            v-model="form.username"
-            type="text"
-            autocomplete="username"
-            placeholder="请输入账号"
-          >
-        </div>
-      </label>
-
-      <label class="login-field">
-        <span>密码</span>
-        <div class="login-field__input-wrap">
-          <span class="login-field__icon" aria-hidden="true">
-            <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <div class="login-card__header">
+          <div class="login-card__brand">
+            <svg
+              class="login-card__logo"
+              viewBox="0 0 48 48"
+              fill="none"
+              xmlns="http://www.w3.org/2000/svg"
+              aria-hidden="true"
+            >
+              <defs>
+                <linearGradient
+                  id="loginCardLogoFrame"
+                  x1="4"
+                  y1="6"
+                  x2="42"
+                  y2="44"
+                  gradientUnits="userSpaceOnUse"
+                >
+                  <stop stop-color="#22d3ee" />
+                  <stop offset="0.55" stop-color="#38bdf8" />
+                  <stop offset="1" stop-color="#7dd3fc" />
+                </linearGradient>
+                <linearGradient
+                  id="loginCardLogoAmber"
+                  x1="14"
+                  y1="36"
+                  x2="34"
+                  y2="10"
+                  gradientUnits="userSpaceOnUse"
+                >
+                  <stop stop-color="#b45309" />
+                  <stop offset="0.35" stop-color="#ea580c" />
+                  <stop offset="0.7" stop-color="#fbbf24" />
+                  <stop offset="1" stop-color="#fde68a" />
+                </linearGradient>
+                <linearGradient
+                  id="loginCardLogoShine"
+                  x1="16"
+                  y1="12"
+                  x2="28"
+                  y2="26"
+                  gradientUnits="userSpaceOnUse"
+                >
+                  <stop stop-color="#fff" stop-opacity="0.55" />
+                  <stop offset="0.45" stop-color="#fff" stop-opacity="0.12" />
+                  <stop offset="1" stop-color="#fff" stop-opacity="0" />
+                </linearGradient>
+              </defs>
               <rect
-                x="5"
-                y="10"
-                width="14"
-                height="11"
-                rx="2"
-                stroke="currentColor"
-                stroke-width="1.6"
+                x="3.2"
+                y="3.2"
+                width="41.6"
+                height="41.6"
+                rx="12.5"
+                stroke="url(#loginCardLogoFrame)"
+                stroke-width="1.5"
+                fill="rgba(15, 23, 42, 0.72)"
               />
               <path
-                d="M8 10V8a4 4 0 0 1 8 0v2"
-                stroke="currentColor"
-                stroke-width="1.6"
+                d="M24 10.5 35.2 20.4l-2.9 16.1H15.7L12.8 20.4 24 10.5Z"
+                fill="url(#loginCardLogoAmber)"
+              />
+              <path d="M24 10.5v13L12.8 20.4l11.2-9.9Z" fill="url(#loginCardLogoShine)" />
+              <path
+                d="M24 23.5 33.5 19.8"
+                stroke="rgba(255,255,255,0.22)"
+                stroke-width="0.9"
                 stroke-linecap="round"
               />
-              <circle cx="12" cy="15.5" r="1.2" fill="currentColor" />
             </svg>
-          </span>
-          <input
-            v-model="form.password"
-            type="password"
-            autocomplete="current-password"
-            placeholder="请输入密码"
-            @keyup.enter="handleSubmit"
-          >
+            <h1>琥珀商城后台管理系统</h1>
+          </div>
         </div>
-      </label>
 
-      <p
-        v-if="props.error"
-        class="login-error"
-        role="alert"
-      >
-        {{ props.error }}
-      </p>
+        <label class="login-field">
+          <span>账号</span>
+          <div class="login-field__input-wrap">
+            <span class="login-field__icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path
+                  d="M12 11.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"
+                  stroke="currentColor"
+                  stroke-width="1.6"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                />
+                <path
+                  d="M5 20.5v-.5a5 5 0 0 1 5-5h4a5 5 0 0 1 5 5v.5"
+                  stroke="currentColor"
+                  stroke-width="1.6"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                />
+              </svg>
+            </span>
+            <input
+              v-model="form.username"
+              type="text"
+              autocomplete="username"
+              placeholder="请输入账号"
+            >
+          </div>
+        </label>
 
-      <button
-        class="login-btn"
-        type="button"
-        :disabled="props.loading"
-        :class="{ 'login-btn--loading': props.loading && !props.success, 'login-btn--ok': props.success }"
-        @click="handleSubmit"
-      >
-        <span class="login-btn__spinner" aria-hidden="true" />
-        <span class="login-btn__label">{{ props.success ? '验证通过' : props.loading ? '登录中…' : '立即登录' }}</span>
-      </button>
+        <label class="login-field">
+          <span>密码</span>
+          <div class="login-field__input-wrap">
+            <span class="login-field__icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <rect
+                  x="5"
+                  y="10"
+                  width="14"
+                  height="11"
+                  rx="2"
+                  stroke="currentColor"
+                  stroke-width="1.6"
+                />
+                <path
+                  d="M8 10V8a4 4 0 0 1 8 0v2"
+                  stroke="currentColor"
+                  stroke-width="1.6"
+                  stroke-linecap="round"
+                />
+                <circle cx="12" cy="15.5" r="1.2" fill="currentColor" />
+              </svg>
+            </span>
+            <input
+              v-model="form.password"
+              type="password"
+              autocomplete="current-password"
+              placeholder="请输入密码"
+              @keyup.enter="handleSubmit"
+            >
+          </div>
+        </label>
+
+        <p
+          v-if="props.error"
+          class="login-error"
+          role="alert"
+        >
+          {{ props.error }}
+        </p>
+
+        <button
+          class="login-btn"
+          type="button"
+          :disabled="props.loading"
+          :class="{ 'login-btn--loading': props.loading && !props.success, 'login-btn--ok': props.success }"
+          @click="handleSubmit"
+        >
+          <span class="login-btn__spinner" aria-hidden="true" />
+          <span class="login-btn__label">{{ props.success ? '验证通过' : props.loading ? '登录中…' : '立即登录' }}</span>
+        </button>
+      </div>
     </div>
   </div>
 </template>
@@ -146,6 +228,74 @@ function handleSubmit() {
   syntax: '<angle>';
   inherits: false;
   initial-value: 0deg;
+}
+
+.login-scene {
+  position: relative;
+  z-index: 0;
+  min-height: 100vh;
+  width: 100%;
+  display: grid;
+  place-items: center;
+  padding: clamp(20px, 5vw, 48px);
+  box-sizing: border-box;
+  overflow: hidden;
+  isolation: isolate;
+}
+
+.login-scene__photo {
+  position: absolute;
+  inset: -4%;
+  z-index: 0;
+  background-position: 50% 42%;
+  background-size: cover;
+  background-repeat: no-repeat;
+  transform: scale(1.06);
+  animation: heroKen 28s ease-in-out infinite alternate;
+  filter: saturate(1.12) contrast(1.05);
+}
+
+.login-scene__tint {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  background:
+    radial-gradient(ellipse 120% 85% at 50% 100%, rgba(2, 6, 23, 0.92) 0%, transparent 58%),
+    radial-gradient(ellipse 90% 70% at 80% 20%, rgba(14, 116, 144, 0.22), transparent 52%),
+    radial-gradient(ellipse 70% 60% at 12% 35%, rgba(79, 70, 229, 0.18), transparent 48%),
+    linear-gradient(165deg, rgba(2, 6, 23, 0.55) 0%, rgba(15, 23, 42, 0.72) 45%, rgba(2, 6, 23, 0.88) 100%);
+  pointer-events: none;
+}
+
+.login-scene__grid {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  opacity: 0.22;
+  background-image:
+    linear-gradient(rgba(56, 189, 248, 0.07) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(56, 189, 248, 0.06) 1px, transparent 1px);
+  background-size: 48px 48px;
+  mask-image: radial-gradient(ellipse 85% 75% at 50% 50%, black 18%, transparent 70%);
+  pointer-events: none;
+  animation: sceneGridDrift 14s ease-in-out infinite alternate;
+}
+
+.login-scene__scan {
+  position: absolute;
+  inset: -40% -20%;
+  z-index: 2;
+  background: linear-gradient(
+    105deg,
+    transparent 44%,
+    rgba(34, 211, 238, 0.04) 49.5%,
+    rgba(255, 255, 255, 0.06) 50%,
+    rgba(34, 211, 238, 0.04) 50.5%,
+    transparent 56%
+  );
+  mix-blend-mode: screen;
+  animation: sceneScan 11s ease-in-out infinite;
+  pointer-events: none;
 }
 
 .login-shell {
@@ -244,11 +394,27 @@ function handleSubmit() {
   border-bottom: 1px solid rgba(148, 163, 184, 0.1);
 }
 
+.login-card__brand {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.login-card__logo {
+  flex-shrink: 0;
+  width: clamp(44px, 9vw, 56px);
+  height: clamp(44px, 9vw, 56px);
+  filter: drop-shadow(0 0 14px rgba(56, 189, 248, 0.38));
+}
+
 .login-card__header h1 {
   margin: 0;
+  flex: 1;
+  min-width: 0;
   font-size: clamp(28px, 4.5vw, 36px);
   font-weight: 800;
   letter-spacing: 0.04em;
+  line-height: 1.2;
   background: linear-gradient(120deg, #f8fafc 0%, #bae6fd 45%, #e0e7ff 100%);
   -webkit-background-clip: text;
   background-clip: text;
@@ -498,7 +664,33 @@ function handleSubmit() {
   to { opacity: 1; transform: translateY(0); }
 }
 
+@keyframes heroKen {
+  0% { transform: scale(1.06) translate(0, 0); }
+  100% { transform: scale(1.12) translate(-1.2%, 0.8%); }
+}
+
+@keyframes sceneGridDrift {
+  0% { opacity: 0.18; transform: translate(0, 0); }
+  100% { opacity: 0.26; transform: translate(-10px, 6px); }
+}
+
+@keyframes sceneScan {
+  0%, 18% { transform: translateX(-8%) skewX(-6deg); opacity: 0; }
+  32% { opacity: 1; }
+  52%, 100% { transform: translateX(8%) skewX(-6deg); opacity: 0; }
+}
+
 @media (prefers-reduced-motion: reduce) {
+  .login-scene__photo,
+  .login-scene__grid,
+  .login-scene__scan {
+    animation: none !important;
+  }
+
+  .login-scene__photo {
+    transform: scale(1.04);
+  }
+
   .login-shell {
     animation: none;
     background: linear-gradient(

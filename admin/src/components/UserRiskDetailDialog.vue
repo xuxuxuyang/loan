@@ -4,6 +4,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { computed, ref, watch } from 'vue'
 import { withAdminAuthHeaders } from '../composables/useAdminApi'
 import { getAdminSession } from '../composables/useAdminAuth'
+import UserRegistrationInfoScroll from './UserRegistrationInfoScroll.vue'
 import {
   INSTALLMENT_ORDER_RISK_STEP_KEYS,
   INSTALLMENT_ORDER_RISK_STEP_LABELS,
@@ -150,6 +151,7 @@ interface ApiUserItem {
   riskControlSnapshot?: UserRiskSnapshot | null
   riskUpstreamConfigured?: boolean
   adminPasswordPlain?: string
+  adminRemark?: string
   registerChannelCode?: string
   registerChannelName?: string
   registerChannelLabel?: string
@@ -160,14 +162,9 @@ const MALL_API_BASE = `${(import.meta.env.VITE_MALL_API_BASE || 'http://localhos
 const props = withDefaults(defineProps<{
   modelValue: boolean
   userId: string | null
-  /**
-   * 从订单列表/待审核打开时：基本信息不展示登录密码。
-   */
-  basicTabOrderContext?: boolean
   /** 为 true 时隐藏「基本信息」页签（仅保留下单七项、雷达风控），并默认打开下单七项。 */
   hideBasicInfoTab?: boolean
 }>(), {
-  basicTabOrderContext: false,
   hideBasicInfoTab: false,
 })
 
@@ -326,28 +323,7 @@ function displayCreditFromSnapshotBasic(snapshot: UserRiskSnapshot | null): Disp
   return '良好'
 }
 
-const riskBasicDisplayCredit = computed(() => displayCreditFromSnapshotBasic(userRiskSnapshot.value))
-
 const riskBasicCanSeePasswordRow = computed(() => getAdminSession()?.role === 'super_admin')
-
-const riskBasicShowPasswordRow = computed(
-  () => riskBasicCanSeePasswordRow.value && !props.basicTabOrderContext,
-)
-
-/** 与 UsersPage 信誉角标配色一致 */
-function riskBasicCreditBadgeClass(status: DisplayCreditStatusBasic) {
-  if (status === '良好') {
-    return 'credit-badge badge-ok'
-  }
-  if (status === '待风控') {
-    return 'credit-badge badge-pending'
-  }
-  return 'credit-badge badge-risk'
-}
-
-function registerChannelLine(u: UserItem) {
-  return u.registerChannelLabel || u.registerChannelName || u.registerChannelCode || '—'
-}
 
 function truncateText(s: string, max: number) {
   if (s.length <= max) {
@@ -681,6 +657,7 @@ function mapApiUser(user: ApiUserItem): UserItem {
     registerChannelCode: typeof user.registerChannelCode === 'string' ? user.registerChannelCode.trim() : undefined,
     registerChannelName: typeof user.registerChannelName === 'string' ? user.registerChannelName.trim() : undefined,
     registerChannelLabel: typeof user.registerChannelLabel === 'string' ? user.registerChannelLabel.trim() : undefined,
+    adminRemark: typeof user.adminRemark === 'string' ? user.adminRemark : undefined,
   }
 }
 
@@ -760,75 +737,17 @@ function handleUserRiskDialogClosed() {
       <el-tabs v-model="riskDialogMainTab" class="user-risk-body-tabs">
         <el-tab-pane
           v-if="!hideBasicInfoTab"
-          label="基本信息"
+          label="用户注册信息"
           name="basic"
         >
           <div class="user-risk-tab-pane-inner user-risk-basic-tab">
-            <header class="user-risk-basic-head">
-              <p class="user-risk-basic-meta">
-                <span>{{ selectedUserForRisk.name }}</span>
-                <span class="user-risk-basic-meta__sep">·</span>
-                <span>{{ selectedUserForRisk.phone }}</span>
-                <span class="user-risk-basic-meta__sep">·</span>
-                <span class="user-risk-basic-meta__id">{{ selectedUserForRisk.id }}</span>
-              </p>
-            </header>
-            <section class="user-risk-basic-block">
-              <h4 class="user-risk-basic-block__title">
-                <span class="user-risk-basic-block__bar" />
-                基本信息
-              </h4>
-              <el-descriptions
-                :column="2"
-                border
-                size="default"
-                class="user-risk-basic-preview-desc"
-              >
-                <el-descriptions-item label="姓名">
-                  {{ selectedUserForRisk.name }}
-                </el-descriptions-item>
-                <el-descriptions-item label="手机号">
-                  {{ selectedUserForRisk.phone }}
-                </el-descriptions-item>
-                <el-descriptions-item
-                  v-if="riskBasicShowPasswordRow"
-                  label="登录密码"
-                >
-                  <span v-if="selectedUserForRisk.adminPasswordPlain">{{ selectedUserForRisk.adminPasswordPlain }}</span>
-                  <span
-                    v-else
-                    class="user-risk-basic-muted"
-                  >未设置</span>
-                </el-descriptions-item>
-                <el-descriptions-item label="身份证号码">
-                  <span
-                    v-if="selectedUserForRisk.idNumber?.trim()"
-                    class="user-risk-basic-id-number"
-                  >{{ selectedUserForRisk.idNumber }}</span>
-                  <span
-                    v-else
-                    class="user-risk-basic-muted"
-                  >未填写</span>
-                </el-descriptions-item>
-                <el-descriptions-item label="注册时间">
-                  {{ selectedUserForRisk.registerAt || '—' }}
-                </el-descriptions-item>
-                <el-descriptions-item label="注册渠道">
-                  {{ registerChannelLine(selectedUserForRisk) }}
-                </el-descriptions-item>
-                <el-descriptions-item label="额度">
-                  <span class="user-risk-basic-quota">¥ {{ selectedUserForRisk.quota }}</span>
-                </el-descriptions-item>
-                <el-descriptions-item
-                  label="信誉状态"
-                  :span="2"
-                >
-                  <span :class="riskBasicCreditBadgeClass(riskBasicDisplayCredit)">
-                    {{ riskBasicDisplayCredit }}
-                  </span>
-                </el-descriptions-item>
-              </el-descriptions>
-            </section>
+            <UserRegistrationInfoScroll
+              show-embedded-head
+              :user="selectedUserForRisk"
+              :snapshot="userRiskSnapshot"
+              :can-manage-users="riskBasicCanSeePasswordRow"
+              @close="dialogVisible = false"
+            />
           </div>
         </el-tab-pane>
         <el-tab-pane label="下单七项" name="order7">
@@ -1286,6 +1205,47 @@ function handleUserRiskDialogClosed() {
   gap: 12px;
 }
 
+.user-risk-basic-tab__meta {
+  margin: 0 0 4px;
+}
+
+/* 与 UsersPage 用户预览弹窗一致：副标题行、小节标题 */
+.user-preview-meta {
+  font-size: 13px;
+  color: #64748b;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+}
+
+.user-preview-meta__sep {
+  opacity: 0.45;
+}
+
+.user-preview-meta__id {
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  color: #94a3b8;
+}
+
+.user-preview-block__title {
+  margin: 0 0 12px;
+  font-size: 14px;
+  font-weight: 700;
+  color: #1e293b;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.user-preview-block__bar {
+  width: 4px;
+  height: 14px;
+  border-radius: 2px;
+  background: linear-gradient(180deg, #6366f1, #8b5cf6);
+}
+
 .user-risk-basic-intro {
   margin: 0;
   font-size: 13px;
@@ -1297,9 +1257,49 @@ function handleUserRiskDialogClosed() {
   margin-top: 0;
 }
 
-.user-risk-basic-quota {
+/* 与 UsersPage「用户注册信息」基本信息区 el-descriptions 一致 */
+.user-preview-desc {
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.user-preview-desc :deep(.el-descriptions__label) {
+  width: 112px;
   font-weight: 600;
-  color: #15803d;
+  color: #64748b !important;
+  background: #f8fafc !important;
+}
+
+.user-preview-desc :deep(.el-descriptions__content) {
+  color: #0f172a;
+}
+
+.user-preview-quota {
+  font-weight: 700;
+  color: #0f766e;
+  font-variant-numeric: tabular-nums;
+}
+
+.user-preview-meta__muted {
+  color: #94a3b8;
+}
+
+/* 与 UsersPage 用户列表「备注」预览样式一致 */
+.remark-preview {
+  margin: 0;
+  font-size: 13px;
+  color: #f10202;
+  line-height: 1.45;
+  max-height: 4.35em;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  word-break: break-word;
+}
+
+.remark-preview--empty {
+  color: #000;
 }
 
 .credit-badge {

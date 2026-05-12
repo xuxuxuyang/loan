@@ -2,7 +2,7 @@
 import { nextTick, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import type { CsChatMessage } from '~/composables/useMallCsChat'
-import { useMallCsChat } from '~/composables/useMallCsChat'
+import { resolveCsImageDisplayUrl, useMallCsChat } from '~/composables/useMallCsChat'
 
 const router = useRouter()
 const { syncFromStorage } = useMallAuth()
@@ -15,11 +15,13 @@ const {
   openSession,
   pullMessages,
   sendUserMessage,
+  sendUserImage,
   startPolling,
   stopPolling,
 } = useMallCsChat()
 
 const draft = ref('')
+const imageInputRef = ref<HTMLInputElement | null>(null)
 const listRef = ref<HTMLElement | null>(null)
 
 function formatMsgTime(iso: string) {
@@ -74,6 +76,25 @@ async function onSend() {
   }
   draft.value = ''
   await sendUserMessage(t)
+  await scrollToBottom()
+}
+
+function isCsImageMessage(m: CsChatMessage) {
+  return m.type === 'image' || Boolean(String(m.imageUrl || '').trim())
+}
+
+function openImagePicker() {
+  imageInputRef.value?.click()
+}
+
+async function onImageSelected(ev: Event) {
+  const el = ev.target as HTMLInputElement
+  const file = el.files?.[0]
+  el.value = ''
+  if (!file || loading.value || sending.value) {
+    return
+  }
+  await sendUserImage(file)
   await scrollToBottom()
 }
 
@@ -135,10 +156,20 @@ function bubbleClass(m: CsChatMessage) {
         :class="m.role === 'user' ? 'items-end' : 'items-start'"
       >
         <div
-          class="max-w-[85%] rounded-2xl px-3 py-2 text-[14px] leading-relaxed shadow-sm"
-          :class="bubbleClass(m)"
+          class="max-w-[85%] rounded-2xl text-[14px] leading-relaxed shadow-sm"
+          :class="[bubbleClass(m), isCsImageMessage(m) ? 'p-1.5' : 'px-3 py-2']"
         >
-          {{ m.text }}
+          <img
+            v-if="isCsImageMessage(m)"
+            :src="resolveCsImageDisplayUrl(m.imageUrl || '')"
+            alt="图片消息"
+            class="cs-chat-img block max-h-[min(52vh,280px)] max-w-full rounded-xl object-contain"
+            loading="lazy"
+          >
+          <span
+            v-else
+            class="whitespace-pre-wrap"
+          >{{ m.text }}</span>
         </div>
         <p class="mt-1 px-1 text-[10px] text-slate-400">
           <template v-if="m.role === 'agent' && m.agentName">
@@ -150,7 +181,25 @@ function bubbleClass(m: CsChatMessage) {
     </div>
 
     <footer class="shrink-0 border-t border-slate-200/80 bg-white px-3 py-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
+      <input
+        ref="imageInputRef"
+        type="file"
+        accept="image/jpeg,image/png,image/webp,image/gif"
+        class="sr-only"
+        tabindex="-1"
+        aria-hidden="true"
+        @change="onImageSelected"
+      >
       <div class="flex items-end gap-2">
+        <button
+          type="button"
+          class="tap flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-slate-50 text-xl font-medium leading-none text-slate-600 disabled:opacity-40"
+          aria-label="发送图片"
+          :disabled="sending || loading"
+          @click="openImagePicker"
+        >
+          +
+        </button>
         <textarea
           v-model="draft"
           rows="2"

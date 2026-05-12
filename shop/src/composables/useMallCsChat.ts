@@ -17,6 +17,31 @@ export interface CsChatMessage {
   text: string
   createdAt: string
   agentName?: string
+  /** 新建消息必有；历史数据缺省时按纯文本处理 */
+  type?: 'text' | 'image'
+  imageUrl?: string
+}
+
+/** 将服务端返回的 `/static/...` 或绝对 URL 转为浏览器可加载地址 */
+export function resolveCsImageDisplayUrl(pathOrUrl: string): string {
+  const s = String(pathOrUrl || '').trim()
+  if (!s) {
+    return ''
+  }
+  if (/^https?:\/\//i.test(s)) {
+    return s
+  }
+  const base = mallApiBase()
+  if (base.startsWith('http')) {
+    try {
+      const origin = new URL(base).origin
+      return `${origin}${s.startsWith('/') ? s : `/${s}`}`
+    }
+    catch {
+      return s
+    }
+  }
+  return s.startsWith('/') ? s : `/${s}`
 }
 
 export interface CsOpenPayload {
@@ -208,6 +233,41 @@ export function useMallCsChat() {
     }
   }
 
+  async function sendUserImage(file: File) {
+    if (!sessionId.value || !authMode.value || sending.value) {
+      return
+    }
+    if (authMode.value === 'visitor_headers' && !secret.value) {
+      return
+    }
+    sending.value = true
+    errorText.value = ''
+    try {
+      const fd = new FormData()
+      fd.append('image', file)
+      const res = await $fetch<{ success: boolean, msg?: string, data?: { messages: CsChatMessage[] } }>(
+        `${mallApiBase()}/mall/cs/messages/image`,
+        {
+          method: 'POST',
+          body: fd,
+          headers: buildAuthHeaders(),
+        },
+      )
+      if (!res?.success) {
+        throw new Error(res?.msg || '发送失败')
+      }
+      if (res.data?.messages) {
+        messages.value = res.data.messages
+      }
+    }
+    catch (e) {
+      errorText.value = e instanceof Error ? e.message : '图片发送失败'
+    }
+    finally {
+      sending.value = false
+    }
+  }
+
   function startPolling() {
     stopPolling()
     pollTimer = setInterval(() => {
@@ -237,6 +297,7 @@ export function useMallCsChat() {
     openSession,
     pullMessages,
     sendUserMessage,
+    sendUserImage,
     startPolling,
     stopPolling,
     clearVisitorStorage,

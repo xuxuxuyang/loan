@@ -107,12 +107,12 @@ interface KpiCard {
 /** 第一行、第二行指标均为「卡包已发放」订单维度 */
 const row1Cards = computed<KpiCard[]>(() => {
   const k = kpis.value
-  const scope = '卡包已发放订单。'
+  const scope = '【卡包已发放】'
   return [
     {
       label: '成交总额',
       value: fmtYuan(k.totalSales),
-      hint: `${scope}这些订单的成交金额合计`,
+      hint: `${scope}订单的成交金额合计`,
       tone: 'greenSpring',
     },
     {
@@ -138,12 +138,12 @@ const row1Cards = computed<KpiCard[]>(() => {
 
 const row2Cards = computed<KpiCard[]>(() => {
   const k = kpis.value
-  const scope = '卡包已发放订单。'
+  const scope = '【卡包已发放】'
   return [
     {
       label: '订单数',
       value: String(k.orderCount),
-      hint: `${scope}订单笔数`,
+      hint: `${scope}订单数`,
       tone: 'greenForest',
     },
     {

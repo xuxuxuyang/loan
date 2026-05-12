@@ -1225,7 +1225,6 @@ watch(
   <UserRiskDetailDialog
     v-model="userRiskDialogVisible"
     :user-id="riskDialogUserId"
-    basic-tab-order-context
     @user-updated="onRiskDialogUserUpdated"
   />
 </template>
