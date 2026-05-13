@@ -462,7 +462,7 @@ function getStatusClass(status: ReturnType<typeof displayCreditStatusFromOrderSe
                               :colspan="PREVIEW_RADAR_TABLE_COLSPAN"
                               class="user-preview-radar-table__empty"
                             >
-                              暂无该项返回数据
+                              查询无数据
                             </td>
                           </tr>
                           <template v-else>

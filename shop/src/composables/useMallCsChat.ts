@@ -22,26 +22,70 @@ export interface CsChatMessage {
   imageUrl?: string
 }
 
-/** 将服务端返回的 `/static/...` 或绝对 URL 转为浏览器可加载地址 */
+/** 仅客服上传图：历史为 /static/uploads/cs/；线上网关常只反代 /api，须走 /api/static/... */
+function normalizeCsChatImagePath(relativePath: string): string {
+  const p = relativePath.startsWith('/') ? relativePath : `/${relativePath}`
+  if (p.startsWith('/api/static/uploads/cs/')) {
+    return p
+  }
+  if (p.startsWith('/static/uploads/cs/')) {
+    return `/api${p}`
+  }
+  return p
+}
+
+function mallApiBaseAbsoluteForResolve(): string | null {
+  let base = mallApiBase().trim().replace(/\/$/, '')
+  if (!base) {
+    return null
+  }
+  if (base.startsWith('//')) {
+    if (typeof window !== 'undefined' && window.location?.protocol) {
+      base = `${window.location.protocol}${base}`
+    }
+    else {
+      base = `https:${base}`
+    }
+  }
+  if (!base.startsWith('http')) {
+    if (typeof window === 'undefined') {
+      return null
+    }
+    try {
+      base = new URL(base, window.location.origin).href
+    }
+    catch {
+      return null
+    }
+  }
+  return base
+}
+
+/** 将服务端返回的图片路径或绝对 URL 转为浏览器可加载地址 */
 export function resolveCsImageDisplayUrl(pathOrUrl: string): string {
-  const s = String(pathOrUrl || '').trim()
+  let s = String(pathOrUrl || '').trim()
   if (!s) {
     return ''
+  }
+  if (s.startsWith('//')) {
+    return typeof window !== 'undefined' && window.location?.protocol
+      ? `${window.location.protocol}${s}`
+      : `https:${s}`
   }
   if (/^https?:\/\//i.test(s)) {
     return s
   }
-  const base = mallApiBase()
-  if (base.startsWith('http')) {
+  s = normalizeCsChatImagePath(s)
+  const absBase = mallApiBaseAbsoluteForResolve()
+  if (absBase) {
     try {
-      const origin = new URL(base).origin
-      return `${origin}${s.startsWith('/') ? s : `/${s}`}`
+      return `${new URL(absBase).origin}${s}`
     }
     catch {
       return s
     }
   }
-  return s.startsWith('/') ? s : `/${s}`
+  return s
 }
 
 export interface CsOpenPayload {

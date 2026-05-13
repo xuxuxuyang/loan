@@ -4321,7 +4321,7 @@ router.post('/mall/cs/messages/image', async (ctx) => {
         fail(ctx, '请选择图片文件')
         return
       }
-      const imageUrl = `/static/uploads/cs/${file.filename}`
+      const imageUrl = `/api/static/uploads/cs/${file.filename}`
       const s = r.session
       csAppendMessage(s, 'user', '', { type: 'image', imageUrl })
       s.userOnlineAt = new Date().toISOString()
@@ -4454,7 +4454,7 @@ router.post('/admin/cs/sessions/:sessionId/messages/image', async (ctx) => {
         fail(ctx, '请选择图片文件')
         return
       }
-      const imageUrl = `/static/uploads/cs/${file.filename}`
+      const imageUrl = `/api/static/uploads/cs/${file.filename}`
       const agentName = resolveCsAgentName(ctx, db)
       csAppendMessage(s, 'agent', '', { type: 'image', imageUrl, agentName })
       writeDb(db)
@@ -4483,6 +4483,8 @@ router.post('/admin/cs/sessions/:sessionId/messages/image', async (ctx) => {
 
 app.use(cors())
 app.use(mount('/static', serve(API_PUBLIC_DIR)))
+/** 与 /api 同一网关反代时，上传图走 /api/static/...，避免单独配置 /static */
+app.use(mount('/api/static', serve(API_PUBLIC_DIR)))
 /** 注册等接口含证件 base64，默认 json 1mb 易 413；放宽（前有 Nginx 时仍需调 client_max_body_size） */
 app.use(bodyParser({
   jsonLimit: '12mb',

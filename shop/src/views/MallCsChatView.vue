@@ -83,6 +83,13 @@ function isCsImageMessage(m: CsChatMessage) {
   return m.type === 'image' || Boolean(String(m.imageUrl || '').trim())
 }
 
+function csMessageImageSrc(m: CsChatMessage): string {
+  if (!isCsImageMessage(m)) {
+    return ''
+  }
+  return resolveCsImageDisplayUrl(m.imageUrl || '')
+}
+
 function openImagePicker() {
   imageInputRef.value?.click()
 }
@@ -160,22 +167,23 @@ function bubbleClass(m: CsChatMessage) {
           :class="[bubbleClass(m), isCsImageMessage(m) ? 'p-1.5' : 'px-3 py-2']"
         >
           <img
-            v-if="isCsImageMessage(m)"
-            :src="resolveCsImageDisplayUrl(m.imageUrl || '')"
+            v-if="csMessageImageSrc(m)"
+            :src="csMessageImageSrc(m)"
             alt="图片消息"
             class="cs-chat-img block max-h-[min(52vh,280px)] max-w-full rounded-xl object-contain"
             loading="lazy"
           >
+          <span
+            v-else-if="isCsImageMessage(m)"
+            class="whitespace-pre-wrap text-slate-400"
+          >[图片]</span>
           <span
             v-else
             class="whitespace-pre-wrap"
           >{{ m.text }}</span>
         </div>
         <p class="mt-1 px-1 text-[10px] text-slate-400">
-          <template v-if="m.role === 'agent' && m.agentName">
-            {{ m.agentName }} ·
-          </template>
-          {{ m.role === 'user' ? '我' : '客服' }} · {{ formatMsgTime(m.createdAt) }}
+          {{ m.role === 'user' ? '我' : '平台客服' }} · {{ formatMsgTime(m.createdAt) }}
         </p>
       </div>
     </div>
@@ -190,27 +198,32 @@ function bubbleClass(m: CsChatMessage) {
         aria-hidden="true"
         @change="onImageSelected"
       >
-      <div class="flex items-end gap-2">
-        <button
-          type="button"
-          class="tap flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-slate-50 text-xl font-medium leading-none text-slate-600 disabled:opacity-40"
-          aria-label="发送图片"
-          :disabled="sending || loading"
-          @click="openImagePicker"
-        >
-          +
-        </button>
+      <div class="flex items-center gap-2">
         <textarea
           v-model="draft"
-          rows="2"
+          rows="1"
           maxlength="2000"
-          class="composer-input min-h-[44px] flex-1 resize-none rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none focus:border-[#e06f8d] focus:ring-1 focus:ring-[#e06f8d]/30"
+          class="composer-input box-border h-10 min-h-10 max-h-10 flex-1 resize-none overflow-y-auto rounded-xl border border-slate-200 bg-slate-50 px-3 py-0 text-sm leading-10 outline-none focus:border-[#e06f8d] focus:ring-1 focus:ring-[#e06f8d]/30"
           placeholder="输入消息，Enter 发送"
           @keydown.enter.exact.prevent="onSend"
         />
         <button
           type="button"
-          class="send-btn shrink-0 rounded-xl px-4 py-2 text-sm font-semibold text-white disabled:opacity-40"
+          class="img-picker-btn tap flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-[#e8cad3]/90 bg-[#fffafb] text-[#b84562] shadow-sm disabled:pointer-events-none disabled:opacity-40"
+          aria-label="发送图片"
+          title="发送图片"
+          :disabled="sending || loading"
+          @click="openImagePicker"
+        >
+          <Icon
+            name="tabler:photo"
+            class="pointer-events-none text-[1.05rem]"
+            aria-hidden="true"
+          />
+        </button>
+        <button
+          type="button"
+          class="send-btn inline-flex h-10 shrink-0 items-center justify-center rounded-xl px-4 text-sm font-semibold text-white disabled:opacity-40"
           :disabled="sending || !draft.trim()"
           @click="onSend"
         >
@@ -229,6 +242,11 @@ function bubbleClass(m: CsChatMessage) {
 
 .tap:active {
   opacity: 0.88;
+}
+
+.img-picker-btn:active:not(:disabled) {
+  border-color: rgba(224, 111, 141, 0.45);
+  background: linear-gradient(180deg, #fff5f8, #fff0f4);
 }
 
 .bubble-user {

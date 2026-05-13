@@ -235,9 +235,9 @@ function pushOrderedSection(
       emphasis: RADAR_V4_MANAGER_EMPHASIS.has(code),
     })
   }
-  if (lines.length === 0) return
   out.push({ label: title, value: subtitle, emphasis: true })
-  out.push(...lines)
+  if (lines.length > 0)
+    out.push(...lines)
 }
 
 export interface BuildRadarV4DetailFactLinesOptions {

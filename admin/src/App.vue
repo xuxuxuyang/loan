@@ -16,7 +16,9 @@ import {
   User,
 } from '@element-plus/icons-vue'
 import { useRoute, useRouter } from 'vue-router'
+import MallBrandLogo from './components/MallBrandLogo.vue'
 import { clearAdminSession, getAdminSession, type AdminSession } from './composables/useAdminAuth'
+import { csMenuUnreadTotal, useAdminCsUnreadBadge } from './composables/useAdminCsUnreadBadge'
 
 type Role = NonNullable<AdminSession['role']>
 
@@ -154,6 +156,22 @@ watch(
   },
   { immediate: true },
 )
+
+const csSidebarBadgeEnabled = computed(() => {
+  if (isLoginPage.value) {
+    return false
+  }
+  const r = session.value?.role
+  return r === 'super_admin' || r === 'reviewer'
+})
+
+const headerAvatarText = computed(() => {
+  const u = session.value?.username?.trim()
+  if (!u) return '?'
+  return u.slice(0, 1).toUpperCase()
+})
+
+useAdminCsUnreadBadge(csSidebarBadgeEnabled)
 </script>
 
 <template>
@@ -163,56 +181,75 @@ watch(
     v-else
     class="admin-layout"
   >
-    <aside class="admin-sidebar">
-      <div class="admin-logo">
-        琥珀商城
-      </div>
-      <el-menu
-        :key="sideMenuKey"
-        class="admin-side-menu"
-        :default-active="route.path"
-        :default-openeds="defaultOpenedSubmenus"
-        router
-        background-color="transparent"
-        text-color="#ebe4dc"
-        active-text-color="#fffaf5"
-      >
-        <template
-          v-for="item in menus"
-          :key="item.children?.length ? submenuIndex(item) : item.path"
+    <aside class="admin-sidebar admin-sidebar--dynamic">
+      <div
+        class="admin-sidebar-bg"
+        aria-hidden="true"
+      />
+      <div class="admin-sidebar-content">
+        <div class="admin-logo">
+          <MallBrandLogo class="admin-logo-mark" />
+          <div class="admin-logo-titles">
+            <span class="admin-logo-text">琥珀商城</span>
+            <span class="admin-logo-sub">后台管理</span>
+          </div>
+        </div>
+        <el-menu
+          :key="sideMenuKey"
+          class="admin-side-menu"
+          :default-active="route.path"
+          :default-openeds="defaultOpenedSubmenus"
+          router
+          background-color="transparent"
+          text-color="#e8eef7"
+          active-text-color="#fffaf5"
         >
-          <el-sub-menu
-            v-if="item.children?.length"
-            :index="submenuIndex(item)"
+          <template
+            v-for="item in menus"
+            :key="item.children?.length ? submenuIndex(item) : item.path"
           >
-            <template #title>
+            <el-sub-menu
+              v-if="item.children?.length"
+              :index="submenuIndex(item)"
+            >
+              <template #title>
+                <el-icon class="admin-menu-icon">
+                  <component :is="item.icon" />
+                </el-icon>
+                <span class="admin-menu-title">{{ item.label }}</span>
+              </template>
+              <el-menu-item
+                v-for="child in item.children"
+                :key="child.path"
+                :index="child.path"
+              >
+                <el-icon class="admin-menu-icon admin-menu-icon--child">
+                  <component :is="child.icon" />
+                </el-icon>
+                <span>{{ child.label }}</span>
+              </el-menu-item>
+            </el-sub-menu>
+            <el-menu-item
+              v-else
+              :index="item.path"
+            >
               <el-icon class="admin-menu-icon">
                 <component :is="item.icon" />
               </el-icon>
-              <span class="admin-menu-title">{{ item.label }}</span>
-            </template>
-            <el-menu-item
-              v-for="child in item.children"
-              :key="child.path"
-              :index="child.path"
-            >
-              <el-icon class="admin-menu-icon admin-menu-icon--child">
-                <component :is="child.icon" />
-              </el-icon>
-              <span>{{ child.label }}</span>
+              <span
+                class="admin-menu-top-label"
+                :class="{ 'admin-menu-top-label--cs': item.path === '/cs-messages' }"
+              >
+                <span class="admin-menu-top-label-text">{{ item.label }}</span>
+                <span
+                  v-if="item.path === '/cs-messages' && csMenuUnreadTotal > 0"
+                  class="admin-cs-menu-badge"
+                >{{ csMenuUnreadTotal > 99 ? '99+' : csMenuUnreadTotal }}</span>
+              </span>
             </el-menu-item>
-          </el-sub-menu>
-          <el-menu-item
-            v-else
-            :index="item.path"
-          >
-            <el-icon class="admin-menu-icon">
-              <component :is="item.icon" />
-            </el-icon>
-            <span>{{ item.label }}</span>
-          </el-menu-item>
-        </template>
-      </el-menu>
+          </template>
+        </el-menu>
+      </div>
     </aside>
 
     <main class="admin-main">
@@ -222,6 +259,12 @@ watch(
           v-if="session"
           class="admin-header-right"
         >
+          <el-avatar
+            :size="36"
+            class="admin-header-avatar"
+          >
+            {{ headerAvatarText }}
+          </el-avatar>
           <span class="admin-role">{{ roleText(session.role) }}</span>
           <span class="admin-user">{{ session.username }}</span>
           <button
@@ -256,15 +299,20 @@ watch(
 
 .admin-side-menu :deep(.el-menu-item:hover),
 .admin-side-menu :deep(.el-sub-menu__title:hover) {
-  background-color: rgba(255, 248, 240, 0.1) !important;
+  background-color: rgba(255, 255, 255, 0.12) !important;
 }
 
 .admin-side-menu :deep(.el-sub-menu__icon-arrow) {
-  color: #cfc4b8;
+  color: rgba(255, 255, 255, 0.55);
 }
 
 .admin-side-menu :deep(.el-menu-item.is-active) {
-  background-color: rgba(158, 118, 88, 0.92) !important;
+  background: linear-gradient(
+    120deg,
+    rgba(37, 99, 235, 0.55) 0%,
+    rgba(234, 88, 12, 0.48) 100%
+  ) !important;
+  box-shadow: 0 4px 18px rgba(37, 99, 235, 0.2);
   color: #fffaf5 !important;
 }
 
@@ -274,7 +322,11 @@ watch(
 }
 
 .admin-side-menu :deep(.el-sub-menu .el-menu-item.is-active) {
-  background-color: rgba(212, 181, 152, 0.42) !important;
+  background: linear-gradient(
+    120deg,
+    rgba(37, 99, 235, 0.38) 0%,
+    rgba(234, 88, 12, 0.32) 100%
+  ) !important;
 }
 
 .admin-menu-icon {
@@ -289,5 +341,177 @@ watch(
 
 .admin-menu-title {
   font-weight: 600;
+}
+
+.admin-menu-top-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.admin-menu-top-label--cs {
+  flex: 1;
+  justify-content: space-between;
+}
+
+.admin-menu-top-label-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.admin-cs-menu-badge {
+  flex-shrink: 0;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: #ef4444;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 18px;
+  text-align: center;
+}
+</style>
+
+<style>
+/* 侧栏动态背景与顶栏头像（全局类名，与 style.css 中的 .admin-sidebar 配合） */
+.admin-sidebar.admin-sidebar--dynamic {
+  position: relative;
+  overflow: hidden;
+  background: linear-gradient(155deg, #1a1530 0%, #0f172a 44%, #1c1917 100%);
+  box-shadow:
+    inset -1px 0 0 rgba(255, 255, 255, 0.07),
+    6px 0 28px rgba(15, 23, 42, 0.18);
+}
+
+.admin-sidebar--dynamic .admin-logo {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px 14px;
+}
+
+.admin-logo-titles {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+  line-height: 1.2;
+}
+
+.admin-logo-mark {
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  filter: drop-shadow(0 0 10px rgba(56, 189, 248, 0.32));
+}
+
+.admin-sidebar--dynamic .admin-logo-text {
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: #faf6f2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-shadow:
+    0 0 20px rgba(96, 165, 250, 0.35),
+    0 1px 8px rgba(0, 0, 0, 0.4);
+}
+
+.admin-logo-sub {
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  color: rgba(232, 238, 247, 0.72);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.admin-sidebar-bg {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.admin-sidebar-bg::before,
+.admin-sidebar-bg::after {
+  content: '';
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(56px);
+  opacity: 0.92;
+  animation-timing-function: ease-in-out;
+  animation-iteration-count: infinite;
+  animation-direction: alternate;
+}
+
+.admin-sidebar-bg::before {
+  width: 150%;
+  height: 95%;
+  left: -40%;
+  top: -28%;
+  background:
+    radial-gradient(ellipse 80% 70% at 28% 38%, rgba(251, 146, 60, 0.48) 0%, transparent 58%),
+    radial-gradient(ellipse 70% 60% at 72% 28%, rgba(59, 130, 246, 0.52) 0%, transparent 55%);
+  animation: admin-sidebar-aurora-a 16s infinite;
+}
+
+.admin-sidebar-bg::after {
+  width: 130%;
+  height: 110%;
+  right: -45%;
+  bottom: -38%;
+  background:
+    radial-gradient(ellipse 75% 65% at 55% 62%, rgba(139, 92, 246, 0.38) 0%, transparent 58%),
+    radial-gradient(ellipse 60% 50% at 35% 72%, rgba(234, 88, 12, 0.3) 0%, transparent 48%);
+  animation: admin-sidebar-aurora-b 20s infinite;
+  opacity: 0.8;
+}
+
+@keyframes admin-sidebar-aurora-a {
+  0% {
+    transform: translate(0, 0) scale(1);
+  }
+  100% {
+    transform: translate(9%, 7%) scale(1.06);
+  }
+}
+
+@keyframes admin-sidebar-aurora-b {
+  0% {
+    transform: translate(0, 0) scale(1.04);
+  }
+  100% {
+    transform: translate(-7%, -6%) scale(1);
+  }
+}
+
+.admin-sidebar-content {
+  position: relative;
+  z-index: 1;
+}
+
+.admin-header-avatar {
+  flex-shrink: 0;
+  background: linear-gradient(135deg, #2563eb 0%, #ea580c 100%) !important;
+  color: #fff !important;
+  font-weight: 700;
+  font-size: 15px;
+  box-shadow: 0 2px 14px rgba(37, 99, 235, 0.28);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .admin-sidebar-bg::before,
+  .admin-sidebar-bg::after {
+    animation: none;
+  }
 }
 </style>

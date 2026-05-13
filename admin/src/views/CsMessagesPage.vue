@@ -68,29 +68,73 @@ function formatMsgTime(iso: string) {
   return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
 }
 
+function normalizeCsChatImagePath(relativePath: string): string {
+  const p = relativePath.startsWith('/') ? relativePath : `/${relativePath}`
+  if (p.startsWith('/api/static/uploads/cs/')) {
+    return p
+  }
+  if (p.startsWith('/static/uploads/cs/')) {
+    return `/api${p}`
+  }
+  return p
+}
+
+function mallApiBaseAbsoluteForImages(): string | null {
+  let base = MALL_API_BASE.trim().replace(/\/$/, '')
+  if (!base) {
+    return null
+  }
+  if (base.startsWith('//')) {
+    base = typeof window !== 'undefined' && window.location?.protocol
+      ? `${window.location.protocol}${base}`
+      : `https:${base}`
+  }
+  if (!base.startsWith('http')) {
+    try {
+      base = new URL(base, window.location.origin).href
+    }
+    catch {
+      return null
+    }
+  }
+  return base
+}
+
 function resolveCsImageUrl(pathOrUrl: string): string {
-  const s = String(pathOrUrl || '').trim()
+  let s = String(pathOrUrl || '').trim()
   if (!s) {
     return ''
+  }
+  if (s.startsWith('//')) {
+    return typeof window !== 'undefined' && window.location?.protocol
+      ? `${window.location.protocol}${s}`
+      : `https:${s}`
   }
   if (/^https?:\/\//i.test(s)) {
     return s
   }
-  const base = MALL_API_BASE.replace(/\/$/, '')
-  if (base.startsWith('http')) {
+  s = normalizeCsChatImagePath(s)
+  const absBase = mallApiBaseAbsoluteForImages()
+  if (absBase) {
     try {
-      const origin = new URL(base).origin
-      return `${origin}${s.startsWith('/') ? s : `/${s}`}`
+      return `${new URL(absBase).origin}${s}`
     }
     catch {
       return s
     }
   }
-  return s.startsWith('/') ? s : `/${s}`
+  return s
 }
 
 function isCsImageMessage(m: ChatMessage): boolean {
   return m.type === 'image' || Boolean(String(m.imageUrl || '').trim())
+}
+
+function csChatImageSrc(m: ChatMessage): string {
+  if (!isCsImageMessage(m)) {
+    return ''
+  }
+  return resolveCsImageUrl(m.imageUrl || '')
 }
 
 function pickAgentImage() {
@@ -366,12 +410,15 @@ onUnmounted(() => {
             >
               <div class="cs-msg-bubble">
                 <img
-                  v-if="isCsImageMessage(m)"
-                  :src="resolveCsImageUrl(m.imageUrl || '')"
+                  v-if="csChatImageSrc(m)"
+                  :src="csChatImageSrc(m)"
                   alt=""
                   class="cs-msg-img"
                   loading="lazy"
                 >
+                <template v-else-if="isCsImageMessage(m)">
+                  [图片]
+                </template>
                 <template v-else>
                   {{ m.text }}
                 </template>
@@ -409,7 +456,7 @@ onUnmounted(() => {
             @keydown.enter.exact.prevent="sendReply"
           />
           <el-button
-            circle
+            class="cs-composer-img-btn"
             :disabled="!activeId || sending"
             aria-label="发送图片"
             @click="pickAgentImage"
@@ -735,5 +782,19 @@ onUnmounted(() => {
 
 .cs-composer :deep(.el-textarea) {
   flex: 1;
+}
+
+/** 与默认尺寸「发送」按钮同高，仅保留小图标 */
+.cs-composer-img-btn.el-button {
+  flex-shrink: 0;
+  width: var(--el-component-size);
+  height: var(--el-component-size);
+  min-height: var(--el-component-size);
+  padding: 0;
+  align-self: flex-end;
+}
+
+.cs-composer-img-btn.el-button .el-icon {
+  font-size: calc(var(--el-component-size) * 0.42);
 }
 </style>
