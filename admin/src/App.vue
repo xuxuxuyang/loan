@@ -16,6 +16,7 @@ import {
   User,
 } from '@element-plus/icons-vue'
 import { useRoute, useRouter } from 'vue-router'
+import AdminRoleAvatar from './components/AdminRoleAvatar.vue'
 import MallBrandLogo from './components/MallBrandLogo.vue'
 import { clearAdminSession, getAdminSession, type AdminSession } from './composables/useAdminAuth'
 import { csMenuUnreadTotal, useAdminCsUnreadBadge } from './composables/useAdminCsUnreadBadge'
@@ -165,12 +166,6 @@ const csSidebarBadgeEnabled = computed(() => {
   return r === 'super_admin' || r === 'reviewer'
 })
 
-const headerAvatarText = computed(() => {
-  const u = session.value?.username?.trim()
-  if (!u) return '?'
-  return u.slice(0, 1).toUpperCase()
-})
-
 useAdminCsUnreadBadge(csSidebarBadgeEnabled)
 </script>
 
@@ -259,21 +254,28 @@ useAdminCsUnreadBadge(csSidebarBadgeEnabled)
           v-if="session"
           class="admin-header-right"
         >
-          <el-avatar
+          <AdminRoleAvatar
+            :role="session.role"
             :size="36"
-            class="admin-header-avatar"
-          >
-            {{ headerAvatarText }}
-          </el-avatar>
+          />
           <span class="admin-role">{{ roleText(session.role) }}</span>
           <span class="admin-user">{{ session.username }}</span>
-          <button
-            class="admin-logout-btn"
-            type="button"
-            @click="logout"
+          <el-popconfirm
+            width="240"
+            title="确定退出登录吗？"
+            confirm-button-text="确定"
+            cancel-button-text="取消"
+            @confirm="logout"
           >
-            退出登录
-          </button>
+            <template #reference>
+              <button
+                class="admin-logout-btn"
+                type="button"
+              >
+                退出登录
+              </button>
+            </template>
+          </el-popconfirm>
         </div>
       </header>
       <section class="admin-content">
@@ -497,15 +499,6 @@ useAdminCsUnreadBadge(csSidebarBadgeEnabled)
 .admin-sidebar-content {
   position: relative;
   z-index: 1;
-}
-
-.admin-header-avatar {
-  flex-shrink: 0;
-  background: linear-gradient(135deg, #2563eb 0%, #ea580c 100%) !important;
-  color: #fff !important;
-  font-weight: 700;
-  font-size: 15px;
-  box-shadow: 0 2px 14px rgba(37, 99, 235, 0.28);
 }
 
 @media (prefers-reduced-motion: reduce) {

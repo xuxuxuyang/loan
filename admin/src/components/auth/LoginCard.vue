@@ -8,6 +8,8 @@ const props = defineProps<{
   loading: boolean
   error: string
   success?: boolean
+  /** 登录成功后、路由跳转前的过渡阶段 */
+  enteringSystem?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -56,7 +58,11 @@ function handleSubmit() {
 
     <div
       class="login-shell"
-      :class="{ 'login-shell--shake': shakeCard, 'login-shell--success': props.success }"
+      :class="{
+        'login-shell--shake': shakeCard,
+        'login-shell--success': props.success,
+        'login-shell--entering': props.enteringSystem,
+      }"
     >
       <div class="login-shell__ring" aria-hidden="true" />
       <div class="login-card">
@@ -146,12 +152,46 @@ function handleSubmit() {
           class="login-btn"
           type="button"
           :disabled="props.loading"
-          :class="{ 'login-btn--loading': props.loading && !props.success, 'login-btn--ok': props.success }"
+          :class="{
+            'login-btn--loading': props.loading && !props.success,
+            'login-btn--ok': props.success,
+            'login-btn--entering': props.enteringSystem,
+          }"
           @click="handleSubmit"
         >
           <span class="login-btn__spinner" aria-hidden="true" />
-          <span class="login-btn__label">{{ props.success ? '验证通过' : props.loading ? '登录中…' : '立即登录' }}</span>
+          <span class="login-btn__label">{{
+            props.enteringSystem
+              ? '进入中…'
+              : props.success
+                ? '登录成功'
+                : props.loading
+                  ? '登录中…'
+                  : '立即登录'
+          }}</span>
         </button>
+
+        <Transition name="login-enter-mask">
+          <div
+            v-if="props.enteringSystem"
+            class="login-card__enter-mask"
+            role="status"
+            aria-live="polite"
+          >
+            <div class="login-card__enter-backdrop" aria-hidden="true" />
+            <div class="login-card__enter-panel">
+              <div class="login-card__enter-orbit" aria-hidden="true">
+                <span class="login-card__enter-dot" />
+              </div>
+              <p class="login-card__enter-title">
+                正在进入系统
+              </p>
+              <p class="login-card__enter-hint">
+                正在为您跳转后台，请稍候
+              </p>
+            </div>
+          </div>
+        </Transition>
       </div>
     </div>
   </div>
@@ -259,6 +299,155 @@ function handleSubmit() {
 
 .login-shell--success {
   animation: shellGlow 0.6s ease-out;
+}
+
+.login-shell--entering {
+  animation: shellEnterPulse 1.25s ease-in-out infinite alternate;
+}
+
+.login-card__enter-mask {
+  position: absolute;
+  inset: 0;
+  z-index: 8;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  border-radius: inherit;
+  overflow: hidden;
+}
+
+.login-card__enter-backdrop {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    160deg,
+    rgba(2, 6, 23, 0.72) 0%,
+    rgba(15, 23, 42, 0.82) 45%,
+    rgba(6, 78, 59, 0.55) 100%
+  );
+  backdrop-filter: blur(10px);
+}
+
+.login-card__enter-panel {
+  position: relative;
+  z-index: 1;
+  text-align: center;
+  max-width: 280px;
+  animation: enterPanelIn 0.55s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.login-card__enter-orbit {
+  position: relative;
+  width: 56px;
+  height: 56px;
+  margin: 0 auto 18px;
+  border-radius: 50%;
+  border: 2px solid rgba(52, 211, 153, 0.35);
+  border-top-color: rgba(45, 212, 191, 0.95);
+  animation: enterOrbitSpin 0.95s linear infinite;
+}
+
+.login-card__enter-dot {
+  position: absolute;
+  left: 50%;
+  top: -5px;
+  width: 10px;
+  height: 10px;
+  margin-left: -5px;
+  border-radius: 50%;
+  background: #5eead4;
+  box-shadow: 0 0 14px rgba(45, 212, 191, 0.85);
+}
+
+.login-card__enter-title {
+  margin: 0 0 8px;
+  font-size: 18px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  color: #ecfdf5;
+  text-shadow: 0 0 24px rgba(45, 212, 191, 0.35);
+}
+
+.login-card__enter-hint {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.55;
+  color: rgba(167, 243, 208, 0.88);
+}
+
+.login-enter-mask-enter-active,
+.login-enter-mask-leave-active {
+  transition: opacity 0.38s ease;
+}
+
+.login-enter-mask-enter-active .login-card__enter-panel,
+.login-enter-mask-leave-active .login-card__enter-panel {
+  transition: transform 0.38s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.38s ease;
+}
+
+.login-enter-mask-enter-from,
+.login-enter-mask-leave-to {
+  opacity: 0;
+}
+
+.login-enter-mask-enter-from .login-card__enter-panel,
+.login-enter-mask-leave-to .login-card__enter-panel {
+  opacity: 0;
+  transform: scale(0.92) translateY(8px);
+}
+
+.login-btn--entering {
+  background: linear-gradient(125deg, #14b8a6, #22c55e, #0ea5e9);
+  background-size: 200% 200%;
+  color: #042f2e;
+  animation: btnGradient 2.8s ease infinite, btnEnterPulse 1.1s ease-in-out infinite alternate;
+}
+
+.login-btn--entering.login-btn--loading .login-btn__spinner {
+  opacity: 0;
+}
+
+@keyframes shellEnterPulse {
+  from {
+    filter: brightness(1);
+    box-shadow:
+      0 0 0 1px rgba(15, 23, 42, 0.6),
+      0 28px 90px rgba(2, 6, 23, 0.75),
+      0 0 120px rgba(56, 189, 248, 0.12);
+  }
+  to {
+    filter: brightness(1.06);
+    box-shadow:
+      0 0 0 1px rgba(45, 212, 191, 0.35),
+      0 28px 100px rgba(6, 95, 70, 0.45),
+      0 0 140px rgba(45, 212, 191, 0.22);
+  }
+}
+
+@keyframes enterPanelIn {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.94);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes enterOrbitSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes btnEnterPulse {
+  from {
+    box-shadow: 0 10px 28px rgba(20, 184, 166, 0.28);
+  }
+  to {
+    box-shadow: 0 14px 36px rgba(34, 197, 94, 0.38);
+  }
 }
 
 .login-shell__ring {
@@ -633,6 +822,22 @@ function handleSubmit() {
       rgba(129, 140, 248, 0.35),
       rgba(34, 211, 238, 0.4)
     );
+  }
+
+  .login-shell--entering {
+    animation: none !important;
+  }
+
+  .login-card__enter-orbit {
+    animation: none !important;
+  }
+
+  .login-card__enter-panel {
+    animation: none !important;
+  }
+
+  .login-btn--entering {
+    animation: none !important;
   }
 
   .login-card__shine,

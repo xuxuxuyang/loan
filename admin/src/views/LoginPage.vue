@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref } from 'vue'
+import { ElMessage } from 'element-plus'
 import { useRoute, useRouter } from 'vue-router'
 import LoginCard from '../components/auth/LoginCard.vue'
 import { setAdminSession, type AdminRole } from '../composables/useAdminAuth'
@@ -9,12 +10,14 @@ const router = useRouter()
 const loading = ref(false)
 const error = ref('')
 const loginSuccess = ref(false)
+const enteringSystem = ref(false)
 const MALL_API_BASE = `${(import.meta.env.VITE_MALL_API_BASE || 'http://localhost:3110/api').replace(/\/$/, '')}`
 
 async function handleLogin(payload: { username: string, password: string }) {
   if (loading.value) return
   error.value = ''
   loginSuccess.value = false
+  enteringSystem.value = false
   loading.value = true
   try {
     const response = await fetch(`${MALL_API_BASE}/admin/login`, {
@@ -51,8 +54,11 @@ async function handleLogin(payload: { username: string, password: string }) {
       loginAt: new Date().toISOString(),
     })
 
+    ElMessage.success('登录成功')
     loginSuccess.value = true
-    await new Promise(r => setTimeout(r, 420))
+    await new Promise(r => setTimeout(r, 480))
+    enteringSystem.value = true
+    await new Promise(r => setTimeout(r, 1400))
 
     const redirect = String(route.query.redirect || '/')
     await router.replace(redirect.startsWith('/') ? redirect : '/')
@@ -63,6 +69,7 @@ async function handleLogin(payload: { username: string, password: string }) {
   finally {
     loading.value = false
     loginSuccess.value = false
+    enteringSystem.value = false
   }
 }
 </script>
@@ -82,6 +89,7 @@ async function handleLogin(payload: { username: string, password: string }) {
       :loading="loading"
       :error="error"
       :success="loginSuccess"
+      :entering-system="enteringSystem"
       @submit="handleLogin"
     />
 
