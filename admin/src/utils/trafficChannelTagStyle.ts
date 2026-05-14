@@ -15,6 +15,9 @@ export function trafficChannelDisplayKey(
   return (code ?? '').trim()
 }
 
+/** 未带流量渠道参数注册时，在「注册用户」等场景展示的固定文案 */
+export const MALL_SELF_REGISTER_CHANNEL_LABEL = '商城注册'
+
 const PALETTE: ReadonlyArray<{ bg: string; fg: string; bd: string }> = [
   { bg: '#dbeafe', fg: '#1e40af', bd: '#93c5fd' },
   { bg: '#dcfce7', fg: '#166534', bd: '#86efac' },

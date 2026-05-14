@@ -1,6 +1,6 @@
 import { onUnmounted, ref, watch, type ComputedRef } from 'vue'
 import { useRoute } from 'vue-router'
-import { getAdminSession } from './useAdminAuth'
+import { getAdminSession, isSuperAdminRole } from './useAdminAuth'
 import { withAdminAuthHeaders } from './useAdminApi'
 
 const MALL_API_BASE = `${(import.meta.env.VITE_MALL_API_BASE || 'http://localhost:3110/api').replace(/\/$/, '')}`
@@ -12,7 +12,7 @@ let pollTimer: ReturnType<typeof setInterval> | null = null
 
 async function fetchCsUnreadSum() {
   const s = getAdminSession()
-  if (!s?.token || (s.role !== 'super_admin' && s.role !== 'reviewer')) {
+  if (!s?.token || (!isSuperAdminRole(s.role) && s.role !== 'reviewer')) {
     csMenuUnreadTotal.value = 0
     return
   }

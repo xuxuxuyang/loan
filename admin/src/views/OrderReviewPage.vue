@@ -2,10 +2,11 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { OrderItem } from '../stores/useOrdersStore'
-import { getAdminSession } from '../composables/useAdminAuth'
+import { getAdminSession, isSuperAdminRole } from '../composables/useAdminAuth'
 import { useOrdersStore } from '../stores/useOrdersStore'
 import { withAdminAuthHeaders } from '../composables/useAdminApi'
 import UserRiskDetailDialog, { type UserItem } from '../components/UserRiskDetailDialog.vue'
+import { refreshOrdersMenuPendingReview } from '../composables/useAdminOrderReviewBadge'
 import { donePageProgress, startPageProgress } from '../utils/progress'
 
 const MALL_API_BASE = `${(import.meta.env.VITE_MALL_API_BASE || 'http://localhost:3110/api').replace(/\/$/, '')}`
@@ -23,7 +24,7 @@ const riskFilter = ref<'全部' | OrderItem['riskStatus']>('全部')
 const userFilter = ref('')
 const { orders, fetchOrders, updateOrderStatus, rejectOrderReview, deleteOrder } = useOrdersStore()
 
-const canDeleteOrder = computed(() => getAdminSession()?.role === 'super_admin')
+const canDeleteOrder = computed(() => isSuperAdminRole(getAdminSession()?.role))
 
 function normalizePhone(raw: string): string {
   return String(raw || '').replace(/\D/g, '')
@@ -63,6 +64,7 @@ async function loadReviewOrders() {
   finally {
     loading.value = false
     donePageProgress()
+    void refreshOrdersMenuPendingReview()
   }
 }
 
@@ -157,7 +159,9 @@ async function handleDeleteOrder(order: OrderItem) {
 }
 
 function onRiskDialogUserUpdated(_user: UserItem) {
-  void fetchOrders({ status: '待审核' }).catch(() => {})
+  void fetchOrders({ status: '待审核' })
+    .then(() => void refreshOrdersMenuPendingReview())
+    .catch(() => {})
 }
 
 async function openRiskDetail(order: OrderItem, entry: 'user' | 'risk') {
@@ -276,10 +280,10 @@ onMounted(() => {
           <td class="td-user-remark">
             <p
               class="order-user-remark-text"
-              :class="{ 'order-user-remark-text--empty': !(item.userRemark || '').trim() }"
+              :class="(item.userRemark || '').trim() ? 'order-user-remark-text--filled' : 'order-user-remark-text--empty'"
               :title="(item.userRemark || '').trim() ? item.userRemark : ''"
             >
-              {{ (item.userRemark || '').trim() ? item.userRemark : '—' }}
+              {{ (item.userRemark || '').trim() ? item.userRemark : '暂无备注' }}
             </p>
           </td>
           <td>{{ item.product }}</td>
@@ -462,20 +466,24 @@ onMounted(() => {
 
 .order-user-remark-text {
   margin: 0;
-  font-size: 13px;
   line-height: 1.45;
   word-break: break-word;
   overflow: hidden;
   display: block;
   width: 100%;
   max-height: 4.35em;
-  color: #f10202;
-  font-weight: 500;
+}
+
+.order-user-remark-text--filled {
+  font-size: 16px;
+  font-weight: 700;
+  color: #dc2626;
 }
 
 .order-user-remark-text--empty {
-  color: #9ca3af;
+  font-size: 12px;
   font-weight: 400;
+  color: #a8a1a1;
 }
 
 .order-user-risk-tag {

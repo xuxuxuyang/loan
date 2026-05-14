@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { TeaProduct } from '~/composables/useTeaProducts'
+import mallDefaultAvatarUrl from '~/assets/mall-default-avatar.svg?url'
 
 const route = useRoute()
 const { smartNavigate } = useCustomRouting(route)
@@ -131,6 +132,10 @@ async function handleService(key: string) {
     await smartNavigate('/cs-chat')
     return
   }
+  if (key === 'privacy') {
+    await smartNavigate('/privacy-policy')
+    return
+  }
   ElMessage.info('该功能开发中')
 }
 </script>
@@ -139,12 +144,18 @@ async function handleService(key: string) {
   <section class="bg-[#f3f4f8] px-4 pb-5 pt-4">
     <div class="profile-card mb-3 flex items-center gap-2 sm:gap-3">
       <div class="flex min-w-0 flex-1 items-center gap-3">
-        <div class="avatar-shell flex h-14 w-14 shrink-0 items-center justify-center rounded-full bg-white shadow-sm">
-          <Icon
-            name="tabler:user-filled"
-            size="2rem"
-            class="text-[#e4869b]"
-          />
+        <div
+          class="avatar-shell flex h-14 w-14 shrink-0 overflow-hidden rounded-full bg-white shadow-sm ring-1 ring-black/[0.06]"
+          aria-hidden="true"
+        >
+          <img
+            :src="mallDefaultAvatarUrl"
+            alt=""
+            width="56"
+            height="56"
+            class="h-full w-full object-cover"
+            decoding="async"
+          >
         </div>
         <div class="min-w-0 flex-1">
           <button
@@ -261,7 +272,7 @@ async function handleService(key: string) {
           </span>
         </div>
         <p class="max-w-full px-0.5 text-center text-[11px] leading-snug text-black/50 sm:text-xs">
-          {{ isLoggedIn ? `待还 ¥${summary.billPendingAmount}` : '登录后查看' }}
+          {{ isLoggedIn ? `待还 ¥${Number(summary.billPendingAmount ?? 0).toFixed(2)}` : '登录后查看' }}
         </p>
       </button>
       <button
@@ -312,14 +323,14 @@ async function handleService(key: string) {
       </div>
     </div>
 
-    <div class="mb-4 rounded-2xl bg-white px-3 py-4 text-center normal-font">
+    <!-- <div class="mb-4 rounded-2xl bg-white px-3 py-4 text-center normal-font">
       <p class="text-lg leading-6 text-black/65">
         客服电话：<span class="font-semibold text-[#c06b37]">18968327662</span>
       </p>
       <p class="mt-1 text-lg leading-6 text-black/45">
         9:00-18:00
       </p>
-    </div>
+    </div> -->
 
     <div class="normal-font">
       <div class="mb-4 text-center">

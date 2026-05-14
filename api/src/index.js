@@ -9,8 +9,14 @@ const Koa = require('koa')
 const Router = require('@koa/router')
 const bodyParser = require('koa-bodyparser')
 const cors = require('@koa/cors')
-const { readDb, writeDb, resetDb, hydrateFromMongoAfterConnect, isMongoPersistenceEnabled }
-  = require('./store')
+const {
+  readDb,
+  writeDb,
+  resetDb,
+  hydrateFromMongoAfterConnect,
+  isMongoPersistenceEnabled,
+  flushMongoPersist,
+} = require('./store')
 const { DEFAULT_SUPER_ADMIN_USERNAME, BOOTSTRAP_ADMIN_ACCOUNTS } = require('./defaultBootstrap')
 const crypto = require('node:crypto')
 const path = require('node:path')
@@ -116,10 +122,15 @@ function resolveProductCategoryKey(raw) {
 }
 const ADMIN_ROLES = {
   SUPER: 'super_admin',
+  BOSS: 'boss',
   REVIEWER: 'reviewer',
   COLLECTOR: 'collector',
 }
 const ADMIN_ROLE_SET = new Set(Object.values(ADMIN_ROLES))
+/** 与超级管理员同权的后台角色（展示名可不同） */
+function isSuperEquivalentRole(role) {
+  return role === ADMIN_ROLES.SUPER || role === ADMIN_ROLES.BOSS
+}
 /** 商城用户注册及未填写额度时的默认先享后付可用额度（元） */
 const DEFAULT_USER_QUOTA = 2750
 
@@ -133,6 +144,73 @@ function verifyMallUserPassword(plain, hash) {
     return false
   }
   return hashMallUserPassword(String(plain)) === String(hash)
+}
+
+/** 紧急联系人姓名：仅汉字或英文字母，可含间隔号「·」与空格；禁止数字与其它符号 */
+function normalizeEmergencyContactPersonName(raw) {
+  return String(raw != null ? raw : '')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .replace(/\u00b7|・|･/g, '·')
+}
+
+function isValidEmergencyContactPersonName(raw) {
+  const s = normalizeEmergencyContactPersonName(raw)
+  if (!s || s.length > 32) {
+    return false
+  }
+  if (/\d/.test(s)) {
+    return false
+  }
+  if (!/^[\u4e00-\u9fff\u3400-\u4DBFa-zA-Z· ]+$/.test(s)) {
+    return false
+  }
+  if (!/[\u4e00-\u9fff\u3400-\u4DBFa-zA-Z]/.test(s)) {
+    return false
+  }
+  return true
+}
+
+/** 单条紧急联系人：姓名 + 大陆手机号 */
+function normalizeEmergencyContactEntry(raw) {
+  if (!raw || typeof raw !== 'object') {
+    return null
+  }
+  if (!isValidEmergencyContactPersonName(raw.name)) {
+    return null
+  }
+  const name = normalizeEmergencyContactPersonName(raw.name)
+  const phone = normalizePhone(raw.phone != null ? raw.phone : '')
+  if (!/^1\d{10}$/.test(phone)) {
+    return null
+  }
+  return { name, phone }
+}
+
+function normalizeEmergencyContactsList(raw) {
+  if (!Array.isArray(raw)) {
+    return []
+  }
+  const out = []
+  for (const x of raw) {
+    const c = normalizeEmergencyContactEntry(x)
+    if (c) {
+      out.push(c)
+    }
+    if (out.length >= 2) {
+      break
+    }
+  }
+  return out
+}
+
+function isEmergencyContactsComplete(list) {
+  return Array.isArray(list) && list.length === 2 && list.every(c => c && c.name && /^1\d{10}$/.test(String(c.phone || '')))
+}
+
+function countApprovedOrdersForUserPhone(db, phone) {
+  const userOrders = db.orders.filter(item => orderReceiverPhoneMatches(phone, item.receiverPhone))
+  return userOrders.filter(item => item.status !== 'reviewing').length
 }
 
 function sanitizeMallUser(user, opts = {}) {
@@ -227,6 +305,9 @@ function normalizeAdminRole(role) {
   if (value === 'super_admin' || value === 'super-admin' || value === 'superadmin' || value === '超级管理员') {
     return ADMIN_ROLES.SUPER
   }
+  if (value === 'boss' || value === '老板') {
+    return ADMIN_ROLES.BOSS
+  }
   if (
     value === 'reviewer'
     || value === 'auditor'
@@ -246,6 +327,7 @@ function normalizeAdminRole(role) {
 
 function getRoleLabel(role) {
   if (role === ADMIN_ROLES.SUPER) return '超级管理员'
+  if (role === ADMIN_ROLES.BOSS) return '老板'
   if (role === ADMIN_ROLES.REVIEWER) return '审核员'
   if (role === ADMIN_ROLES.COLLECTOR) return '催收员'
   return '未知角色'
@@ -352,17 +434,24 @@ function resolveAdminRole(ctx) {
   return ctx.state.adminRole
 }
 
+function roleMatchesAllowedRoles(role, allowedRoles) {
+  if (!role || !Array.isArray(allowedRoles)) return false
+  if (allowedRoles.includes(role)) return true
+  if (isSuperEquivalentRole(role) && allowedRoles.some(a => isSuperEquivalentRole(a))) return true
+  return false
+}
+
 function requireAdminPermission(ctx, allowedRoles, actionLabel) {
   const role = resolveAdminRole(ctx)
   if (!role) {
     fail(
       ctx,
-      `未提供后台角色信息，无法执行${actionLabel}。请在请求头传 x-admin-role: super_admin / reviewer / collector`,
+      `未提供后台角色信息，无法执行${actionLabel}。请在请求头传 x-admin-role: super_admin / boss / reviewer / collector`,
       401,
     )
     return ''
   }
-  if (!ADMIN_ROLE_SET.has(role) || !allowedRoles.includes(role)) {
+  if (!ADMIN_ROLE_SET.has(role) || !roleMatchesAllowedRoles(role, allowedRoles)) {
     fail(ctx, `当前角色【${getRoleLabel(role)}】无权限执行${actionLabel}`, 403)
     return ''
   }
@@ -775,11 +864,11 @@ function persistLegacyInstallmentFirstPaidIfOrderPaid(order) {
   if (!Array.isArray(plan) || plan.length === 0) {
     return false
   }
-  if (plan.some(item => item && item.paid)) {
+  if (plan.some(item => item && installmentItemIsPaid(item))) {
     return false
   }
   const first = plan.find(item => item && Number(item.period) === 1) || plan[0]
-  if (!first || first.paid) {
+  if (!first || installmentItemIsPaid(first)) {
     return false
   }
   first.paid = true
@@ -798,7 +887,7 @@ function applyInstallmentCompletionOrderStatus(order, opts = {}) {
   if (!Array.isArray(plan) || plan.length === 0) {
     return false
   }
-  const allPaid = plan.every(item => item.paid)
+  const allPaid = plan.every(item => installmentItemIsPaid(item))
   if (allPaid) {
     if (order.status !== 'enjoying') {
       /** 后台手动改过订单状态后，列表接口 reconcile 不应再强行覆盖为 enjoying（否则前端「订单状态已更新」刷新仍显示已完成） */
@@ -1259,7 +1348,7 @@ function findMallCardPackageClaimOrder(db, phone, orderId) {
     return null
   }
   const order = db.orders.find(item => item.id === id)
-  if (!order || order.receiverPhone !== phone) {
+  if (!order || !orderReceiverPhoneMatches(phone, order.receiverPhone)) {
     return null
   }
   if (!isOrderCardPackageEligible(order)) {
@@ -1297,7 +1386,143 @@ function fail(ctx, msg, code = 400) {
 }
 
 function normalizePhone(phone) {
-  return String(phone || '').trim()
+  return String(phone || '').replace(/\D/g, '')
+}
+
+/** 订单收货手机号与登录 query.phone（已 normalize）一致比较，避免空格/格式导致还款找不到订单 */
+function orderReceiverPhoneMatches(phoneNorm, receiverPhone) {
+  if (!/^1\d{10}$/.test(String(phoneNorm || ''))) {
+    return false
+  }
+  return normalizePhone(receiverPhone || '') === phoneNorm
+}
+
+/** 分期 period 在 JSON/Mongo 中可能为字符串，与严格相等比较会找不到期次导致还款未落库 */
+function findInstallmentPlanItemByPeriod(plan, periodNumber) {
+  if (!Array.isArray(plan)) {
+    return undefined
+  }
+  const n = Number(periodNumber)
+  if (!Number.isInteger(n) || n <= 0) {
+    return undefined
+  }
+  return plan.find(item => item && Number(item.period) === n)
+}
+
+/** 协商还款：解析「协商后未还金额还款日」为 YYYY-MM-DD */
+function normalizeNegotiateRemainderDueDate(raw) {
+  const s = String(raw || '').trim()
+  const m = s.match(/^(\d{4}-\d{2}-\d{2})/)
+  return m ? m[1] : ''
+}
+
+/**
+ * 完成「协商支付」首段：本期应还更新为剩余本金与协商还款日，清除 negotiationPayPending，末条协商记录写入 userPaidAt。
+ * @returns {{ ok: true } | { ok: false, msg: string }}
+ */
+function applyInstallmentNegotiationPayCompleted(planItem) {
+  const pend = planItem.negotiationPayPending
+  if (!pend || !Number.isFinite(Number(pend.negotiatedAmount)) || Number(pend.negotiatedAmount) <= 0) {
+    return { ok: false, msg: '暂无待支付的协商款项' }
+  }
+  const remainder = Number(Number(pend.remainderAmount || 0).toFixed(2))
+  const remainderDue = normalizeNegotiateRemainderDueDate(pend.remainderDueDate)
+  if (remainder <= 0 || !remainderDue || !/^\d{4}-\d{2}-\d{2}$/.test(remainderDue)) {
+    return { ok: false, msg: '协商待支付数据异常，请联系客服' }
+  }
+  const hist = planItem.negotiationHistory
+  const last = Array.isArray(hist) && hist.length > 0 ? hist[hist.length - 1] : null
+  if (last && !String(last.originalDueDate || '').trim()) {
+    last.originalDueDate = String(planItem.dueDate || '').trim()
+  }
+  planItem.amount = remainder
+  planItem.principal = remainder
+  planItem.dueDate = remainderDue
+  planItem.negotiationPayPending = null
+  if (last) {
+    last.userPaidAt = new Date().toISOString()
+  }
+  return { ok: true }
+}
+
+/**
+ * 撤销末条「协商支付」完成态：恢复 negotiationPayPending 与本期应还总额、还款日（依赖 originalDueDate 或 remainderDueDate）
+ * @returns {{ ok: true } | { ok: false, msg: string }}
+ */
+function revertLastNegotiationPayCompletion(planItem) {
+  const hist = planItem.negotiationHistory
+  if (!Array.isArray(hist) || hist.length === 0) {
+    return { ok: false, msg: '无协商历史' }
+  }
+  const last = hist[hist.length - 1]
+  if (planItem.negotiationPayPending && Number(planItem.negotiationPayPending.negotiatedAmount || 0) > 0) {
+    return { ok: false, msg: '当前仍有待协商支付，无法撤销' }
+  }
+  const nAmt = Number(Number(last.negotiatedAmount || 0).toFixed(2))
+  const rem = Number(Number(last.remainderAmount || 0).toFixed(2))
+  const curAmt = Number(Number(planItem.amount || 0).toFixed(2))
+  if (Math.abs(curAmt - rem) > 0.02) {
+    return { ok: false, msg: '本期金额与协商记录不一致，无法撤销' }
+  }
+  planItem.negotiationPayPending = {
+    negotiatedAmount: nAmt,
+    remainderAmount: rem,
+    remainderDueDate: String(last.remainderDueDate || '').trim(),
+    createdAt: String(last.createdAt || new Date().toISOString()),
+  }
+  const fullAmt = Number((nAmt + rem).toFixed(2))
+  planItem.amount = fullAmt
+  planItem.principal = fullAmt
+  const priorDue = normalizeNegotiateRemainderDueDate(String(last.originalDueDate || '').trim())
+  const fallbackDue = normalizeNegotiateRemainderDueDate(String(last.remainderDueDate || '').trim())
+  planItem.dueDate = priorDue || fallbackDue
+  if (!planItem.dueDate) {
+    return { ok: false, msg: '缺少原还款日信息，无法撤销' }
+  }
+  delete last.userPaidAt
+  return { ok: true }
+}
+
+/** 与持久化/前端展示一致地判断单期是否已还（兼容 Mongo/JSON 中数字、字符串等） */
+function installmentItemIsPaid(planItem) {
+  if (!planItem || planItem.paid == null) {
+    return false
+  }
+  const p = planItem.paid
+  return p === true || p === 1 || p === '1' || p === 'true'
+}
+
+/**
+ * 将本期改回「未还」时：若末条协商尚未完成「协商支付」（无 userPaidAt）、且当前无有效待付协商款，
+ * 则从末条协商记录恢复 negotiationPayPending（例如用户曾用常规还款一次结清导致 pending 被清空）。
+ */
+function restoreNegotiationPayPendingFromLastHistoryIfNeeded(planItem) {
+  if (!planItem || installmentItemIsPaid(planItem)) {
+    return
+  }
+  const existing = planItem.negotiationPayPending
+  if (existing && Number(existing.negotiatedAmount || 0) > 0) {
+    return
+  }
+  const hist = planItem.negotiationHistory
+  if (!Array.isArray(hist) || hist.length === 0) {
+    return
+  }
+  const last = hist[hist.length - 1]
+  if (!last || String(last.userPaidAt || '').trim()) {
+    return
+  }
+  const negotiatedAmount = Number(Number(last.negotiatedAmount || 0).toFixed(2))
+  if (!Number.isFinite(negotiatedAmount) || negotiatedAmount <= 0) {
+    return
+  }
+  const remainderAmount = Number(Number(last.remainderAmount || 0).toFixed(2))
+  planItem.negotiationPayPending = {
+    negotiatedAmount,
+    remainderAmount,
+    remainderDueDate: String(last.remainderDueDate || '').trim(),
+    createdAt: String(last.createdAt || new Date().toISOString()),
+  }
 }
 
 function ensureCsSessions(db) {
@@ -1578,12 +1803,13 @@ function createMallUserFromRegisterPayload(db, payload) {
     nextUser.passwordHash = hashMallUserPassword(payload.password)
     nextUser.adminPasswordPlain = String(payload.password)
   }
+  nextUser.emergencyContacts = []
   db.users.unshift(nextUser)
   return nextUser
 }
 
 function attachUserOrderStats(db, user, opts = {}) {
-  const userOrders = db.orders.filter(item => item.receiverPhone === user.phone)
+  const userOrders = db.orders.filter(item => orderReceiverPhoneMatches(user.phone, item.receiverPhone))
   /** 管理端展示：仅计审核通过后的订单；待审核 reviewing 不计入订单数与成交累计 */
   const approvedOrders = userOrders.filter(item => item.status !== 'reviewing')
   let lastOrderAt = ''
@@ -1600,6 +1826,7 @@ function attachUserOrderStats(db, user, opts = {}) {
     }
   }
   const mall = Boolean(opts.mall)
+  const emList = normalizeEmergencyContactsList(user.emergencyContacts)
   const base = {
     ...sanitizeMallUser(user, { mall }),
     quota: normalizeUserQuota(user.quota),
@@ -1608,6 +1835,8 @@ function attachUserOrderStats(db, user, opts = {}) {
     /** 管理端列表与弹窗种子：与 GET /users/:id 的 riskView.upstreamConfigured 一致 */
     riskUpstreamConfigured: isRiskUpstreamConfigured(),
     orderBlacklisted: Boolean(user && user.orderBlacklisted),
+    emergencyContacts: emList,
+    emergencyContactsComplete: isEmergencyContactsComplete(emList),
   }
   if (lastOrderAt) {
     base.lastOrderAt = lastOrderAt
@@ -1653,8 +1882,8 @@ function maskCardNo(cardNo) {
 }
 
 function calcMySummary(db, phone) {
-  const userOrders = db.orders.filter(item => item.receiverPhone === phone)
-  const userCards = db.bankCards.filter(item => item.userPhone === phone)
+  const userOrders = db.orders.filter(item => orderReceiverPhoneMatches(phone, item.receiverPhone))
+  const userCards = db.bankCards.filter(item => normalizePhone(item.userPhone || '') === phone)
 
   const orderCount = {
     reviewing: userOrders.filter(item => item.status === 'reviewing').length,
@@ -1662,18 +1891,7 @@ function calcMySummary(db, phone) {
     receiving: userOrders.filter(item => item.status === 'receiving').length,
     enjoying: userOrders.filter(item => item.status === 'enjoying').length,
   }
-  const currentMonth = formatDate(new Date().toISOString()).slice(0, 7)
-  const billPendingAmount = Number(userOrders.reduce((sum, order) => {
-    // 未审核通过（reviewing）订单不进入还款口径。
-    if (order.status === 'reviewing') {
-      return sum
-    }
-    ensureOrderInstallmentPlan(order)
-    const monthRepay = order.installmentPlan
-      .filter(plan => !plan.paid && String(plan.dueDate || '').startsWith(currentMonth))
-      .reduce((subSum, plan) => subSum + Math.abs(Number(plan.amount || 0)), 0)
-    return sum + monthRepay
-  }, 0).toFixed(2))
+  const { totalPending: billPendingAmount } = buildMallBillingListAndSummaries(db, phone)
 
   return {
     orderCount,
@@ -2221,8 +2439,8 @@ router.post('/admin/accounts', (ctx) => {
     fail(ctx, '密码长度至少为4位')
     return
   }
-  if (![ADMIN_ROLES.REVIEWER, ADMIN_ROLES.COLLECTOR].includes(role)) {
-    fail(ctx, '仅允许新增审核员或催收员账号（审核员含原客服进线与订单审核权限）')
+  if (![ADMIN_ROLES.REVIEWER, ADMIN_ROLES.COLLECTOR, ADMIN_ROLES.BOSS].includes(role)) {
+    fail(ctx, '仅允许新增审核员、催收员或老板账号（审核员含原客服进线与订单审核权限；老板与超级管理员同权）')
     return
   }
   if (!/^1\d{10}$/.test(phone)) {
@@ -2267,7 +2485,7 @@ router.patch('/admin/accounts/:id', (ctx) => {
     fail(ctx, '后台账号不存在', 404)
     return
   }
-  if (target.username === DEFAULT_SUPER_ADMIN_USERNAME && payload.role && normalizeAdminRole(payload.role) !== ADMIN_ROLES.SUPER) {
+  if (target.username === DEFAULT_SUPER_ADMIN_USERNAME && payload.role && !isSuperEquivalentRole(normalizeAdminRole(payload.role))) {
     fail(ctx, '默认超级管理员账号角色不可修改')
     return
   }
@@ -2480,6 +2698,55 @@ router.get('/users/by-phone', (ctx) => {
   const phone = normalizePhone(ctx.query.phone)
   const user = db.users.find(item => item.phone === phone) || null
   ctx.body = success(user ? attachUserOrderStats(db, user, { mall: true }) : null)
+})
+
+/** 商城：已下单用户登记两位紧急联系人（姓名 + 手机号），用于领取等流程 */
+router.post('/mall/me/emergency-contacts', (ctx) => {
+  const phone = getUserPhone(ctx)
+  if (!phone) {
+    fail(ctx, '手机号格式不正确')
+    return
+  }
+  const db = readDb()
+  const user = db.users.find(item => item.phone === phone)
+  if (!user) {
+    fail(ctx, '用户不存在', 404)
+    return
+  }
+  if (countApprovedOrdersForUserPhone(db, phone) < 1) {
+    fail(ctx, '当前账户无需登记紧急联系人', 400)
+    return
+  }
+  const rawBody = ctx.request && ctx.request.body
+  const body = rawBody && typeof rawBody === 'object' && !Array.isArray(rawBody) ? rawBody : {}
+  const arr = Array.isArray(body.contacts)
+    ? body.contacts
+    : (Array.isArray(body.emergencyContacts) ? body.emergencyContacts : [])
+  const list = []
+  for (let i = 0; i < 2; i++) {
+    const it = arr[i]
+    if (!it || typeof it !== 'object') {
+      fail(ctx, `请完整填写第 ${i + 1} 位紧急联系人的姓名与手机号`, 400)
+      return
+    }
+    if (!isValidEmergencyContactPersonName(it.name)) {
+      fail(ctx, `第 ${i + 1} 位紧急联系人姓名须为汉字或英文字母，不可含数字、标点及其它符号（姓名中仅允许间隔符「·」与空格）`, 400)
+      return
+    }
+    const ph = normalizePhone(it.phone != null ? it.phone : '')
+    if (!/^1\d{10}$/.test(ph)) {
+      fail(ctx, `第 ${i + 1} 位紧急联系人手机号须为以 1 开头的 11 位大陆号码`, 400)
+      return
+    }
+    list.push({ name: normalizeEmergencyContactPersonName(it.name), phone: ph })
+  }
+  if (list[0].phone === list[1].phone) {
+    fail(ctx, '两位紧急联系人手机号不能相同', 400)
+    return
+  }
+  user.emergencyContacts = list
+  writeDb(db)
+  ctx.body = success({ user: attachUserOrderStats(db, user, { mall: true }) })
 })
 
 /** 先享后付下单：创建浏览器可分步调用的风控会话（后续 7 步由 /wave/:id/step/:key 完成） */
@@ -2744,6 +3011,7 @@ router.post('/users', (ctx) => {
     quota: normalizeUserQuota(payload.quota),
     adminRemark: '',
     orderBlacklisted: false,
+    emergencyContacts: [],
   }
   if (typeof payload.idNumber === 'string' && payload.idNumber.trim()) {
     nextUser.idNumber = payload.idNumber.trim().toUpperCase()
@@ -2777,7 +3045,7 @@ router.get('/card-packages', (ctx) => {
     return
   }
   const list = db.orders
-    .filter(item => item.receiverPhone === phone && isOrderCardPackageEligible(item))
+    .filter(item => orderReceiverPhoneMatches(phone, item.receiverPhone) && isOrderCardPackageEligible(item))
     .map((item) => {
       ensureOrderInstallmentPlan(item)
       ensureOrderCardPackage(item)
@@ -3337,6 +3605,87 @@ router.delete('/bank-cards/:id', (ctx) => {
   ctx.body = success({ id: Number(id) })
 })
 
+/**
+ * 与 GET /bills 一致：构建商城分期账单行并计算 shouldRepay（本月待还）、totalPending（全部待还）。
+ * 含 status=reviewing 的先享后付单（行状态为「审核中」、不计入待还汇总），与订单列表一致；供 /bills 与 /my/summary 共用。
+ */
+function buildMallBillingListAndSummaries(db, phone) {
+  const list = []
+  /** 含审核中的先享后付单，便于账单与「我的—订单」同步展示；待还汇总仅计 status 为「待还款」的行 */
+  const loanOrders = db.orders
+    .filter(item => orderReceiverPhoneMatches(phone, item.receiverPhone))
+    .filter(item => item.payType === 'installment')
+    .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
+  loanOrders.forEach((order) => {
+    ensureOrderInstallmentPlan(order)
+    const reviewingOrder = order.status === 'reviewing'
+    order.installmentPlan.forEach((planItem) => {
+      const oid = String(order.id || '')
+      const periodNum = Number(planItem.period) || 0
+      const rowStatus = reviewingOrder
+        ? '审核中'
+        : (installmentItemIsPaid(planItem) ? '已还款' : '待还款')
+      const installmentRow = {
+        /** 稳定键：与 POST /bills/repay 入参一致 */
+        id: `${oid}:${periodNum}`,
+        billKind: 'installment',
+        orderId: oid,
+        period: periodNum,
+        userPhone: phone,
+        title: order.payType === 'installment'
+          ? `${order.name} 第${planItem.period}期 #${order.id}`
+          : `${order.name} #${order.id}`,
+        amount: -Math.abs(Number(planItem.amount || 0)),
+        time: `${planItem.dueDate} 00:00`,
+        status: rowStatus,
+      }
+      if (Array.isArray(planItem.negotiationHistory) && planItem.negotiationHistory.length > 0) {
+        installmentRow.negotiationHistory = planItem.negotiationHistory.map((h) => ({
+          negotiatedAmount: Number(Number(h.negotiatedAmount || 0).toFixed(2)),
+          remainderAmount: Number(Number(h.remainderAmount || 0).toFixed(2)),
+          remainderDueDate: String(h.remainderDueDate || '').trim(),
+          createdAt: String(h.createdAt || '').trim(),
+          userPaidAt: String(h.userPaidAt || '').trim(),
+        }))
+      }
+      const pend = planItem.negotiationPayPending
+      if (pend && Number(pend.negotiatedAmount || 0) > 0) {
+        installmentRow.negotiationPayPending = {
+          negotiatedAmount: Number(Number(pend.negotiatedAmount || 0).toFixed(2)),
+          remainderAmount: Number(Number(pend.remainderAmount || 0).toFixed(2)),
+          remainderDueDate: String(pend.remainderDueDate || '').trim(),
+          createdAt: String(pend.createdAt || '').trim(),
+        }
+      }
+      list.push(installmentRow)
+    })
+  })
+  list.sort((a, b) => String(b.time).localeCompare(String(a.time)))
+
+  const billAmountForTotals = (item) => {
+    if (item && item.billKind === 'negotiation') {
+      return 0
+    }
+    return Math.abs(Number(item.amount || 0))
+  }
+
+  const currentMonth = formatDate(new Date().toISOString()).slice(0, 7)
+  const shouldRepay = Number(
+    list
+      .filter(item => item.status === '待还款' && String(item.time).startsWith(currentMonth))
+      .reduce((sum, item) => sum + billAmountForTotals(item), 0)
+      .toFixed(2),
+  )
+  const totalPending = Number(
+    list
+      .filter(item => item.status === '待还款')
+      .reduce((sum, item) => sum + billAmountForTotals(item), 0)
+      .toFixed(2),
+  )
+
+  return { list, shouldRepay, totalPending, loanOrders }
+}
+
 router.get('/bills', (ctx) => {
   const db = readDb()
   reconcileInstallmentCompletionAcrossDb(db)
@@ -3345,43 +3694,7 @@ router.get('/bills', (ctx) => {
     fail(ctx, '手机号格式不正确')
     return
   }
-  const list = []
-  const loanOrders = db.orders
-    .filter(item => item.receiverPhone === phone)
-    .filter(item => item.payType === 'installment')
-    // 仅展示已审核通过后的订单还款信息。
-    .filter(item => item.status !== 'reviewing')
-    .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
-  loanOrders.forEach((order) => {
-    ensureOrderInstallmentPlan(order)
-    order.installmentPlan.forEach((planItem) => {
-      list.push({
-        id: list.length + 1,
-        userPhone: phone,
-        title: order.payType === 'installment'
-          ? `${order.name} 第${planItem.period}期 #${order.id}`
-          : `${order.name} #${order.id}`,
-        amount: -Math.abs(Number(planItem.amount || 0)),
-        time: `${planItem.dueDate} 00:00`,
-        status: planItem.paid ? '已还款' : '待还款',
-      })
-    })
-  })
-  list.sort((a, b) => String(b.time).localeCompare(String(a.time)))
-
-  const currentMonth = formatDate(new Date().toISOString()).slice(0, 7)
-  const shouldRepay = Number(
-    list
-      .filter(item => item.status === '待还款' && String(item.time).startsWith(currentMonth))
-      .reduce((sum, item) => sum + Math.abs(Number(item.amount || 0)), 0)
-      .toFixed(2),
-  )
-  const totalPending = Number(
-    list
-      .filter(item => item.status === '待还款')
-      .reduce((sum, item) => sum + Math.abs(Number(item.amount || 0)), 0)
-      .toFixed(2),
-  )
+  const { list, shouldRepay, totalPending, loanOrders } = buildMallBillingListAndSummaries(db, phone)
 
   const baseQuota = 10000
   const availableQuota = Number(
@@ -3396,12 +3709,186 @@ router.get('/bills', (ctx) => {
   ctx.body = success({
     summary: {
       shouldRepay,
+      totalPending,
       availableQuota,
       billDate: `每月 ${billDateDay} 日`,
       minRepayment: Number((shouldRepay * 0.1).toFixed(2)),
     },
     list,
   })
+})
+
+/**
+ * 商城用户还款：与后台 PATCH /orders/:id/installments/:period/pay 写入同一套 installmentPlan，
+ * 需校验收货手机号与订单归属；与 OrdersPage 一致，卡包未发放前不允许记为已还。
+ * body: { orderId: string, period: number } 或 { all: true } 一键归还当前用户全部待还期次
+ */
+router.post('/bills/repay', async (ctx) => {
+  const db = readDb()
+  reconcileInstallmentCompletionAcrossDb(db)
+  const phone = getUserPhone(ctx)
+  if (!phone) {
+    fail(ctx, '手机号格式不正确')
+    return
+  }
+  const payload = ctx.request.body || {}
+  const repayAll = payload.all === true || payload.all === 'true' || payload.all === 1
+
+  const loanOrders = db.orders
+    .filter(item => orderReceiverPhoneMatches(phone, item.receiverPhone))
+    .filter(item => item.payType === 'installment')
+    .filter(item => item.status !== 'reviewing')
+
+  if (repayAll) {
+    for (const order of loanOrders) {
+      ensureOrderInstallmentPlan(order)
+      const hasUnpaid = order.installmentPlan.some(p => p && !installmentItemIsPaid(p))
+      if (!hasUnpaid) {
+        continue
+      }
+      if (!order.cardPackageIssued) {
+        fail(ctx, `订单 ${order.id} 的卡包尚未发放，暂无法还款。请联系客服。`)
+        return
+      }
+    }
+    let repaidPeriods = 0
+    for (const order of loanOrders) {
+      ensureOrderInstallmentPlan(order)
+      let touched = false
+      for (const planItem of order.installmentPlan) {
+        if (planItem && !installmentItemIsPaid(planItem)) {
+          if (planItem.negotiationPayPending && Number(planItem.negotiationPayPending.negotiatedAmount || 0) > 0) {
+            planItem.negotiationPayPending = null
+          }
+          planItem.paid = true
+          repaidPeriods += 1
+          touched = true
+        }
+      }
+      if (touched) {
+        order.installmentScheduleExplicit = true
+        applyInstallmentCompletionOrderStatus(order, { ignoreAdminSkip: true })
+      }
+    }
+    writeDb(db)
+    await flushMongoPersist()
+    ctx.body = success({ all: true, repaidPeriods })
+    return
+  }
+
+  const orderId = String(payload.orderId || '').trim()
+  const periodNumber = Number(payload.period)
+  if (!orderId || !Number.isInteger(periodNumber) || periodNumber <= 0) {
+    fail(ctx, '请提供正确的 orderId 与 period')
+    return
+  }
+
+  const target = db.orders.find(item => String(item.id) === orderId && orderReceiverPhoneMatches(phone, item.receiverPhone))
+  if (!target) {
+    fail(ctx, '订单不存在', 404)
+    return
+  }
+  if (target.status === 'reviewing') {
+    fail(ctx, '订单未审核通过，暂无法还款')
+    return
+  }
+  if (target.payType !== 'installment') {
+    fail(ctx, '该订单不支持账单还款')
+    return
+  }
+  if (!target.cardPackageIssued) {
+    fail(ctx, '卡包未发放，暂无法还款')
+    return
+  }
+  ensureOrderInstallmentPlan(target)
+  const planItem = findInstallmentPlanItemByPeriod(target.installmentPlan, periodNumber)
+  if (!planItem) {
+    fail(ctx, '账单期次不存在', 404)
+    return
+  }
+  if (installmentItemIsPaid(planItem)) {
+    fail(ctx, '该期已还款')
+    return
+  }
+  if (planItem.negotiationPayPending && Number(planItem.negotiationPayPending.negotiatedAmount || 0) > 0) {
+    /** 用户可选择「协商支付」分步还，也可「全部支付」一次性还清本期应还并放弃待协商首段 */
+    planItem.negotiationPayPending = null
+  }
+  planItem.paid = true
+  target.installmentScheduleExplicit = true
+  applyInstallmentCompletionOrderStatus(target, { ignoreAdminSkip: true })
+  writeDb(db)
+  await flushMongoPersist()
+  ctx.body = success({ orderId: target.id, period: periodNumber, paid: true })
+})
+
+/**
+ * 商城用户：支付后台协商登记的本期「协商还款金额」，成功后再落库剩余应还本金与还款日（与 PATCH negotiate 配套）
+ * body: { orderId: string, period: number }
+ */
+router.post('/bills/repay-negotiated', async (ctx) => {
+  const db = readDb()
+  reconcileInstallmentCompletionAcrossDb(db)
+  const phone = getUserPhone(ctx)
+  if (!phone) {
+    fail(ctx, '手机号格式不正确')
+    return
+  }
+  const payload = ctx.request.body || {}
+  const orderId = String(payload.orderId || '').trim()
+  const periodNumber = Number(payload.period)
+  if (!orderId || !Number.isInteger(periodNumber) || periodNumber <= 0) {
+    fail(ctx, '请提供正确的 orderId 与 period')
+    return
+  }
+  const target = db.orders.find(item => String(item.id) === orderId && orderReceiverPhoneMatches(phone, item.receiverPhone))
+  if (!target) {
+    fail(ctx, '订单不存在', 404)
+    return
+  }
+  if (target.status === 'reviewing') {
+    fail(ctx, '订单未审核通过，暂无法支付')
+    return
+  }
+  if (target.payType !== 'installment') {
+    fail(ctx, '该订单不支持协商支付')
+    return
+  }
+  if (!target.cardPackageIssued) {
+    fail(ctx, '卡包未发放，暂无法支付')
+    return
+  }
+  ensureOrderInstallmentPlan(target)
+  const planItem = findInstallmentPlanItemByPeriod(target.installmentPlan, periodNumber)
+  if (!planItem) {
+    fail(ctx, '账单期次不存在', 404)
+    return
+  }
+  if (installmentItemIsPaid(planItem)) {
+    fail(ctx, '该期已还款')
+    return
+  }
+  const pend = planItem.negotiationPayPending
+  if (!pend || !Number.isFinite(Number(pend.negotiatedAmount)) || Number(pend.negotiatedAmount) <= 0) {
+    fail(ctx, '暂无待支付的协商款项', 400)
+    return
+  }
+  const remainder = Number(Number(pend.remainderAmount || 0).toFixed(2))
+  const remainderDue = normalizeNegotiateRemainderDueDate(pend.remainderDueDate)
+  if (remainder <= 0 || !remainderDue || !/^\d{4}-\d{2}-\d{2}$/.test(remainderDue)) {
+    fail(ctx, '协商待支付数据异常，请联系客服', 400)
+    return
+  }
+  const applied = applyInstallmentNegotiationPayCompleted(planItem)
+  if (!applied.ok) {
+    fail(ctx, applied.msg, 400)
+    return
+  }
+  target.installmentScheduleExplicit = true
+  applyInstallmentCompletionOrderStatus(target, { ignoreAdminSkip: true })
+  writeDb(db)
+  await flushMongoPersist()
+  ctx.body = success({ orderId: target.id, period: periodNumber, negotiatedPaid: true })
 })
 
 router.patch('/users/:id', (ctx) => {
@@ -3563,9 +4050,13 @@ router.get('/orders', (ctx) => {
     const phone = normalizePhone(order.receiverPhone || '')
     const buyer = /^1\d{10}$/.test(phone) ? db.users.find(item => item.phone === phone) : null
     const rawRemark = buyer && typeof buyer.adminRemark === 'string' ? buyer.adminRemark.trim() : ''
+    const emergencyContactsComplete = buyer
+      ? isEmergencyContactsComplete(normalizeEmergencyContactsList(buyer.emergencyContacts))
+      : null
     return {
       ...order,
       buyerAdminRemark: rawRemark,
+      emergencyContactsComplete,
     }
   })
 
@@ -3664,6 +4155,37 @@ router.get('/orders/pending-receivable', (ctx) => {
     overdueRateAsOfDate,
     overdueBeforeDateCount,
     unpaidDueOnOrBeforeDateCount,
+  })
+})
+
+/** 单条订单详情（含最新 installmentPlan），供管理端「查看还款」等弹窗拉数 */
+router.get('/orders/:id', (ctx) => {
+  const db = readDb()
+  reconcileInstallmentCompletionAcrossDb(db)
+  const { id } = ctx.params
+  const target = db.orders.find(item => String(item.id) === String(id))
+  if (!target) {
+    fail(ctx, '订单不存在', 404)
+    return
+  }
+  ensureOrderInstallmentPlan(target)
+  ensureOrderCardPackage(target)
+  ensureOrderShipment(target)
+  if (target.payType === 'full' && target.status !== 'reviewing' && !target.paid) {
+    target.paid = true
+  }
+  const phone = normalizePhone(target.receiverPhone || '')
+  const buyer = /^1\d{10}$/.test(phone)
+    ? db.users.find(item => normalizePhone(item.phone || '') === phone)
+    : null
+  const rawRemark = buyer && typeof buyer.adminRemark === 'string' ? buyer.adminRemark.trim() : ''
+  const emergencyContactsComplete = buyer
+    ? isEmergencyContactsComplete(normalizeEmergencyContactsList(buyer.emergencyContacts))
+    : null
+  ctx.body = success({
+    ...target,
+    buyerAdminRemark: rawRemark,
+    emergencyContactsComplete,
   })
 })
 
@@ -3856,11 +4378,11 @@ router.post('/orders', async (ctx) => {
   ctx.body = success(nextOrder)
 })
 
-router.patch('/orders/:id/pay', (ctx) => {
+router.patch('/orders/:id/pay', async (ctx) => {
   const db = readDb()
   const { id } = ctx.params
   const payload = ctx.request.body || {}
-  const target = db.orders.find(item => item.id === id)
+  const target = db.orders.find(item => String(item.id) === String(id))
 
   if (!target) {
     ctx.status = 404
@@ -3871,7 +4393,7 @@ router.patch('/orders/:id/pay', (ctx) => {
   target.paid = true
   ensureOrderInstallmentPlan(target)
   if (target.payType === 'installment') {
-    const firstPending = target.installmentPlan.find(item => !item.paid)
+    const firstPending = target.installmentPlan.find(item => !installmentItemIsPaid(item))
     if (firstPending) {
       firstPending.paid = true
     }
@@ -3887,14 +4409,15 @@ router.patch('/orders/:id/pay', (ctx) => {
     target.status = 'shipping'
   }
   writeDb(db)
+  await flushMongoPersist()
   ctx.body = success(target)
 })
 
-router.patch('/orders/:id/installments/:period/pay', (ctx) => {
+router.patch('/orders/:id/installments/:period/pay', async (ctx) => {
   const db = readDb()
   const { id, period } = ctx.params
   const payload = ctx.request.body || {}
-  const target = db.orders.find(item => item.id === id)
+  const target = db.orders.find(item => String(item.id) === String(id))
   if (!target) {
     fail(ctx, '订单不存在', 404)
     return
@@ -3907,31 +4430,38 @@ router.patch('/orders/:id/installments/:period/pay', (ctx) => {
   }
 
   ensureOrderInstallmentPlan(target)
-  const planItem = target.installmentPlan.find(item => item.period === periodNumber)
+  const planItem = findInstallmentPlanItemByPeriod(target.installmentPlan, periodNumber)
   if (!planItem) {
     fail(ctx, '先享后付记录不存在', 404)
     return
   }
 
   planItem.paid = Boolean(payload.paid)
+  if (planItem.paid && planItem.negotiationPayPending) {
+    planItem.negotiationPayPending = null
+  }
+  if (!planItem.paid) {
+    restoreNegotiationPayPendingFromLastHistoryIfNeeded(planItem)
+  }
 
   target.installmentScheduleExplicit = true
 
   applyInstallmentCompletionOrderStatus(target, { ignoreAdminSkip: true })
 
   writeDb(db)
+  await flushMongoPersist()
   ctx.body = success(target)
 })
 
 /** 管理端：将指定期次的还款日在原日期基础上顺延若干天 */
-router.patch('/orders/:id/installments/:period/due-date', (ctx) => {
+router.patch('/orders/:id/installments/:period/due-date', async (ctx) => {
   if (!requireAdminPermission(ctx, [ADMIN_ROLES.SUPER], '延期还款')) {
     return
   }
   const db = readDb()
   const { id, period } = ctx.params
   const payload = ctx.request.body || {}
-  const target = db.orders.find(item => item.id === id)
+  const target = db.orders.find(item => String(item.id) === String(id))
   if (!target) {
     fail(ctx, '订单不存在', 404)
     return
@@ -3950,14 +4480,22 @@ router.patch('/orders/:id/installments/:period/due-date', (ctx) => {
   }
 
   ensureOrderInstallmentPlan(target)
-  const planItem = target.installmentPlan.find(item => item.period === periodNumber)
+  const planItem = findInstallmentPlanItemByPeriod(target.installmentPlan, periodNumber)
   if (!planItem) {
     fail(ctx, '先享后付记录不存在', 404)
     return
   }
 
-  if (planItem.paid) {
+  if (installmentItemIsPaid(planItem)) {
     fail(ctx, '已还款期次不可延期')
+    return
+  }
+  if (Array.isArray(planItem.negotiationHistory) && planItem.negotiationHistory.length > 0) {
+    fail(ctx, '该期已有协商记录，请使用「协商还款」调整，不可延期还款', 400)
+    return
+  }
+  if (planItem.negotiationPayPending && Number(planItem.negotiationPayPending.negotiatedAmount || 0) > 0) {
+    fail(ctx, '本期尚有协商款项待用户完成支付，请先完成后再延期', 400)
     return
   }
 
@@ -3978,6 +4516,239 @@ router.patch('/orders/:id/installments/:period/due-date', (ctx) => {
   applyInstallmentCompletionOrderStatus(target, { ignoreAdminSkip: true })
 
   writeDb(db)
+  await flushMongoPersist()
+  ctx.body = success(target)
+})
+
+/** 管理端：协商结清金额——将本期应还总额与本金直接改为指定值（无协商记录且待协商支付为空时可用） */
+router.patch('/orders/:id/installments/:period/settle-amount', async (ctx) => {
+  if (!requireAdminPermission(ctx, [ADMIN_ROLES.SUPER], '协商结清金额')) {
+    return
+  }
+  const db = readDb()
+  const { id, period } = ctx.params
+  const payload = ctx.request.body || {}
+  const target = db.orders.find(item => String(item.id) === String(id))
+  if (!target) {
+    fail(ctx, '订单不存在', 404)
+    return
+  }
+  if (target.payType !== 'installment') {
+    fail(ctx, '仅先享后付订单可修改应还金额', 400)
+    return
+  }
+  if (!target.cardPackageIssued) {
+    fail(ctx, '卡包未发放，暂不可修改应还金额', 400)
+    return
+  }
+  const periodNumber = Number(period)
+  if (!Number.isInteger(periodNumber) || periodNumber <= 0) {
+    fail(ctx, '期数参数不正确')
+    return
+  }
+  ensureOrderInstallmentPlan(target)
+  const planItem = findInstallmentPlanItemByPeriod(target.installmentPlan, periodNumber)
+  if (!planItem) {
+    fail(ctx, '先享后付记录不存在', 404)
+    return
+  }
+  if (installmentItemIsPaid(planItem)) {
+    fail(ctx, '已还款期次不可修改应还金额', 400)
+    return
+  }
+  if (Array.isArray(planItem.negotiationHistory) && planItem.negotiationHistory.length > 0) {
+    fail(ctx, '该期已有协商记录，请使用「协商还款」或协商记录调整，不可直接修改应还金额', 400)
+    return
+  }
+  if (planItem.negotiationPayPending && Number(planItem.negotiationPayPending.negotiatedAmount || 0) > 0) {
+    fail(ctx, '本期尚有协商款项待用户完成支付，请先完成后再修改', 400)
+    return
+  }
+  const nextRaw = Number(payload.amount)
+  if (!Number.isFinite(nextRaw) || nextRaw < 0.01) {
+    fail(ctx, '应还金额须为不小于 0.01 的数字')
+    return
+  }
+  const nextAmount = Number(nextRaw.toFixed(2))
+  if (nextAmount > 99_999_999) {
+    fail(ctx, '应还金额过大')
+    return
+  }
+  planItem.amount = nextAmount
+  planItem.principal = nextAmount
+  if (planItem.fee != null) {
+    planItem.fee = 0
+  }
+  target.installmentScheduleExplicit = true
+  applyInstallmentCompletionOrderStatus(target, { ignoreAdminSkip: true })
+  writeDb(db)
+  await flushMongoPersist()
+  ctx.body = success(target)
+})
+
+/** 管理端：协商还款——登记本次协商金额，更新剩余应还本金与还款日，并写入协商历史（用户端账单展示「协商记录」） */
+router.patch('/orders/:id/installments/:period/negotiate', async (ctx) => {
+  if (!requireAdminPermission(ctx, [ADMIN_ROLES.SUPER], '协商还款')) {
+    return
+  }
+  const db = readDb()
+  const { id, period } = ctx.params
+  const payload = ctx.request.body || {}
+  const target = db.orders.find(item => String(item.id) === String(id))
+  if (!target) {
+    fail(ctx, '订单不存在', 404)
+    return
+  }
+  if (target.payType !== 'installment') {
+    fail(ctx, '仅先享后付订单可协商还款', 400)
+    return
+  }
+  if (!target.cardPackageIssued) {
+    fail(ctx, '卡包未发放，暂不可协商还款', 400)
+    return
+  }
+  const periodNumber = Number(period)
+  if (!Number.isInteger(periodNumber) || periodNumber <= 0) {
+    fail(ctx, '期数参数不正确')
+    return
+  }
+  ensureOrderInstallmentPlan(target)
+  const planItem = findInstallmentPlanItemByPeriod(target.installmentPlan, periodNumber)
+  if (!planItem) {
+    fail(ctx, '先享后付记录不存在', 404)
+    return
+  }
+  if (installmentItemIsPaid(planItem)) {
+    fail(ctx, '已还款期次不可协商', 400)
+    return
+  }
+  if (planItem.negotiationPayPending && Number(planItem.negotiationPayPending.negotiatedAmount || 0) > 0) {
+    fail(ctx, '本期尚有协商款项待用户在前台完成支付，暂不可再次协商', 400)
+    return
+  }
+  const negotiatedAmountRaw = Number(payload.negotiatedAmount)
+  if (!Number.isFinite(negotiatedAmountRaw) || negotiatedAmountRaw <= 0) {
+    fail(ctx, '协商还款金额须为大于 0 的数字')
+    return
+  }
+  const curAmount = Number(Number(planItem.amount || 0).toFixed(2))
+  const nAmt = Number(negotiatedAmountRaw.toFixed(2))
+  if (nAmt >= curAmount) {
+    fail(ctx, '协商还款金额须小于当前应还金额')
+    return
+  }
+  const remainder = Number((curAmount - nAmt).toFixed(2))
+  if (remainder <= 0) {
+    fail(ctx, '协商后未还金额须大于 0')
+    return
+  }
+  const remainderDue = normalizeNegotiateRemainderDueDate(payload.remainderDueDate)
+  if (!remainderDue || !/^\d{4}-\d{2}-\d{2}$/.test(remainderDue)) {
+    fail(ctx, '请提供有效的协商后未还金额还款日（YYYY-MM-DD）')
+    return
+  }
+  if (!Array.isArray(planItem.negotiationHistory)) {
+    planItem.negotiationHistory = []
+  }
+  planItem.negotiationHistory.push({
+    negotiatedAmount: nAmt,
+    remainderAmount: remainder,
+    remainderDueDate: remainderDue,
+    originalDueDate: String(planItem.dueDate || '').trim(),
+    createdAt: new Date().toISOString(),
+  })
+  /** 待用户在前台完成「协商支付」后再写入剩余本金与还款日；此前本期应还总额保持不变 */
+  planItem.negotiationPayPending = {
+    negotiatedAmount: nAmt,
+    remainderAmount: remainder,
+    remainderDueDate: remainderDue,
+    createdAt: new Date().toISOString(),
+  }
+  target.installmentScheduleExplicit = true
+  applyInstallmentCompletionOrderStatus(target, { ignoreAdminSkip: true })
+  writeDb(db)
+  await flushMongoPersist()
+  ctx.body = success(target)
+})
+
+/** 管理端：协商记录中单条「协商金额还款状态」标记已还 / 未还（与商城协商支付落库一致，可撤销末条已应用状态） */
+router.patch('/orders/:id/installments/:period/negotiation/history/:historyIndex/paid', async (ctx) => {
+  if (!requireAdminPermission(ctx, [ADMIN_ROLES.SUPER], '协商还款')) {
+    return
+  }
+  const db = readDb()
+  const { id, period, historyIndex: historyIndexRaw } = ctx.params
+  const payload = ctx.request.body || {}
+  const target = db.orders.find(item => String(item.id) === String(id))
+  if (!target) {
+    fail(ctx, '订单不存在', 404)
+    return
+  }
+  if (target.payType !== 'installment') {
+    fail(ctx, '仅先享后付订单可操作', 400)
+    return
+  }
+  if (!target.cardPackageIssued) {
+    fail(ctx, '卡包未发放，暂不可操作', 400)
+    return
+  }
+  const periodNumber = Number(period)
+  if (!Number.isInteger(periodNumber) || periodNumber <= 0) {
+    fail(ctx, '期数参数不正确')
+    return
+  }
+  const historyIndex = Number(historyIndexRaw)
+  if (!Number.isInteger(historyIndex) || historyIndex < 0) {
+    fail(ctx, '协商记录序号不正确')
+    return
+  }
+  ensureOrderInstallmentPlan(target)
+  const planItem = findInstallmentPlanItemByPeriod(target.installmentPlan, periodNumber)
+  if (!planItem) {
+    fail(ctx, '先享后付记录不存在', 404)
+    return
+  }
+  if (installmentItemIsPaid(planItem)) {
+    fail(ctx, '该期已结清，不可再改协商记录', 400)
+    return
+  }
+  const hist = planItem.negotiationHistory
+  if (!Array.isArray(hist) || !hist[historyIndex]) {
+    fail(ctx, '协商记录不存在', 404)
+    return
+  }
+  const row = hist[historyIndex]
+  const isLast = historyIndex === hist.length - 1
+  const paid = Boolean(payload.paid)
+
+  if (paid) {
+    if (isLast && planItem.negotiationPayPending && Number(planItem.negotiationPayPending.negotiatedAmount || 0) > 0) {
+      const applied = applyInstallmentNegotiationPayCompleted(planItem)
+      if (!applied.ok) {
+        fail(ctx, applied.msg, 400)
+        return
+      }
+    }
+    else {
+      row.userPaidAt = new Date().toISOString()
+    }
+  }
+  else {
+    if (isLast && !planItem.negotiationPayPending) {
+      const rev = revertLastNegotiationPayCompletion(planItem)
+      if (!rev.ok) {
+        delete row.userPaidAt
+      }
+    }
+    else {
+      delete row.userPaidAt
+    }
+  }
+
+  target.installmentScheduleExplicit = true
+  applyInstallmentCompletionOrderStatus(target, { ignoreAdminSkip: true })
+  writeDb(db)
+  await flushMongoPersist()
   ctx.body = success(target)
 })
 

@@ -57,12 +57,6 @@ const salesMode = computed<SalesMode>(() =>
   route.path.includes('installment') ? 'installment' : 'mall',
 )
 
-const channelHint = computed(() =>
-  salesMode.value === 'mall'
-    ? '商城首页商品（前台「商城精选」展示，支持在线下单）'
-    : '先享后付产品（前台「先享后付」先享后付，可下单）',
-)
-
 const products = ref<ProductItem[]>([])
 const loading = ref(false)
 const submitting = ref(false)
@@ -565,11 +559,8 @@ watch(salesMode, () => {
       </button>
     </div>
 
-    <p class="channel-hint">
-      {{ channelHint }}
-    </p>
-
-    <table class="table">
+    <div class="products-table-wrap">
+      <table class="table products-table">
       <thead>
         <tr>
           <th>ID</th>
@@ -591,14 +582,14 @@ watch(salesMode, () => {
           :key="item.id"
         >
           <td>{{ item.id }}</td>
-          <td>
+          <td class="products-table__thumb">
             <img
               :src="item.image"
               :alt="item.name"
               class="product-image"
             >
           </td>
-          <td>
+          <td class="products-table__info">
             <p class="name">
               {{ item.name }}
             </p>
@@ -688,7 +679,8 @@ watch(salesMode, () => {
           </td>
         </tr>
       </tbody>
-    </table>
+      </table>
+    </div>
   </div>
 
   <div
@@ -729,7 +721,7 @@ watch(salesMode, () => {
           v-else
           class="subtitle-auto-label"
         >
-          副标题（随卡包金额自动生成）
+          副标题
           <el-input
             :model-value="form.subtitle"
             class="form-input subtitle-generated"
@@ -756,7 +748,7 @@ watch(salesMode, () => {
           前台专区
           <el-input
             class="form-input"
-            :model-value="'先享后付（与前台「先享后付」一致）'"
+            :model-value="'先享后付'"
             disabled
           />
         </label>
@@ -824,7 +816,7 @@ watch(salesMode, () => {
           </el-select>
         </label>
         <label class="full">
-          商品主图（本地上传）
+          商品主图
           <div class="cover-upload-row">
             <el-upload
               class="cover-upload"
@@ -852,9 +844,6 @@ watch(salesMode, () => {
               移除图片
             </button>
           </div>
-          <p class="cover-upload-hint">
-            自动压缩为 JPEG 后保存；编辑已有商品时若不改图可保留当前图。
-          </p>
           <div
             v-if="form.image"
             class="cover-preview-wrap"
@@ -867,7 +856,7 @@ watch(salesMode, () => {
           </div>
         </label>
         <label class="full">
-          商品详情图（可多选，自动压缩为 JPEG）
+          商品详情图
           <div class="cover-upload-row">
             <el-upload
               class="cover-upload"
@@ -889,9 +878,6 @@ watch(salesMode, () => {
             </el-upload>
             <span class="detail-count-hint">已选 {{ form.detailImages.length }} / {{ PRODUCT_DETAIL_IMAGE_MAX }} 张</span>
           </div>
-          <p class="cover-upload-hint">
-            用于前台商品详情页展示；可与主图相同或补充长图说明。
-          </p>
           <div
             v-if="form.detailImages.length"
             class="detail-preview-grid"
@@ -1065,7 +1051,7 @@ watch(salesMode, () => {
 
 .sub {
   margin: 0;
-  color: #6b7280;
+  color: #a8a1a1;
   font-size: 12px;
 }
 
@@ -1162,7 +1148,7 @@ watch(salesMode, () => {
   display: grid;
   gap: 6px;
   font-size: 14px;
-  color: #6b7280;
+  color: #a8a1a1;
 }
 
 .form-grid .full {
@@ -1220,7 +1206,7 @@ watch(salesMode, () => {
   display: grid;
   gap: 6px;
   font-size: 14px;
-  color: #6b7280;
+  color: #a8a1a1;
   min-width: 0;
 }
 
@@ -1318,5 +1304,55 @@ watch(salesMode, () => {
   margin-top: 6px;
   width: 100%;
   font-size: 12px;
+}
+
+/* 列表区域：横向溢出时在此容器内滚动，避免表格外层布局被撑乱、行背景错位 */
+.products-table-wrap {
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: visible;
+  -webkit-overflow-scrolling: touch;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.products-table {
+  width: 100%;
+  min-width: 1040px;
+}
+
+.products-table th {
+  background: #fafafa;
+}
+
+.products-table tbody td {
+  background-color: #fff;
+}
+
+.products-table tbody tr:hover td {
+  background-color: #fff;
+}
+
+.products-table td.products-table__thumb {
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.products-table td.products-table__info {
+  min-width: 140px;
+  max-width: 420px;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  vertical-align: top;
+}
+
+.products-table td:last-child {
+  vertical-align: middle;
+}
+
+.products-table .actions {
+  flex-wrap: wrap;
+  max-width: 280px;
 }
 </style>

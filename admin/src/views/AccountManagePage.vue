@@ -4,7 +4,7 @@ import { ElMessage } from 'element-plus'
 import { withAdminAuthHeaders } from '../composables/useAdminApi'
 import { donePageProgress, startPageProgress } from '../utils/progress'
 
-type AccountRole = 'super_admin' | 'reviewer' | 'collector'
+type AccountRole = 'super_admin' | 'boss' | 'reviewer' | 'collector'
 type AccountStatus = 'active' | 'disabled'
 
 interface AdminAccountItem {
@@ -72,6 +72,7 @@ function formatDateTime(value: string) {
 }
 
 function getRoleClass(role: AccountRole) {
+  if (role === 'boss') return 'role-chip role-boss'
   if (role === 'super_admin') return 'role-chip role-super-admin'
   if (role === 'reviewer') return 'role-chip role-reviewer'
   if (role === 'collector') return 'role-chip role-collector'
@@ -82,6 +83,7 @@ function formatRoleCell(item: AdminAccountItem): string {
   if (item.roleLabel?.trim())
     return item.roleLabel
   if (item.role === 'super_admin') return '超级管理员'
+  if (item.role === 'boss') return '老板'
   if (item.role === 'reviewer') return '审核员'
   if (item.role === 'collector') return '催收员'
   return '审核员'
@@ -522,6 +524,7 @@ onMounted(() => {
           >
             <el-option label="审核员" value="reviewer" />
             <el-option label="催收员" value="collector" />
+            <el-option label="老板" value="boss" />
           </el-select>
         </label>
       </div>
@@ -563,6 +566,7 @@ onMounted(() => {
             class="form-select"
           >
             <el-option label="超级管理员" value="super_admin" />
+            <el-option label="老板" value="boss" />
             <el-option label="审核员" value="reviewer" />
             <el-option label="催收员" value="collector" />
           </el-select>
@@ -689,7 +693,12 @@ onMounted(() => {
 
 .actions {
   display: flex;
+  align-items: center;
   gap: 8px;
+}
+
+.panel .table tbody td:last-child {
+  vertical-align: middle;
 }
 
 .actions-right {
@@ -736,6 +745,57 @@ onMounted(() => {
   background: #ffedd5;
 }
 
+@keyframes role-boss-glow {
+  0%,
+  100% {
+    box-shadow:
+      0 0 0 1px rgba(146, 64, 14, 0.35),
+      0 0 10px rgba(251, 191, 36, 0.35);
+  }
+  50% {
+    box-shadow:
+      0 0 0 1px rgba(146, 64, 14, 0.55),
+      0 0 18px rgba(252, 211, 77, 0.65),
+      0 0 28px rgba(245, 158, 11, 0.35);
+  }
+}
+
+@keyframes role-boss-flow {
+  0% {
+    background-position: 0% 50%;
+  }
+  100% {
+    background-position: 100% 50%;
+  }
+}
+
+.role-boss {
+  position: relative;
+  color: #422006;
+  border: 1px solid rgba(146, 64, 14, 0.45);
+  background: linear-gradient(
+    110deg,
+    #fde047 0%,
+    #fbbf24 22%,
+    #f59e0b 45%,
+    #fcd34d 68%,
+    #fde68a 88%,
+    #fde047 100%
+  );
+  background-size: 220% 100%;
+  animation:
+    role-boss-flow 5s ease-in-out infinite alternate,
+    role-boss-glow 2.5s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .role-boss {
+    animation: none;
+    background-size: 100% 100%;
+    box-shadow: 0 0 0 1px rgba(146, 64, 14, 0.35);
+  }
+}
+
 .role-reviewer {
   color: #1d4ed8;
   background: #dbeafe;
@@ -747,8 +807,8 @@ onMounted(() => {
 }
 
 .role-collector {
-  color: #9a3412;
-  background: #ffedd5;
+  color: #5b21b6;
+  background: #ede9fe;
 }
 
 .delete-wrap {
@@ -832,7 +892,7 @@ onMounted(() => {
   display: grid;
   gap: 6px;
   font-size: 14px;
-  color: #6b7280;
+  color: #a8a1a1;
 }
 
 .form-grid .full {

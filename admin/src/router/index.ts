@@ -1,6 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import type { AdminSession } from '../composables/useAdminAuth'
-import { getAdminSession, isAdminAuthenticated } from '../composables/useAdminAuth'
+import { adminSessionRoleAllowed, getAdminSession, isAdminAuthenticated } from '../composables/useAdminAuth'
 import AccountManagePage from '../views/AccountManagePage.vue'
 import CsMessagesPage from '../views/CsMessagesPage.vue'
 import DashboardPage from '../views/DashboardPage.vue'
@@ -138,8 +138,8 @@ router.beforeEach((to) => {
   if (authed && to.name === 'login') {
     return adminHomeRoute(session)
   }
-  const allowRoles = Array.isArray(to.meta.roles) ? to.meta.roles.map(String) : []
-  if (allowRoles.length > 0 && (!session || !allowRoles.includes(session.role))) {
+  const allowRoles = Array.isArray(to.meta.roles) ? to.meta.roles : []
+  if (allowRoles.length > 0 && !adminSessionRoleAllowed(session?.role, allowRoles)) {
     return adminHomeRoute(session)
   }
   return true

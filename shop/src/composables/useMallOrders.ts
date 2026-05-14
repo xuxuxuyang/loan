@@ -51,6 +51,26 @@ interface CreateOrderPayload {
 const ORDER_STORAGE_KEY = 'mall-orders'
 const ORDER_REMOTE_PATH = '/orders'
 
+/** 与账单 API `normalizePhone` 一致：比较收货人与登录账号是否为同一手机号 */
+export function normalizeReceiverPhoneDigits(phone: string) {
+  return String(phone || '').replace(/\D/g, '')
+}
+
+export function mallOrderBelongsToLoggedIn(orderReceiverPhone: string, loginAccount: string) {
+  let u = normalizeReceiverPhoneDigits(loginAccount)
+  if (u.startsWith('86') && u.length === 13) {
+    u = u.slice(2)
+  }
+  if (!/^1\d{10}$/.test(u)) {
+    return false
+  }
+  let r = normalizeReceiverPhoneDigits(orderReceiverPhone)
+  if (r.startsWith('86') && r.length === 13) {
+    r = r.slice(2)
+  }
+  return r === u
+}
+
 function resolveMallApiBase() {
   const runtimeConfig = useRuntimeConfig()
   return runtimeConfig.public.mallApiBase || '/api'

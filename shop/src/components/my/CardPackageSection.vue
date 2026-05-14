@@ -1,7 +1,12 @@
 <script setup lang="ts">
-import { nextTick } from 'vue'
+import { ElMessageBox } from 'element-plus'
 import type { MallCardPackageDTO } from '~/api/modules/mall'
 import kefuQrUrl from '~/assets/kefu.png'
+import {
+  isValidEmergencyContactPersonName,
+  isValidEmergencyContactPhoneDigits,
+  normalizeEmergencyContactPersonName,
+} from '~/utils/emergencyContactValidate'
 
 defineProps<{
   /** 为 true 时使用更紧凑的移动端字号与间距 */
@@ -16,15 +21,26 @@ const {
   fetchCardPackages,
   fetchCardPackageContractFlow,
   downloadCardPackageContractBlob,
+  saveMallEmergencyContacts,
 } = useMallMy()
 
 const account = computed(() => loginPhone.value || profile.value?.phone || '')
 const isValidAccount = computed(() => /^1\d{10}$/.test(account.value))
 const loading = ref(false)
 const dialogVisible = ref(false)
+const emergencyDialogVisible = ref(false)
+const emergencySubmitting = ref(false)
+const emergencyForm = reactive({
+  c1Name: '',
+  c1Phone: '',
+  c2Name: '',
+  c2Phone: '',
+})
 const activeItem = ref<MallCardPackageDTO | null>(null)
 
 const CARD_PACKAGE_CONTRACT_SIGNED_MSG = 'mall-card-package-contract-signed'
+/** 内嵌合同页签名校验失败时 postMessage，父页用 Element Plus 展示 */
+const CARD_PACKAGE_CONTRACT_SIGNATURE_HINT_MSG = 'mall-card-package-signature-hint'
 
 /** 业务：订单金额 = 卡包金额 × 135% + 50；列表「现金礼」展示反推的卡包金额：(订单金额 − 50) ÷ 1.35 */
 const CARD_PACKAGE_REVERSE_FIXED = 50
@@ -64,6 +80,18 @@ const contractRoot = ref<Record<string, unknown> | null>(null)
 const contractIframeKey = ref(0)
 const contractSignFrameVisible = ref(false)
 const contractFrameMode = ref<'sign' | 'view'>('sign')
+
+/** 已下单用户：签署合同后须先登记两位紧急联系人，方可打开客服二维码 */
+const needsEmergencyBeforeKefu = computed(() => {
+  const p = profile.value
+  if (!p) {
+    return false
+  }
+  if (Number(p.orderCount || 0) < 1) {
+    return false
+  }
+  return !p.emergencyContactsComplete
+})
 
 /** API 返回中含上游对接提示时，展示简要运维说明 */
 const showContractUpstreamHint = computed(() => {
@@ -162,19 +190,35 @@ function trustedContractPostMessageOrigin(ev: MessageEvent): boolean {
   }
 }
 
-function onContractSignedPostMessage(ev: MessageEvent) {
+function onContractEmbedPostMessage(ev: MessageEvent) {
   if (!trustedContractPostMessageOrigin(ev)) {
     return
   }
-  const data = ev.data as { type?: string, orderId?: string } | null
-  if (!data || typeof data !== 'object' || data.type !== CARD_PACKAGE_CONTRACT_SIGNED_MSG) {
+  const data = ev.data as {
+    type?: string
+    orderId?: string
+    message?: string
+    variant?: string
+  } | null
+  if (!data || typeof data !== 'object') {
     return
   }
   const oid = String(data.orderId || '')
   if (!oid || oid !== activeItem.value?.orderId) {
     return
   }
-  void handleContractSignedFromEmbed()
+  if (data.type === CARD_PACKAGE_CONTRACT_SIGNED_MSG) {
+    void handleContractSignedFromEmbed()
+    return
+  }
+  if (data.type === CARD_PACKAGE_CONTRACT_SIGNATURE_HINT_MSG) {
+    const msg = String(data.message || '').trim() || '签名校验未通过，请按页面说明重新书写后提交。'
+    void ElMessageBox.alert(msg, '签署提示', {
+      confirmButtonText: '我知道了',
+      type: 'warning',
+      appendTo: document.body,
+    })
+  }
 }
 
 async function handleContractSignedFromEmbed() {
@@ -183,18 +227,28 @@ async function handleContractSignedFromEmbed() {
   contractDialogVisible.value = false
   await loadContractFlow()
   await refreshList()
-  dialogVisible.value = true
+  await syncFromStorage()
+  if (needsEmergencyBeforeKefu.value) {
+    emergencyForm.c1Name = ''
+    emergencyForm.c1Phone = ''
+    emergencyForm.c2Name = ''
+    emergencyForm.c2Phone = ''
+    emergencyDialogVisible.value = true
+  }
+  else {
+    dialogVisible.value = true
+  }
 }
 
 onMounted(() => {
   if (!import.meta.env.SSR) {
-    window.addEventListener('message', onContractSignedPostMessage)
+    window.addEventListener('message', onContractEmbedPostMessage)
   }
 })
 
 onUnmounted(() => {
   if (!import.meta.env.SSR) {
-    window.removeEventListener('message', onContractSignedPostMessage)
+    window.removeEventListener('message', onContractEmbedPostMessage)
   }
 })
 
@@ -229,7 +283,7 @@ function cancelPreClaimPrompt() {
 
 /** 小弹窗通过右上角关闭时：若未进入签约/其它弹窗则结束本次领取 */
 function onPreClaimDialogClosed() {
-  if (contractSignFrameVisible.value || contractDialogVisible.value || dialogVisible.value) {
+  if (contractSignFrameVisible.value || contractDialogVisible.value || dialogVisible.value || emergencyDialogVisible.value) {
     return
   }
   activeItem.value = null
@@ -377,8 +431,68 @@ async function downloadContractFile() {
 }
 
 function openClaimKefuFromContract() {
+  if (needsEmergencyBeforeKefu.value) {
+    ElMessage.warning('请先填写两位紧急联系人后再联系客服领取')
+    contractDialogVisible.value = false
+    emergencyForm.c1Name = ''
+    emergencyForm.c1Phone = ''
+    emergencyForm.c2Name = ''
+    emergencyForm.c2Phone = ''
+    emergencyDialogVisible.value = true
+    return
+  }
   contractDialogVisible.value = false
   dialogVisible.value = true
+}
+
+async function submitEmergencyContacts() {
+  const phone = account.value
+  if (!/^1\d{10}$/.test(phone)) {
+    return
+  }
+  const pairs = [
+    { idx: 1, nameRaw: emergencyForm.c1Name, phoneRaw: emergencyForm.c1Phone },
+    { idx: 2, nameRaw: emergencyForm.c2Name, phoneRaw: emergencyForm.c2Phone },
+  ] as const
+  for (const { idx, nameRaw, phoneRaw } of pairs) {
+    if (!String(nameRaw || '').trim()) {
+      ElMessage.warning(`请填写第 ${idx} 位联系人的姓名`)
+      return
+    }
+    if (!isValidEmergencyContactPersonName(nameRaw)) {
+      ElMessage.warning(`第 ${idx} 位联系人姓名须为汉字或英文字母，不可含数字、标点及其它符号（仅允许「·」与空格）`)
+      return
+    }
+    if (!isValidEmergencyContactPhoneDigits(phoneRaw)) {
+      ElMessage.warning(`第 ${idx} 位联系人手机号须为以 1 开头的 11 位大陆号码`)
+      return
+    }
+  }
+  const n1 = normalizeEmergencyContactPersonName(emergencyForm.c1Name)
+  const n2 = normalizeEmergencyContactPersonName(emergencyForm.c2Name)
+  const p1 = emergencyForm.c1Phone.trim().replace(/\D/g, '')
+  const p2 = emergencyForm.c2Phone.trim().replace(/\D/g, '')
+  if (p1 === p2) {
+    ElMessage.warning('两位联系人手机号不能相同')
+    return
+  }
+  emergencySubmitting.value = true
+  try {
+    await saveMallEmergencyContacts(phone, [
+      { name: n1, phone: p1 },
+      { name: n2, phone: p2 },
+    ])
+    ElMessage.success('已保存')
+    emergencyDialogVisible.value = false
+    await syncFromStorage()
+    dialogVisible.value = true
+  }
+  catch (e: unknown) {
+    ElMessage.error(mallApiErrorText(e))
+  }
+  finally {
+    emergencySubmitting.value = false
+  }
 }
 
 function onContractDialogClosed() {
@@ -386,7 +500,7 @@ function onContractDialogClosed() {
   contractError.value = ''
   contractSignFrameVisible.value = false
   preClaimPromptVisible.value = false
-  if (!dialogVisible.value) {
+  if (!dialogVisible.value && !emergencyDialogVisible.value) {
     activeItem.value = null
   }
 }
@@ -472,7 +586,7 @@ function closeDialog() {
             <span
               class="ml-1 text-black/35"
               :class="compact ? 'text-xs font-normal' : 'text-sm font-normal'"
-            >现金礼包</span>
+            >现金卡包</span>
           </p>
         </div>
         <div class="shrink-0 self-center">
@@ -660,7 +774,7 @@ function closeDialog() {
           订单 {{ activeItem.orderId }} · 以下为合同原文（含签署记录）。
         </template>
         <template v-else>
-          订单 {{ activeItem.orderId }} · 请在内嵌合同页阅读条款，在签名区<strong>手写签名</strong>后点击「提交签署」。若打开的是第三方签约页，请按其页面完成签署。
+          订单 {{ activeItem.orderId }} · 请在内嵌合同页阅读条款，在签名区按<strong>浅色姓名笔画</strong>描摹书写后点击「提交签署」。若打开的是第三方签约页，请按其页面完成签署。
         </template>
       </p>
       <div
@@ -683,6 +797,87 @@ function closeDialog() {
             @click="closeContractSignDialog"
           >
             返回
+          </el-button>
+        </div>
+      </template>
+    </el-dialog>
+
+    <!-- 已下单用户：签署后必填两位紧急联系人，完成后方可查看客服二维码 -->
+    <el-dialog
+      v-model="emergencyDialogVisible"
+      title="填写紧急联系人"
+      :width="compact ? 'min(94vw, 400px)' : '420px'"
+      destroy-on-close
+      align-center
+      :close-on-click-modal="false"
+      append-to-body
+      class="card-package-emergency-dialog"
+    >
+      <p class="mb-3 text-sm leading-relaxed text-black/70">
+        您已有商城订单，领取前需登记 <strong class="text-black/85">两位紧急联系人</strong>（姓名与手机号，用于必要时的联络）。信息将加密保存，仅用于服务与风控相关用途。
+      </p>
+      <p class="mb-3 text-xs leading-relaxed text-black/45">
+        姓名仅可为<strong>汉字或英文字母</strong>，可含间隔符「·」与空格；<strong>不可含数字、标点及其它符号</strong>。手机号为大陆 11 位号码（以 1 开头）。
+      </p>
+      <div class="space-y-3">
+        <div class="rounded-xl border border-black/[0.08] bg-[#f8fafc] p-3">
+          <p class="mb-2 text-xs font-semibold text-black/55">
+            紧急联系人 1
+          </p>
+          <div class="flex flex-col gap-2 sm:flex-row">
+            <el-input
+              v-model="emergencyForm.c1Name"
+              maxlength="32"
+              show-word-limit
+              placeholder="姓名"
+              class="flex-1"
+            />
+            <el-input
+              v-model="emergencyForm.c1Phone"
+              maxlength="11"
+              inputmode="numeric"
+              placeholder="11 位手机号"
+              class="flex-1"
+            />
+          </div>
+        </div>
+        <div class="rounded-xl border border-black/[0.08] bg-[#f8fafc] p-3">
+          <p class="mb-2 text-xs font-semibold text-black/55">
+            紧急联系人 2
+          </p>
+          <div class="flex flex-col gap-2 sm:flex-row">
+            <el-input
+              v-model="emergencyForm.c2Name"
+              maxlength="32"
+              show-word-limit
+              placeholder="姓名"
+              class="flex-1"
+            />
+            <el-input
+              v-model="emergencyForm.c2Phone"
+              maxlength="11"
+              inputmode="numeric"
+              placeholder="11 位手机号"
+              class="flex-1"
+            />
+          </div>
+        </div>
+      </div>
+      <template #footer>
+        <div class="flex flex-wrap justify-end gap-2">
+          <el-button
+            :disabled="emergencySubmitting"
+            @click="emergencyDialogVisible = false"
+          >
+            稍后
+          </el-button>
+          <el-button
+            type="primary"
+            class="!bg-gradient-to-r !from-[#0b7b6e] !to-[#18a08f] !border-0"
+            :loading="emergencySubmitting"
+            @click="submitEmergencyContacts"
+          >
+            保存并继续
           </el-button>
         </div>
       </template>
@@ -770,7 +965,8 @@ function closeDialog() {
 .card-package-claim-dialog:deep(.el-dialog),
 .card-package-contract-dialog:deep(.el-dialog),
 .card-package-contract-sign-frame-dialog:deep(.el-dialog),
-.card-package-pre-claim-dialog:deep(.el-dialog) {
+.card-package-pre-claim-dialog:deep(.el-dialog),
+.card-package-emergency-dialog:deep(.el-dialog) {
   border-radius: 16px;
 }
 

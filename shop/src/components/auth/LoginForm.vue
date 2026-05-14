@@ -105,6 +105,14 @@ async function goRegister() {
   })
 }
 
+async function openUserAgreement() {
+  await smartNavigate('/user-agreement')
+}
+
+async function openPrivacyPolicy() {
+  await smartNavigate('/privacy-policy')
+}
+
 function resolveSubmitError(error: unknown): string {
   if (error && typeof error === 'object' && 'data' in error) {
     const data = (error as { data?: { msg?: string, message?: string } }).data
@@ -280,22 +288,34 @@ async function submitLogin() {
         </template>
       </div>
 
-      <div class="mt-6 flex items-start text-sm text-black/55">
+      <div class="mt-6 flex items-start gap-2 text-sm text-black/55">
         <input
           id="agree"
           v-model="agree"
           type="checkbox"
-          class="mr-2 mt-1 h-4 w-4 accent-[#38a169]"
+          class="mt-1 h-4 w-4 shrink-0 accent-[#38a169]"
         >
-        <label
-          for="agree"
-          class="leading-6"
-        >
-          我已阅读并同意
-          <span class="text-[#e87b8f]">《用户注册协议》</span>
-          和
-          <span class="text-[#e87b8f]">《用户隐私政策》</span>
-        </label>
+        <div class="min-w-0 leading-6">
+          <label
+            for="agree"
+            class="cursor-pointer select-none"
+          >我已阅读并同意</label>
+          <button
+            type="button"
+            class="font-medium text-[#e87b8f] underline decoration-[#e87b8f]/35 underline-offset-2 transition hover:text-[#d45f78]"
+            @click="openUserAgreement"
+          >
+            《用户注册协议》
+          </button>
+          <span>和</span>
+          <button
+            type="button"
+            class="font-medium text-[#e87b8f] underline decoration-[#e87b8f]/35 underline-offset-2 transition hover:text-[#d45f78]"
+            @click="openPrivacyPolicy"
+          >
+            《用户隐私政策》
+          </button>
+        </div>
       </div>
 
       <button

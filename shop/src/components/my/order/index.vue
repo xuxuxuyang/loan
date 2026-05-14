@@ -4,6 +4,7 @@ import type { MallOrderStatus } from '~/composables/useMallOrders'
 import {
   formatMallOrderTime,
   getSimulatedLogisticsTrace,
+  mallOrderBelongsToLoggedIn,
   normalizeOrderTrackingNumber,
   orderHasShippedTracking,
 } from '~/composables/useMallOrders'
@@ -51,10 +52,11 @@ const currentUserPhone = computed(() => {
 })
 
 const userOrders = computed(() => {
-  if (!currentUserPhone.value) {
+  const account = currentUserPhone.value
+  if (!account) {
     return []
   }
-  return orders.value.filter(item => item.receiverPhone === currentUserPhone.value)
+  return orders.value.filter(item => mallOrderBelongsToLoggedIn(item.receiverPhone, account))
 })
 
 const filteredOrders = computed(() => {

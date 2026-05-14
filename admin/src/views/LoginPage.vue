@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import LoginCard from '../components/auth/LoginCard.vue'
-import { setAdminSession, type AdminRole } from '../composables/useAdminAuth'
+import LoginWelcomeCelebration from '../components/auth/LoginWelcomeCelebration.vue'
+import { adminRoleDisplayLabel, setAdminSession, type AdminRole } from '../composables/useAdminAuth'
 
 const route = useRoute()
 const router = useRouter()
@@ -13,11 +13,32 @@ const loginSuccess = ref(false)
 const enteringSystem = ref(false)
 const MALL_API_BASE = `${(import.meta.env.VITE_MALL_API_BASE || 'http://localhost:3110/api').replace(/\/$/, '')}`
 
+const welcomeRoleName = ref('')
+const loginWelcomeOpen = ref(false)
+const loginWelcomeRole = ref<AdminRole>('super_admin')
+const loginWelcomeName = ref('')
+
+let loginWelcomeTimer: ReturnType<typeof setTimeout> | undefined
+
+function clearLoginWelcomeTimer() {
+  if (loginWelcomeTimer) {
+    clearTimeout(loginWelcomeTimer)
+    loginWelcomeTimer = undefined
+  }
+}
+
+onUnmounted(() => {
+  clearLoginWelcomeTimer()
+})
+
 async function handleLogin(payload: { username: string, password: string }) {
   if (loading.value) return
   error.value = ''
   loginSuccess.value = false
   enteringSystem.value = false
+  welcomeRoleName.value = ''
+  clearLoginWelcomeTimer()
+  loginWelcomeOpen.value = false
   loading.value = true
   try {
     const response = await fetch(`${MALL_API_BASE}/admin/login`, {
@@ -35,6 +56,7 @@ async function handleLogin(payload: { username: string, password: string }) {
         username: string
         token: string
         adminRole: AdminRole
+        roleLabel?: string
       }
     } = {}
     try {
@@ -47,16 +69,27 @@ async function handleLogin(payload: { username: string, password: string }) {
       throw new Error(result?.msg || `登录失败: ${response.status}`)
     }
 
+    const role = (result.data.adminRole || 'super_admin') as AdminRole
+    const roleName = String(result.data.roleLabel || '').trim() || adminRoleDisplayLabel(role)
+
     setAdminSession({
       username: result.data.username || payload.username,
       token: result.data.token,
-      role: result.data.adminRole || 'super_admin',
+      role,
       loginAt: new Date().toISOString(),
     })
 
-    ElMessage.success('登录成功')
+    loginWelcomeRole.value = role
+    loginWelcomeName.value = roleName
+    loginWelcomeOpen.value = true
+    clearLoginWelcomeTimer()
+    loginWelcomeTimer = setTimeout(() => {
+      loginWelcomeOpen.value = false
+    }, 3200)
+
+    welcomeRoleName.value = roleName
     loginSuccess.value = true
-    await new Promise(r => setTimeout(r, 480))
+    await new Promise(r => setTimeout(r, 1000))
     enteringSystem.value = true
     await new Promise(r => setTimeout(r, 1400))
 
@@ -65,11 +98,14 @@ async function handleLogin(payload: { username: string, password: string }) {
   }
   catch (err) {
     error.value = err instanceof Error ? err.message : '登录失败，请稍后重试'
+    clearLoginWelcomeTimer()
+    loginWelcomeOpen.value = false
   }
   finally {
     loading.value = false
     loginSuccess.value = false
     enteringSystem.value = false
+    welcomeRoleName.value = ''
   }
 }
 </script>
@@ -85,11 +121,18 @@ async function handleLogin(payload: { username: string, password: string }) {
       <span class="login-page__brand-sub">先享后付 · 管理中台</span>
     </header>
 
+    <LoginWelcomeCelebration
+      :visible="loginWelcomeOpen"
+      :role="loginWelcomeRole"
+      :display-name="loginWelcomeName"
+    />
+
     <LoginCard
       :loading="loading"
       :error="error"
       :success="loginSuccess"
       :entering-system="enteringSystem"
+      :welcome-role-name="welcomeRoleName"
       @submit="handleLogin"
     />
 

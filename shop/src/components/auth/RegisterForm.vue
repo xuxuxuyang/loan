@@ -18,6 +18,7 @@ const route = useRoute()
 const { smartNavigate } = useCustomRouting(route)
 const { register, sendRegisterSms } = useMallAuth()
 
+const agree = ref(false)
 const submitting = ref(false)
 const smsSending = ref(false)
 const smsCooldown = ref(0)
@@ -222,6 +223,10 @@ async function handleSubmit() {
   if (!validateForm()) {
     return
   }
+  if (!agree.value) {
+    ElMessage.warning('请先阅读并同意用户注册协议和隐私政策')
+    return
+  }
 
   submitting.value = true
   const pwdSubmit = form.value.password.trim()
@@ -308,6 +313,14 @@ async function goLogin() {
       redirect: typeof route.query.redirect === 'string' ? route.query.redirect : '/my',
     },
   })
+}
+
+async function openUserAgreement() {
+  await smartNavigate('/user-agreement')
+}
+
+async function openPrivacyPolicy() {
+  await smartNavigate('/privacy-policy')
 }
 </script>
 
@@ -526,9 +539,39 @@ async function goLogin() {
         </div>
       </div>
 
+      <div class="mt-5 flex items-start gap-2 text-sm text-black/55">
+        <input
+          id="register-agree"
+          v-model="agree"
+          type="checkbox"
+          class="mt-1 h-4 w-4 shrink-0 accent-[#38a169]"
+        >
+        <div class="min-w-0 leading-6">
+          <label
+            for="register-agree"
+            class="cursor-pointer select-none"
+          >我已阅读并同意</label>
+          <button
+            type="button"
+            class="font-medium text-[#e87b8f] underline decoration-[#e87b8f]/35 underline-offset-2 transition hover:text-[#d45f78]"
+            @click="openUserAgreement"
+          >
+            《用户注册协议》
+          </button>
+          <span>和</span>
+          <button
+            type="button"
+            class="font-medium text-[#e87b8f] underline decoration-[#e87b8f]/35 underline-offset-2 transition hover:text-[#d45f78]"
+            @click="openPrivacyPolicy"
+          >
+            《用户隐私政策》
+          </button>
+        </div>
+      </div>
+
       <button
         type="button"
-        class="mt-6 w-full rounded-full bg-gradient-to-r from-[#ff8292] to-[#f06b81] py-3.5 text-base font-semibold text-white shadow-[0_10px_22px_rgba(235,112,137,0.28)] transition hover:brightness-105 disabled:opacity-60"
+        class="mt-5 w-full rounded-full bg-gradient-to-r from-[#ff8292] to-[#f06b81] py-3.5 text-base font-semibold text-white shadow-[0_10px_22px_rgba(235,112,137,0.28)] transition hover:brightness-105 disabled:opacity-60"
         :disabled="submitting"
         @click="handleSubmit"
       >

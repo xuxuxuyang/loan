@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { CircleCheck, CircleClose, Minus, Picture } from '@element-plus/icons-vue'
+import { ElMessage } from 'element-plus'
 import { computed } from 'vue'
 import TrafficChannelNameTag from './TrafficChannelNameTag.vue'
 import { trafficChannelDisplayKey } from '../utils/trafficChannelTagStyle'
@@ -27,6 +28,14 @@ export interface UserRegistrationInfoUser {
   registerChannelCode?: string
   registerChannelName?: string
   registerChannelLabel?: string
+  emergencyContacts?: Array<{ name: string, phone: string }>
+}
+
+/** 订单收货人信息：与 OrdersPage 传入风控弹窗的订单字段一致 */
+export interface OrderShippingSnapshot {
+  name: string
+  phone: string
+  address: string
 }
 
 const props = withDefaults(defineProps<{
@@ -41,6 +50,10 @@ const props = withDefaults(defineProps<{
   embeddedInParentScroll?: boolean
   /** 仅展示证件照片 + 信誉报告（用于 users 页编辑态下避开重复「基本信息」） */
   photosAndRiskOnly?: boolean
+  /**
+   * 从订单入口：收货人姓名、电话、详细地址；不传则不展示收货区块。
+   */
+  orderShippingSnapshot?: OrderShippingSnapshot | null
 }>(), {
   snapshot: null,
   showEmbeddedHead: false,
@@ -55,6 +68,30 @@ const emit = defineEmits<{
 const panel = computed(() => buildOrderSubmitSevenPanel(props.snapshot))
 const radarGrouped = computed(() => groupRadarV4FactsForTables(panel.value.radarStep.facts))
 const displayCredit = computed(() => displayCreditStatusFromOrderSevenSnapshot(props.snapshot))
+
+const orderShippingSectionVisible = computed(() => props.orderShippingSnapshot != null)
+
+const orderShippingNameTrim = computed(() => String(props.orderShippingSnapshot?.name ?? '').trim())
+const orderShippingPhoneTrim = computed(() => String(props.orderShippingSnapshot?.phone ?? '').trim())
+const orderShippingAddressTrim = computed(() => String(props.orderShippingSnapshot?.address ?? '').trim())
+
+function buildOrderShippingClipboardText(): string {
+  const name = orderShippingNameTrim.value || '暂无'
+  const phone = orderShippingPhoneTrim.value || '暂无'
+  const addr = orderShippingAddressTrim.value || '暂无收货地址'
+  return `姓名：${name}\n电话：${phone}\n详细地址：${addr}`
+}
+
+async function copyOrderShippingFull() {
+  const text = buildOrderShippingClipboardText()
+  try {
+    await navigator.clipboard.writeText(text)
+    ElMessage.success('已复制姓名、电话与详细地址')
+  }
+  catch {
+    ElMessage.error('复制失败，请手动选择文字复制')
+  }
+}
 
 const PREVIEW_RADAR_PAIR_COLUMNS = 3
 const PREVIEW_RADAR_TABLE_COLSPAN = PREVIEW_RADAR_PAIR_COLUMNS * 2
@@ -161,6 +198,7 @@ function getStatusClass(status: ReturnType<typeof displayCreditStatusFromOrderSe
           </el-descriptions-item>
           <el-descriptions-item label="注册渠道">
             <TrafficChannelNameTag
+              mall-plain-when-empty
               :display-key="trafficChannelDisplayKey(user.registerChannelLabel, user.registerChannelName, user.registerChannelCode)"
             />
           </el-descriptions-item>
@@ -170,15 +208,33 @@ function getStatusClass(status: ReturnType<typeof displayCreditStatusFromOrderSe
           <el-descriptions-item label="订单数">
             {{ user.orderCount }}
           </el-descriptions-item>
+          <el-descriptions-item label="紧急联系人一">
+            <template v-if="user.emergencyContacts && user.emergencyContacts[0]">
+              {{ user.emergencyContacts[0].name }}　<span class="tabular-nums">{{ user.emergencyContacts[0].phone }}</span>
+            </template>
+            <span
+              v-else
+              class="user-preview-meta__muted"
+            >暂无</span>
+          </el-descriptions-item>
+          <el-descriptions-item label="紧急联系人二">
+            <template v-if="user.emergencyContacts && user.emergencyContacts[1]">
+              {{ user.emergencyContacts[1].name }}　<span class="tabular-nums">{{ user.emergencyContacts[1].phone }}</span>
+            </template>
+            <span
+              v-else
+              class="user-preview-meta__muted"
+            >暂无</span>
+          </el-descriptions-item>
           <el-descriptions-item
             label="备注"
             :span="2"
           >
             <p
               class="remark-preview"
-              :class="{ 'remark-preview--empty': !String(user.adminRemark || '').trim() }"
+              :class="String(user.adminRemark || '').trim() ? 'remark-preview--filled' : 'remark-preview--empty'"
             >
-              {{ String(user.adminRemark || '').trim() ? user.adminRemark : '—' }}
+              {{ String(user.adminRemark || '').trim() ? user.adminRemark : '暂无备注' }}
             </p>
           </el-descriptions-item>
           <el-descriptions-item
@@ -190,6 +246,62 @@ function getStatusClass(status: ReturnType<typeof displayCreditStatusFromOrderSe
             </span>
           </el-descriptions-item>
         </el-descriptions>
+      </section>
+
+      <section
+        v-if="orderShippingSectionVisible"
+        class="user-preview-block"
+      >
+        <h4 class="user-preview-block__title user-preview-shipping-head">
+          <span class="user-preview-shipping-head__text">
+            <span class="user-preview-block__bar" />
+            收货地址
+          </span>
+          <el-button
+            type="primary"
+            link
+            class="user-preview-shipping-copy-all"
+            @click="copyOrderShippingFull"
+          >
+            复制用户收货地址
+          </el-button>
+        </h4>
+        <div class="user-preview-shipping-table-wrap">
+          <table class="user-preview-shipping-table">
+            <tbody>
+              <tr>
+                <th scope="row">
+                  姓名
+                </th>
+                <td>
+                  <span
+                    :class="{ 'user-preview-meta__muted': !orderShippingNameTrim }"
+                  >{{ orderShippingNameTrim || '暂无' }}</span>
+                </td>
+                <th scope="row">
+                  电话
+                </th>
+                <td>
+                  <span
+                    class="tabular-nums"
+                    :class="{ 'user-preview-meta__muted': !orderShippingPhoneTrim }"
+                  >{{ orderShippingPhoneTrim || '暂无' }}</span>
+                </td>
+              </tr>
+              <tr>
+                <th scope="row">
+                  详细地址
+                </th>
+                <td colspan="3">
+                  <span
+                    class="user-preview-receiver-text"
+                    :class="{ 'user-preview-meta__muted': !orderShippingAddressTrim }"
+                  >{{ orderShippingAddressTrim || '暂无收货地址' }}</span>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
       </section>
 
       <section class="user-preview-block">
@@ -300,9 +412,8 @@ function getStatusClass(status: ReturnType<typeof displayCreditStatusFromOrderSe
               </h4>
               <p class="user-preview-risk-card__sub">
                 <template v-if="panel.checkedAt">
-                  档案更新时间 {{ panel.checkedAt }} ·
+                  档案更新时间 {{ panel.checkedAt }} 
                 </template>
-                先享后付下单七项与全景雷达（共八项，与商城档案写入口径一致）
               </p>
             </div>
             <span :class="getStatusClass(displayCredit)">
@@ -733,6 +844,73 @@ function getStatusClass(status: ReturnType<typeof displayCreditStatusFromOrderSe
   background: linear-gradient(180deg, #6366f1, #8b5cf6);
 }
 
+.user-preview-shipping-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 14px;
+  flex-wrap: wrap;
+}
+
+.user-preview-shipping-head__text {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.user-preview-shipping-copy-all {
+  flex-shrink: 0;
+  font-weight: 600;
+  padding: 0 4px;
+}
+
+.user-preview-shipping-table-wrap {
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid #e2e8f0;
+}
+
+.user-preview-shipping-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.user-preview-shipping-table th,
+.user-preview-shipping-table td {
+  border: 1px solid #e2e8f0;
+  padding: 10px 12px;
+  vertical-align: top;
+  text-align: left;
+}
+
+.user-preview-shipping-table th {
+  width: 112px;
+  box-sizing: border-box;
+  font-weight: 600;
+  color: #64748b;
+  background: #f8fafc;
+  white-space: nowrap;
+}
+
+.user-preview-shipping-table td {
+  color: #0f172a;
+  background: #fff;
+  word-break: break-word;
+}
+
+.user-preview-receiver-text {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.55;
+  color: #0f172a;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .user-preview-desc {
   border-radius: 10px;
   overflow: hidden;
@@ -757,8 +935,6 @@ function getStatusClass(status: ReturnType<typeof displayCreditStatusFromOrderSe
 
 .remark-preview {
   margin: 0;
-  font-size: 13px;
-  color: #f10202;
   line-height: 1.45;
   max-height: 4.35em;
   overflow: hidden;
@@ -768,8 +944,16 @@ function getStatusClass(status: ReturnType<typeof displayCreditStatusFromOrderSe
   word-break: break-word;
 }
 
+.remark-preview--filled {
+  font-size: 16px;
+  font-weight: 700;
+  color: #dc2626;
+}
+
 .remark-preview--empty {
-  color: #000;
+  font-size: 12px;
+  font-weight: 400;
+  color: #a8a1a1;
 }
 
 .credit-badge {

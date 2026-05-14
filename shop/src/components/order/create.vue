@@ -2,6 +2,7 @@
 import { normalizeMallAccount } from '~/composables/useMallAuth'
 import { resolveMallCreditQuota } from '~/composables/mallCreditQuota'
 import { formatMallAddressLine, useMallMy } from '~/composables/useMallMy'
+import { mallOrderBelongsToLoggedIn, normalizeReceiverPhoneDigits } from '~/composables/useMallOrders'
 import type { TeaProduct } from '~/composables/useTeaProducts'
 import {
   ensureMallProductsLoaded,
@@ -17,7 +18,7 @@ const { smartNavigate } = useCustomRouting(route)
 const installmentProducts = useTeaProducts()
 const mallShowcaseProducts = useMallShowcaseProducts()
 const { ensureRegistered, profile, loginPhone, syncFromStorage } = useMallAuth()
-const { addresses, fetchAddresses } = useMallMy()
+const { addresses, fetchAddresses, fetchBills, fetchSummary } = useMallMy()
 const { orders, createOrder, syncFromRemote } = useMallOrders()
 const runtimeConfig = useRuntimeConfig()
 
@@ -114,11 +115,11 @@ const currentUserPhone = computed(() =>
 )
 
 const myMallOrders = computed(() => {
-  const phone = currentUserPhone.value
-  if (!/^1\d{10}$/.test(phone)) {
+  const account = currentUserPhone.value
+  if (!account) {
     return []
   }
-  return orders.value.filter(o => o.receiverPhone === phone)
+  return orders.value.filter(o => mallOrderBelongsToLoggedIn(o.receiverPhone, account))
 })
 
 /** 存在任一未「已完成」(enjoying) 的订单时，不允许再下单 */
@@ -363,6 +364,15 @@ async function submitOrder() {
   }
   else {
     ElMessage.success(`系统审核通过，订单已提交，订单号 ${currentOrderNo.value}`)
+  }
+  {
+    let login = normalizeReceiverPhoneDigits(currentUserPhone.value)
+    if (login.startsWith('86') && login.length === 13) {
+      login = login.slice(2)
+    }
+    if (/^1\d{10}$/.test(login)) {
+      void Promise.all([fetchBills(login), fetchSummary(login)])
+    }
   }
   await smartNavigate({
     path: '/orders',
@@ -642,7 +652,7 @@ watch(
           :disabled="submitting || !canSubmitOrder"
           @click="submitOrder"
         >
-          {{ submitting ? '系统审核与提交中…' : '提交订单并等待审核' }}
+          {{ submitting ? '系统审核与提交中…' : '提交订单' }}
         </button>
         <p class="mt-2 text-center text-xs text-black/45">
           审核通过后可进入发货流程

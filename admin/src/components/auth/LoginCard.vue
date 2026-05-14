@@ -10,6 +10,8 @@ const props = defineProps<{
   success?: boolean
   /** 登录成功后、路由跳转前的过渡阶段 */
   enteringSystem?: boolean
+  /** 登录成功时在按钮上展示「欢迎某某登录」 */
+  welcomeRoleName?: string
 }>()
 
 const emit = defineEmits<{
@@ -164,7 +166,7 @@ function handleSubmit() {
             props.enteringSystem
               ? '进入中…'
               : props.success
-                ? '登录成功'
+                ? (props.welcomeRoleName ? `欢迎${props.welcomeRoleName}登录` : '登录成功')
                 : props.loading
                   ? '登录中…'
                   : '立即登录'

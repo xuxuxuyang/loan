@@ -2,11 +2,13 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import type { InstallmentItem, OrderItem } from '../stores/useOrdersStore'
-import { getAdminSession } from '../composables/useAdminAuth'
+import type { InstallmentItem, InstallmentNegotiationRecord, OrderItem } from '../stores/useOrdersStore'
+import { getAdminSession, isSuperAdminRole } from '../composables/useAdminAuth'
+import { refreshOrdersMenuPendingReview } from '../composables/useAdminOrderReviewBadge'
 import { withAdminAuthHeaders } from '../composables/useAdminApi'
 import { useOrdersStore } from '../stores/useOrdersStore'
 import UserRiskDetailDialog, { type UserItem } from '../components/UserRiskDetailDialog.vue'
+import type { OrderShippingSnapshot } from '../components/UserRegistrationInfoScroll.vue'
 import { donePageProgress, startPageProgress } from '../utils/progress'
 
 const MALL_API_BASE = `${(import.meta.env.VITE_MALL_API_BASE || 'http://localhost:3110/api').replace(/\/$/, '')}`
@@ -23,6 +25,8 @@ const payType = ref<'全部' | OrderItem['payType']>('全部')
 const orderDate = ref('')
 const selectedOrder = ref<OrderItem | null>(null)
 const loading = ref(false)
+/** 打开「还款详情」弹窗时拉取单条订单，避免列表缓存与商城还款后服务端数据不一致 */
+const openingPlanOrderId = ref('')
 const changingStatusOrderId = ref('')
 const trackingSavingId = ref('')
 const cardPackageSavingId = ref('')
@@ -31,21 +35,23 @@ const deletingOrderId = ref('')
 const trackingDialogOpen = ref(false)
 const trackingDialogOrder = ref<OrderItem | null>(null)
 const trackingDialogInput = ref('')
-const addressDialogOpen = ref(false)
-const addressDialogOrder = ref<OrderItem | null>(null)
 const userRiskDialogVisible = ref(false)
 const riskDialogUserId = ref<string | null>(null)
+/** 从订单打开风控时带入该单收货人信息，关闭弹窗后清空 */
+const riskContextOrderShipping = ref<OrderShippingSnapshot | undefined>(undefined)
 const resolvingRiskUserOrderId = ref<string | null>(null)
-const { orders, recalculateOrderFields, fetchOrders, updateInstallmentPaid, updateInstallmentDueDate, updateOrderStatus, updateOrderShipment, updateOrderCardPackage, updateOrderCardPackageContract, deleteOrder } = useOrdersStore()
-const canOperateOrders = computed(() => getAdminSession()?.role === 'super_admin')
+const { orders, recalculateOrderFields, fetchOrders, fetchOrderById, updateInstallmentPaid, updateInstallmentDueDate, updateInstallmentSettleAmount, updateInstallmentNegotiate, updateInstallmentNegotiationHistoryPaid, updateOrderStatus, updateOrderShipment, updateOrderCardPackage, updateOrderCardPackageContract, deleteOrder } = useOrdersStore()
+const canOperateOrders = computed(() => isSuperAdminRole(getAdminSession()?.role))
 
 function normalizePhone(raw: string): string {
   return String(raw || '').replace(/\D/g, '')
 }
 
 watch(userRiskDialogVisible, (open) => {
-  if (!open)
+  if (!open) {
     riskDialogUserId.value = null
+    riskContextOrderShipping.value = undefined
+  }
 })
 
 function onRiskDialogUserUpdated(_user: UserItem) {
@@ -79,6 +85,11 @@ async function openUserRiskFromOrder(order: OrderItem) {
       return
     }
     riskDialogUserId.value = id
+    riskContextOrderShipping.value = {
+      name: String(order.user ?? '').trim(),
+      phone: String(order.receiverPhone ?? '').trim(),
+      address: String(order.receiverAddress ?? ''),
+    }
     userRiskDialogVisible.value = true
   }
   catch (e) {
@@ -106,6 +117,23 @@ function dueKey(dueDate: string) {
   const s = String(dueDate || '').trim()
   const m = s.match(/^(\d{4}-\d{2}-\d{2})/)
   return m ? m[1] : ''
+}
+
+/** 从当前期还款日（YYYY-MM-DD）起顺延整数天，与管理端「延期还款」接口的正午锚点算法一致 */
+function remainderDueYmdAfterDelayDays(dueDateRaw: string, delayDays: number): string {
+  const key = dueKey(dueDateRaw)
+  if (!key || !/^\d{4}-\d{2}-\d{2}$/.test(key)) {
+    return ''
+  }
+  const date = new Date(`${key}T12:00:00`)
+  if (Number.isNaN(date.getTime())) {
+    return ''
+  }
+  date.setDate(date.getDate() + delayDays)
+  const y = date.getFullYear()
+  const m = `${date.getMonth() + 1}`.padStart(2, '0')
+  const d = `${date.getDate()}`.padStart(2, '0')
+  return `${y}-${m}-${d}`
 }
 
 /** 根据当前日期 + 各期还款日 + 是否已还，得到订单还款维度状态 */
@@ -153,9 +181,227 @@ function periodRepayStatus(plan: InstallmentItem): '已还款' | '待还款' | '
   return '待还款'
 }
 
-const deferDueSavingKey = ref('')
+/** 还款详情表：取最近一次协商登记（金额、协商后未还金额的还款日） */
+function latestNegotiationRecord(plan: InstallmentItem): InstallmentNegotiationRecord | null {
+  const h = plan.negotiationHistory
+  if (!Array.isArray(h) || h.length === 0) {
+    return null
+  }
+  return h[h.length - 1] ?? null
+}
 
-const orderTableColspan = computed(() => (isCardPackageDataPage.value ? 14 : 13))
+/** 该期是否已有协商登记（存在协商记录时不可使用「延期还款」，应通过「协商还款」调整） */
+function planHasNegotiationHistory(plan: InstallmentItem): boolean {
+  const h = plan.negotiationHistory
+  return Array.isArray(h) && h.length > 0
+}
+
+/** 「延期还款」按钮禁用时的悬停说明（无说明则不展示 tooltip） */
+function deferRepaymentTooltip(plan: InstallmentItem): string {
+  if (!selectedOrder.value?.cardPackageIssued) {
+    return '卡包未发放'
+  }
+  if (planHasNegotiationHistory(plan)) {
+    return '已有协商记录，不可延期还款'
+  }
+  return ''
+}
+
+/** 「协商结清金额」禁用说明（无说明则不展示 tooltip） */
+function settleAmountTooltip(plan: InstallmentItem): string {
+  if (!selectedOrder.value?.cardPackageIssued) {
+    return '卡包未发放'
+  }
+  if (plan.negotiationPayPending && Number(plan.negotiationPayPending.negotiatedAmount || 0) > 0) {
+    return '待用户在前台完成协商支付'
+  }
+  if (planHasNegotiationHistory(plan)) {
+    return '已有协商记录，请使用「协商还款」或协商记录处理'
+  }
+  return ''
+}
+
+/** 协商记录中的登记时间展示 */
+function formatNegotiationCreatedAt(raw: string): string {
+  const s = String(raw || '').trim()
+  if (!s) {
+    return '—'
+  }
+  const d = new Date(s)
+  if (Number.isNaN(d.getTime())) {
+    return s.length > 16 ? s.slice(0, 16) : s
+  }
+  const yyyy = d.getFullYear()
+  const mm = `${d.getMonth() + 1}`.padStart(2, '0')
+  const dd = `${d.getDate()}`.padStart(2, '0')
+  const hh = `${d.getHours()}`.padStart(2, '0')
+  const min = `${d.getMinutes()}`.padStart(2, '0')
+  return `${yyyy}-${mm}-${dd} ${hh}:${min}`
+}
+
+/** 协商记录单行：还款状态仅「已还款 / 待还款」 */
+function negotiationRowPayStatus(
+  plan: InstallmentItem,
+  row: InstallmentNegotiationRecord,
+  index: number,
+): { tag: 'success' | 'warning'; text: '已还款' | '待还款' } {
+  const paidAt = String(row.userPaidAt || '').trim()
+  if (paidAt) {
+    return { tag: 'success', text: '已还款' }
+  }
+  const hist = plan.negotiationHistory
+  const lastIdx = Array.isArray(hist) && hist.length > 0 ? hist.length - 1 : -1
+  const pending = plan.negotiationPayPending
+  if (pending && Number(pending.negotiatedAmount || 0) > 0 && index === lastIdx) {
+    return { tag: 'warning', text: '待还款' }
+  }
+  return { tag: 'success', text: '已还款' }
+}
+
+/** 协商记录：可标记已还（仅末条且为「待用户协商支付」） */
+function negotiationRowCanMarkPaid(plan: InstallmentItem, row: InstallmentNegotiationRecord, index: number): boolean {
+  const hist = plan.negotiationHistory
+  const lastIdx = Array.isArray(hist) && hist.length > 0 ? hist.length - 1 : -1
+  if (index !== lastIdx) {
+    return false
+  }
+  return negotiationRowPayStatus(plan, row, index).text === '待还款'
+}
+
+/** 协商记录：可标记未还（仅末条；已记 userPaidAt，或末条已应用剩余本金可撤销）；本期已结清时不可再改 */
+function negotiationRowCanMarkUnpaid(plan: InstallmentItem, row: InstallmentNegotiationRecord, index: number): boolean {
+  if (plan.paid) {
+    return false
+  }
+  const hist = plan.negotiationHistory
+  const lastIdx = Array.isArray(hist) && hist.length > 0 ? hist.length - 1 : -1
+  if (index !== lastIdx) {
+    return false
+  }
+  if (negotiationRowPayStatus(plan, row, index).text !== '已还款') {
+    return false
+  }
+  if (String(row.userPaidAt || '').trim()) {
+    return true
+  }
+  if (plan.negotiationPayPending) {
+    return false
+  }
+  const rem = Number(row.remainderAmount || 0)
+  return Math.abs(Number(plan.amount || 0) - rem) <= 0.02
+}
+
+/** 本期已结清：每条协商历史在操作栏展示「已全额还款」（状态为已还款且无标记按钮时；含多轮协商中的非末条） */
+function negotiationRowShowFullRepayHint(plan: InstallmentItem, row: InstallmentNegotiationRecord, index: number): boolean {
+  if (!plan.paid) {
+    return false
+  }
+  if (negotiationRowPayStatus(plan, row, index).text !== '已还款') {
+    return false
+  }
+  if (negotiationRowCanMarkPaid(plan, row, index) || negotiationRowCanMarkUnpaid(plan, row, index)) {
+    return false
+  }
+  return true
+}
+
+/** 已有更新的协商记录：非末条仅展示「已完结」（不可再操作） */
+function negotiationRowShowSupersededEndedHint(plan: InstallmentItem, _row: InstallmentNegotiationRecord, index: number): boolean {
+  if (plan.paid) {
+    return false
+  }
+  const hist = plan.negotiationHistory
+  const lastIdx = Array.isArray(hist) && hist.length > 0 ? hist.length - 1 : -1
+  return index < lastIdx
+}
+
+const selectedOrderHasNegotiationHistory = computed(() => {
+  const ord = selectedOrder.value
+  if (!ord?.installmentPlan?.length) {
+    return false
+  }
+  return ord.installmentPlan.some(p => Array.isArray(p.negotiationHistory) && p.negotiationHistory.length > 0)
+})
+
+const deferDueSavingKey = ref('')
+const negotiateSavingKey = ref('')
+const settleAmountSavingKey = ref('')
+const negotiationHistorySavingKey = ref('')
+const negotiateDialogOpen = ref(false)
+const negotiateDialogOrder = ref<OrderItem | null>(null)
+const negotiateDialogPlan = ref<InstallmentItem | null>(null)
+const negotiateFormAmount = ref<number | null>(null)
+/** 相对当前期还款日顺延的天数（0 表示不推迟），提交时换算为 remainderDueDate */
+const negotiateFormDelayDays = ref('0')
+
+/** 还款详情弹窗表格：每期最近一次协商金额与协商后还款日（与 negotiationHistory 末条一致） */
+const selectedOrderNegotiationByPeriod = computed(() => {
+  const ord = selectedOrder.value
+  if (!ord?.installmentPlan?.length) {
+    return {} as Record<number, { negotiatedAmount: string; remainderDueDate: string }>
+  }
+  const out: Record<number, { negotiatedAmount: string; remainderDueDate: string }> = {}
+  for (const plan of ord.installmentPlan) {
+    const r = latestNegotiationRecord(plan)
+    if (r) {
+      out[plan.period] = {
+        negotiatedAmount: Number(r.negotiatedAmount).toFixed(2),
+        remainderDueDate: String(r.remainderDueDate || '').trim(),
+      }
+    }
+  }
+  return out
+})
+
+/** 协商弹窗：根据延迟天数预览协商后还款日 */
+const negotiateRemainderDuePreview = computed(() => {
+  const plan = negotiateDialogPlan.value
+  if (!plan) {
+    return ''
+  }
+  const raw = String(negotiateFormDelayDays.value || '').trim()
+  if (!/^\d+$/.test(raw)) {
+    return ''
+  }
+  const delayDays = Number.parseInt(raw, 10)
+  if (delayDays < 0 || delayDays > 3650) {
+    return ''
+  }
+  return remainderDueYmdAfterDelayDays(plan.dueDate, delayDays)
+})
+
+/** 协商弹窗：当前应还本金（元） */
+const negotiateDialogCurrentDueNumber = computed(() => {
+  const plan = negotiateDialogPlan.value
+  if (!plan) {
+    return 0
+  }
+  return Number(Number(plan.amount || 0).toFixed(2))
+})
+
+/** 协商还款金额输入上限（须小于应还，与接口 remainder>0 一致） */
+const negotiateDialogMaxNegotiatedAmount = computed(() => {
+  const cur = negotiateDialogCurrentDueNumber.value
+  if (!Number.isFinite(cur) || cur <= 0) {
+    return 0.01
+  }
+  const cap = Number((cur - 0.01).toFixed(2))
+  return Math.max(0.01, cap)
+})
+
+function onNegotiateAmountChange(val: number | undefined) {
+  const plan = negotiateDialogPlan.value
+  if (!plan || val == null || !Number.isFinite(val)) {
+    return
+  }
+  const cur = negotiateDialogCurrentDueNumber.value
+  if (val > cur) {
+    ElMessage.warning(`协商还款金额不能大于当前应还金额（¥${cur.toFixed(2)}）`)
+    negotiateFormAmount.value = negotiateDialogMaxNegotiatedAmount.value
+  }
+}
+
+const orderTableColspan = computed(() => (isCardPackageDataPage.value ? 15 : 14))
 
 const filteredOrders = computed(() => {
   // 订单管理仅展示已通过人工审核后的订单，待审核订单统一在“审核订单”页面处理。
@@ -173,8 +419,68 @@ const filteredOrders = computed(() => {
   return list
 })
 
-function openPlan(order: OrderItem) {
-  selectedOrder.value = order
+async function openPlan(order: OrderItem) {
+  if (openingPlanOrderId.value) {
+    return
+  }
+  openingPlanOrderId.value = order.id
+  try {
+    const fresh = await fetchOrderById(order.id)
+    selectedOrder.value = fresh
+  }
+  catch (e) {
+    ElMessage.error(e instanceof Error ? e.message : '加载还款详情失败')
+  }
+  finally {
+    openingPlanOrderId.value = ''
+  }
+}
+
+async function toggleNegotiationHistoryPaid(order: OrderItem, plan: InstallmentItem, historyIndex: number, paid: boolean) {
+  if (!canOperateOrders.value) {
+    return
+  }
+  if (deferDueSavingKey.value || negotiateSavingKey.value || negotiationHistorySavingKey.value || settleAmountSavingKey.value) {
+    return
+  }
+  if (!order.cardPackageIssued) {
+    ElMessage.warning('卡包未发放')
+    return
+  }
+  try {
+    await ElMessageBox.confirm(
+      paid
+        ? '确认将本条协商记录标记为「已还款」？将按协商流程更新剩余应还本金等数据。'
+        : '确认将本条协商记录标记为「未还款」？将撤销已还款标记并回退相关数据。',
+      paid ? '确认标记已还' : '确认标记未还',
+      {
+        confirmButtonText: '确定',
+        cancelButtonText: '取消',
+        type: 'warning',
+      },
+    )
+  }
+  catch {
+    return
+  }
+  negotiationHistorySavingKey.value = `${order.id}-${plan.period}-${historyIndex}`
+  try {
+    await updateInstallmentNegotiationHistoryPaid(order.id, plan.period, historyIndex, paid)
+    ElMessage.success(paid ? '协商记录已标记为已还款' : '协商记录已标记为未还款')
+    const id = selectedOrder.value?.id
+    if (id) {
+      const fresh = orders.value.find(o => o.id === id)
+      if (fresh) {
+        selectedOrder.value = fresh
+      }
+    }
+  }
+  catch {
+    ElMessage.error('更新协商还款状态失败，请稍后重试')
+  }
+  finally {
+    negotiationHistorySavingKey.value = ''
+  }
 }
 
 function closePlan() {
@@ -183,9 +489,28 @@ function closePlan() {
 
 async function toggleRepay(order: OrderItem, period: InstallmentItem) {
   if (!canOperateOrders.value) return
+  if (deferDueSavingKey.value || negotiateSavingKey.value || negotiationHistorySavingKey.value || settleAmountSavingKey.value) {
+    return
+  }
   const nextPaid = !period.paid
   if (nextPaid && !order.cardPackageIssued) {
     ElMessage.warning('卡包未发放')
+    return
+  }
+  try {
+    await ElMessageBox.confirm(
+      nextPaid
+        ? `确认将第 ${period.period} 期标记为「已还款」？`
+        : `确认将第 ${period.period} 期标记为「未还款」？`,
+      nextPaid ? '确认标记已还' : '确认标记未还',
+      {
+        confirmButtonText: '确定',
+        cancelButtonText: '取消',
+        type: 'warning',
+      },
+    )
+  }
+  catch {
     return
   }
   const prevPaid = period.paid
@@ -220,15 +545,6 @@ function openTrackingDialog(order: OrderItem) {
 function onTrackingDialogClosed() {
   trackingDialogOrder.value = null
   trackingDialogInput.value = ''
-}
-
-function openAddressDialog(order: OrderItem) {
-  addressDialogOrder.value = order
-  addressDialogOpen.value = true
-}
-
-function onAddressDialogClosed() {
-  addressDialogOrder.value = null
 }
 
 async function confirmTrackingDialog() {
@@ -445,12 +761,20 @@ function orderHasCardPackageContract(order: OrderItem): boolean {
   return order.payType === '先享后付'
 }
 
-/** 先享后付：仅合同已签署后才允许标记卡包已发放 */
+/** 未添加紧急联系人不可标记卡包已发放；先享后付还需合同已签署 */
 function canMarkCardPackageIssued(order: OrderItem): boolean {
+  if (order.emergencyContactsComplete === false) {
+    return false
+  }
   if (!orderHasCardPackageContract(order)) {
     return true
   }
   return Boolean(order.cardPackageContractSigned)
+}
+
+/** 「已发放」因未添加紧急联系人被禁用时，用于气泡提示 */
+function issuedOptionNeedsEmergencyContactTip(order: OrderItem): boolean {
+  return !order.cardPackageIssued && order.emergencyContactsComplete === false
 }
 
 /** 「已发放」因未签合同被禁用时，用于气泡提示 */
@@ -509,7 +833,15 @@ async function applyCardPackage(order: OrderItem, next: boolean) {
     return
   }
   if (next && !canMarkCardPackageIssued(order)) {
-    ElMessage.warning('请先完成合同签署后再标记卡包已发放')
+    if (orderHasCardPackageContract(order) && !order.cardPackageContractSigned) {
+      ElMessage.warning('请先完成合同签署后再标记卡包已发放')
+    }
+    else if (order.emergencyContactsComplete === false) {
+      ElMessage.warning('请先添加紧急联系人后再标记卡包已发放')
+    }
+    else {
+      ElMessage.warning('请先完成合同签署后再标记卡包已发放')
+    }
     return
   }
   cardPackageSavingId.value = order.id
@@ -567,8 +899,12 @@ async function deferRepaymentDue(order: OrderItem, plan: InstallmentItem) {
     ElMessage.warning('卡包未发放')
     return
   }
+  if (planHasNegotiationHistory(plan)) {
+    ElMessage.warning('已有协商记录，不可延期还款')
+    return
+  }
   const key = `${order.id}-${plan.period}`
-  if (deferDueSavingKey.value) {
+  if (deferDueSavingKey.value || negotiateSavingKey.value || negotiationHistorySavingKey.value || settleAmountSavingKey.value) {
     return
   }
   try {
@@ -611,6 +947,182 @@ async function deferRepaymentDue(order: OrderItem, plan: InstallmentItem) {
   }
 }
 
+function openNegotiateRepayDialog(order: OrderItem, plan: InstallmentItem) {
+  if (!canOperateOrders.value || plan.paid) {
+    return
+  }
+  if (!order.cardPackageIssued) {
+    ElMessage.warning('卡包未发放')
+    return
+  }
+  if (plan.negotiationPayPending && Number(plan.negotiationPayPending.negotiatedAmount || 0) > 0) {
+    ElMessage.warning('本期尚有协商款项待用户在前台完成支付，请待完成后再协商')
+    return
+  }
+  if (deferDueSavingKey.value || negotiateSavingKey.value || negotiationHistorySavingKey.value || settleAmountSavingKey.value) {
+    return
+  }
+  negotiateDialogOrder.value = order
+  negotiateDialogPlan.value = plan
+  negotiateFormAmount.value = null
+  negotiateFormDelayDays.value = '0'
+  negotiateDialogOpen.value = true
+}
+
+function onNegotiateRepayDialogClosed() {
+  negotiateDialogOrder.value = null
+  negotiateDialogPlan.value = null
+  negotiateFormAmount.value = null
+  negotiateFormDelayDays.value = '0'
+}
+
+async function confirmNegotiateRepay() {
+  const order = negotiateDialogOrder.value
+  const plan = negotiateDialogPlan.value
+  if (!order || !plan || !canOperateOrders.value) {
+    return
+  }
+  if (negotiationHistorySavingKey.value || settleAmountSavingKey.value) {
+    return
+  }
+  const amt = Number(negotiateFormAmount.value)
+  if (!Number.isFinite(amt) || amt <= 0) {
+    ElMessage.warning('请输入有效的协商还款金额')
+    return
+  }
+  const daysRaw = String(negotiateFormDelayDays.value || '').trim()
+  if (!/^\d+$/.test(daysRaw)) {
+    ElMessage.warning('请输入非负整数作为协商还款延迟天数')
+    return
+  }
+  const delayDays = Number.parseInt(daysRaw, 10)
+  if (delayDays > 3650) {
+    ElMessage.warning('协商还款延迟天数须在 0～3650 之间')
+    return
+  }
+  const due = remainderDueYmdAfterDelayDays(plan.dueDate, delayDays)
+  if (!due) {
+    ElMessage.warning('当前期还款日无效，无法根据延迟天数计算协商后还款日')
+    return
+  }
+  const cur = negotiateDialogCurrentDueNumber.value
+  if (!Number.isFinite(cur) || cur <= 0) {
+    ElMessage.warning('当前应还金额无效')
+    return
+  }
+  if (amt > cur) {
+    ElMessage.warning(`协商还款金额不能大于当前应还金额（¥${cur.toFixed(2)}）`)
+    return
+  }
+  if (amt >= cur) {
+    ElMessage.warning(`协商还款金额须小于当前应还金额（¥${cur.toFixed(2)}），协商后未还金额须大于 0`)
+    return
+  }
+  const key = `${order.id}-${plan.period}`
+  negotiateSavingKey.value = key
+  try {
+    await updateInstallmentNegotiate(order.id, plan.period, {
+      negotiatedAmount: amt,
+      remainderDueDate: due,
+    })
+    ElMessage.success('协商还款已保存')
+    negotiateDialogOpen.value = false
+    const id = selectedOrder.value?.id
+    if (id) {
+      const fresh = orders.value.find(o => o.id === id)
+      if (fresh) {
+        selectedOrder.value = fresh
+      }
+    }
+  }
+  catch (e) {
+    ElMessage.error(e instanceof Error ? e.message : '保存失败')
+  }
+  finally {
+    negotiateSavingKey.value = ''
+  }
+}
+
+async function promptSettleRepayAmount(order: OrderItem, plan: InstallmentItem) {
+  if (!canOperateOrders.value || plan.paid) {
+    return
+  }
+  if (!order.cardPackageIssued) {
+    ElMessage.warning('卡包未发放')
+    return
+  }
+  if (plan.negotiationPayPending && Number(plan.negotiationPayPending.negotiatedAmount || 0) > 0) {
+    ElMessage.warning('本期尚有协商款项待用户在前台完成支付，请待完成后再操作')
+    return
+  }
+  if (planHasNegotiationHistory(plan)) {
+    ElMessage.warning('本期已有协商记录，请通过「协商还款」或协商记录处理，不可直接修改应还金额')
+    return
+  }
+  if (deferDueSavingKey.value || negotiateSavingKey.value || negotiationHistorySavingKey.value || settleAmountSavingKey.value) {
+    return
+  }
+  let value: string
+  try {
+    const ret = await ElMessageBox.prompt(
+      '请输入协商结清金额（元）',
+      '协商结清金额',
+      {
+        confirmButtonText: '确定',
+        cancelButtonText: '取消',
+        inputValue: Number(plan.amount).toFixed(2),
+        inputPlaceholder: '例如 5000.00',
+        inputValidator: (raw) => {
+          const s = String(raw ?? '').trim()
+          if (!s) {
+            return '请输入金额'
+          }
+          const n = Number(s)
+          if (!Number.isFinite(n) || n < 0.01) {
+            return '金额须为不小于 0.01 的数字'
+          }
+          if (n > 99_999_999) {
+            return '金额过大'
+          }
+          return true
+        },
+      },
+    )
+    value = String(ret.value).trim()
+  }
+  catch (e) {
+    if (e === 'cancel' || e === 'close') {
+      return
+    }
+    return
+  }
+  const nextAmount = Number(Number(value).toFixed(2))
+  const cur = Number(Number(plan.amount).toFixed(2))
+  if (Math.abs(nextAmount - cur) < 0.005) {
+    ElMessage.info('金额未变化')
+    return
+  }
+  const key = `${order.id}-${plan.period}`
+  settleAmountSavingKey.value = key
+  try {
+    await updateInstallmentSettleAmount(order.id, plan.period, nextAmount)
+    ElMessage.success('应还金额已更新')
+    const id = selectedOrder.value?.id
+    if (id) {
+      const fresh = orders.value.find(o => o.id === id)
+      if (fresh) {
+        selectedOrder.value = fresh
+      }
+    }
+  }
+  catch (e) {
+    ElMessage.error(e instanceof Error ? e.message : '保存失败')
+  }
+  finally {
+    settleAmountSavingKey.value = ''
+  }
+}
+
 async function loadOrders() {
   loading.value = true
   startPageProgress()
@@ -626,6 +1138,7 @@ async function loadOrders() {
   finally {
     loading.value = false
     donePageProgress()
+    void refreshOrdersMenuPendingReview()
   }
 }
 
@@ -735,15 +1248,15 @@ watch(
           <th>下单时间</th>
           <th>总金额</th>
           <th>本期应还</th>
+          <th>订单状态</th>
+          <th>快递单号</th>
+          <th>合同签署</th>
+          <th>紧急联系人</th>
+          <th>卡包发放</th>
           <th>还款到期日</th>
           <th v-if="isCardPackageDataPage">
             还款状态
           </th>
-          
-          <th>订单状态</th>
-          <th>快递单号</th>
-          <th>合同签署</th>
-          <th>卡包发放</th>
           <th>{{ canOperateOrders ? '操作' : '查看' }}</th>
         </tr>
       </thead>
@@ -769,10 +1282,10 @@ watch(
           <td class="td-user-remark">
             <p
               class="order-user-remark-text"
-              :class="{ 'order-user-remark-text--empty': !(item.userRemark || '').trim() }"
+              :class="(item.userRemark || '').trim() ? 'order-user-remark-text--filled' : 'order-user-remark-text--empty'"
               :title="(item.userRemark || '').trim() ? item.userRemark : ''"
             >
-              {{ (item.userRemark || '').trim() ? item.userRemark : '—' }}
+              {{ (item.userRemark || '').trim() ? item.userRemark : '暂无备注' }}
             </p>
           </td>
           <td
@@ -784,18 +1297,6 @@ watch(
           <td>{{ item.createdAt }}</td>
           <td>¥ {{ item.totalAmount }}</td>
           <td>¥ {{ item.periodAmount }}</td>
-          <td>{{ item.nextRepayDate }}</td>
-          <td v-if="isCardPackageDataPage">
-            <el-tag
-              :type="repayBucketTagType(orderRepayBucket(item))"
-              effect="light"
-              round
-              size="small"
-            >
-              {{ orderRepayBucket(item) }}
-            </el-tag>
-          </td>
-          
           <td class="td-order-status">
             <el-dropdown
               v-if="canOperateOrders && !item.cardPackageIssued"
@@ -921,6 +1422,33 @@ watch(
               class="order-contract-na"
             >—</span>
           </td>
+          <td class="td-emergency-contact">
+            <template v-if="item.emergencyContactsComplete === true">
+              <el-tag
+                type="success"
+                effect="light"
+                round
+                size="small"
+                class="emergency-contact-tag"
+              >
+                已添加
+              </el-tag>
+            </template>
+            <el-tag
+              v-else-if="item.emergencyContactsComplete === false"
+              type="info"
+              effect="light"
+              round
+              size="small"
+              class="emergency-contact-tag"
+            >
+              未添加
+            </el-tag>
+            <span
+              v-else
+              class="order-contract-na"
+            >—</span>
+          </td>
           <td class="td-card-package">
             <template v-if="canOperateOrders">
               <el-dropdown
@@ -967,6 +1495,20 @@ watch(
                         </el-dropdown-item>
                       </span>
                     </el-tooltip>
+                    <el-tooltip
+                      v-else-if="issuedOptionNeedsEmergencyContactTip(item)"
+                      content="未添加紧急联系人，无法发放卡包"
+                      placement="top"
+                    >
+                      <span class="card-package-issued-tip-wrap">
+                        <el-dropdown-item
+                          command="issued"
+                          disabled
+                        >
+                          已发放
+                        </el-dropdown-item>
+                      </span>
+                    </el-tooltip>
                     <el-dropdown-item
                       v-else
                       command="issued"
@@ -989,21 +1531,26 @@ watch(
               {{ item.cardPackageIssued ? '已发放' : '未发放' }}
             </el-tag>
           </td>
+          <td>{{ item.nextRepayDate }}</td>
+          <td v-if="isCardPackageDataPage">
+            <el-tag
+              :type="repayBucketTagType(orderRepayBucket(item))"
+              effect="light"
+              round
+              size="small"
+            >
+              {{ orderRepayBucket(item) }}
+            </el-tag>
+          </td>
           <td class="actions-cell">
             <div class="actions">
               <button
                 class="btn btn-primary"
                 type="button"
+                :disabled="openingPlanOrderId === item.id"
                 @click="openPlan(item)"
               >
-                查看还款
-              </button>
-              <button
-                class="btn btn-secondary"
-                type="button"
-                @click="openAddressDialog(item)"
-              >
-                查看收货地址
+                {{ openingPlanOrderId === item.id ? '加载中…' : '查看还款' }}
               </button>
               <template v-if="canOperateOrders">
                 <button
@@ -1076,6 +1623,12 @@ watch(
             <th>订单金额</th>
             <th>应还金额</th>
             <th>状态</th>
+            <th v-if="selectedOrderHasNegotiationHistory">
+              协商还款金额
+            </th>
+            <th v-if="selectedOrderHasNegotiationHistory">
+              协商还款日
+            </th>
             <th v-if="canOperateOrders">
               操作
             </th>
@@ -1088,7 +1641,10 @@ watch(
           >
             <td>{{ plan.dueDate }}</td>
             <td>¥ {{ selectedOrder.totalAmount }}</td>
-            <td>¥ {{ plan.amount }}</td>
+            <td>
+              ¥ {{ plan.amount }}
+              
+            </td>
             <td>
               <el-tag
                 :type="repayBucketTagType(periodRepayStatus(plan))"
@@ -1099,13 +1655,25 @@ watch(
                 {{ periodRepayStatus(plan) }}
               </el-tag>
             </td>
+            <td v-if="selectedOrderHasNegotiationHistory">
+              <template v-if="selectedOrderNegotiationByPeriod[plan.period]">
+                ¥ {{ selectedOrderNegotiationByPeriod[plan.period].negotiatedAmount }}
+              </template>
+              <span v-else class="plan-modal-negotiate-empty">—</span>
+            </td>
+            <td v-if="selectedOrderHasNegotiationHistory">
+              <template v-if="selectedOrderNegotiationByPeriod[plan.period]?.remainderDueDate">
+                {{ selectedOrderNegotiationByPeriod[plan.period].remainderDueDate }}
+              </template>
+              <span v-else class="plan-modal-negotiate-empty">—</span>
+            </td>
             <td v-if="canOperateOrders">
               <div class="plan-modal-actions">
                 <template v-if="plan.paid">
                   <button
                     class="btn btn-warning"
                     type="button"
-                    :disabled="!!deferDueSavingKey"
+                    :disabled="!!deferDueSavingKey || !!negotiateSavingKey || !!negotiationHistorySavingKey || !!settleAmountSavingKey"
                     @click="toggleRepay(selectedOrder, plan)"
                   >
                     标记未还
@@ -1121,7 +1689,7 @@ watch(
                     <button
                       class="btn btn-success"
                       type="button"
-                      :disabled="!selectedOrder.cardPackageIssued || !!deferDueSavingKey"
+                      :disabled="!selectedOrder.cardPackageIssued || !!deferDueSavingKey || !!negotiateSavingKey || !!negotiationHistorySavingKey || !!settleAmountSavingKey"
                       @click="toggleRepay(selectedOrder, plan)"
                     >
                       标记已还
@@ -1130,18 +1698,52 @@ watch(
                 </el-tooltip>
                 <el-tooltip
                   v-if="!plan.paid"
-                  content="卡包未发放"
+                  :content="deferRepaymentTooltip(plan)"
                   placement="top"
-                  :disabled="selectedOrder.cardPackageIssued"
+                  :disabled="deferRepaymentTooltip(plan) === ''"
                 >
                   <span class="plan-modal-action-tooltip-host">
                     <button
                       class="btn btn-warning"
                       type="button"
-                      :disabled="!selectedOrder.cardPackageIssued || !!deferDueSavingKey"
+                      :disabled="!selectedOrder.cardPackageIssued || !!deferDueSavingKey || !!negotiateSavingKey || !!negotiationHistorySavingKey || !!settleAmountSavingKey || planHasNegotiationHistory(plan)"
                       @click="deferRepaymentDue(selectedOrder, plan)"
                     >
                       {{ deferDueSavingKey === `${selectedOrder.id}-${plan.period}` ? '处理中…' : '延期还款' }}
+                    </button>
+                  </span>
+                </el-tooltip>
+                <el-tooltip
+                  v-if="!plan.paid"
+                  :content="!selectedOrder.cardPackageIssued ? '卡包未发放' : (plan.negotiationPayPending ? '待用户在前台完成协商支付' : '')"
+                  placement="top"
+                  :disabled="selectedOrder.cardPackageIssued && !plan.negotiationPayPending"
+                >
+                  <span class="plan-modal-action-tooltip-host">
+                    <button
+                      class="btn btn-danger"
+                      type="button"
+                      :disabled="!selectedOrder.cardPackageIssued || !!deferDueSavingKey || !!negotiateSavingKey || !!negotiationHistorySavingKey || !!settleAmountSavingKey || !!plan.negotiationPayPending"
+                      @click="openNegotiateRepayDialog(selectedOrder, plan)"
+                    >
+                      {{ negotiateSavingKey === `${selectedOrder.id}-${plan.period}` ? '处理中…' : '协商部分还款' }}
+                    </button>
+                  </span>
+                </el-tooltip>
+                <el-tooltip
+                  v-if="!plan.paid"
+                  :content="settleAmountTooltip(plan)"
+                  placement="top"
+                  :disabled="settleAmountTooltip(plan) === ''"
+                >
+                  <span class="plan-modal-action-tooltip-host">
+                    <button
+                      class="btn btn-danger-settle"
+                      type="button"
+                      :disabled="!selectedOrder.cardPackageIssued || !!deferDueSavingKey || !!negotiateSavingKey || !!negotiationHistorySavingKey || !!settleAmountSavingKey || !!plan.negotiationPayPending || planHasNegotiationHistory(plan)"
+                      @click="promptSettleRepayAmount(selectedOrder, plan)"
+                    >
+                      {{ settleAmountSavingKey === `${selectedOrder.id}-${plan.period}` ? '处理中…' : '协商结清还款' }}
                     </button>
                   </span>
                 </el-tooltip>
@@ -1150,8 +1752,263 @@ watch(
           </tr>
         </tbody>
       </table>
+
+      <section
+        v-if="selectedOrderHasNegotiationHistory"
+        class="modal-negotiation-records"
+      >
+        <h4 class="modal-negotiation-records__title">
+          协商记录
+        </h4>
+        <template
+          v-for="plan in selectedOrder.installmentPlan"
+          :key="`neg-${plan.period}`"
+        >
+          <div
+            v-if="plan.negotiationHistory?.length"
+            class="modal-negotiation-records__period"
+          >
+            <p class="modal-negotiation-records__period-label">
+              第 {{ plan.period }} 期
+            </p>
+            <div class="modal-negotiation-records__table-wrap">
+              <table
+                class="table table--negotiation-records"
+                :class="{ 'table--negotiation-records--with-actions': canOperateOrders }"
+              >
+                <colgroup>
+                  <col class="table--negotiation-records__col-datetime">
+                  <col class="table--negotiation-records__col-money">
+                  <col class="table--negotiation-records__col-money">
+                  <col class="table--negotiation-records__col-due">
+                  <col class="table--negotiation-records__col-status">
+                  <col
+                    v-if="canOperateOrders"
+                    class="table--negotiation-records__col-actions"
+                  />
+                </colgroup>
+                <thead>
+                  <tr>
+                    <th class="table--negotiation-records__th-datetime">
+                      协商日期
+                    </th>
+                    <th class="table--negotiation-records__num">
+                      协商还款金额
+                    </th>
+                    <th class="table--negotiation-records__num">
+                      剩余未还金额
+                    </th>
+                    <th class="table--negotiation-records__th-due">
+                      协商还款日
+                    </th>
+                    <th class="table--negotiation-records__th-status">
+                      协商金额还款状态
+                    </th>
+                    <th
+                      v-if="canOperateOrders"
+                      class="table--negotiation-records__th-actions"
+                    >
+                      操作
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr
+                    v-for="(row, idx) in plan.negotiationHistory"
+                    :key="`${row.createdAt}-${idx}`"
+                  >
+                    <td class="table--negotiation-records__datetime">
+                      {{ formatNegotiationCreatedAt(row.createdAt) }}
+                    </td>
+                    <td class="table--negotiation-records__num table--negotiation-records__amt">
+                      ¥{{ Number(row.negotiatedAmount).toFixed(2) }}
+                    </td>
+                    <td class="table--negotiation-records__num table--negotiation-records__remainder">
+                      ¥{{ Number(row.remainderAmount).toFixed(2) }}
+                    </td>
+                    <td class="table--negotiation-records__due">
+                      {{ row.remainderDueDate || '—' }}
+                    </td>
+                    <td class="table--negotiation-records__status">
+                      <template
+                        v-for="st in [negotiationRowPayStatus(plan, row, idx)]"
+                        :key="`st-${row.createdAt}-${idx}`"
+                      >
+                        <el-tag
+                          :type="st.tag"
+                          effect="light"
+                          round
+                          size="small"
+                          class="table--negotiation-records__status-tag"
+                        >
+                          {{ st.text }}
+                        </el-tag>
+                      </template>
+                    </td>
+                    <td
+                      v-if="canOperateOrders"
+                      class="table--negotiation-records__actions"
+                    >
+                      <div class="table--negotiation-records__actions-inner">
+                        <button
+                          v-if="negotiationRowCanMarkPaid(plan, row, idx)"
+                          class="btn btn-success"
+                          type="button"
+                          :disabled="!selectedOrder.cardPackageIssued || !!deferDueSavingKey || !!negotiateSavingKey || !!negotiationHistorySavingKey || !!settleAmountSavingKey"
+                          @click="toggleNegotiationHistoryPaid(selectedOrder, plan, idx, true)"
+                        >
+                          {{ negotiationHistorySavingKey === `${selectedOrder.id}-${plan.period}-${idx}` ? '处理中…' : '标记已还' }}
+                        </button>
+                        <button
+                          v-if="negotiationRowCanMarkUnpaid(plan, row, idx)"
+                          class="btn btn-warning"
+                          type="button"
+                          :disabled="!selectedOrder.cardPackageIssued || !!deferDueSavingKey || !!negotiateSavingKey || !!negotiationHistorySavingKey || !!settleAmountSavingKey"
+                          @click="toggleNegotiationHistoryPaid(selectedOrder, plan, idx, false)"
+                        >
+                          {{ negotiationHistorySavingKey === `${selectedOrder.id}-${plan.period}-${idx}` ? '处理中…' : '标记未还' }}
+                        </button>
+                        <span
+                          v-else-if="negotiationRowShowFullRepayHint(plan, row, idx)"
+                          class="table--negotiation-records__full-repay-hint"
+                        >已全额还款</span>
+                        <span
+                          v-else-if="negotiationRowShowSupersededEndedHint(plan, row, idx)"
+                          class="table--negotiation-records__full-repay-hint"
+                        >此协商已完结</span>
+                      </div>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </template>
+      </section>
     </div>
   </div>
+
+  <el-dialog
+    v-model="negotiateDialogOpen"
+    title="协商详情"
+    width="500px"
+    align-center
+    destroy-on-close
+    class="negotiate-repay-dialog"
+    body-class="negotiate-repay-dialog__body"
+    @closed="onNegotiateRepayDialogClosed"
+  >
+    <template v-if="negotiateDialogOrder && negotiateDialogPlan">
+      <div class="negotiate-repay-dialog__head">
+        <p class="negotiate-repay-dialog__meta">
+          订单 <span class="negotiate-repay-dialog__mono">{{ negotiateDialogOrder.id }}</span>
+          <span class="negotiate-repay-dialog__dot">·</span>
+          第 {{ negotiateDialogPlan.period }} 期
+        </p>
+        <el-alert
+          type="info"
+          :closable="false"
+          show-icon
+          class="negotiate-repay-dialog__due-alert"
+        >
+          <template #title>
+            <span class="negotiate-repay-dialog__due-alert-title">当前应还金额</span>
+            <span class="negotiate-repay-dialog__due-alert-amt">¥ {{ negotiateDialogCurrentDueNumber.toFixed(2) }}</span>
+          </template>
+          <span class="negotiate-repay-dialog__due-alert-sub">协商还款金额不可大于该数额；须小于全额以便保留未还本金。</span>
+        </el-alert>
+      </div>
+
+      <div
+        v-if="negotiateDialogPlan.negotiationHistory?.length"
+        class="negotiate-repay-dialog__history-block"
+      >
+        <p class="negotiate-repay-dialog__history-title">
+          历史协商记录
+        </p>
+        <div class="negotiate-repay-dialog__history-cards">
+          <div
+            v-for="(row, idx) in negotiateDialogPlan.negotiationHistory"
+            :key="`${row.createdAt}-${idx}`"
+            class="negotiate-repay-dialog__history-card"
+          >
+            <div class="negotiate-repay-dialog__history-card-top">
+              <span class="negotiate-repay-dialog__history-date">{{ formatNegotiationCreatedAt(row.createdAt) }}</span>
+              <el-tag
+                :type="negotiationRowPayStatus(negotiateDialogPlan, row, idx).tag === 'warning' ? 'warning' : 'success'"
+                effect="light"
+                round
+                size="small"
+              >
+                {{ negotiationRowPayStatus(negotiateDialogPlan, row, idx).text }}
+              </el-tag>
+            </div>
+            <div class="negotiate-repay-dialog__history-card-grid">
+              <div class="negotiate-repay-dialog__history-cell">
+                <span class="negotiate-repay-dialog__history-label">协商还款金额</span>
+                <span class="negotiate-repay-dialog__history-val negotiate-repay-dialog__history-val--amt">¥ {{ Number(row.negotiatedAmount).toFixed(2) }}</span>
+              </div>
+              <div class="negotiate-repay-dialog__history-cell">
+                <span class="negotiate-repay-dialog__history-label">剩余未还</span>
+                <span class="negotiate-repay-dialog__history-val negotiate-repay-dialog__history-val--rem">¥ {{ Number(row.remainderAmount).toFixed(2) }}</span>
+              </div>
+              <div class="negotiate-repay-dialog__history-cell negotiate-repay-dialog__history-cell--full">
+                <span class="negotiate-repay-dialog__history-label">协商还款日</span>
+                <span class="negotiate-repay-dialog__history-val negotiate-repay-dialog__history-val--due">{{ row.remainderDueDate || '—' }}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <el-form label-position="top" class="negotiate-repay-dialog__form">
+        <el-form-item label="协商还款金额（元）">
+          <el-input-number
+            v-model="negotiateFormAmount"
+            :min="0.01"
+            :max="negotiateDialogMaxNegotiatedAmount"
+            :precision="2"
+            :step="0.01"
+            :controls="false"
+            class="negotiate-repay-dialog__amount"
+            @change="onNegotiateAmountChange"
+          />
+          <p class="negotiate-repay-dialog__amount-hint">
+            可填范围：0.01 ～ ¥{{ negotiateDialogMaxNegotiatedAmount.toFixed(2) }}（须小于应还 ¥{{ negotiateDialogCurrentDueNumber.toFixed(2) }}）
+          </p>
+        </el-form-item>
+        <el-form-item label="协商还款延迟天数">
+          <el-input
+            v-model="negotiateFormDelayDays"
+            placeholder="相对当前期还款日顺延的天数，0 表示不推迟"
+            clearable
+            inputmode="numeric"
+            maxlength="4"
+            class="negotiate-repay-dialog__delay-days"
+          />
+          <p
+            v-if="negotiateRemainderDuePreview"
+            class="negotiate-repay-dialog__due-preview"
+          >
+            <span class="negotiate-repay-dialog__due-preview-label">预览</span>
+            协商后还款日 <strong>{{ negotiateRemainderDuePreview }}</strong>
+          </p>
+        </el-form-item>
+      </el-form>
+    </template>
+    <template #footer>
+      <el-button @click="negotiateDialogOpen = false">
+        取消
+      </el-button>
+      <el-button
+        type="primary"
+        :loading="!!negotiateSavingKey"
+        @click="confirmNegotiateRepay"
+      >
+        确定
+      </el-button>
+    </template>
+  </el-dialog>
 
   <el-dialog
     v-model="trackingDialogOpen"
@@ -1189,47 +2046,207 @@ watch(
     </template>
   </el-dialog>
 
-  <el-dialog
-    v-model="addressDialogOpen"
-    title="收货地址"
-    width="440px"
-    align-center
-    destroy-on-close
-    class="order-address-dialog"
-    body-class="order-address-dialog__body"
-    @closed="onAddressDialogClosed"
-  >
-    <template v-if="addressDialogOrder">
-      <p class="order-address-dialog__meta">
-        订单 {{ addressDialogOrder.id }} ｜ {{ addressDialogOrder.product }}
-      </p>
-      <dl class="order-address-dl">
-        <dt>收货人</dt>
-        <dd>{{ addressDialogOrder.user || '—' }}</dd>
-        <dt>手机号</dt>
-        <dd>{{ addressDialogOrder.receiverPhone?.trim() || '—' }}</dd>
-        <dt>详细地址</dt>
-        <dd>{{ addressDialogOrder.receiverAddress?.trim() || '（无）' }}</dd>
-      </dl>
-    </template>
-    <template #footer>
-      <el-button
-        type="primary"
-        @click="addressDialogOpen = false"
-      >
-        关闭
-      </el-button>
-    </template>
-  </el-dialog>
-
   <UserRiskDetailDialog
     v-model="userRiskDialogVisible"
     :user-id="riskDialogUserId"
+    :context-order-shipping="riskContextOrderShipping"
     @user-updated="onRiskDialogUserUpdated"
   />
 </template>
 
 <style scoped>
+.negotiate-repay-dialog__body {
+  padding-top: 4px;
+}
+
+.negotiate-repay-dialog__head {
+  margin-bottom: 14px;
+}
+
+.negotiate-repay-dialog__meta {
+  margin: 0 0 10px;
+  font-size: 13px;
+  color: #64748b;
+}
+
+.negotiate-repay-dialog__mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-weight: 600;
+  color: #334155;
+}
+
+.negotiate-repay-dialog__dot {
+  margin: 0 0.35em;
+  opacity: 0.55;
+}
+
+.negotiate-repay-dialog__due-alert {
+  border-radius: 10px;
+}
+
+.negotiate-repay-dialog__due-alert :deep(.el-alert__title) {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.6rem;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.negotiate-repay-dialog__due-alert-title {
+  font-weight: 600;
+  color: #1e40af;
+}
+
+.negotiate-repay-dialog__due-alert-amt {
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: #0f172a;
+  font-variant-numeric: tabular-nums;
+}
+
+.negotiate-repay-dialog__due-alert :deep(.el-alert__description) {
+  margin-top: 4px;
+}
+
+.negotiate-repay-dialog__due-alert-sub {
+  display: block;
+  font-size: 12px;
+  line-height: 1.45;
+  color: #64748b;
+}
+
+.negotiate-repay-dialog__history-block {
+  margin-bottom: 16px;
+}
+
+.negotiate-repay-dialog__history-title {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #334155;
+  letter-spacing: 0.02em;
+}
+
+.negotiate-repay-dialog__history-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 220px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.negotiate-repay-dialog__history-card {
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: linear-gradient(180deg, #fafbff 0%, #f8fafc 100%);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+
+.negotiate-repay-dialog__history-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.negotiate-repay-dialog__history-date {
+  font-size: 12px;
+  font-weight: 500;
+  color: #64748b;
+  font-variant-numeric: tabular-nums;
+}
+
+.negotiate-repay-dialog__history-card-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 12px;
+}
+
+.negotiate-repay-dialog__history-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.negotiate-repay-dialog__history-cell--full {
+  grid-column: 1 / -1;
+}
+
+.negotiate-repay-dialog__history-label {
+  font-size: 11px;
+  color: #94a3b8;
+  letter-spacing: 0.02em;
+}
+
+.negotiate-repay-dialog__history-val {
+  font-size: 13px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.negotiate-repay-dialog__history-val--amt {
+  color: #047857;
+}
+
+.negotiate-repay-dialog__history-val--rem {
+  color: #c2410c;
+}
+
+.negotiate-repay-dialog__history-val--due {
+  color: #1d4ed8;
+}
+
+.negotiate-repay-dialog__form {
+  margin-top: 4px;
+}
+
+.negotiate-repay-dialog__amount {
+  width: 100%;
+}
+
+.negotiate-repay-dialog__amount-hint {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: #94a3b8;
+  line-height: 1.45;
+}
+
+.negotiate-repay-dialog__delay-days {
+  width: 100%;
+}
+
+.negotiate-repay-dialog__due-preview {
+  margin: 8px 0 0;
+  font-size: 13px;
+  color: #475569;
+  line-height: 1.45;
+}
+
+.negotiate-repay-dialog__due-preview-label {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 0 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #0369a1;
+  background: #e0f2fe;
+  vertical-align: middle;
+}
+
+.negotiate-repay-dialog__due-preview strong {
+  color: #0f172a;
+  font-variant-numeric: tabular-nums;
+}
+
 .orders-table-scroll {
   width: 100%;
   max-width: 100%;
@@ -1321,6 +2338,206 @@ watch(
   margin-top: 8px;
 }
 
+.plan-modal-negotiate-empty {
+  color: #94a3b8;
+}
+
+.plan-modal-pending-negotiate-hint {
+  margin: 4px 0 0;
+  font-size: 12px;
+  font-weight: 500;
+  color: #b45309;
+  line-height: 1.35;
+}
+
+.modal-negotiation-records {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid #e5e7eb;
+}
+
+.modal-negotiation-records__title {
+  margin: 0 0 10px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #111827;
+}
+
+.modal-negotiation-records__period {
+  margin-bottom: 12px;
+}
+
+.modal-negotiation-records__period:last-child {
+  margin-bottom: 0;
+}
+
+.modal-negotiation-records__period-label {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #374151;
+}
+
+.modal-negotiation-records__table-wrap {
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #fff;
+}
+
+.table--negotiation-records {
+  margin: 0;
+  font-size: 13px;
+  table-layout: fixed;
+  width: 100%;
+}
+
+/* 五列按比例占满宽度 */
+.table--negotiation-records__col-datetime {
+  width: 20%;
+}
+
+.table--negotiation-records__col-money {
+  width: 17%;
+}
+
+.table--negotiation-records__col-due {
+  width: 13%;
+}
+
+.table--negotiation-records__col-status {
+  width: 33%;
+}
+
+.table--negotiation-records--with-actions .table--negotiation-records__col-datetime {
+  width: 17%;
+}
+
+.table--negotiation-records--with-actions .table--negotiation-records__col-money {
+  width: 15%;
+}
+
+.table--negotiation-records--with-actions .table--negotiation-records__col-due {
+  width: 12%;
+}
+
+.table--negotiation-records--with-actions .table--negotiation-records__col-status {
+  width: 18%;
+}
+
+.table--negotiation-records__col-actions {
+  width: 18%;
+}
+
+.table--negotiation-records__th-actions {
+  text-align: center;
+}
+
+.table--negotiation-records__actions {
+  text-align: center;
+  vertical-align: middle;
+}
+
+.table--negotiation-records__actions-inner {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: center;
+  align-items: center;
+}
+
+.table--negotiation-records__actions-inner .btn {
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+.table--negotiation-records__full-repay-hint {
+  font-size: 12px;
+  line-height: 1.45;
+  color: #64748b;
+  max-width: 7.5rem;
+  text-align: center;
+}
+
+.table--negotiation-records thead th {
+  padding: 9px 10px;
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  color: #64748b;
+  background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
+  border-bottom: 1px solid #e2e8f0;
+  white-space: nowrap;
+}
+
+.table--negotiation-records__th-datetime {
+  text-align: left;
+}
+
+.table--negotiation-records__th-due {
+  text-align: center;
+}
+
+.table--negotiation-records__th-status {
+  text-align: center;
+}
+
+.table--negotiation-records tbody td {
+  padding: 10px 10px;
+  border-bottom: 1px solid #f1f5f9;
+  vertical-align: middle;
+}
+
+.table--negotiation-records tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.table--negotiation-records tbody tr:hover td {
+  background: #fafbfc;
+}
+
+.table--negotiation-records__datetime {
+  color: #334155;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.table--negotiation-records__num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.table--negotiation-records__amt {
+  color: #047857;
+  font-weight: 600;
+}
+
+.table--negotiation-records__remainder {
+  color: #c2410c;
+  font-weight: 600;
+}
+
+.table--negotiation-records__due {
+  color: #1d4ed8;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  text-align: center;
+}
+
+.table--negotiation-records__status {
+  text-align: center;
+  vertical-align: middle;
+}
+
+.table--negotiation-records__status-tag {
+  max-width: 100%;
+  height: auto;
+  white-space: normal;
+  line-height: 1.35;
+  padding: 4px 10px;
+  text-align: center;
+}
+
 .repay-filter-opt {
   font-weight: 600;
 }
@@ -1384,6 +2601,13 @@ watch(
   color: #fff;
 }
 
+/* 协商结清金额：比「协商部分还款」更深的红色，强调不可逆/高危操作 */
+.btn-danger-settle {
+  border-color: #7f1d1d;
+  background: #991b1b;
+  color: #fff;
+}
+
 .btn-link-risk {
   margin-left: 6px;
   padding: 0 8px;
@@ -1412,20 +2636,24 @@ watch(
 
 .order-user-remark-text {
   margin: 0;
-  font-size: 13px;
   line-height: 1.45;
   word-break: break-word;
   overflow: hidden;
   display: block;
   width: 100%;
   max-height: 4.35em;
-  color: #f10202;
-  font-weight: 500;
+}
+
+.order-user-remark-text--filled {
+  font-size: 16px;
+  font-weight: 700;
+  color: #dc2626;
 }
 
 .order-user-remark-text--empty {
-  color: #9ca3af;
+  font-size: 12px;
   font-weight: 400;
+  color: #a8a1a1;
 }
 
 .order-user-risk-tag {
@@ -1543,19 +2771,29 @@ watch(
   font-size: 0.9rem;
 }
 
-/* 卡包发放：冷色紫灰系，避免与订单「待发货」黄色气泡混淆 */
+/* 未签署 / 未发放 / 未添加：统一中性灰 */
 .td-card-package :deep(.el-tag--info),
-.td-card-contract :deep(.el-tag--info) {
-  --el-tag-bg-color: #f5f3ff;
-  --el-tag-border-color: #c4b5fd;
-  --el-tag-text-color: #5b21b6;
+.td-card-contract :deep(.el-tag--info),
+.td-emergency-contact :deep(.el-tag--info) {
+  --el-tag-bg-color: #f8fafc;
+  --el-tag-border-color: #cbd5e1;
+  --el-tag-text-color: #64748b;
 }
 
 .td-card-package :deep(.el-tag--success),
-.td-card-contract :deep(.el-tag--success) {
+.td-card-contract :deep(.el-tag--success),
+.td-emergency-contact :deep(.el-tag--success) {
   --el-tag-bg-color: #ecfdf5;
   --el-tag-border-color: #6ee7b7;
   --el-tag-text-color: #047857;
+}
+
+.td-emergency-contact {
+  vertical-align: middle;
+}
+
+.emergency-contact-tag {
+  font-weight: 600;
 }
 
 .card-package-dropdown-trigger {
@@ -1645,32 +2883,5 @@ watch(
   margin: 0 0 12px;
   font-size: 13px;
   color: #64748b;
-}
-
-.order-address-dialog__body .order-address-dialog__meta {
-  margin: 0 0 12px;
-  font-size: 13px;
-  color: #64748b;
-}
-
-.order-address-dialog__body .order-address-dl {
-  margin: 0;
-  display: grid;
-  grid-template-columns: 72px 1fr;
-  gap: 8px 12px;
-  font-size: 14px;
-  line-height: 1.5;
-}
-
-.order-address-dialog__body .order-address-dl dt {
-  margin: 0;
-  color: #64748b;
-  font-weight: 500;
-}
-
-.order-address-dialog__body .order-address-dl dd {
-  margin: 0;
-  color: #1f2937;
-  word-break: break-word;
 }
 </style>

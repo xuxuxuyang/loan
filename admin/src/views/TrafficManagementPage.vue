@@ -366,22 +366,6 @@ onMounted(() => {
 <template>
   <div class="panel traffic-page">
     <el-alert
-      type="info"
-      :closable="false"
-      show-icon
-      class="traffic-alert"
-    >
-      <template #title>
-        <span class="traffic-alert__title">使用说明</span>
-      </template>
-      <p class="traffic-alert__body">
-        创建渠道后填写<strong>名称</strong>（将写入注册用户档案并在「注册用户」列表<strong>注册渠道</strong>列展示）。把专属链接发给合作方，用户通过
-        <code class="traffic-code">?channel=渠道标识</code>
-        进入 H5 后完成注册即计入该渠道；未在后台配置或已停用的标识不会写入用户。
-      </p>
-    </el-alert>
-
-    <el-alert
       v-if="showH5OriginDevHint"
       type="warning"
       :closable="false"
@@ -610,8 +594,8 @@ onMounted(() => {
                 </span>
                 <span
                   class="remark-cell__text remark-preview"
-                  :class="{ 'remark-preview--empty': !row.remark?.trim() }"
-                >{{ row.remark?.trim() ? row.remark : '—' }}</span>
+                  :class="row.remark?.trim() ? 'remark-preview--filled' : 'remark-preview--empty'"
+                >{{ row.remark?.trim() ? row.remark : '暂无备注' }}</span>
               </span>
             </el-button>
           </template>
@@ -819,7 +803,7 @@ onMounted(() => {
         :rows="4"
         maxlength="200"
         show-word-limit
-        placeholder="选填，仅后台可见"
+        placeholder="请输入添加备注"
         :disabled="remarkSaving"
       />
       <template #footer>
@@ -1066,8 +1050,6 @@ onMounted(() => {
 
 .remark-preview {
   margin: 0;
-  font-size: 13px;
-  color: #f10202;
   line-height: 1.45;
   max-height: 4.35em;
   overflow: hidden;
@@ -1078,8 +1060,16 @@ onMounted(() => {
   word-break: break-word;
 }
 
+.remark-preview--filled {
+  font-size: 16px;
+  font-weight: 700;
+  color: #dc2626;
+}
+
 .remark-preview--empty {
-  color: #000;
+  font-size: 12px;
+  font-weight: 400;
+  color: #a8a1a1;
 }
 
 .remark-cell {

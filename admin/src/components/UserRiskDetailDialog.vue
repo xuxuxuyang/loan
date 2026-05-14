@@ -3,8 +3,8 @@ import { CircleCheck, CircleClose, DataAnalysis, Minus } from '@element-plus/ico
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { computed, ref, watch } from 'vue'
 import { withAdminAuthHeaders } from '../composables/useAdminApi'
-import { getAdminSession } from '../composables/useAdminAuth'
-import UserRegistrationInfoScroll from './UserRegistrationInfoScroll.vue'
+import { getAdminSession, isSuperAdminRole } from '../composables/useAdminAuth'
+import UserRegistrationInfoScroll, { type OrderShippingSnapshot } from './UserRegistrationInfoScroll.vue'
 import {
   INSTALLMENT_ORDER_RISK_STEP_KEYS,
   INSTALLMENT_ORDER_RISK_STEP_LABELS,
@@ -131,6 +131,8 @@ export interface UserItem {
   registerChannelCode?: string
   registerChannelName?: string
   registerChannelLabel?: string
+  /** 两位紧急联系人 */
+  emergencyContacts?: Array<{ name: string, phone: string }>
 }
 
 interface ApiUserItem {
@@ -155,6 +157,7 @@ interface ApiUserItem {
   registerChannelCode?: string
   registerChannelName?: string
   registerChannelLabel?: string
+  emergencyContacts?: Array<{ name?: string, phone?: string }>
 }
 
 const MALL_API_BASE = `${(import.meta.env.VITE_MALL_API_BASE || 'http://localhost:3110/api').replace(/\/$/, '')}`
@@ -164,6 +167,11 @@ const props = withDefaults(defineProps<{
   userId: string | null
   /** 为 true 时隐藏「基本信息」页签（仅保留下单七项、雷达风控），并默认打开下单七项。 */
   hideBasicInfoTab?: boolean
+  /**
+   * 从订单列表打开时传入该单收货人姓名、电话、地址，在用户注册信息中展示收货区块；
+   * 不传则不展示该区块。
+   */
+  contextOrderShipping?: OrderShippingSnapshot | null
 }>(), {
   hideBasicInfoTab: false,
 })
@@ -323,7 +331,7 @@ function displayCreditFromSnapshotBasic(snapshot: UserRiskSnapshot | null): Disp
   return '良好'
 }
 
-const riskBasicCanSeePasswordRow = computed(() => getAdminSession()?.role === 'super_admin')
+const riskBasicCanSeePasswordRow = computed(() => isSuperAdminRole(getAdminSession()?.role))
 
 function truncateText(s: string, max: number) {
   if (s.length <= max) {
@@ -658,6 +666,15 @@ function mapApiUser(user: ApiUserItem): UserItem {
     registerChannelName: typeof user.registerChannelName === 'string' ? user.registerChannelName.trim() : undefined,
     registerChannelLabel: typeof user.registerChannelLabel === 'string' ? user.registerChannelLabel.trim() : undefined,
     adminRemark: typeof user.adminRemark === 'string' ? user.adminRemark : undefined,
+    emergencyContacts: Array.isArray(user.emergencyContacts)
+      ? user.emergencyContacts
+        .map(x => ({
+          name: String(x?.name || '').trim(),
+          phone: String(x?.phone || '').trim().replace(/\D/g, ''),
+        }))
+        .filter(x => x.name && /^1\d{10}$/.test(x.phone))
+        .slice(0, 2)
+      : [],
   }
 }
 
@@ -746,6 +763,7 @@ function handleUserRiskDialogClosed() {
               :user="selectedUserForRisk"
               :snapshot="userRiskSnapshot"
               :can-manage-users="riskBasicCanSeePasswordRow"
+              :order-shipping-snapshot="contextOrderShipping"
               @close="dialogVisible = false"
             />
           </div>
@@ -812,9 +830,6 @@ function handleUserRiskDialogClosed() {
                   一键查询七项
                 </el-button>
               </div>
-              <p class="user-risk-simple-hint">
-                库内档案；单条可「手动查询」刷新。全景雷达见「雷达风控」页签。七项以多列卡片展示，便于一屏浏览。
-              </p>
               <div
                 class="user-risk-order7-grid"
                 role="list"

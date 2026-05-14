@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, useId } from 'vue'
 import type { AdminRole } from '../composables/useAdminAuth'
+import { isSuperAdminRole } from '../composables/useAdminAuth'
 
 const props = withDefaults(
   defineProps<{
@@ -12,7 +13,7 @@ const props = withDefaults(
 
 const uid = useId().replace(/[^a-zA-Z0-9_-]/g, '')
 
-const isBoss = computed(() => props.role === 'super_admin')
+const isBoss = computed(() => isSuperAdminRole(props.role))
 
 const ariaLabel = computed(() =>
   isBoss.value ? '超级管理员（老板）动画头像' : '员工动画头像',

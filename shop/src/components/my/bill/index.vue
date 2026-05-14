@@ -44,12 +44,18 @@ function displayAmount(amount: number) {
 }
 
 function billStatusClass(status: string) {
+  if (status === '审核中') {
+    return 'border-[#93c5fd] bg-[#eff6ff] text-[#1d4ed8]'
+  }
   return status === '待还款'
     ? 'border-[#f4c66a] bg-[#fff7e8] text-[#b7791f]'
     : 'border-[#9fd8b9] bg-[#edf9f1] text-[#1f8a4c]'
 }
 
 function billStatusDotClass(status: string) {
+  if (status === '审核中') {
+    return 'bg-[#3b82f6]'
+  }
   return status === '待还款'
     ? 'bg-[#f59e0b]'
     : 'bg-[#22a35a]'
@@ -83,7 +89,7 @@ const groupedBills = computed(() => {
   }>()
 
   billList.value.forEach((item) => {
-    const orderId = extractOrderId(item.title)
+    const orderId = String(item.orderId || extractOrderId(item.title) || '').trim()
     const key = orderId || `bill-${item.id}`
     const group = groups.get(key) || {
       key,
@@ -95,7 +101,9 @@ const groupedBills = computed(() => {
     }
     group.records.push({
       ...item,
-      period: extractPeriod(item.title),
+      period: Number.isFinite(Number(item.period)) && Number(item.period) > 0
+        ? Number(item.period)
+        : extractPeriod(item.title),
     })
     if (item.status === '待还款') {
       group.pendingCount += 1

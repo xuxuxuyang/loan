@@ -626,7 +626,7 @@ onUnmounted(() => {
 
 .cs-session-preview {
   font-size: 12px;
-  color: #6b7280;
+  color: #a8a1a1;
   margin-top: 2px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -685,7 +685,7 @@ onUnmounted(() => {
 
 .cs-status-pill.is-offline {
   background: #f3f4f6;
-  color: #6b7280;
+  color: #a8a1a1;
 }
 
 .cs-chat-sub {

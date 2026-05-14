@@ -104,17 +104,22 @@ interface KpiCard {
   tone: Tone
 }
 
-/** 第一行、第二行指标均为「卡包已发放」订单维度 */
-const row1Cards = computed<KpiCard[]>(() => {
+/** 财务报表：1+3 两行一组，关键指标独占首列（与下方三卡同宽同高） */
+const kpiLeadTotal = computed<KpiCard>(() => {
+  const k = kpis.value
+  const scope = '【卡包已发放】'
+  return {
+    label: '成交总额',
+    value: fmtYuan(k.totalSales),
+    hint: `${scope}订单的成交金额合计`,
+    tone: 'greenSpring',
+  }
+})
+
+const kpiPrincipalRow = computed<KpiCard[]>(() => {
   const k = kpis.value
   const scope = '【卡包已发放】'
   return [
-    {
-      label: '成交总额',
-      value: fmtYuan(k.totalSales),
-      hint: `${scope}订单的成交金额合计`,
-      tone: 'greenSpring',
-    },
     {
       label: '成交本金',
       value: fmtYuan(k.totalPrincipal),
@@ -124,7 +129,7 @@ const row1Cards = computed<KpiCard[]>(() => {
     {
       label: '待收金额',
       value: fmtYuan(k.receivableAmount),
-      hint: `${scope}未还应还分期金额合计`,
+      hint: `${scope}未还应还先享后付金额合计`,
       tone: 'teal',
     },
     {
@@ -136,16 +141,21 @@ const row1Cards = computed<KpiCard[]>(() => {
   ]
 })
 
-const row2Cards = computed<KpiCard[]>(() => {
+const kpiLeadOrderCount = computed<KpiCard>(() => {
+  const k = kpis.value
+  const scope = '【卡包已发放】'
+  return {
+    label: '订单数',
+    value: String(k.orderCount),
+    hint: `${scope}订单数`,
+    tone: 'greenForest',
+  }
+})
+
+const kpiOverdueRow = computed<KpiCard[]>(() => {
   const k = kpis.value
   const scope = '【卡包已发放】'
   return [
-    {
-      label: '订单数',
-      value: String(k.orderCount),
-      hint: `${scope}订单数`,
-      tone: 'greenForest',
-    },
     {
       label: '逾期订单数',
       value: String(k.overdueOrderCount),
@@ -203,11 +213,31 @@ onMounted(() => {
       </el-button>
     </div>
 
-    <div class="kpi-rows">
-      <div class="kpi-row">
+    <div class="kpi-board">
+      <div class="kpi-board-row kpi-board-row--lead">
         <div
-          v-for="(card, idx) in row1Cards"
-          :key="`r1-${idx}`"
+          class="kpi-card kpi-card--lead-slot"
+          :class="`kpi-card--${kpiLeadTotal.tone}`"
+        >
+          <p class="kpi-label">
+            {{ kpiLeadTotal.label }}
+          </p>
+          <div class="kpi-rule" />
+          <p class="kpi-value">
+            {{ kpiLeadTotal.value }}
+          </p>
+          <p
+            v-if="kpiLeadTotal.hint"
+            class="kpi-hint"
+          >
+            {{ kpiLeadTotal.hint }}
+          </p>
+        </div>
+      </div>
+      <div class="kpi-board-row kpi-board-row--three">
+        <div
+          v-for="(card, idx) in kpiPrincipalRow"
+          :key="`principal-${idx}`"
           class="kpi-card"
           :class="`kpi-card--${card.tone}`"
         >
@@ -226,10 +256,30 @@ onMounted(() => {
           </p>
         </div>
       </div>
-      <div class="kpi-row">
+      <div class="kpi-board-row kpi-board-row--lead">
         <div
-          v-for="(card, idx) in row2Cards"
-          :key="`r2-${idx}`"
+          class="kpi-card kpi-card--lead-slot"
+          :class="`kpi-card--${kpiLeadOrderCount.tone}`"
+        >
+          <p class="kpi-label">
+            {{ kpiLeadOrderCount.label }}
+          </p>
+          <div class="kpi-rule" />
+          <p class="kpi-value">
+            {{ kpiLeadOrderCount.value }}
+          </p>
+          <p
+            v-if="kpiLeadOrderCount.hint"
+            class="kpi-hint"
+          >
+            {{ kpiLeadOrderCount.hint }}
+          </p>
+        </div>
+      </div>
+      <div class="kpi-board-row kpi-board-row--three">
+        <div
+          v-for="(card, idx) in kpiOverdueRow"
+          :key="`overdue-${idx}`"
           class="kpi-card"
           :class="`kpi-card--${card.tone}`"
         >
@@ -279,26 +329,32 @@ onMounted(() => {
   color: var(--el-text-color-primary);
 }
 
-.kpi-rows {
+.kpi-board {
   flex: 1;
   display: flex;
   flex-direction: column;
-  gap: 16px;
-  align-content: start;
+  gap: 18px;
 }
 
-.kpi-row {
+.kpi-board-row {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 14px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 18px;
+  align-items: stretch;
+  grid-auto-rows: minmax(228px, auto);
+}
+
+.kpi-board-row--lead .kpi-card--lead-slot {
+  grid-column: 1;
 }
 
 .kpi-card {
-  border-radius: 12px;
-  padding: 22px 18px 18px;
-  min-height: 168px;
+  box-sizing: border-box;
+  border-radius: 14px;
+  padding: 28px 22px 22px;
+  min-height: 228px;
   color: #fff;
-  box-shadow: 0 2px 10px rgba(15, 23, 42, 0.12);
+  box-shadow: 0 4px 18px rgba(15, 23, 42, 0.14);
   display: flex;
   flex-direction: column;
   position: relative;
@@ -306,8 +362,8 @@ onMounted(() => {
 
 .kpi-label {
   margin: 0;
-  font-size: 14px;
-  font-weight: 500;
+  font-size: 16px;
+  font-weight: 600;
   opacity: 0.95;
   line-height: 1.35;
 }
@@ -315,24 +371,26 @@ onMounted(() => {
 .kpi-rule {
   height: 1px;
   background: rgba(255, 255, 255, 0.35);
-  margin: 14px 0 10px;
+  margin: 16px 0 12px;
 }
 
 .kpi-value {
   margin: 0;
-  font-size: 1.55rem;
+  font-size: 2rem;
   font-weight: 700;
   letter-spacing: 0.02em;
   font-variant-numeric: tabular-nums;
-  line-height: 1.25;
+  line-height: 1.2;
   word-break: break-all;
 }
 
 .kpi-hint {
-  margin: 12px 0 0;
-  font-size: 12px;
-  opacity: 0.82;
-  line-height: 1.4;
+  margin-top: auto;
+  margin-bottom: 0;
+  padding-top: 14px;
+  font-size: 13px;
+  opacity: 0.86;
+  line-height: 1.45;
 }
 
 /* 语义色：绿/橙/红各系内深浅区分 */
@@ -375,8 +433,16 @@ onMounted(() => {
 }
 
 @media (max-width: 900px) {
-  .kpi-row {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+  .kpi-board-row {
+    grid-template-columns: 1fr;
+  }
+
+  .kpi-board-row--lead .kpi-card--lead-slot {
+    grid-column: auto;
+  }
+
+  .kpi-value {
+    font-size: 1.65rem;
   }
 }
 </style>

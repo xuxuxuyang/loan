@@ -42,11 +42,13 @@ declare global {
   const isReadonly: typeof import('vue').isReadonly
   const isRef: typeof import('vue').isRef
   const isShallow: typeof import('vue').isShallow
+  const mallOrderBelongsToLoggedIn: typeof import('./composables/useMallOrders').mallOrderBelongsToLoggedIn
   const markRaw: typeof import('vue').markRaw
   const nextTick: typeof import('vue').nextTick
   const normalizeApiProduct: typeof import('./composables/useTeaProducts').normalizeApiProduct
   const normalizeMallAccount: typeof import('./composables/useMallAuth').normalizeMallAccount
   const normalizeOrderTrackingNumber: typeof import('./composables/useMallOrders').normalizeOrderTrackingNumber
+  const normalizeReceiverPhoneDigits: typeof import('./composables/useMallOrders').normalizeReceiverPhoneDigits
   const onActivated: typeof import('vue').onActivated
   const onBeforeMount: typeof import('vue').onBeforeMount
   const onBeforeRouteLeave: typeof import('vue-router').onBeforeRouteLeave
@@ -123,7 +125,7 @@ declare global {
   export type { CsChatMessage, CsOpenPayload } from './composables/useMallCsChat'
   import('./composables/useMallCsChat')
   // @ts-ignore
-  export type { MallMySummary, MallAddressItem, MallAddressPayload, MallBankCardItem, MallBillItem, MallBillSummary } from './composables/useMallMy'
+  export type { MallMySummary, MallAddressItem, MallAddressPayload, MallBankCardItem, MallBillNegotiationEntry, MallNegotiationPayPending, MallBillItem, MallRepayPayload, MallRepayNegotiatedPayload, MallBillSummary } from './composables/useMallMy'
   import('./composables/useMallMy')
   // @ts-ignore
   export type { MallOrderStatus, MallPayType, MallPayChannel, MallOrder, SimulatedLogisticsNode } from './composables/useMallOrders'
@@ -174,11 +176,13 @@ declare module 'vue' {
     readonly isReadonly: UnwrapRef<typeof import('vue')['isReadonly']>
     readonly isRef: UnwrapRef<typeof import('vue')['isRef']>
     readonly isShallow: UnwrapRef<typeof import('vue')['isShallow']>
+    readonly mallOrderBelongsToLoggedIn: UnwrapRef<typeof import('./composables/useMallOrders')['mallOrderBelongsToLoggedIn']>
     readonly markRaw: UnwrapRef<typeof import('vue')['markRaw']>
     readonly nextTick: UnwrapRef<typeof import('vue')['nextTick']>
     readonly normalizeApiProduct: UnwrapRef<typeof import('./composables/useTeaProducts')['normalizeApiProduct']>
     readonly normalizeMallAccount: UnwrapRef<typeof import('./composables/useMallAuth')['normalizeMallAccount']>
     readonly normalizeOrderTrackingNumber: UnwrapRef<typeof import('./composables/useMallOrders')['normalizeOrderTrackingNumber']>
+    readonly normalizeReceiverPhoneDigits: UnwrapRef<typeof import('./composables/useMallOrders')['normalizeReceiverPhoneDigits']>
     readonly onActivated: UnwrapRef<typeof import('vue')['onActivated']>
     readonly onBeforeMount: UnwrapRef<typeof import('vue')['onBeforeMount']>
     readonly onBeforeRouteLeave: UnwrapRef<typeof import('vue-router')['onBeforeRouteLeave']>

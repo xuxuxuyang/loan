@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" fill="none" role="img" aria-labelledby="mallAvatarTitle">
+  <title id="mallAvatarTitle">????????</title>
+  <defs>
+    <linearGradient id="mallAvBg" x1="18" y1="12" x2="82" y2="88" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#fff8fa"/>
+      <stop offset="0.45" stop-color="#f0f6fa"/>
+      <stop offset="1" stop-color="#e8f2f5"/>
+    </linearGradient>
+    <linearGradient id="mallAvSil" x1="48" y1="22" x2="48" y2="94" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#ffc4d4"/>
+      <stop offset="0.55" stop-color="#f47296"/>
+      <stop offset="1" stop-color="#e85a7a"/>
+    </linearGradient>
+  </defs>
+  <circle cx="48" cy="48" r="48" fill="url(#mallAvBg)"/>
+  <circle cx="48" cy="38" r="18" fill="url(#mallAvSil)"/>
+  <path fill="url(#mallAvSil)" d="M14 96V88c0-16.6 15.2-30 34-30s34 13.4 34 30v8H14z"/>
+  <ellipse cx="40" cy="34" rx="5" ry="4" fill="#fff" opacity="0.32"/>
+</svg>

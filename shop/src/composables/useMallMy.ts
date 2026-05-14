@@ -42,17 +42,52 @@ export interface MallBankCardItem {
   createdAt?: string
 }
 
+export interface MallBillNegotiationEntry {
+  negotiatedAmount: number
+  remainderAmount: number
+  remainderDueDate: string
+  /** 登记协商的时间（ISO），用于展示「协商日期」 */
+  createdAt: string
+  /** 用户完成前台「协商支付」的时间（ISO） */
+  userPaidAt?: string
+}
+
+export interface MallNegotiationPayPending {
+  negotiatedAmount: number
+  remainderAmount: number
+  remainderDueDate: string
+  createdAt: string
+}
+
 export interface MallBillItem {
-  id: number
+  /** 稳定键，格式 `orderId:period` 或 `orderId:period:negotiation` */
+  id: string
+  orderId: string
+  period: number
   userPhone: string
   title: string
   amount: number
   time: string
   status: string
+  /** 对账单汇总去重：`negotiation` 与对应分期行金额一致，仅用于展示 */
+  billKind?: 'installment' | 'negotiation'
+  /** 最近一条协商中登记的「协商还款金额」（旧接口协商行；新接口见 negotiationHistory） */
+  negotiatedAmount?: number
+  /** 该期多次协商的完整记录（与后台 installmentPlan.negotiationHistory 一致） */
+  negotiationHistory?: MallBillNegotiationEntry[]
+  /** 后台协商后待用户完成「协商支付」的款项；支付成功后顶部待还金额才会按剩余本金更新 */
+  negotiationPayPending?: MallNegotiationPayPending
 }
 
+export type MallRepayPayload = { orderId: string, period: number } | { all: true }
+
+export type MallRepayNegotiatedPayload = { orderId: string, period: number }
+
 export interface MallBillSummary {
+  /** 本月到期应还（与列表「到期日所在月」筛选一致） */
   shouldRepay: number
+  /** 全部待还期次合计（与列表、一键还款扣款范围一致） */
+  totalPending: number
   availableQuota: number
   billDate: string
   minRepayment: number
@@ -193,6 +228,7 @@ export function useMallMy() {
   const cardPackages = useState<MallCardPackageDTO[]>('mall-my-card-packages', () => [])
   const billSummary = useState<MallBillSummary>('mall-my-bill-summary', () => ({
     shouldRepay: 0,
+    totalPending: 0,
     availableQuota: 0,
     billDate: '每月 08 日',
     minRepayment: 0,
@@ -209,7 +245,11 @@ export function useMallMy() {
       method: 'GET',
       query: { phone },
     })
-    summary.value = response.data || emptySummary()
+    const raw = response.data || emptySummary()
+    summary.value = {
+      ...raw,
+      billPendingAmount: Number(Number(raw.billPendingAmount ?? 0).toFixed(2)),
+    }
     return summary.value
   }
 
@@ -334,6 +374,20 @@ export function useMallMy() {
     )
   }
 
+  const saveMallEmergencyContacts = async (
+    account: string,
+    contacts: Array<{ name: string, phone: string }>,
+  ) => {
+    const phone = normalizeMallAccount(account)
+    if (!/^1\d{10}$/.test(phone)) {
+      throw new Error('请先登录')
+    }
+    return await $fetch<{ success: boolean, data: { user?: Record<string, unknown> } }>(
+      `${resolveMallApiBase()}/mall/me/emergency-contacts`,
+      { method: 'POST', query: { phone }, body: { contacts } },
+    )
+  }
+
   const fetchAddresses = async (account: string) => {
     const phone = normalizeMallAccount(account)
     if (!/^1\d{10}$/.test(phone)) {
@@ -417,11 +471,13 @@ export function useMallMy() {
     if (!/^1\d{10}$/.test(phone)) {
       billSummary.value = {
         shouldRepay: 0,
+        totalPending: 0,
         availableQuota: 0,
         billDate: '每月 08 日',
         minRepayment: 0,
       }
       bills.value = []
+      summary.value = { ...summary.value, billPendingAmount: 0 }
       return {
         summary: billSummary.value,
         list: bills.value,
@@ -433,12 +489,45 @@ export function useMallMy() {
     })
     billSummary.value = response?.data?.summary || {
       shouldRepay: 0,
+      totalPending: 0,
       availableQuota: 0,
       billDate: '每月 08 日',
       minRepayment: 0,
     }
     bills.value = Array.isArray(response?.data?.list) ? response.data.list : []
+    const tp = Number(Number(billSummary.value.totalPending ?? billSummary.value.shouldRepay ?? 0).toFixed(2))
+    summary.value = { ...summary.value, billPendingAmount: tp }
     return response.data
+  }
+
+  /** 用户端协商支付：支付后台登记的协商还款金额后，再落库剩余应还本金（成功后 fetchBills 更新界面） */
+  const repayNegotiatedBills = async (account: string, payload: MallRepayNegotiatedPayload) => {
+    const phone = normalizeMallAccount(account)
+    if (!/^1\d{10}$/.test(phone)) {
+      throw new Error('请先登录')
+    }
+    await $fetch<{ success: boolean }>(`${resolveMallApiBase()}/bills/repay-negotiated`, {
+      method: 'POST',
+      query: { phone },
+      body: payload,
+    })
+    await fetchBills(phone)
+    await fetchSummary(phone)
+  }
+
+  /** 用户端还款：与后台订单分期 `paid` 同步（需卡包已发放等规则与 POST /bills/repay 一致） */
+  const repayBills = async (account: string, payload: MallRepayPayload) => {
+    const phone = normalizeMallAccount(account)
+    if (!/^1\d{10}$/.test(phone)) {
+      throw new Error('请先登录')
+    }
+    await $fetch<{ success: boolean }>(`${resolveMallApiBase()}/bills/repay`, {
+      method: 'POST',
+      query: { phone },
+      body: payload,
+    })
+    await fetchBills(phone)
+    await fetchSummary(phone)
   }
 
   return {
@@ -455,6 +544,7 @@ export function useMallMy() {
     downloadCardPackageContractBlob,
     ackCardPackageContract,
     resetCardPackageContractSign,
+    saveMallEmergencyContacts,
     fetchAddresses,
     createAddress,
     updateAddress,
@@ -463,5 +553,7 @@ export function useMallMy() {
     createBankCard,
     deleteBankCard,
     fetchBills,
+    repayBills,
+    repayNegotiatedBills,
   }
 }

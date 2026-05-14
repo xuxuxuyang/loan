@@ -35,6 +35,9 @@ interface MallUserProfile extends RegisterPayload {
   totalAmount?: number
   /** 为 true 时商城应禁止提交新订单（后台拉黑） */
   orderBlacklisted?: boolean
+  /** 两位紧急联系人（已下单用户签署后必填登记） */
+  emergencyContacts?: Array<{ name?: string, phone?: string }>
+  emergencyContactsComplete?: boolean
 }
 
 function resolveMallApiBase() {

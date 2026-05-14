@@ -18,8 +18,9 @@ import {
 import { useRoute, useRouter } from 'vue-router'
 import AdminRoleAvatar from './components/AdminRoleAvatar.vue'
 import MallBrandLogo from './components/MallBrandLogo.vue'
-import { clearAdminSession, getAdminSession, type AdminSession } from './composables/useAdminAuth'
+import { adminSessionRoleAllowed, clearAdminSession, getAdminSession, isSuperAdminRole, type AdminSession } from './composables/useAdminAuth'
 import { csMenuUnreadTotal, useAdminCsUnreadBadge } from './composables/useAdminCsUnreadBadge'
+import { ordersMenuPendingReviewTotal, useAdminOrderReviewBadge } from './composables/useAdminOrderReviewBadge'
 
 type Role = NonNullable<AdminSession['role']>
 
@@ -99,12 +100,12 @@ const allMenus: MenuEntry[] = [
 const menus = computed(() => {
   const role = session.value?.role
   return allMenus
-    .filter(item => !item.roles || (role && item.roles.includes(role)))
+    .filter(item => !item.roles || adminSessionRoleAllowed(role, item.roles))
     .map((item) => {
       if (!item.children) return item
       return {
         ...item,
-        children: item.children.filter(child => !child.roles || (role && child.roles.includes(role))),
+        children: item.children.filter(child => !child.roles || adminSessionRoleAllowed(role, child.roles)),
       }
     })
 })
@@ -139,6 +140,7 @@ function submenuIndex(item: MenuEntry) {
 
 function roleText(role?: AdminSession['role']) {
   if (role === 'super_admin') return '超级管理员'
+  if (role === 'boss') return '老板'
   if (role === 'reviewer') return '审核员'
   if (role === 'collector') return '催收员'
   return '访客'
@@ -163,10 +165,19 @@ const csSidebarBadgeEnabled = computed(() => {
     return false
   }
   const r = session.value?.role
-  return r === 'super_admin' || r === 'reviewer'
+  return isSuperAdminRole(r) || r === 'reviewer'
+})
+
+const ordersSidebarBadgeEnabled = computed(() => {
+  if (isLoginPage.value) {
+    return false
+  }
+  const r = session.value?.role
+  return isSuperAdminRole(r) || r === 'reviewer' || r === 'collector'
 })
 
 useAdminCsUnreadBadge(csSidebarBadgeEnabled)
+useAdminOrderReviewBadge(ordersSidebarBadgeEnabled)
 </script>
 
 <template>
@@ -208,10 +219,16 @@ useAdminCsUnreadBadge(csSidebarBadgeEnabled)
               :index="submenuIndex(item)"
             >
               <template #title>
-                <el-icon class="admin-menu-icon">
-                  <component :is="item.icon" />
-                </el-icon>
-                <span class="admin-menu-title">{{ item.label }}</span>
+                <span class="admin-sub-menu-title-row">
+                  <el-icon class="admin-menu-icon">
+                    <component :is="item.icon" />
+                  </el-icon>
+                  <span class="admin-menu-title">{{ item.label }}</span>
+                  <span
+                    v-if="item.path === '/orders' && ordersMenuPendingReviewTotal > 0"
+                    class="admin-cs-menu-badge"
+                  >{{ ordersMenuPendingReviewTotal > 99 ? '99+' : ordersMenuPendingReviewTotal }}</span>
+                </span>
               </template>
               <el-menu-item
                 v-for="child in item.children"
@@ -293,10 +310,16 @@ useAdminCsUnreadBadge(csSidebarBadgeEnabled)
   background-color: transparent !important;
 }
 
-.admin-side-menu :deep(.el-menu-item),
+.admin-side-menu :deep(.el-menu-item) {
+  border-radius: 8px;
+  margin-bottom: 4px;
+}
+
 .admin-side-menu :deep(.el-sub-menu__title) {
   border-radius: 8px;
   margin-bottom: 4px;
+  display: flex;
+  align-items: center;
 }
 
 .admin-side-menu :deep(.el-menu-item:hover),
@@ -343,6 +366,18 @@ useAdminCsUnreadBadge(csSidebarBadgeEnabled)
 
 .admin-menu-title {
   font-weight: 600;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.admin-sub-menu-title-row {
+  flex: 1;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .admin-menu-top-label {

@@ -4,7 +4,7 @@ import { ElMessage } from 'element-plus'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { withAdminAuthHeaders } from '../composables/useAdminApi'
-import { getAdminSession } from '../composables/useAdminAuth'
+import { getAdminSession, isSuperAdminRole } from '../composables/useAdminAuth'
 import TrafficChannelNameTag from '../components/TrafficChannelNameTag.vue'
 import UserRegistrationInfoScroll from '../components/UserRegistrationInfoScroll.vue'
 import UserRiskDetailDialog, {
@@ -60,9 +60,14 @@ interface ApiUserItem {
   registerChannelCode?: string
   registerChannelName?: string
   registerChannelLabel?: string
+  /** 两位紧急联系人（GET /users 等） */
+  emergencyContacts?: Array<{ name: string, phone: string }>
 }
 
 const MALL_API_BASE = `${(import.meta.env.VITE_MALL_API_BASE || 'http://localhost:3110/api').replace(/\/$/, '')}`
+
+/** 注册渠道筛选：与「商城注册 / 具体渠道」区分，表示不做渠道过滤 */
+const REGISTER_CHANNEL_FILTER_ALL = '__all__'
 
 const users = ref<ListedUser[]>([])
 const loading = ref(false)
@@ -82,6 +87,8 @@ const createDialogVisible = ref(false)
 const keyword = ref('')
 /** 下单用户页：按「最近一笔已计入订单」的本地日期筛选 */
 const orderDateKey = ref<string | null>(null)
+/** 注册用户页：按与列表「注册渠道」列一致的展示名筛选 */
+const registerChannelFilter = ref<string>(REGISTER_CHANNEL_FILTER_ALL)
 const previewUser = ref<ListedUser | null>(null)
 const editingUserId = ref<string | null>(null)
 const userRiskDialogVisible = ref(false)
@@ -97,7 +104,7 @@ const createForm = reactive({
   initialPassword: '',
 })
 
-const canManageUsers = computed(() => getAdminSession()?.role === 'super_admin')
+const canManageUsers = computed(() => isSuperAdminRole(getAdminSession()?.role))
 
 const route = useRoute()
 
@@ -122,6 +129,15 @@ const filteredUsers = computed(() => {
 /** 下单用户：可选按下单日本地日期筛选，再按最近下单时间倒序；注册用户：保持接口顺序 */
 const tableUsers = computed(() => {
   let list = [...filteredUsers.value]
+  if (!isOrderingUsersView.value) {
+    const ch = registerChannelFilter.value
+    if (ch === '__none__') {
+      list = list.filter(u => !userRegisterChannelDisplay(u))
+    }
+    else if (ch && ch !== REGISTER_CHANNEL_FILTER_ALL) {
+      list = list.filter(u => userRegisterChannelDisplay(u) === ch)
+    }
+  }
   if (isOrderingUsersView.value) {
     const dk = orderDateKey.value
     if (dk) {
@@ -150,8 +166,25 @@ watch(
     if (path !== '/users/ordering') {
       orderDateKey.value = null
     }
+    if (path === '/users/ordering') {
+      registerChannelFilter.value = REGISTER_CHANNEL_FILTER_ALL
+    }
   },
 )
+
+function userRegisterChannelDisplay(u: ListedUser): string {
+  return trafficChannelDisplayKey(u.registerChannelLabel, u.registerChannelName, u.registerChannelCode).trim()
+}
+
+const registerChannelOptions = computed(() => {
+  const set = new Set<string>()
+  for (const u of users.value) {
+    const k = userRegisterChannelDisplay(u)
+    if (k)
+      set.add(k)
+  }
+  return [...set].sort((a, b) => a.localeCompare(b, 'zh-CN'))
+})
 
 function localYmdFromIso(iso: string) {
   const d = new Date(iso)
@@ -204,6 +237,7 @@ function onRiskDialogUserUpdated(mapped: UserItem) {
       lastOrderAt: mapped.lastOrderAt ?? prev.lastOrderAt,
       adminRemark: mapped.adminRemark ?? prev.adminRemark,
       orderBlacklisted: mapped.orderBlacklisted ?? prev.orderBlacklisted,
+      emergencyContacts: mapped.emergencyContacts ?? prev.emergencyContacts,
     }
   }
 }
@@ -254,6 +288,15 @@ function mapApiUser(user: ApiUserItem): ListedUser {
     registerChannelCode: typeof user.registerChannelCode === 'string' ? user.registerChannelCode.trim() : undefined,
     registerChannelName: typeof user.registerChannelName === 'string' ? user.registerChannelName.trim() : undefined,
     registerChannelLabel: typeof user.registerChannelLabel === 'string' ? user.registerChannelLabel.trim() : undefined,
+    emergencyContacts: Array.isArray(user.emergencyContacts)
+      ? user.emergencyContacts
+        .map(x => ({
+          name: String(x?.name || '').trim(),
+          phone: String(x?.phone || '').trim().replace(/\D/g, ''),
+        }))
+        .filter(x => x.name && /^1\d{10}$/.test(x.phone))
+        .slice(0, 2)
+      : [],
   }
 }
 
@@ -614,6 +657,30 @@ async function toggleBlacklist(user: ListedUser) {
         value-format="YYYY-MM-DD"
         clearable
       />
+      <el-select
+        v-if="!isOrderingUsersView"
+        v-model="registerChannelFilter"
+        class="toolbar-select-channel"
+        placeholder="注册渠道"
+        clearable
+        filterable
+        @clear="registerChannelFilter = REGISTER_CHANNEL_FILTER_ALL"
+      >
+        <el-option
+          label="全部"
+          :value="REGISTER_CHANNEL_FILTER_ALL"
+        />
+        <el-option
+          label="商城注册"
+          value="__none__"
+        />
+        <el-option
+          v-for="name in registerChannelOptions"
+          :key="name"
+          :label="name"
+          :value="name"
+        />
+      </el-select>
       <button
         class="btn btn-refresh"
         type="button"
@@ -657,6 +724,7 @@ async function toggleBlacklist(user: ListedUser) {
           <td>{{ item.phone }}</td>
           <td class="td-register-channel">
             <TrafficChannelNameTag
+              mall-plain-when-empty
               :display-key="trafficChannelDisplayKey(item.registerChannelLabel, item.registerChannelName, item.registerChannelCode)"
             />
           </td>
@@ -707,8 +775,8 @@ async function toggleBlacklist(user: ListedUser) {
               </span>
               <span
                 class="remark-cell__text remark-preview"
-                :class="{ 'remark-preview--empty': !item.adminRemark?.trim() }"
-              >{{ item.adminRemark?.trim() ? item.adminRemark : '—' }}</span>
+                :class="item.adminRemark?.trim() ? 'remark-preview--filled' : 'remark-preview--empty'"
+              >{{ item.adminRemark?.trim() ? item.adminRemark : '暂无备注' }}</span>
             </button>
             <div
               v-else
@@ -726,10 +794,10 @@ async function toggleBlacklist(user: ListedUser) {
               </span>
               <p
                 class="remark-cell__text remark-preview"
-                :class="{ 'remark-preview--empty': !item.adminRemark?.trim() }"
+                :class="item.adminRemark?.trim() ? 'remark-preview--filled' : 'remark-preview--empty'"
                 :title="item.adminRemark?.trim() ? item.adminRemark : ''"
               >
-                {{ item.adminRemark?.trim() ? item.adminRemark : '—' }}
+                {{ item.adminRemark?.trim() ? item.adminRemark : '暂无备注' }}
               </p>
             </div>
           </td>
@@ -754,7 +822,7 @@ async function toggleBlacklist(user: ListedUser) {
                 v-if="canManageUsers"
                 type="button"
                 class="btn"
-                :class="item.orderBlacklisted ? 'btn-muted' : 'btn-danger'"
+                :class="item.orderBlacklisted ? 'btn-success' : 'btn-danger'"
                 :disabled="blacklistBusyId === item.id"
                 @click="toggleBlacklist(item)"
               >
@@ -957,7 +1025,7 @@ async function toggleBlacklist(user: ListedUser) {
           :rows="4"
           maxlength="500"
           show-word-limit
-          placeholder="仅后台可见，可用于记录沟通或风控说明"
+          placeholder="请输入添加备注"
         />
       </label>
       <div class="actions actions-right">
@@ -1050,9 +1118,6 @@ async function toggleBlacklist(user: ListedUser) {
               <span class="user-preview-field__label">信誉状态</span>
               <div class="user-preview-credit-readonly">
                 <span :class="getStatusClass(previewDisplayCreditStatus)">{{ previewDisplayCreditStatus }}</span>
-                <p class="user-preview-field__hint">
-                  由先享后付下单七项接口结果自动判定（七项均为通过为「良好」，任一项未通过为「风险」，尚无结论或未测完为「待风控」），不可手动修改。
-                </p>
               </div>
             </label>
             <label class="user-preview-field user-preview-field--full">
@@ -1076,6 +1141,7 @@ async function toggleBlacklist(user: ListedUser) {
                 <span class="user-preview-edit-readonly__k">注册渠道</span>
                 <span class="user-preview-edit-readonly__v">
                   <TrafficChannelNameTag
+                    mall-plain-when-empty
                     :display-key="trafficChannelDisplayKey(previewUser.registerChannelLabel, previewUser.registerChannelName, previewUser.registerChannelCode)"
                   />
                 </span>
@@ -1140,6 +1206,15 @@ async function toggleBlacklist(user: ListedUser) {
   width: 168px;
 }
 
+.toolbar-select-channel {
+  width: 200px;
+}
+
+.toolbar-select-channel :deep(.el-select__wrapper) {
+  min-height: 36px;
+  border-radius: 8px;
+}
+
 .btn {
   height: 30px;
   border-radius: 6px;
@@ -1194,6 +1269,12 @@ async function toggleBlacklist(user: ListedUser) {
   color: #fff;
 }
 
+.btn-success {
+  border-color: #059669;
+  background: #059669;
+  color: #fff;
+}
+
 .btn-muted {
   border-color: #9ca3af;
   background: #f3f4f6;
@@ -1211,8 +1292,6 @@ async function toggleBlacklist(user: ListedUser) {
 
 .remark-preview {
   margin: 0;
-  font-size: 13px;
-  color: #f10202;
   line-height: 1.45;
   max-height: 4.35em;
   overflow: hidden;
@@ -1222,8 +1301,16 @@ async function toggleBlacklist(user: ListedUser) {
   word-break: break-word;
 }
 
+.remark-preview--filled {
+  font-size: 16px;
+  font-weight: 700;
+  color: #dc2626;
+}
+
 .remark-preview--empty {
-  color: #000;
+  font-size: 12px;
+  font-weight: 400;
+  color: #a8a1a1;
 }
 
 .remark-cell {
@@ -1930,7 +2017,7 @@ async function toggleBlacklist(user: ListedUser) {
   display: grid;
   gap: 6px;
   font-size: 14px;
-  color: #6b7280;
+  color: #a8a1a1;
   margin-bottom: 8px;
 }
 
@@ -1955,7 +2042,7 @@ async function toggleBlacklist(user: ListedUser) {
   display: grid;
   gap: 6px;
   font-size: 14px;
-  color: #6b7280;
+  color: #a8a1a1;
 }
 
 .modal-grid .full {

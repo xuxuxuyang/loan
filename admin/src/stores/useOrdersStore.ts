@@ -1,6 +1,24 @@
 import { ref } from 'vue'
 import { withAdminAuthHeaders } from '../composables/useAdminApi'
 
+export interface InstallmentNegotiationRecord {
+  negotiatedAmount: number
+  remainderAmount: number
+  remainderDueDate: string
+  createdAt: string
+  /** 登记协商时该期的原还款日（YYYY-MM-DD），撤销「协商支付完成」时恢复 */
+  originalDueDate?: string
+  /** 用户在前台完成协商支付的时间（ISO） */
+  userPaidAt?: string
+}
+
+export interface InstallmentNegotiationPayPending {
+  negotiatedAmount: number
+  remainderAmount: number
+  remainderDueDate: string
+  createdAt: string
+}
+
 export interface InstallmentItem {
   period: number
   dueDate: string
@@ -8,6 +26,9 @@ export interface InstallmentItem {
   fee: number
   amount: number
   paid: boolean
+  negotiationHistory?: InstallmentNegotiationRecord[]
+  /** 后台协商后待用户在前台完成「协商支付」的款项；支付成功后清空并落库剩余本金 */
+  negotiationPayPending?: InstallmentNegotiationPayPending | null
 }
 
 export interface OrderItem {
@@ -41,6 +62,8 @@ export interface OrderItem {
   trackingNumber: string
   /** 用户管理中的备注（关联收货手机号 users.adminRemark） */
   userRemark: string
+  /** 收货手机对应商城用户是否已填齐紧急联系人；无对应用户为 null；接口未返回该字段时不写入 */
+  emergencyContactsComplete?: boolean | null
 }
 
 export interface RiskDetailRule {
@@ -88,7 +111,7 @@ interface MallOrderPayload {
   receiverName: string
   receiverPhone?: string
   receiverAddress?: string
-  installmentPlan?: InstallmentItem[]
+  installmentPlan?: Array<InstallmentItem & Record<string, unknown>>
   /** 卡包金额（元），与商品卡包配置一致并对账落库 */
   cardPackageAmount?: number
   cardPackageIssued?: boolean
@@ -96,6 +119,8 @@ interface MallOrderPayload {
   trackingNumber?: string
   /** 管理端列表：关联收货手机号的商城用户后台备注 */
   buyerAdminRemark?: string
+  /** GET /orders 等：与 buyer 关联的紧急联系人是否已填齐 */
+  emergencyContactsComplete?: boolean | null
 }
 
 interface RiskDetailPayload {
@@ -131,6 +156,9 @@ interface OrderFilterParams {
 const MALL_ORDERS_ENDPOINT = `${(import.meta.env.VITE_MALL_API_BASE || 'http://localhost:3110/api').replace(/\/$/, '')}/orders`
 const MALL_INSTALLMENT_PAY_ENDPOINT = `${MALL_ORDERS_ENDPOINT}/:id/installments/:period/pay`
 const MALL_INSTALLMENT_DUE_DATE_ENDPOINT = `${MALL_ORDERS_ENDPOINT}/:id/installments/:period/due-date`
+const MALL_INSTALLMENT_NEGOTIATE_ENDPOINT = `${MALL_ORDERS_ENDPOINT}/:id/installments/:period/negotiate`
+const MALL_INSTALLMENT_SETTLE_AMOUNT_ENDPOINT = `${MALL_ORDERS_ENDPOINT}/:id/installments/:period/settle-amount`
+const MALL_INSTALLMENT_NEGOTIATION_HISTORY_PAID_ENDPOINT = `${MALL_ORDERS_ENDPOINT}/:id/installments/:period/negotiation/history/:historyIndex/paid`
 const MALL_ORDER_RISK_DETAIL_ENDPOINT = `${MALL_ORDERS_ENDPOINT}/:id/risk-detail`
 const MALL_ORDER_CARD_PACKAGE_CONTRACT_ENDPOINT = `${MALL_ORDERS_ENDPOINT}/:id/card-package-contract`
 const orders = ref<OrderItem[]>([])
@@ -178,16 +206,58 @@ function mapMallOrderStatus(
   return '已完成'
 }
 
+/** 与商城 / API 一致：Mongo 或 JSON 中 paid 可能为 1、'1'、'true'；避免 Boolean('false')===true */
+function parseInstallmentPaid(raw: unknown): boolean {
+  if (raw === true || raw === 1 || raw === '1') {
+    return true
+  }
+  if (typeof raw === 'string' && raw.toLowerCase() === 'true') {
+    return true
+  }
+  return false
+}
+
 function normalizeInstallmentPlan(payload: MallOrderPayload) {
   if (Array.isArray(payload.installmentPlan) && payload.installmentPlan.length > 0) {
-    return payload.installmentPlan.map(item => ({
-      period: Number(item.period),
-      dueDate: item.dueDate,
-      principal: Number(item.principal),
-      fee: Number(item.fee),
-      amount: Number(item.amount),
-      paid: Boolean(item.paid),
-    }))
+    return payload.installmentPlan.map((item) => {
+      const rawHist = (item as { negotiationHistory?: unknown }).negotiationHistory
+      const negotiationHistory = Array.isArray(rawHist)
+        ? rawHist.map((row: Record<string, unknown>) => ({
+            negotiatedAmount: Number(row.negotiatedAmount || 0),
+            remainderAmount: Number(row.remainderAmount || 0),
+            remainderDueDate: String(row.remainderDueDate || ''),
+            createdAt: String(row.createdAt || ''),
+            ...(typeof row.originalDueDate === 'string' && row.originalDueDate.trim()
+              ? { originalDueDate: row.originalDueDate.trim() }
+              : {}),
+            ...(typeof row.userPaidAt === 'string' && row.userPaidAt.trim()
+              ? { userPaidAt: row.userPaidAt.trim() }
+              : {}),
+          }))
+        : undefined
+      const rawPend = (item as { negotiationPayPending?: unknown }).negotiationPayPending
+      const pend = rawPend && typeof rawPend === 'object' && rawPend !== null && !Array.isArray(rawPend)
+        ? rawPend as Record<string, unknown>
+        : null
+      const negotiationPayPending = pend && Number(pend.negotiatedAmount || 0) > 0
+        ? {
+            negotiatedAmount: Number(pend.negotiatedAmount || 0),
+            remainderAmount: Number(pend.remainderAmount || 0),
+            remainderDueDate: String(pend.remainderDueDate || '').trim(),
+            createdAt: String(pend.createdAt || '').trim(),
+          }
+        : undefined
+      return {
+        period: Number(item.period),
+        dueDate: item.dueDate,
+        principal: Number(item.principal),
+        fee: Number(item.fee),
+        amount: Number(item.amount),
+        paid: parseInstallmentPaid(item.paid),
+        ...(negotiationHistory && negotiationHistory.length > 0 ? { negotiationHistory } : {}),
+        ...(negotiationPayPending ? { negotiationPayPending } : {}),
+      }
+    })
   }
   return []
 }
@@ -203,7 +273,7 @@ function mapMallOrderToAdminOrder(order: MallOrderPayload): OrderItem {
         principal: Number(order.totalAmount.toFixed(2)),
         fee: 0,
         amount: Number(order.totalAmount.toFixed(2)),
-        paid: Boolean(order.paid),
+        paid: parseInstallmentPaid(order.paid),
       }]
   const periods = safePlan.length || fallbackPeriods
   const nextPending = safePlan.find(item => !item.paid)
@@ -217,6 +287,7 @@ function mapMallOrderToAdminOrder(order: MallOrderPayload): OrderItem {
   const userRemark = typeof order.buyerAdminRemark === 'string' ? order.buyerAdminRemark.trim() : ''
   const signedAtRaw = order.cardPackageContractSignedAt
   const signedAt = typeof signedAtRaw === 'string' && signedAtRaw.trim() ? signedAtRaw.trim() : ''
+  const rawEc = order.emergencyContactsComplete
 
   return {
     id: order.id,
@@ -241,13 +312,20 @@ function mapMallOrderToAdminOrder(order: MallOrderPayload): OrderItem {
     cardPackageContractSignedAt: signedAt,
     trackingNumber: tracking,
     userRemark,
+    ...(rawEc === true ? { emergencyContactsComplete: true as const }
+      : rawEc === false ? { emergencyContactsComplete: false as const }
+        : rawEc === null ? { emergencyContactsComplete: null as const }
+          : {}),
   }
 }
 
 /** PATCH 返回的订单不含 buyerAdminRemark 时保留列表中已有的备注展示 */
 function mergeOrderAfterPatch(prev: OrderItem, mapped: OrderItem): OrderItem {
   const ur = mapped.userRemark.trim() ? mapped.userRemark : prev.userRemark
-  return { ...mapped, userRemark: ur || '' }
+  const ec = mapped.emergencyContactsComplete !== undefined
+    ? mapped.emergencyContactsComplete
+    : prev.emergencyContactsComplete
+  return { ...mapped, userRemark: ur || '', emergencyContactsComplete: ec }
 }
 
 function installmentPayUrl(orderId: string, period: number) {
@@ -260,6 +338,25 @@ function installmentDueDateUrl(orderId: string, period: number) {
   return MALL_INSTALLMENT_DUE_DATE_ENDPOINT
     .replace(':id', encodeURIComponent(orderId))
     .replace(':period', encodeURIComponent(String(period)))
+}
+
+function installmentNegotiateUrl(orderId: string, period: number) {
+  return MALL_INSTALLMENT_NEGOTIATE_ENDPOINT
+    .replace(':id', encodeURIComponent(orderId))
+    .replace(':period', encodeURIComponent(String(period)))
+}
+
+function installmentSettleAmountUrl(orderId: string, period: number) {
+  return MALL_INSTALLMENT_SETTLE_AMOUNT_ENDPOINT
+    .replace(':id', encodeURIComponent(orderId))
+    .replace(':period', encodeURIComponent(String(period)))
+}
+
+function installmentNegotiationHistoryPaidUrl(orderId: string, period: number, historyIndex: number) {
+  return MALL_INSTALLMENT_NEGOTIATION_HISTORY_PAID_ENDPOINT
+    .replace(':id', encodeURIComponent(orderId))
+    .replace(':period', encodeURIComponent(String(period)))
+    .replace(':historyIndex', encodeURIComponent(String(historyIndex)))
 }
 
 function riskDetailUrl(orderId: string) {
@@ -313,6 +410,23 @@ async function fetchOrders(params: OrderFilterParams = {}) {
   orders.value = list.map(mapMallOrderToAdminOrder)
 }
 
+async function fetchOrderById(orderId: string): Promise<OrderItem> {
+  const response = await fetch(`${MALL_ORDERS_ENDPOINT}/${encodeURIComponent(orderId)}`, {
+    method: 'GET',
+    headers: withAdminAuthHeaders(),
+  })
+  const payload = await response.json().catch(() => ({})) as { success?: boolean, data?: MallOrderPayload, msg?: string }
+  if (!response.ok) {
+    throw new Error(payload.msg || `请求订单失败: ${response.status}`)
+  }
+  if (!payload.data) {
+    throw new Error(payload.msg || '订单数据为空')
+  }
+  const mapped = mapMallOrderToAdminOrder(payload.data)
+  orders.value = orders.value.map(item => (item.id === mapped.id ? mapped : item))
+  return mapped
+}
+
 async function updateInstallmentDueDate(orderId: string, period: number, addDays: number) {
   const response = await fetch(installmentDueDateUrl(orderId, period), {
     method: 'PATCH',
@@ -322,6 +436,64 @@ async function updateInstallmentDueDate(orderId: string, period: number, addDays
   if (!response.ok) {
     const payload = await response.json().catch(() => ({})) as { msg?: string }
     throw new Error(payload.msg || `延期还款日失败: ${response.status}`)
+  }
+  const payload = await response.json() as { success?: boolean, data?: MallOrderPayload }
+  if (!payload.data) {
+    return
+  }
+  const mapped = mapMallOrderToAdminOrder(payload.data)
+  orders.value = orders.value.map(item => (item.id === mapped.id ? mergeOrderAfterPatch(item, mapped) : item))
+}
+
+async function updateInstallmentSettleAmount(orderId: string, period: number, amount: number) {
+  const response = await fetch(installmentSettleAmountUrl(orderId, period), {
+    method: 'PATCH',
+    headers: withAdminAuthHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ amount }),
+  })
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({})) as { msg?: string }
+    throw new Error(payload.msg || `修改应还金额失败: ${response.status}`)
+  }
+  const payload = await response.json() as { success?: boolean, data?: MallOrderPayload }
+  if (!payload.data) {
+    return
+  }
+  const mapped = mapMallOrderToAdminOrder(payload.data)
+  orders.value = orders.value.map(item => (item.id === mapped.id ? mergeOrderAfterPatch(item, mapped) : item))
+}
+
+async function updateInstallmentNegotiate(
+  orderId: string,
+  period: number,
+  body: { negotiatedAmount: number, remainderDueDate: string },
+) {
+  const response = await fetch(installmentNegotiateUrl(orderId, period), {
+    method: 'PATCH',
+    headers: withAdminAuthHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify(body),
+  })
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({})) as { msg?: string }
+    throw new Error(payload.msg || `协商还款失败: ${response.status}`)
+  }
+  const payload = await response.json() as { success?: boolean, data?: MallOrderPayload }
+  if (!payload.data) {
+    return
+  }
+  const mapped = mapMallOrderToAdminOrder(payload.data)
+  orders.value = orders.value.map(item => (item.id === mapped.id ? mergeOrderAfterPatch(item, mapped) : item))
+}
+
+async function updateInstallmentNegotiationHistoryPaid(orderId: string, period: number, historyIndex: number, paid: boolean) {
+  const response = await fetch(installmentNegotiationHistoryPaidUrl(orderId, period, historyIndex), {
+    method: 'PATCH',
+    headers: withAdminAuthHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ paid }),
+  })
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({})) as { msg?: string }
+    throw new Error(payload.msg || `更新协商还款状态失败: ${response.status}`)
   }
   const payload = await response.json() as { success?: boolean, data?: MallOrderPayload }
   if (!payload.data) {
@@ -519,9 +691,13 @@ export function useOrdersStore() {
   return {
     orders,
     fetchOrders,
+    fetchOrderById,
     recalculateOrderFields,
     updateInstallmentPaid,
     updateInstallmentDueDate,
+    updateInstallmentSettleAmount,
+    updateInstallmentNegotiate,
+    updateInstallmentNegotiationHistoryPaid,
     updateOrderShipment,
     updateOrderStatus,
     rejectOrderReview,

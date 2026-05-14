@@ -38,8 +38,10 @@ declare module 'vue' {
     MallProductDetailGallery: typeof import('./components/mall/MallProductDetailGallery.vue')['default']
     My: typeof import('./components/my/index.vue')['default']
     Order: typeof import('./components/my/order/index.vue')['default']
+    PrivacyPolicyContent: typeof import('./components/my/privacy-policy/PrivacyPolicyContent.vue')['default']
     RegisterForm: typeof import('./components/auth/RegisterForm.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
+    UserAgreementContent: typeof import('./components/my/user-agreement/UserAgreementContent.vue')['default']
   }
 }
