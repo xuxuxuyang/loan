@@ -401,7 +401,43 @@ function onNegotiateAmountChange(val: number | undefined) {
   }
 }
 
-const orderTableColspan = computed(() => (isCardPackageDataPage.value ? 15 : 14))
+function customerIdentityKey(order: OrderItem): string {
+  const phoneDigits = normalizePhone(order.receiverPhone || '')
+  if (phoneDigits.length === 11) {
+    return `phone:${phoneDigits}`
+  }
+  const name = String(order.user || '').trim().toLowerCase()
+  return name ? `name:${name}` : ''
+}
+
+const issuedCustomerKeys = computed(() => {
+  const keys = new Set<string>()
+  for (const order of orders.value) {
+    if (!order.cardPackageIssued) {
+      continue
+    }
+    const key = customerIdentityKey(order)
+    if (key) {
+      keys.add(key)
+    }
+  }
+  return keys
+})
+
+function isOldCustomer(order: OrderItem): boolean {
+  const key = customerIdentityKey(order)
+  return !!key && issuedCustomerKeys.value.has(key)
+}
+
+function customerTypeTagType(order: OrderItem): 'success' | 'warning' {
+  return isOldCustomer(order) ? 'success' : 'warning'
+}
+
+function customerTypeLabel(order: OrderItem): '老客户' | '新客户' {
+  return isOldCustomer(order) ? '老客户' : '新客户'
+}
+
+const orderTableColspan = computed(() => (isCardPackageDataPage.value ? 16 : 15))
 
 const filteredOrders = computed(() => {
   // 订单管理仅展示已通过人工审核后的订单，待审核订单统一在“审核订单”页面处理。
@@ -1243,6 +1279,7 @@ watch(
         <tr>
           <th>订单号</th>
           <th>用户</th>
+          <th>是否老客户</th>
           <th>备注</th>
           <th>商品</th>
           <th>下单时间</th>
@@ -1277,6 +1314,16 @@ watch(
               @click="openUserRiskFromOrder(item)"
             >
               {{ item.user }}
+            </el-tag>
+          </td>
+          <td class="td-customer-type">
+            <el-tag
+              :type="customerTypeTagType(item)"
+              effect="light"
+              round
+              size="small"
+            >
+              {{ customerTypeLabel(item) }}
             </el-tag>
           </td>
           <td class="td-user-remark">

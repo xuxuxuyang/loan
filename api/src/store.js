@@ -14,14 +14,20 @@ const DB_FILE = path.join(DB_DIR, 'db.json')
 const ADMIN_USER_ID = `U${DEFAULT_SUPER_ADMIN_PHONE}`
 const ADMIN_PHONE = DEFAULT_SUPER_ADMIN_PHONE
 
-/** Mongo 中为整库快照片段使用固定 _id（集合名 mongo.APP_STATE） */
+/** 旧版 appState 单文档 _id */
 const MAIN_STATE_ID = 'main'
+
+/** 与 mongo.SHARDED_ENTITY_KEYS 一致：每项对应 COLLECTIONS[key] */
+const ENTITY_SPECS = mongo.SHARDED_ENTITY_KEYS.map((key) => ({
+  key,
+  collection: mongo.COLLECTIONS[key],
+}))
 
 let mongoBacked = false
 /** 使用 Mongo 时 readDb/writeDb 均针对该常驻对象 */
 let mongoMemoryDb = null
 
-/** 串行写入，避免并发 replaceOne 乱序 */
+/** 串行写入，避免并发持久化乱序 */
 let persistTail = Promise.resolve()
 
 function ensureDbFile() {
@@ -161,6 +167,156 @@ function clonePayloadForMongo(db) {
   return JSON.parse(JSON.stringify(payload))
 }
 
+function stablePrimaryKeyString(pk) {
+  if (pk === null || pk === undefined) {
+    return ''
+  }
+  const t = typeof pk
+  if (t === 'number' || t === 'string' || t === 'boolean') {
+    return `${t}:${pk}`
+  }
+  if (pk && typeof pk.toHexString === 'function') {
+    return `oid:${pk.toString()}`
+  }
+  return `s:${String(pk)}`
+}
+
+/** Mongo 文档主键：与业务 id 一致（数字 id 保持为 number，便于与路由参数一致） */
+function entityMongoPrimaryKey(item, entityKey) {
+  if (!item || typeof item !== 'object') {
+    return undefined
+  }
+  if (item.id !== undefined && item.id !== null) {
+    return item.id
+  }
+  if (entityKey === 'adminAccounts' && item.username) {
+    return item.username
+  }
+  return undefined
+}
+
+function fromMongoEntityDoc(doc) {
+  if (!doc || typeof doc !== 'object') {
+    return null
+  }
+  const { _id, ...rest } = doc
+  if (rest.id === undefined && _id !== undefined) {
+    if (typeof _id === 'object' && _id && typeof _id.toHexString === 'function') {
+      return { ...rest, id: _id.toString() }
+    }
+    return { ...rest, id: _id }
+  }
+  return { ...rest }
+}
+
+function isRawShardedPayloadEmpty(raw) {
+  if (!raw || typeof raw !== 'object') {
+    return true
+  }
+  const meta = raw._meta && typeof raw._meta === 'object' ? raw._meta : {}
+  if (Object.keys(meta).length > 0) {
+    return false
+  }
+  for (const spec of ENTITY_SPECS) {
+    const arr = raw[spec.key]
+    if (Array.isArray(arr) && arr.length > 0) {
+      return false
+    }
+  }
+  return true
+}
+
+/**
+ * 从分集合读取为与 db.json / 旧 appState 相同结构的原始对象（供 shapeDbFromParsed）。
+ */
+async function loadShardedRawFromDb(dbm) {
+  const lists = await Promise.all(
+    ENTITY_SPECS.map(spec => dbm.collection(spec.collection).find({}).toArray()),
+  )
+  const metaDoc = await dbm.collection(mongo.APP_META).findOne({ _id: MAIN_STATE_ID })
+  const meta = metaDoc && metaDoc.meta && typeof metaDoc.meta === 'object' && !Array.isArray(metaDoc.meta)
+    ? { ...metaDoc.meta }
+    : {}
+  const out = {
+    _meta: meta,
+  }
+  ENTITY_SPECS.forEach((spec, i) => {
+    out[spec.key] = lists[i].map(fromMongoEntityDoc).filter(Boolean)
+  })
+  return out
+}
+
+const BULK_CHUNK = 400
+
+/**
+ * 将快照写入分集合 + app_meta（已深拷贝的 plain 对象）。
+ * 每集合：删除内存中已不存在的 _id，再 bulkWrite replace upsert。
+ */
+async function persistShardedSnapshot(dbm, snapshot) {
+  const updatedAt = new Date()
+  for (const spec of ENTITY_SPECS) {
+    const coll = dbm.collection(spec.collection)
+    const items = Array.isArray(snapshot[spec.key]) ? snapshot[spec.key] : []
+    const wantKeys = new Set()
+    const keyedItems = []
+    for (const item of items) {
+      const pk = entityMongoPrimaryKey(item, spec.key)
+      if (pk === undefined || pk === null) {
+        console.warn(`[store] 跳过缺少主键的 ${spec.key} 记录`, item && typeof item === 'object' ? Object.keys(item) : item)
+        continue
+      }
+      wantKeys.add(stablePrimaryKeyString(pk))
+      keyedItems.push({ pk, item })
+    }
+
+    const existing = await coll.find({}, { projection: { _id: 1 } }).toArray()
+    const toRemove = existing
+      .map(e => e._id)
+      .filter(_id => !wantKeys.has(stablePrimaryKeyString(_id)))
+
+    for (let i = 0; i < toRemove.length; i += 500) {
+      const slice = toRemove.slice(i, i + 500)
+      if (slice.length) {
+        await coll.deleteMany({ _id: { $in: slice } })
+      }
+    }
+
+    for (let i = 0; i < keyedItems.length; i += BULK_CHUNK) {
+      const chunk = keyedItems.slice(i, i + BULK_CHUNK)
+      const ops = chunk.map(({ pk, item }) => {
+        const body = JSON.parse(JSON.stringify(item))
+        delete body._id
+        return {
+          replaceOne: {
+            filter: { _id: pk },
+            replacement: { ...body, _id: pk },
+            upsert: true,
+          },
+        }
+      })
+      if (ops.length) {
+        await coll.bulkWrite(ops, { ordered: false })
+      }
+    }
+  }
+
+  const meta = snapshot._meta && typeof snapshot._meta === 'object' ? snapshot._meta : {}
+  await dbm.collection(mongo.APP_META).replaceOne(
+    { _id: MAIN_STATE_ID },
+    {
+      _id: MAIN_STATE_ID,
+      updatedAt,
+      meta: JSON.parse(JSON.stringify(meta)),
+    },
+    { upsert: true },
+  )
+}
+
+function legacyAppStateDocToRaw(legacyDoc) {
+  const { _id: _drop, updatedAt: _u, ...rest } = legacyDoc
+  return rest
+}
+
 function scheduleMongoPersist(snapshot) {
   persistTail = persistTail
     .then(async () => {
@@ -168,16 +324,15 @@ function scheduleMongoPersist(snapshot) {
       if (!dbm || !mongoBacked) {
         return
       }
-      const coll = dbm.collection(mongo.APP_STATE)
-      const doc = {
-        _id: MAIN_STATE_ID,
-        updatedAt: new Date(),
-        ...snapshot,
+      try {
+        await persistShardedSnapshot(dbm, snapshot)
       }
-      await coll.replaceOne({ _id: MAIN_STATE_ID }, doc, { upsert: true })
+      catch (err) {
+        console.error('[store] MongoDB 分集合持久化失败:', err?.message || err)
+      }
     })
     .catch((err) => {
-      console.error('[store] MongoDB 持久化失败:', err?.message || err)
+      console.error('[store] MongoDB 持久化队列失败:', err?.message || err)
     })
 }
 
@@ -192,7 +347,7 @@ function assertDatastoreReady() {
 }
 
 /**
- * connectMongo() 成功后调用：从 Mongo 加载整库快照，若不存在则写入最小空库快照（仅存默认后台账号）。
+ * connectMongo() 成功后调用：优先迁移旧版 appState(main)；否则从分集合加载；空库则写入种子数据。
  * @returns {Promise<boolean>}
  */
 async function hydrateFromMongoAfterConnect() {
@@ -201,24 +356,31 @@ async function hydrateFromMongoAfterConnect() {
     return false
   }
 
-  const coll = dbm.collection(mongo.APP_STATE)
-  const doc = await coll.findOne({ _id: MAIN_STATE_ID })
+  const legacyColl = dbm.collection(mongo.APP_STATE)
+  const legacyDoc = await legacyColl.findOne({ _id: MAIN_STATE_ID })
 
-  if (!doc) {
-    mongoMemoryDb = buildSeedDb()
-    await coll.replaceOne(
-      { _id: MAIN_STATE_ID },
-      {
-        _id: MAIN_STATE_ID,
-        updatedAt: new Date(),
-        ...clonePayloadForMongo(mongoMemoryDb),
-      },
-      { upsert: true },
-    )
+  if (legacyDoc) {
+    const raw = legacyAppStateDocToRaw(legacyDoc)
+    mongoMemoryDb = shapeDbFromParsed(raw)
+    try {
+      await persistShardedSnapshot(dbm, clonePayloadForMongo(mongoMemoryDb))
+      await legacyColl.deleteOne({ _id: MAIN_STATE_ID })
+      console.log('[store] 已从旧版 appState(main) 迁移到分集合持久化，并删除旧文档')
+    }
+    catch (err) {
+      console.error('[store] 迁移 appState → 分集合失败:', err?.message || err)
+      throw err
+    }
   }
   else {
-    const { _id: _ignore, updatedAt: _u2, ...rest } = doc
-    mongoMemoryDb = shapeDbFromParsed(rest)
+    const raw = await loadShardedRawFromDb(dbm)
+    if (isRawShardedPayloadEmpty(raw)) {
+      mongoMemoryDb = buildSeedDb()
+      await persistShardedSnapshot(dbm, clonePayloadForMongo(mongoMemoryDb))
+    }
+    else {
+      mongoMemoryDb = shapeDbFromParsed(raw)
+    }
   }
 
   mongoBacked = true
@@ -243,7 +405,7 @@ function writeDb(db) {
   fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2), 'utf-8')
 }
 
-/** 供脚本在 writeDb 后 await，确保 Mongo replaceOne 已完成再断开连接 */
+/** 供脚本在 writeDb 后 await，确保 Mongo 持久化已完成再断开连接 */
 function flushMongoPersist() {
   return persistTail
 }
@@ -260,7 +422,18 @@ function resetDb() {
 }
 
 /**
- * 将 api/data/db.json（若存在且合法）或最小空库快照覆盖写入 Mongo。
+ * 清空分集合 + app_meta + 旧 appState，再写入种子快照（供 mongo:fresh 脚本）。
+ */
+async function wipeAllMongoPersistence(dbm) {
+  for (const spec of ENTITY_SPECS) {
+    await dbm.collection(spec.collection).deleteMany({})
+  }
+  await dbm.collection(mongo.APP_META).deleteMany({})
+  await dbm.collection(mongo.APP_STATE).deleteMany({})
+}
+
+/**
+ * 将 api/data/db.json（若存在且合法）或最小空库快照覆盖写入 Mongo（分集合）。
  */
 async function importLocalSnapshotToMongo() {
   const dbm = mongo.getMongoDb()
@@ -284,16 +457,8 @@ async function importLocalSnapshotToMongo() {
     snapshot = buildSeedDb()
     sourceUsed = 'empty-bootstrap'
   }
-  const coll = dbm.collection(mongo.APP_STATE)
-  await coll.replaceOne(
-    { _id: MAIN_STATE_ID },
-    {
-      _id: MAIN_STATE_ID,
-      updatedAt: new Date(),
-      ...clonePayloadForMongo(snapshot),
-    },
-    { upsert: true },
-  )
+  await persistShardedSnapshot(dbm, clonePayloadForMongo(snapshot))
+  await dbm.collection(mongo.APP_STATE).deleteOne({ _id: MAIN_STATE_ID }).catch(() => {})
   if (mongoBacked) {
     mongoMemoryDb = snapshot
   }
@@ -305,6 +470,7 @@ async function importLocalSnapshotToMongo() {
     addresses: snapshot.addresses.length,
     bankCards: snapshot.bankCards.length,
     bills: snapshot.bills.length,
+    trafficChannels: Array.isArray(snapshot.trafficChannels) ? snapshot.trafficChannels.length : 0,
     csSessions: Array.isArray(snapshot.csSessions) ? snapshot.csSessions.length : 0,
   }
   return { source: sourceUsed, counts }
@@ -323,4 +489,8 @@ module.exports = {
   hydrateFromMongoAfterConnect,
   importLocalSnapshotToMongo,
   isMongoPersistenceEnabled,
+  clonePayloadForMongo,
+  /** 脚本：清空云库 mall 相关集合并写入 buildSeedDb() */
+  wipeAllMongoPersistence,
+  persistShardedSnapshot,
 }

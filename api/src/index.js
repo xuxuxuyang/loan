@@ -2012,16 +2012,27 @@ router.get('/health', async (ctx) => {
   const dbm = mongo.getMongoDb()
   if (dbm) {
     try {
-      const coll = dbm.collection(mongo.APP_STATE)
-      const cnt = await coll.estimatedDocumentCount()
-      const main = await coll.findOne({ _id: 'main' }, { projection: { _id: 1, updatedAt: 1 } })
+      const entityCounts = {}
+      for (const key of mongo.SHARDED_ENTITY_KEYS) {
+        const name = mongo.COLLECTIONS[key]
+        entityCounts[key] = await dbm.collection(name).estimatedDocumentCount()
+      }
+      const metaMain = await dbm.collection(mongo.APP_META).findOne(
+        { _id: 'main' },
+        { projection: { _id: 1, updatedAt: 1 } },
+      )
+      const legacyMain = await dbm.collection(mongo.APP_STATE).findOne(
+        { _id: 'main' },
+        { projection: { _id: 1, updatedAt: 1 } },
+      )
       mallSnapshot = {
         database: dbm.databaseName,
-        collection: mongo.APP_STATE,
-        documentCount: cnt,
-        /** 是否与 store 写入的整条快照文档一致（无则用 import:mongo-local 写入） */
-        hasMainSnapshot: Boolean(main),
-        mainUpdatedAt: main && main.updatedAt ? main.updatedAt.toISOString() : null,
+        layout: 'sharded_v1',
+        entityCollections: entityCounts,
+        metaCollection: mongo.APP_META,
+        metaUpdatedAt: metaMain && metaMain.updatedAt ? metaMain.updatedAt.toISOString() : null,
+        /** 若仍为 true，说明尚未完成迁移或存在旧数据，应重启 api 或执行 import:mongo-local */
+        legacyAppStateMainPresent: Boolean(legacyMain),
       }
     }
     catch (err) {
@@ -5273,7 +5284,7 @@ app.use(riskControlApi.router.allowedMethods())
     await mongo.connectMongo()
     mongoPersistenceActive = await hydrateFromMongoAfterConnect()
     if (mongoPersistenceActive) {
-      console.log(`[mongo] 已启用 MongoDB 持久化（集合: ${mongo.APP_STATE}）`)
+      console.log(`[mongo] 已启用 MongoDB 持久化（分集合: ${mongo.SHARDED_ENTITY_KEYS.join(', ')}；元数据: ${mongo.APP_META}）`)
     }
   }
   catch (err) {

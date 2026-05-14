@@ -1,5 +1,5 @@
 /**
- * 将 api/data/db.json（若存在）或最小空库快照（仅默认后台账号）写入云库 mall.appState(_id: main)。
+ * 将 api/data/db.json（若存在）或最小空库快照（仅默认后台账号）写入云库（分集合 + app_meta）。
  * 用法：在 api 目录执行 npm run import:mongo-local
  */
 const path = require('node:path')
@@ -8,7 +8,6 @@ const { loadDotenvExports } = require('../src/loadEnv')
 loadDotenvExports(path.join(__dirname, '..', 'src'))
 
 const mongoConfig = require('../src/mongoConfig')
-const mongo = require('../src/mongo')
 const store = require('../src/store')
 
 async function main() {
@@ -21,7 +20,7 @@ async function main() {
 
   try {
     const result = await store.importLocalSnapshotToMongo()
-    console.log('[import] 已写入 Mongo 集合', mongo.APP_STATE)
+    console.log('[import] 已写入 Mongo（分集合 + app_meta，已移除旧版 appState 单文档若存在）')
     console.log('[import] 数据来源:', result.source)
     console.log('[import] 条数:', JSON.stringify(result.counts, null, 2))
   }

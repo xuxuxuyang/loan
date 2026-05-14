@@ -10,10 +10,27 @@ const COLLECTIONS = {
   addresses: 'addresses',
   bankCards: 'bankCards',
   bills: 'bills',
+  trafficChannels: 'trafficChannels',
+  csSessions: 'csSessions',
 }
 
-/** 商城整库快照（对接 db.json 结构），与分项集合二选一使用；当前 store 使用该集合 */
+/** 旧版整库单文档（启动时若存在则迁移到分集合后删除） */
 const APP_STATE = 'appState'
+/** 分集合模式下的元数据（_meta + updatedAt），单文档 _id: main */
+const APP_META = 'app_meta'
+
+/** 与 store 一致：分集合持久化时的实体键顺序（供健康检查等使用） */
+const SHARDED_ENTITY_KEYS = [
+  'products',
+  'orders',
+  'users',
+  'adminAccounts',
+  'addresses',
+  'bankCards',
+  'bills',
+  'trafficChannels',
+  'csSessions',
+]
 
 let client = null
 let connectPromise = null
@@ -110,6 +127,8 @@ function getMongoHealthSummary() {
 module.exports = {
   COLLECTIONS,
   APP_STATE,
+  APP_META,
+  SHARDED_ENTITY_KEYS,
   connectMongo,
   getMongoClient,
   getMongoDb,

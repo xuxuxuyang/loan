@@ -314,7 +314,7 @@ function mapMallOrderToAdminOrder(order: MallOrderPayload): OrderItem {
     userRemark,
     ...(rawEc === true ? { emergencyContactsComplete: true as const }
       : rawEc === false ? { emergencyContactsComplete: false as const }
-        : rawEc === null ? { emergencyContactsComplete: null as const }
+        : rawEc === null ? { emergencyContactsComplete: null }
           : {}),
   }
 }

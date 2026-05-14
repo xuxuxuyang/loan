@@ -1,5 +1,5 @@
 /**
- * 仅将代码中的「最小空库 + 内置超管」写入云库，不读取 api/data/db.json。
+ * 仅将代码中的「最小空库 + 内置超管」写入云库（分集合 + app_meta），不读取 api/data/db.json。
  * npm run mongo:fresh
  */
 const path = require('node:path')
@@ -13,7 +13,7 @@ const store = require('../src/store')
 
 async function main() {
   if (!mongoConfig.isMongoConfigured()) {
-    console.error('[fresh] 未配置 MONGODB_URI，请在 api/.env.development / .env.production（或 api/.env）中设置')
+    console.error('[fresh] 未配置 MONGODB_URI，请在 api/.env.development / .env.production（或 api/.env、项目根 .env）中设置')
     process.exit(1)
   }
   await mongo.connectMongo()
@@ -23,31 +23,16 @@ async function main() {
       console.error('[fresh] 无法连接 Mongo')
       process.exit(1)
     }
+    await store.wipeAllMongoPersistence(dbm)
     const snapshot = store.buildSeedDb()
-    await dbm.collection(mongo.APP_STATE).replaceOne(
-      { _id: 'main' },
-      {
-        _id: 'main',
-        updatedAt: new Date(),
-        ...JSON.parse(JSON.stringify({
-          products: snapshot.products,
-          orders: snapshot.orders,
-          users: snapshot.users,
-          adminAccounts: snapshot.adminAccounts,
-          addresses: snapshot.addresses,
-          bankCards: snapshot.bankCards,
-          bills: snapshot.bills,
-        })),
-      },
-      { upsert: true },
-    )
-    console.log('[fresh] 已用内置快照覆盖 appState(main)，条数:', {
+    await store.persistShardedSnapshot(dbm, store.clonePayloadForMongo(snapshot))
+    console.log('[fresh] 已清空并写入分集合 + app_meta，条数:', {
       products: snapshot.products.length,
       orders: snapshot.orders.length,
       users: snapshot.users.length,
       adminAccounts: snapshot.adminAccounts.length,
     })
-    console.warn('[fresh] 若 mall-api 正在运行请重启，以载入新快照')
+    console.warn('[fresh] 若 mall-api 正在运行请重启，以载入新数据')
   }
   finally {
     await mongo.closeMongo()
