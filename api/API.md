@@ -158,29 +158,6 @@
 
 ---
 
-## `GET /card-packages/:orderId/contract-download`
-
-- **用在哪：** 商城卡包「下载合同」；`shop` 侧可带 `file=1` 直接拉取 PDF 二进制（`Content-Type: application/pdf`），否则返回 JSON（含 Base64）。
-- **鉴权：** Query `phone` 须与订单归属一致。
-- **模拟签章（`MALL_CARD_PACKAGE_CONTRACT_MOCK=1`）：** 首次下载会在服务端用 Chromium 生成 PDF，可能 **60～120 秒**；生成结果会写入 `api/public/generated/card-package-contracts/` 并记入订单字段，**后续同内容下载命中磁盘缓存会很快**。
-- **运维（重要）：** 若 Nginx 反代 Node，默认 `proxy_read_timeout` 常为 **60s**，生成未结束即会返回 **502/504** 与 Nginx 自带 `50x.html`（浏览器 Preview 里像「nginx error!」）。请对反代到本 API 的 `location` 提高读超时，例如：
-
-```nginx
-# 示例：仅拉长卡包合同下载（按你方实际前缀调整）
-location ~ ^/api/card-packages/[^/]+/contract-download {
-    proxy_pass http://127.0.0.1:3110;  # 与 pm2 监听端口一致
-    proxy_http_version 1.1;
-    proxy_read_timeout 300s;
-    proxy_connect_timeout 75s;
-    proxy_send_timeout 300s;
-    client_max_body_size 20m;
-}
-```
-
-- **可选环境变量：** `CARD_PACKAGE_PDF_CLI_TIMEOUT_MS`（默认 `120000`）控制 `--print-to-pdf` 超时；**须小于**你在 Nginx 上配置的 `proxy_read_timeout`（建议留出余量，例如 Nginx 300s、CLI 120s）。
-
----
-
 ## `GET /addresses`
 
 - **用在哪：** `app/composables/useMallMy.ts`。

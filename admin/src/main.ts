@@ -1,10 +1,13 @@
 import { createApp } from 'vue'
-import ElementPlus from 'element-plus'
-import zhCn from 'element-plus/es/locale/lang/zh-cn'
-import 'element-plus/dist/index.css'
+import { ElLoadingDirective } from 'element-plus'
+import 'element-plus/es/components/loading/style/css'
 import 'nprogress/nprogress.css'
 import './style.css'
 import App from './App.vue'
 import router from './router'
 
-createApp(App).use(router).use(ElementPlus, { locale: zhCn }).mount('#app')
+const app = createApp(App)
+app.use(router)
+// 保留 v-loading 能力，组件本体改由按需自动注册。
+app.directive('loading', ElLoadingDirective)
+app.mount('#app')

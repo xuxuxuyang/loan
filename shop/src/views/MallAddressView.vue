@@ -1,15 +1,11 @@
 <script setup lang="ts">
 import AppTabbar from '~/components/App/AppTabbar.vue'
-import AddressIndex from '~/components/my/address/index.vue'
-import AddressIndexM from '~/components/my/address/index-m.vue'
-
-const device = useDevice()
+const MyAddressMobile = defineAsyncComponent(() => import('~/components/my/address/MyAddressMobile.vue'))
 </script>
 
 <template>
   <div class="min-h-screen bg-[#f3f4f8] pb-16">
-    <AddressIndexM v-if="device.isMobile" />
-    <AddressIndex v-else />
+    <MyAddressMobile />
     <AppTabbar />
   </div>
 </template>

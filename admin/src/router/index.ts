@@ -1,16 +1,17 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import type { AdminSession } from '../composables/useAdminAuth'
 import { adminSessionRoleAllowed, getAdminSession, isAdminAuthenticated } from '../composables/useAdminAuth'
-import AccountManagePage from '../views/AccountManagePage.vue'
-import CsMessagesPage from '../views/CsMessagesPage.vue'
-import DashboardPage from '../views/DashboardPage.vue'
-import ReceivableByDatePage from '../views/ReceivableByDatePage.vue'
-import LoginPage from '../views/LoginPage.vue'
-import OrdersPage from '../views/OrdersPage.vue'
-import OrderReviewPage from '../views/OrderReviewPage.vue'
-import ProductsPage from '../views/ProductsPage.vue'
-import TrafficManagementPage from '../views/TrafficManagementPage.vue'
-import UsersPage from '../views/UsersPage.vue'
+
+const LoginPage = () => import('../views/LoginPage.vue')
+const DashboardPage = () => import('../views/DashboardPage.vue')
+const OrdersPage = () => import('../views/OrdersPage.vue')
+const OrderReviewPage = () => import('../views/OrderReviewPage.vue')
+const ReceivableByDatePage = () => import('../views/ReceivableByDatePage.vue')
+const UsersPage = () => import('../views/UsersPage.vue')
+const AccountManagePage = () => import('../views/AccountManagePage.vue')
+const TrafficManagementPage = () => import('../views/TrafficManagementPage.vue')
+const ProductsPage = () => import('../views/ProductsPage.vue')
+const CsMessagesPage = () => import('../views/CsMessagesPage.vue')
 
 function adminHomeRoute(session: AdminSession | null) {
   if (session?.role === 'reviewer' || session?.role === 'collector')

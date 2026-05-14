@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { normalizeMallAccount } from '~/composables/useMallAuth'
+import { notifyError, notifySuccess, notifyWarning } from '~/utils/epFeedback'
 
 const route = useRoute()
 const { smartNavigate } = useCustomRouting(route)
@@ -55,7 +56,7 @@ if (!import.meta.env.SSR) {
 function validatePhone() {
   const account = normalizeMallAccount(phone.value)
   if (!phoneReg.test(account)) {
-    ElMessage.warning('请输入正确的手机号')
+    notifyWarning('请输入正确的手机号')
     return false
   }
   return true
@@ -68,7 +69,7 @@ async function handleSendLoginSms() {
   smsSending.value = true
   try {
     await sendLoginSms(normalizeMallAccount(phone.value))
-    ElMessage.success('验证码已发送')
+    notifySuccess('验证码已发送')
     countdown.value = 60
     if (smsTimer) {
       clearInterval(smsTimer)
@@ -84,10 +85,10 @@ async function handleSendLoginSms() {
   catch (e) {
     const text = (e as Error).message || '发送失败，请稍后重试'
     if (text.includes('未注册')) {
-      ElMessage.warning(text)
+      notifyWarning(text)
     }
     else {
-      ElMessage.error(text)
+      notifyError(text)
     }
   }
   finally {
@@ -133,18 +134,18 @@ async function submitLogin() {
   }
   if (loginMode.value === 'sms') {
     if (!/^\d{6}$/.test(verifyCode.value.trim())) {
-      ElMessage.warning('请输入 6 位短信验证码')
+      notifyWarning('请输入 6 位短信验证码')
       return
     }
   }
   else {
     if (password.value.trim().length < 6) {
-      ElMessage.warning('密码至少 6 位')
+      notifyWarning('密码至少 6 位')
       return
     }
   }
   if (!agree.value) {
-    ElMessage.warning('请先同意用户协议和隐私政策')
+    notifyWarning('请先同意用户协议和隐私政策')
     return
   }
 
@@ -160,12 +161,12 @@ async function submitLogin() {
     else {
       await loginByPassword(normalizedPhone, password.value.trim())
     }
-    ElMessage.success('登录成功')
+    notifySuccess('登录成功')
     await smartNavigate(redirect)
   }
   catch (error) {
     const message = resolveSubmitError(error)
-    ElMessage.warning(message)
+    notifyWarning(message)
     if (message.includes('未注册')) {
       await goRegister()
     }

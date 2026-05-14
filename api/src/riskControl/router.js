@@ -28,7 +28,6 @@ const {
   postCreateContract,
   postAddSigner,
   postGetContract,
-  postDownloadContract,
   postClSmsSend,
   postClSmsNotify,
 } = require('./upstreamClient')
@@ -437,7 +436,7 @@ async function forwardUserFaceResult(ctx) {
   await runUpstreamProxy(ctx, postUserFaceResult, { bizId })
 }
 
-/** getContract / downloadContract：上游仅需 data.contractNo */
+/** getContract：上游仅需 data.contractNo */
 async function forwardContractNoOnlyUpstream(ctx, upstreamFetch) {
   const data = ctx.state.riskControl.data || {}
   const contractNo = String(data.contractNo ?? data.contract_no ?? '').trim()
@@ -468,11 +467,6 @@ async function forwardContractNoOnlyUpstream(ctx, upstreamFetch) {
 /** 查询合同信息：上游仅需 data.contractNo */
 async function forwardGetContract(ctx) {
   await forwardContractNoOnlyUpstream(ctx, postGetContract)
-}
-
-/** 下载合同：上游仅需 data.contractNo */
-async function forwardDownloadContract(ctx) {
-  await forwardContractNoOnlyUpstream(ctx, postDownloadContract)
 }
 
 /** clSms/send、clSms/notify：上游 data.phone、data.msg */
@@ -1031,11 +1025,6 @@ router.post('/v1/get-contract', verifyRiskSignature, async (ctx) => {
   await forwardGetContract(ctx)
 })
 
-/** 下载合同：验签后转发上游 POST /api/sign/downloadContract */
-router.post('/v1/download-contract', verifyRiskSignature, async (ctx) => {
-  await forwardDownloadContract(ctx)
-})
-
 /** 验证码短信发送：验签后转发上游 POST /api/clSms/send */
 router.post('/v1/cl-sms-send', verifyRiskSignature, async (ctx) => {
   await forwardClSmsSend(ctx)
@@ -1046,11 +1035,8 @@ router.post('/v1/cl-sms-notify', verifyRiskSignature, async (ctx) => {
   await forwardClSmsNotify(ctx)
 })
 
-const { runCreditPreliminaryReview } = require('./preliminaryReview')
-
 module.exports = {
   router,
   verifyRiskSignature,
   PREFIX,
-  runCreditPreliminaryReview,
 }

@@ -2,7 +2,7 @@
 import { normalizeMallAccount } from '~/composables/useMallAuth'
 import { resolveMallCreditQuota } from '~/composables/mallCreditQuota'
 import { formatMallAddressLine, useMallMy } from '~/composables/useMallMy'
-import { mallOrderBelongsToLoggedIn, normalizeReceiverPhoneDigits } from '~/composables/useMallOrders'
+import { mallOrderBelongsToLoggedIn, normalizeReceiverPhoneDigits, effectiveMallOrderStatus } from '~/composables/useMallOrders'
 import type { TeaProduct } from '~/composables/useTeaProducts'
 import {
   ensureMallProductsLoaded,
@@ -11,6 +11,7 @@ import {
   useMallShowcaseProducts,
   useTeaProducts,
 } from '~/composables/useTeaProducts'
+import { notifyError, notifySuccess, notifyWarning } from '~/utils/epFeedback'
 
 const route = useRoute()
 const router = useRouter()
@@ -122,9 +123,14 @@ const myMallOrders = computed(() => {
   return orders.value.filter(o => mallOrderBelongsToLoggedIn(o.receiverPhone, account))
 })
 
-/** 存在任一未「已完成」(enjoying) 的订单时，不允许再下单 */
+/** 老客户：曾有先享后付订单且卡包已发放（与订单列表「有效状态」一致） */
+const isReturningCustomer = computed(() =>
+  myMallOrders.value.some(o => o.payType === 'installment' && Boolean(o.cardPackageIssued)),
+)
+
+/** 存在任一未「已完成」的订单时，不允许再下单（卡包已发视同已完成） */
 const hasBlockingMallOrder = computed(() =>
-  myMallOrders.value.some(o => o.status !== 'enjoying'),
+  myMallOrders.value.some(o => effectiveMallOrderStatus(o) !== 'enjoying'),
 )
 
 const creditQuota = computed(() => resolveMallCreditQuota(profile.value))
@@ -244,7 +250,7 @@ async function submitOrder() {
   }
 
   if (!selectedProduct.value) {
-    ElMessage.warning('商品信息不存在，请返回商品页重新选择')
+    notifyWarning('商品信息不存在，请返回商品页重新选择')
     return
   }
 
@@ -254,24 +260,24 @@ async function submitOrder() {
   }
 
   if (!receiverName.value || !receiverPhone.value) {
-    ElMessage.warning('收货人姓名或手机号不完整，请重新选择或编辑收货地址')
+    notifyWarning('收货人姓名或手机号不完整，请重新选择或编辑收货地址')
     scrollToAddressSection()
     pulseAddressSection()
     return
   }
 
   if (hasBlockingMallOrder.value) {
-    ElMessage.warning('您尚有进行中的订单，请待订单状态为「已完成」后再下单')
+    notifyWarning('您尚有进行中的订单，请待订单状态为「已完成」后再下单')
     return
   }
 
   if (orderBlacklisted.value) {
-    ElMessage.warning('您的账号暂不可下单，如有疑问请联系客服')
+    notifyWarning('您的账号暂不可下单，如有疑问请联系客服')
     return
   }
 
   if (exceedsCreditLimit.value) {
-    ElMessage.warning(
+    notifyWarning(
       `当前商品总额（￥${itemAmount.value.toFixed(2)}）已超过您的授信额度（￥${creditQuota.value}），请更换商品后再试`,
     )
     return
@@ -285,58 +291,82 @@ async function submitOrder() {
     const apiBase = String(runtimeConfig.public.mallApiBase || '/api').replace(/\/$/, '')
     const idNumber = String(profile.value?.idNumber || '').trim()
     if (!idNumber) {
-      ElMessage.warning('先享后付下单需填写身份证号，请先在「我的」完善注册资料后再试')
+      notifyWarning('先享后付下单需填写身份证号，请先在「我的」完善注册资料后再试')
       return
     }
-    type WaveCreateData = { waveId: string, stepKeys: string[] }
-    type StepData = { ok: boolean, step?: { error?: string, label?: string } }
-    const waveRes = await $fetch<{ success: boolean, msg?: string, data?: WaveCreateData }>(
-      `${apiBase}/mall/installment-risk/wave`,
-      {
-        method: 'POST',
-        body: {
-          userName: receiverName.value,
-          phoneNumber: receiverPhone.value,
-          idNumber,
+    if (isReturningCustomer.value) {
+      newOrder = await createOrder({
+        productId: selectedProduct.value.id,
+        name: selectedProduct.value.name,
+        spec: selectedProduct.value.subtitle,
+        totalAmount: installmentRepayTotal.value,
+        quantity: ORDER_QUANTITY,
+        /** 老客户复购：直过审核，后台进入已审核（待发货） */
+        status: 'shipping',
+        paid: false,
+        payType: 'installment',
+        payChannel: 'wechat',
+        installmentPeriods: 1,
+        receiverName: receiverName.value,
+        receiverPhone: receiverPhone.value,
+        receiverAddress: receiverAddressLine.value,
+        idNumber: profile.value?.idNumber,
+        idCardFront: profile.value?.idCardFront,
+        idCardBack: profile.value?.idCardBack,
+        riskBypassReason: 'returning_customer',
+      })
+    }
+    else {
+      type WaveCreateData = { waveId: string, stepKeys: string[] }
+      type StepData = { ok: boolean, step?: { error?: string, label?: string } }
+      const waveRes = await $fetch<{ success: boolean, msg?: string, data?: WaveCreateData }>(
+        `${apiBase}/mall/installment-risk/wave`,
+        {
+          method: 'POST',
+          body: {
+            userName: receiverName.value,
+            phoneNumber: receiverPhone.value,
+            idNumber,
+          },
         },
-      },
-    )
-    if (!waveRes.success || !waveRes.data?.waveId || !Array.isArray(waveRes.data.stepKeys)) {
-      ElMessage.error(typeof waveRes.msg === 'string' && waveRes.msg.trim() ? waveRes.msg : '创建风控会话失败')
-      return
-    }
-    const { waveId, stepKeys } = waveRes.data
-    for (const stepKey of stepKeys) {
-      const stepRes = await $fetch<{ success: boolean, msg?: string, data?: StepData }>(
-        `${apiBase}/mall/installment-risk/wave/${encodeURIComponent(waveId)}/step/${encodeURIComponent(stepKey)}`,
-        { method: 'POST' },
       )
-      const ok = Boolean(stepRes.success && stepRes.data?.ok)
-      if (!ok) {
-        const errText = stepRes.data?.step?.error || (typeof stepRes.msg === 'string' ? stepRes.msg : '') || '系统审核不通过'
-        ElMessage.error(`审核未通过（${stepRes.data?.step?.label || stepKey}）：${errText}`)
+      if (!waveRes.success || !waveRes.data?.waveId || !Array.isArray(waveRes.data.stepKeys)) {
+        notifyError(typeof waveRes.msg === 'string' && waveRes.msg.trim() ? waveRes.msg : '创建风控会话失败')
         return
       }
+      const { waveId, stepKeys } = waveRes.data
+      for (const stepKey of stepKeys) {
+        const stepRes = await $fetch<{ success: boolean, msg?: string, data?: StepData }>(
+          `${apiBase}/mall/installment-risk/wave/${encodeURIComponent(waveId)}/step/${encodeURIComponent(stepKey)}`,
+          { method: 'POST' },
+        )
+        const ok = Boolean(stepRes.success && stepRes.data?.ok)
+        if (!ok) {
+          const errText = stepRes.data?.step?.error || (typeof stepRes.msg === 'string' ? stepRes.msg : '') || '系统审核不通过'
+          notifyError(`审核未通过（${stepRes.data?.step?.label || stepKey}）：${errText}`)
+          return
+        }
+      }
+      newOrder = await createOrder({
+        productId: selectedProduct.value.id,
+        name: selectedProduct.value.name,
+        spec: selectedProduct.value.subtitle,
+        totalAmount: installmentRepayTotal.value,
+        quantity: ORDER_QUANTITY,
+        status: 'reviewing',
+        paid: false,
+        payType: 'installment',
+        payChannel: 'wechat',
+        installmentPeriods: 1,
+        receiverName: receiverName.value,
+        receiverPhone: receiverPhone.value,
+        receiverAddress: receiverAddressLine.value,
+        idNumber: profile.value?.idNumber,
+        idCardFront: profile.value?.idCardFront,
+        idCardBack: profile.value?.idCardBack,
+        installmentRiskWaveId: waveId,
+      })
     }
-    newOrder = await createOrder({
-      productId: selectedProduct.value.id,
-      name: selectedProduct.value.name,
-      spec: selectedProduct.value.subtitle,
-      totalAmount: installmentRepayTotal.value,
-      quantity: ORDER_QUANTITY,
-      status: 'reviewing',
-      paid: false,
-      payType: 'installment',
-      payChannel: 'wechat',
-      installmentPeriods: 1,
-      receiverName: receiverName.value,
-      receiverPhone: receiverPhone.value,
-      receiverAddress: receiverAddressLine.value,
-      idNumber: profile.value?.idNumber,
-      idCardFront: profile.value?.idCardFront,
-      idCardBack: profile.value?.idCardBack,
-      installmentRiskWaveId: waveId,
-    })
     currentOrderNo.value = newOrder.id
   }
   catch (error: unknown) {
@@ -345,7 +375,7 @@ async function submitOrder() {
       const o = error as { data?: { msg?: string } }
       msg = typeof o.data?.msg === 'string' ? o.data.msg.trim() : ''
     }
-    ElMessage.error(msg || '创建订单失败，请稍后重试')
+    notifyError(msg || '创建订单失败，请稍后重试')
     return
   }
   finally {
@@ -356,14 +386,14 @@ async function submitOrder() {
     return
   }
   if (newOrder.riskStatus === 'failed') {
-    ElMessage.warning(
+    notifyWarning(
       newOrder.riskReason
         ? `审核不通过：${newOrder.riskReason}`
         : '审核不通过，请稍后在订单列表查看详情',
     )
   }
   else {
-    ElMessage.success(`系统审核通过，订单已提交，订单号 ${currentOrderNo.value}`)
+    notifySuccess(`系统审核通过，订单已提交，订单号 ${currentOrderNo.value}`)
   }
   {
     let login = normalizeReceiverPhoneDigits(currentUserPhone.value)

@@ -49,8 +49,6 @@ function isRiskUpstreamConfigured() {
   return !!(c.baseUrl && c.appid && c.appkey)
 }
 
-const isUpstreamCourtDetailConfigured = isRiskUpstreamConfigured
-
 function normalizeApiPath(envKey, defaultPath) {
   const p = String(process.env[envKey] || defaultPath).trim()
   return p.startsWith('/') ? p : `/${p}`
@@ -138,10 +136,6 @@ function addSignerPath() {
 
 function getContractPath() {
   return normalizeApiPath('RISK_UPSTREAM_GET_CONTRACT_PATH', '/api/sign/getContract')
-}
-
-function downloadContractPath() {
-  return normalizeApiPath('RISK_UPSTREAM_DOWNLOAD_CONTRACT_PATH', '/api/sign/downloadContract')
 }
 
 function clSmsSendPath() {
@@ -310,10 +304,6 @@ function postAddSigner(data) {
 
 function postGetContract(data) {
   return postSignedUpstream(getContractPath(), data)
-}
-
-function postDownloadContract(data) {
-  return postSignedUpstream(downloadContractPath(), data)
 }
 
 /** 验证码类短信：data 为 { phone, msg }（msg 为完整正文，含签名；商城注册见 mallRegisterSms） */
@@ -792,7 +782,6 @@ async function runOrderSubmitUpstreamRiskPack(params) {
 
 module.exports = {
   isRiskUpstreamConfigured,
-  isUpstreamCourtDetailConfigured,
   orderRiskChannelAndEnvelopeOk,
   postSignedUpstream,
   postCourtDetailPro,
@@ -816,7 +805,6 @@ module.exports = {
   postCreateContract,
   postAddSigner,
   postGetContract,
-  postDownloadContract,
   postClSmsSend,
   postClSmsNotify,
   courtDetailProPath,
@@ -840,7 +828,6 @@ module.exports = {
   createContractPath,
   addSignerPath,
   getContractPath,
-  downloadContractPath,
   clSmsSendPath,
   clSmsNotifyPath,
   runOrderSubmitUpstreamRiskPack,

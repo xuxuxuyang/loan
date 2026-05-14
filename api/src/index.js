@@ -25,8 +25,10 @@ const fsp = require('node:fs/promises')
 const multer = require('@koa/multer')
 const mount = require('koa-mount')
 const serve = require('koa-static')
+const { imageSize } = require('image-size')
+const { getOssConfig, isOssConfigured, uploadIdCardImage, uploadPublicImage } = require('./oss')
 
-const riskControlApi = require('./riskControl/router')
+const { router: riskControlRouter, PREFIX: RISK_CONTROL_PREFIX } = require('./riskControl/router')
 const {
   runCreditPreliminaryReview,
   normalizeFourteenProductRows,
@@ -41,7 +43,6 @@ const {
   postAddPersonalUser,
   postAddSigner,
   postGetContract,
-  postDownloadContract,
 } = require('./riskControl/upstreamClient')
 const {
   createWave: createInstallmentRiskWave,
@@ -65,27 +66,21 @@ const PORT = Number(process.env.PORT || 3110)
 /** GET /static/* → api/public/*（卡包合同模板 PDF 等，供电子签上游按 URL 拉取；本地 mock 下载 PDF 由程序按订单动态生成，不读该目录） */
 const API_PUBLIC_DIR = path.join(__dirname, '..', 'public')
 
-const csChatImageUpload = multer({
-  storage: multer.diskStorage({
-    destination(_req, _file, cb) {
-      const dir = path.join(API_PUBLIC_DIR, 'uploads', 'cs')
-      try {
-        fs.mkdirSync(dir, { recursive: true })
-      }
-      catch (err) {
-        cb(err)
-        return
-      }
-      cb(null, dir)
-    },
-    filename(_req, file, cb) {
-      const ext = path.extname(file.originalname || '').toLowerCase()
-      const allowed = new Set(['.jpg', '.jpeg', '.png', '.webp', '.gif'])
-      const e = allowed.has(ext) ? ext : '.jpg'
-      cb(null, `cs_${Date.now()}_${crypto.randomBytes(6).toString('hex')}${e}`)
-    },
-  }),
+const mallIdCardUpload = multer({
+  storage: multer.memoryStorage(),
   limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter(_req, file, cb) {
+    if (/^image\/(jpeg|png|webp)$/i.test(file.mimetype || '')) {
+      cb(null, true)
+    }
+    else {
+      cb(new Error('仅支持 JPG、PNG、WebP 图片'))
+    }
+  },
+})
+const mallPublicImageUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 8 * 1024 * 1024 },
   fileFilter(_req, file, cb) {
     if (/^image\/(jpeg|png|webp|gif)$/i.test(file.mimetype || '')) {
       cb(null, true)
@@ -95,6 +90,8 @@ const csChatImageUpload = multer({
     }
   },
 })
+const ALLOWED_ID_CARD_EXTS = new Set(['.jpg', '.jpeg', '.png', '.webp'])
+const ALLOWED_ID_CARD_MIMES = new Set(['image/jpeg', 'image/png', 'image/webp'])
 const MALL_PASSWORD_PEPPER = 'mall-local-pepper-v1'
 const PRODUCT_CATEGORIES = new Set(['phone', 'digital', 'appliance', 'cosmetics'])
 /** 历史数据中的旧分类键 → 新分类（仅读库归一化，新建商品请用新分类） */
@@ -880,6 +877,7 @@ function persistLegacyInstallmentFirstPaidIfOrderPaid(order) {
  */
 function applyInstallmentCompletionOrderStatus(order, opts = {}) {
   const ignoreAdminSkip = opts.ignoreAdminSkip === true
+  ensureOrderCardPackage(order)
   if (order.payType !== 'installment') {
     return false
   }
@@ -901,12 +899,29 @@ function applyInstallmentCompletionOrderStatus(order, opts = {}) {
     return false
   }
   if (order.status === 'enjoying') {
+    /** 卡包已发放即视为订单生命周期已完成：不因分期未结清而回退到待收货/待发货（与后台、商城展示一致） */
+    if (order.cardPackageIssued) {
+      return false
+    }
     ensureOrderShipment(order)
     const tn = String(order.trackingNumber || '').trim()
     order.status = tn ? 'receiving' : 'shipping'
     return true
   }
   return false
+}
+
+/** 幂等：历史数据或旧逻辑下「卡包已发但 status 仍为 shipping/receiving」时对齐为 enjoying */
+function reconcileCardPackageIssuedToEnjoying(order) {
+  ensureOrderCardPackage(order)
+  if (order.payType !== 'installment' || !order.cardPackageIssued) {
+    return false
+  }
+  if (order.status === 'enjoying') {
+    return false
+  }
+  order.status = 'enjoying'
+  return true
 }
 
 /**
@@ -978,6 +993,9 @@ function reconcileInstallmentCompletionAcrossDb(db) {
       changed = true
     }
     if (applyInstallmentCompletionOrderStatus(order)) {
+      changed = true
+    }
+    if (reconcileCardPackageIssuedToEnjoying(order)) {
       changed = true
     }
   }
@@ -1387,6 +1405,105 @@ function fail(ctx, msg, code = 400) {
 
 function normalizePhone(phone) {
   return String(phone || '').replace(/\D/g, '')
+}
+
+function normalizeImageExtForIdCard(file) {
+  const ext = path.extname(String(file?.originalname || '')).toLowerCase()
+  return ALLOWED_ID_CARD_EXTS.has(ext) ? ext : ''
+}
+
+function detectImageMimeByMagic(buffer) {
+  if (!buffer || buffer.length < 12) {
+    return ''
+  }
+  // JPEG
+  if (buffer[0] === 0xff && buffer[1] === 0xd8) {
+    return 'image/jpeg'
+  }
+  // PNG
+  if (buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47) {
+    return 'image/png'
+  }
+  // WebP: RIFF....WEBP
+  if (
+    buffer[0] === 0x52 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x46
+    && buffer[8] === 0x57 && buffer[9] === 0x45 && buffer[10] === 0x42 && buffer[11] === 0x50
+  ) {
+    return 'image/webp'
+  }
+  // GIF87a / GIF89a
+  if (
+    buffer[0] === 0x47 && buffer[1] === 0x49 && buffer[2] === 0x46
+    && buffer[3] === 0x38 && (buffer[4] === 0x37 || buffer[4] === 0x39) && buffer[5] === 0x61
+  ) {
+    return 'image/gif'
+  }
+  return ''
+}
+
+function detectImageExtFromMime(mimetype) {
+  const mt = String(mimetype || '').toLowerCase()
+  if (mt === 'image/png') return '.png'
+  if (mt === 'image/webp') return '.webp'
+  if (mt === 'image/gif') return '.gif'
+  return '.jpg'
+}
+
+function validateIdCardImageBuffer(file) {
+  const ext = normalizeImageExtForIdCard(file)
+  if (!ext) {
+    return { ok: false, msg: '图片扩展名仅支持 .jpg/.jpeg/.png/.webp' }
+  }
+  const mimetype = String(file?.mimetype || '').toLowerCase()
+  if (!ALLOWED_ID_CARD_MIMES.has(mimetype)) {
+    return { ok: false, msg: '图片类型仅支持 JPG/PNG/WebP' }
+  }
+  const detectedMime = detectImageMimeByMagic(file?.buffer)
+  if (!detectedMime || detectedMime !== mimetype) {
+    return { ok: false, msg: '图片内容与类型不匹配，请重新上传' }
+  }
+  let sizeInfo
+  try {
+    sizeInfo = imageSize(file.buffer)
+  }
+  catch {
+    return { ok: false, msg: '无法解析图片尺寸，请更换图片重试' }
+  }
+  const width = Number(sizeInfo?.width || 0)
+  const height = Number(sizeInfo?.height || 0)
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+    return { ok: false, msg: '图片尺寸无效，请更换图片重试' }
+  }
+  const c = getOssConfig()
+  const maxPixels = Math.round(Number(c.maxImageMegaPixels || 20) * 1000000)
+  if (width * height > maxPixels) {
+    return { ok: false, msg: `图片像素过大（上限 ${c.maxImageMegaPixels}MP），请压缩后重试` }
+  }
+  return { ok: true }
+}
+
+function validatePublicImageBuffer(file) {
+  const mimetype = String(file?.mimetype || '').toLowerCase()
+  const allowed = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif'])
+  if (!allowed.has(mimetype)) {
+    return { ok: false, msg: '图片类型仅支持 JPG/PNG/WebP/GIF' }
+  }
+  const detectedMime = detectImageMimeByMagic(file?.buffer)
+  if (!detectedMime || detectedMime !== mimetype) {
+    return { ok: false, msg: '图片内容与类型不匹配，请重新上传' }
+  }
+  try {
+    const sizeInfo = imageSize(file.buffer)
+    const width = Number(sizeInfo?.width || 0)
+    const height = Number(sizeInfo?.height || 0)
+    if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+      return { ok: false, msg: '图片尺寸无效，请更换图片重试' }
+    }
+  }
+  catch {
+    return { ok: false, msg: '无法解析图片尺寸，请更换图片重试' }
+  }
+  return { ok: true }
 }
 
 /** 订单收货手机号与登录 query.phone（已 normalize）一致比较，避免空格/格式导致还款找不到订单 */
@@ -1885,11 +2002,18 @@ function calcMySummary(db, phone) {
   const userOrders = db.orders.filter(item => orderReceiverPhoneMatches(phone, item.receiverPhone))
   const userCards = db.bankCards.filter(item => normalizePhone(item.userPhone || '') === phone)
 
+  const mallSummaryStatus = (item) => {
+    ensureOrderCardPackage(item)
+    if (item.payType === 'installment' && item.cardPackageIssued) {
+      return 'enjoying'
+    }
+    return item.status
+  }
   const orderCount = {
-    reviewing: userOrders.filter(item => item.status === 'reviewing').length,
-    shipping: userOrders.filter(item => item.status === 'shipping').length,
-    receiving: userOrders.filter(item => item.status === 'receiving').length,
-    enjoying: userOrders.filter(item => item.status === 'enjoying').length,
+    reviewing: userOrders.filter(item => mallSummaryStatus(item) === 'reviewing').length,
+    shipping: userOrders.filter(item => mallSummaryStatus(item) === 'shipping').length,
+    receiving: userOrders.filter(item => mallSummaryStatus(item) === 'receiving').length,
+    enjoying: userOrders.filter(item => mallSummaryStatus(item) === 'enjoying').length,
   }
   const { totalPending: billPendingAmount } = buildMallBillingListAndSummaries(db, phone)
 
@@ -3246,82 +3370,6 @@ router.get('/card-packages/:orderId/contract-flow', async (ctx) => {
   }
 })
 
-router.get('/card-packages/:orderId/contract-download', async (ctx) => {
-  const phone = getUserPhone(ctx)
-  if (!phone) {
-    fail(ctx, '手机号格式不正确')
-    return
-  }
-  const orderId = decodeURIComponent(String(ctx.params.orderId || ''))
-  const db = readDb()
-  reconcileInstallmentCompletionAcrossDb(db)
-  const order = findMallCardPackageClaimOrder(db, phone, orderId)
-  if (!order) {
-    fail(ctx, '订单不存在或不可领取卡包', 404)
-    return
-  }
-
-  if (isMallCardPackageContractMock()) {
-    try {
-      if (!String(order.cardPackageContractNo || '').trim()) {
-        order.cardPackageContractNo = buildCardPackageContractNo(order)
-        writeDb(db)
-      }
-      const user = db.users.find(item => item.phone === phone)
-      const skipCache = String(ctx.query.nocache || '').trim() === '1'
-      const buf = await getOrBuildMockCardPackagePdfBuffer(ctx, db, order, user, phone, order.cardPackageContractNo, skipCache)
-      const wantFile = String(ctx.query.file || ctx.query.raw || '').trim() === '1'
-      if (wantFile) {
-        const fn = safeCardPackageContractPdfFileName(order)
-        ctx.status = 200
-        ctx.set('Content-Type', 'application/pdf')
-        ctx.set('Cache-Control', 'no-store')
-        ctx.set(
-          'Content-Disposition',
-          `attachment; filename="contract.pdf"; filename*=UTF-8''${encodeURIComponent(fn)}`,
-        )
-        ctx.body = buf
-        return
-      }
-      ctx.body = success({
-        fileName: safeCardPackageContractPdfFileName(order),
-        fileType: 0,
-        data: buf.toString('base64'),
-      })
-    }
-    catch (err) {
-      console.error('[card-packages-contract-download-mock]', err)
-      fail(ctx, err && err.message ? String(err.message) : '生成合同 PDF 失败（请确认已安装 puppeteer-core、@sparticuz/chromium 或系统 Chrome）', 502)
-    }
-    return
-  }
-
-  if (!isRiskUpstreamConfigured()) {
-    fail(ctx, '电子签章服务未配置', 503)
-    return
-  }
-  const contractNo = String(order.cardPackageContractNo || '').trim()
-  if (!contractNo) {
-    fail(ctx, '请先打开合同页面以生成电子合同', 400)
-    return
-  }
-  try {
-    const dl = await postDownloadContract({ contractNo })
-    if (!mallUpstreamContractJsonOk(dl.json)) {
-      ctx.status = dl.status >= 400 ? dl.status : 502
-      ctx.body = dl.json && typeof dl.json === 'object'
-        ? dl.json
-        : { success: false, msg: '下载合同失败' }
-      return
-    }
-    ctx.body = success(dl.json)
-  }
-  catch (err) {
-    console.error('[card-packages-contract-download]', err)
-    fail(ctx, err && err.message ? String(err.message) : '下载合同异常', 502)
-  }
-})
-
 router.post('/card-packages/:orderId/contract-ack', async (ctx) => {
   const phone = getUserPhone(ctx)
   if (!phone) {
@@ -4297,6 +4345,31 @@ router.post('/orders', async (ctx) => {
     trackingNumber: '',
   }
   if (nextOrder.payType === 'installment') {
+    const riskBypassReason = String(payload.riskBypassReason || '').trim()
+    const isReturningCustomerBypass = riskBypassReason === 'returning_customer'
+    if (isReturningCustomerBypass) {
+      const receiverNorm = normalizePhone(nextOrder.receiverPhone)
+      const hasCompletedIssuedOrder = db.orders.some((item) => {
+        if (normalizePhone(String(item.receiverPhone || '')) !== receiverNorm) {
+          return false
+        }
+        ensureOrderCardPackage(item)
+        return item.status === 'enjoying' && item.cardPackageIssued === true
+      })
+      if (!hasCompletedIssuedOrder) {
+        fail(ctx, '当前账号不满足老客户免风控条件，请按正常流程提交', 400)
+        return
+      }
+      if (nextOrder.status === 'reviewing') {
+        nextOrder.status = 'shipping'
+      }
+      nextOrder.riskStatus = 'passed'
+      nextOrder.riskReason = ''
+      nextOrder.riskCheckedAt = new Date().toISOString()
+      nextOrder.riskBypassReason = 'returning_customer'
+      nextOrder.riskOrderSubmitPack = false
+    }
+    else {
     const skipUpstream = String(process.env.RISK_ORDER_SUBMIT_SKIP_UPSTREAM || '').trim() === '1'
     const idForRisk = String(payload.idNumber || '').trim()
     const idPlaceholder = String(process.env.RISK_PRELIMINARY_PLACEHOLDER_ID || '').trim()
@@ -4375,6 +4448,7 @@ router.post('/orders', async (ctx) => {
         orderSubmitRiskStepsFull,
         riskResult.checkedAt,
       )
+    }
     }
   }
   nextOrder.installmentPlan = buildInstallmentPlan(
@@ -5085,25 +5159,36 @@ router.post('/mall/cs/messages', (ctx) => {
 
 router.post('/mall/cs/messages/image', async (ctx) => {
   try {
-    await csChatImageUpload.single('image')(ctx, async () => {
+    await mallPublicImageUpload.single('image')(ctx, async () => {
       const db = readDb()
       const r = resolveCsMallSession(ctx, db, { requireExisting: true })
       const file = ctx.file
       if (r.error) {
-        if (file?.path) {
-          await fsp.unlink(file.path).catch(() => {})
-        }
         fail(ctx, r.error, 401)
         return
       }
-      if (!file || !file.filename) {
-        if (file?.path) {
-          await fsp.unlink(file.path).catch(() => {})
-        }
+      if (!file || !file.buffer || !file.originalname) {
         fail(ctx, '请选择图片文件')
         return
       }
-      const imageUrl = `/api/static/uploads/cs/${file.filename}`
+      if (!isOssConfigured()) {
+        fail(ctx, 'OSS 未配置，请先配置 OSS_*')
+        return
+      }
+      const imageCheck = validatePublicImageBuffer(file)
+      if (!imageCheck.ok) {
+        fail(ctx, imageCheck.msg)
+        return
+      }
+      const uploaded = await uploadPublicImage({
+        buffer: file.buffer,
+        contentType: file.mimetype || 'image/jpeg',
+        originalName: file.originalname || `cs${detectImageExtFromMime(file.mimetype)}`,
+        scene: 'message',
+        phone: r.session?.mallUserId || '',
+        biz: 'cs',
+      })
+      const imageUrl = uploaded.url
       const s = r.session
       csAppendMessage(s, 'user', '', { type: 'image', imageUrl })
       s.userOnlineAt = new Date().toISOString()
@@ -5218,25 +5303,36 @@ router.post('/admin/cs/sessions/:sessionId/messages/image', async (ctx) => {
     return
   }
   try {
-    await csChatImageUpload.single('image')(ctx, async () => {
+    await mallPublicImageUpload.single('image')(ctx, async () => {
       const db = readDb()
       const s = findCsSessionById(db, ctx.params.sessionId)
       const file = ctx.file
       if (!s) {
-        if (file?.path) {
-          await fsp.unlink(file.path).catch(() => {})
-        }
         fail(ctx, '会话不存在', 404)
         return
       }
-      if (!file || !file.filename) {
-        if (file?.path) {
-          await fsp.unlink(file.path).catch(() => {})
-        }
+      if (!file || !file.buffer || !file.originalname) {
         fail(ctx, '请选择图片文件')
         return
       }
-      const imageUrl = `/api/static/uploads/cs/${file.filename}`
+      if (!isOssConfigured()) {
+        fail(ctx, 'OSS 未配置，请先配置 OSS_*')
+        return
+      }
+      const imageCheck = validatePublicImageBuffer(file)
+      if (!imageCheck.ok) {
+        fail(ctx, imageCheck.msg)
+        return
+      }
+      const uploaded = await uploadPublicImage({
+        buffer: file.buffer,
+        contentType: file.mimetype || 'image/jpeg',
+        originalName: file.originalname || `cs${detectImageExtFromMime(file.mimetype)}`,
+        scene: 'message',
+        phone: s.mallUserId || '',
+        biz: 'cs',
+      })
+      const imageUrl = uploaded.url
       const agentName = resolveCsAgentName(ctx, db)
       csAppendMessage(s, 'agent', '', { type: 'image', imageUrl, agentName })
       writeDb(db)
@@ -5263,6 +5359,116 @@ router.post('/admin/cs/sessions/:sessionId/messages/image', async (ctx) => {
   }
 })
 
+router.post('/uploads/id-card', async (ctx) => {
+  try {
+    await mallIdCardUpload.single('image')(ctx, async () => {
+      if (!isOssConfigured()) {
+        fail(ctx, 'OSS 未配置，请在 api/.env.development 或 api/.env.production 设置 OSS_* 变量', 503)
+        return
+      }
+      const file = ctx.file
+      if (!file || !file.buffer || !file.originalname) {
+        fail(ctx, '请选择图片文件')
+        return
+      }
+      const imageCheck = validateIdCardImageBuffer(file)
+      if (!imageCheck.ok) {
+        fail(ctx, imageCheck.msg)
+        return
+      }
+      const body = ctx.request.body || {}
+      const scene = String(body.scene || '').trim().toLowerCase()
+      if (!['front', 'back', 'handheld'].includes(scene)) {
+        fail(ctx, 'scene 必须是 front / back / handheld')
+        return
+      }
+      const phone = normalizePhone(body.phone || '')
+      const uploaded = await uploadIdCardImage({
+        buffer: file.buffer,
+        contentType: file.mimetype || 'image/jpeg',
+        originalName: file.originalname,
+        scene,
+        phone,
+      })
+      ctx.body = success(uploaded)
+    })
+  }
+  catch (err) {
+    const code = err && typeof err === 'object' ? err.code : ''
+    const raw = String(err?.message || err || '')
+    let msg = '上传失败'
+    if (code === 'LIMIT_FILE_SIZE' || raw.includes('LIMIT_FILE_SIZE') || raw.includes('too large')) {
+      msg = '图片不能超过 5MB'
+    }
+    else if (raw.includes('仅支持')) {
+      msg = raw
+    }
+    else if (raw === 'oss_not_configured') {
+      msg = 'OSS 未配置，请先完善 OSS_* 环境变量'
+    }
+    else if (raw && raw !== 'Error') {
+      msg = raw
+    }
+    fail(ctx, msg, 400)
+  }
+})
+
+router.post('/uploads/public-image', async (ctx) => {
+  try {
+    await mallPublicImageUpload.single('image')(ctx, async () => {
+      if (!isOssConfigured()) {
+        fail(ctx, 'OSS 未配置，请在 api/.env.development 或 api/.env.production 设置 OSS_* 变量', 503)
+        return
+      }
+      const file = ctx.file
+      if (!file || !file.buffer || !file.originalname) {
+        fail(ctx, '请选择图片文件')
+        return
+      }
+      const body = ctx.request.body || {}
+      const biz = String(body.biz || '').trim().toLowerCase()
+      if (!['product', 'cs', 'common'].includes(biz)) {
+        fail(ctx, 'biz 必须是 product / cs / common')
+        return
+      }
+      const imageCheck = validatePublicImageBuffer(file)
+      if (!imageCheck.ok) {
+        fail(ctx, imageCheck.msg)
+        return
+      }
+      const scene = String(body.scene || '').trim().toLowerCase() || 'image'
+      const phone = normalizePhone(body.phone || '')
+      const uploaded = await uploadPublicImage({
+        buffer: file.buffer,
+        contentType: file.mimetype || 'image/jpeg',
+        originalName: file.originalname,
+        scene,
+        phone,
+        biz,
+      })
+      ctx.body = success(uploaded)
+    })
+  }
+  catch (err) {
+    const code = err && typeof err === 'object' ? err.code : ''
+    const raw = String(err?.message || err || '')
+    let msg = '上传失败'
+    if (code === 'LIMIT_FILE_SIZE' || raw.includes('LIMIT_FILE_SIZE') || raw.includes('too large')) {
+      msg = '图片不能超过 8MB'
+    }
+    else if (raw.includes('仅支持')) {
+      msg = raw
+    }
+    else if (raw === 'oss_not_configured') {
+      msg = 'OSS 未配置，请先完善 OSS_* 环境变量'
+    }
+    else if (raw && raw !== 'Error') {
+      msg = raw
+    }
+    fail(ctx, msg, 400)
+  }
+})
+
 app.use(cors())
 app.use(mount('/static', serve(API_PUBLIC_DIR)))
 /** 与 /api 同一网关反代时，上传图走 /api/static/...，避免单独配置 /static */
@@ -5275,8 +5481,8 @@ app.use(bodyParser({
 }))
 app.use(router.routes())
 app.use(router.allowedMethods())
-app.use(riskControlApi.router.routes())
-app.use(riskControlApi.router.allowedMethods())
+app.use(riskControlRouter.routes())
+app.use(riskControlRouter.allowedMethods())
 
 ;(async () => {
   let mongoPersistenceActive = false
@@ -5330,7 +5536,7 @@ app.use(riskControlApi.router.allowedMethods())
 
   app.listen(PORT, () => {
     console.log(`Mall API listening on http://localhost:${PORT}/api`)
-    console.log(`Risk control API prefix http://localhost:${PORT}${riskControlApi.PREFIX}`)
+    console.log(`Risk control API prefix http://localhost:${PORT}${RISK_CONTROL_PREFIX}`)
     console.log(`Static files http://localhost:${PORT}/static/ (→ ${API_PUBLIC_DIR})`)
   })
 })()

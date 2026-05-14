@@ -1,15 +1,11 @@
 <script setup lang="ts">
 import AppTabbar from '~/components/App/AppTabbar.vue'
-import CardPackageIndex from '~/components/my/card-package/index.vue'
-import CardPackageIndexM from '~/components/my/card-package/index-m.vue'
-
-const device = useDevice()
+const MyCardPackageMobile = defineAsyncComponent(() => import('~/components/my/card-package/MyCardPackageMobile.vue'))
 </script>
 
 <template>
   <div class="min-h-screen bg-[#f3f4f8] pb-16">
-    <CardPackageIndexM v-if="device.isMobile" />
-    <CardPackageIndex v-else />
+    <MyCardPackageMobile />
     <AppTabbar />
   </div>
 </template>

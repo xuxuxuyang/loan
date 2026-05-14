@@ -68,15 +68,6 @@ const detailImageCompressing = ref(false)
 const PRODUCT_IMAGE_MAX_EDGE = 1600
 const PRODUCT_IMAGE_JPEG_QUALITY = 0.86
 
-function readFileAsDataUrl(file: File) {
-  return new Promise<string>((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = () => resolve(String(reader.result || ''))
-    reader.onerror = () => reject(new Error('文件读取失败'))
-    reader.readAsDataURL(file)
-  })
-}
-
 function drawProductImageToJpegDataUrl(source: CanvasImageSource, sw: number, sh: number, quality: number): string {
   const scale = Math.min(1, PRODUCT_IMAGE_MAX_EDGE / Math.max(sw, sh))
   const cw = Math.max(1, Math.round(sw * scale))
@@ -129,12 +120,47 @@ async function compressProductImageFileToDataUrl(file: File): Promise<string> {
 
 async function processProductCoverFile(file: File): Promise<string> {
   try {
-    return await compressProductImageFileToDataUrl(file)
+    const dataUrl = await compressProductImageFileToDataUrl(file)
+    const blob = dataUrlToBlob(dataUrl)
+    const uploadFile = new File([blob], `product_${Date.now()}.jpg`, { type: blob.type || 'image/jpeg' })
+    const fd = new FormData()
+    fd.append('image', uploadFile)
+    fd.append('biz', 'product')
+    fd.append('scene', 'cover')
+    const response = await fetch(`${MALL_API_BASE}/uploads/public-image`, {
+      method: 'POST',
+      headers: withAdminAuthHeaders(),
+      body: fd,
+    })
+    const payload = await response.json() as { success?: boolean, msg?: string, data?: { url?: string } }
+    if (!response.ok || payload.success === false) {
+      throw new Error(payload.msg || `图片上传失败: ${response.status}`)
+    }
+    const url = String(payload.data?.url || '').trim()
+    if (!url) {
+      throw new Error('图片上传失败：未返回 URL')
+    }
+    return url
   }
   catch (e) {
-    console.warn('[ProductsPage] compress failed, use original data url', e)
-    return readFileAsDataUrl(file)
+    console.warn('[ProductsPage] compress/upload failed', e)
+    throw e
   }
+}
+
+function dataUrlToBlob(dataUrl: string): Blob {
+  const parts = String(dataUrl || '').split(',')
+  if (parts.length < 2) {
+    throw new Error('图片处理失败，请重试')
+  }
+  const mime = /data:(.*?);base64/.exec(parts[0] || '')?.[1] || 'image/jpeg'
+  const binary = atob(parts[1])
+  const len = binary.length
+  const u8 = new Uint8Array(len)
+  for (let i = 0; i < len; i += 1) {
+    u8[i] = binary.charCodeAt(i)
+  }
+  return new Blob([u8], { type: mime })
 }
 
 const onProductCoverChange: UploadProps['onChange'] = async (uploadFile) => {
@@ -146,8 +172,8 @@ const onProductCoverChange: UploadProps['onChange'] = async (uploadFile) => {
   try {
     form.image = await processProductCoverFile(raw)
   }
-  catch {
-    ElMessage.error('图片处理失败，请重新选择')
+  catch (e) {
+    ElMessage.error(e instanceof Error ? e.message : '图片处理失败，请重新选择')
   }
   finally {
     imageCompressing.value = false
@@ -165,11 +191,30 @@ const onDetailImagesChange: UploadProps['onChange'] = async (uploadFile) => {
   }
   detailImageCompressing.value = true
   try {
-    const dataUrl = await processProductCoverFile(raw)
-    form.detailImages.push(dataUrl)
+    const dataUrl = await compressProductImageFileToDataUrl(raw)
+    const blob = dataUrlToBlob(dataUrl)
+    const uploadFile = new File([blob], `detail_${Date.now()}.jpg`, { type: blob.type || 'image/jpeg' })
+    const fd = new FormData()
+    fd.append('image', uploadFile)
+    fd.append('biz', 'product')
+    fd.append('scene', 'detail')
+    const response = await fetch(`${MALL_API_BASE}/uploads/public-image`, {
+      method: 'POST',
+      headers: withAdminAuthHeaders(),
+      body: fd,
+    })
+    const payload = await response.json() as { success?: boolean, msg?: string, data?: { url?: string } }
+    if (!response.ok || payload.success === false) {
+      throw new Error(payload.msg || `详情图上传失败: ${response.status}`)
+    }
+    const url = String(payload.data?.url || '').trim()
+    if (!url) {
+      throw new Error('详情图上传失败：未返回 URL')
+    }
+    form.detailImages.push(url)
   }
-  catch {
-    ElMessage.error('详情图处理失败，请重新选择')
+  catch (e) {
+    ElMessage.error(e instanceof Error ? e.message : '详情图处理失败，请重新选择')
   }
   finally {
     detailImageCompressing.value = false
@@ -766,8 +811,8 @@ watch(salesMode, () => {
             <el-input-number
               v-model="form.price"
               class="form-input-number form-input-number--fill"
-              min="0"
-              step="0.01"
+              :min="0"
+              :step="0.01"
               :controls="false"
             />
           </label>
@@ -781,8 +826,8 @@ watch(salesMode, () => {
             <el-input-number
               v-model="form.price"
               class="form-input-number form-input-number--fill"
-              min="0"
-              step="0.01"
+              :min="0"
+              :step="0.01"
               :controls="false"
             />
           </label>
@@ -908,7 +953,7 @@ watch(salesMode, () => {
             v-model="form.description"
             class="form-textarea"
             type="textarea"
-            rows="3"
+            :rows="3"
           />
         </label>
       </div>

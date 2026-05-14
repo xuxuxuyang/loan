@@ -1,9 +1,7 @@
 <script setup lang="ts">
 import AppTabbar from '~/components/App/AppTabbar.vue'
-import IndexBanner from '~/components/index/banner.vue'
-import IndexBannerM from '~/components/index/banner-m.vue'
-import IndexList from '~/components/index/list.vue'
-import IndexListM from '~/components/index/list-m.vue'
+import HomeBannerMobile from '~/components/index/HomeBannerMobile.vue'
+import HomeListMobile from '~/components/index/HomeListMobile.vue'
 import type { MallCategoryKey } from '~/composables/useTeaProducts'
 import {
   useMallCategories,
@@ -13,7 +11,6 @@ import {
   ensureShopHomeProductsLoaded,
 } from '~/composables/useTeaProducts'
 
-const device = useDevice()
 const route = useRoute()
 const installmentProducts = useTeaProducts()
 const mallProducts = useMallShowcaseProducts()
@@ -82,17 +79,7 @@ function handleSelectZone(zone: 'installment' | 'mall') {
     class="bg-[#f7f7f5] min-h-screen"
     style="padding-bottom: calc(4rem + env(safe-area-inset-bottom));"
   >
-    <IndexBannerM
-      v-if="device.isMobile"
-      :preview-products="filteredHomeProducts"
-      :categories="categories"
-      :active-category="selectedCategory"
-      :home-product-zone="activeHomeZone"
-      @select-category="handleSelectCategory"
-      @select-zone="handleSelectZone"
-    />
-    <IndexBanner
-      v-else
+    <HomeBannerMobile
       :preview-products="filteredHomeProducts"
       :categories="categories"
       :active-category="selectedCategory"
@@ -102,13 +89,7 @@ function handleSelectZone(zone: 'installment' | 'mall') {
     />
 
     <section id="mall-showcase">
-      <IndexListM
-        v-if="device.isMobile"
-        :products="filteredHomeProducts"
-        :list-zone="activeHomeZone"
-      />
-      <IndexList
-        v-else
+      <HomeListMobile
         :products="filteredHomeProducts"
         :list-zone="activeHomeZone"
       />

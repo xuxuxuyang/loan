@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { UploadProps } from 'element-plus'
 import { captureRegisterChannelFromRoute } from '../../composables/useRegisterChannel'
+import { notifyError, notifySuccess, notifyWarning } from '~/utils/epFeedback'
 
 interface RegisterFormModel {
   name: string
@@ -17,6 +18,8 @@ interface RegisterFormModel {
 const route = useRoute()
 const { smartNavigate } = useCustomRouting(route)
 const { register, sendRegisterSms } = useMallAuth()
+const runtimeConfig = useRuntimeConfig()
+const mallApiBase = String(runtimeConfig.public.mallApiBase || '/api').replace(/\/+$/, '')
 
 const agree = ref(false)
 const submitting = ref(false)
@@ -55,18 +58,9 @@ onMounted(() => {
   }
 })
 
-/** 证件照：限制长边、转 JPEG，避免 base64 撑爆请求体（413） */
+/** 证件照：限制长边、转 JPEG 后上传 OSS，表单仅保存 URL */
 const ID_CARD_IMAGE_MAX_EDGE = 1280
 const ID_CARD_JPEG_QUALITY = 0.82
-
-function readFileAsDataUrl(file: File) {
-  return new Promise<string>((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = () => resolve(String(reader.result || ''))
-    reader.onerror = () => reject(new Error('文件读取失败'))
-    reader.readAsDataURL(file)
-  })
-}
 
 function drawToJpegDataUrl(source: CanvasImageSource, sw: number, sh: number, quality: number): string {
   const scale = Math.min(1, ID_CARD_IMAGE_MAX_EDGE / Math.max(sw, sh))
@@ -83,19 +77,36 @@ function drawToJpegDataUrl(source: CanvasImageSource, sw: number, sh: number, qu
   return canvas.toDataURL('image/jpeg', quality)
 }
 
-async function compressImageFileToJpegDataUrl(file: File): Promise<string> {
-  if (import.meta.env.SSR) {
-    return readFileAsDataUrl(file)
+function dataUrlToBlob(dataUrl: string): Blob {
+  const parts = String(dataUrl || '').split(',')
+  if (parts.length < 2) {
+    throw new Error('图片处理失败，请重试')
   }
+  const mime = /data:(.*?);base64/.exec(parts[0] || '')?.[1] || 'image/jpeg'
+  const binary = atob(parts[1])
+  const len = binary.length
+  const u8 = new Uint8Array(len)
+  for (let i = 0; i < len; i += 1) {
+    u8[i] = binary.charCodeAt(i)
+  }
+  return new Blob([u8], { type: mime })
+}
+
+async function compressImageFileToJpegBlob(file: File): Promise<Blob> {
+  if (import.meta.env.SSR) {
+    return file
+  }
+  let dataUrl = ''
   if (typeof createImageBitmap === 'function') {
     try {
       const bitmap = await createImageBitmap(file)
       try {
-        return drawToJpegDataUrl(bitmap, bitmap.width, bitmap.height, ID_CARD_JPEG_QUALITY)
+        dataUrl = drawToJpegDataUrl(bitmap, bitmap.width, bitmap.height, ID_CARD_JPEG_QUALITY)
       }
       finally {
         bitmap.close()
       }
+      return dataUrlToBlob(dataUrl)
     }
     catch {
       // HEIC 等可能失败，走 Image 解码
@@ -107,7 +118,8 @@ async function compressImageFileToJpegDataUrl(file: File): Promise<string> {
     img.onload = () => {
       URL.revokeObjectURL(url)
       try {
-        resolve(drawToJpegDataUrl(img, img.naturalWidth, img.naturalHeight, ID_CARD_JPEG_QUALITY))
+        const jpegDataUrl = drawToJpegDataUrl(img, img.naturalWidth, img.naturalHeight, ID_CARD_JPEG_QUALITY)
+        resolve(dataUrlToBlob(jpegDataUrl))
       }
       catch (e) {
         reject(e)
@@ -121,13 +133,33 @@ async function compressImageFileToJpegDataUrl(file: File): Promise<string> {
   })
 }
 
-async function processIdCardUpload(file: File): Promise<string> {
+type IdCardScene = 'front' | 'back' | 'handheld'
+
+async function uploadIdCardToOss(file: File, scene: IdCardScene): Promise<string> {
+  const fd = new FormData()
+  fd.append('image', file)
+  fd.append('scene', scene)
+  fd.append('phone', form.value.phone.trim())
+  const res = await $fetch<{ success: boolean, data: { url: string } }>(`${mallApiBase}/uploads/id-card`, {
+    method: 'POST',
+    body: fd,
+  })
+  return String(res?.data?.url || '').trim()
+}
+
+async function processIdCardUpload(file: File, scene: IdCardScene): Promise<string> {
   try {
-    return await compressImageFileToJpegDataUrl(file)
+    const blob = await compressImageFileToJpegBlob(file)
+    const uploadFile = new File([blob], `${scene}_${Date.now()}.jpg`, { type: blob.type || 'image/jpeg' })
+    const url = await uploadIdCardToOss(uploadFile, scene)
+    if (!url) {
+      throw new Error('上传后未返回图片地址')
+    }
+    return url
   }
   catch (e) {
-    console.warn('[RegisterForm] compress failed, use original', e)
-    return readFileAsDataUrl(file)
+    console.warn('[RegisterForm] id-card upload failed', e)
+    throw e
   }
 }
 
@@ -137,10 +169,10 @@ const onFrontUpload: UploadProps['onChange'] = async (uploadFile) => {
     return
   }
   try {
-    form.value.idCardFront = await processIdCardUpload(rawFile)
+    form.value.idCardFront = await processIdCardUpload(rawFile, 'front')
   }
   catch {
-    ElMessage.error('正面照片处理失败，请重选图片')
+    notifyError('正面照片上传失败，请重试')
   }
 }
 
@@ -150,10 +182,10 @@ const onBackUpload: UploadProps['onChange'] = async (uploadFile) => {
     return
   }
   try {
-    form.value.idCardBack = await processIdCardUpload(rawFile)
+    form.value.idCardBack = await processIdCardUpload(rawFile, 'back')
   }
   catch {
-    ElMessage.error('反面照片处理失败，请重选图片')
+    notifyError('反面照片上传失败，请重试')
   }
 }
 
@@ -163,10 +195,10 @@ const onHandheldUpload: UploadProps['onChange'] = async (uploadFile) => {
     return
   }
   try {
-    form.value.idCardHandheld = await processIdCardUpload(rawFile)
+    form.value.idCardHandheld = await processIdCardUpload(rawFile, 'handheld')
   }
   catch {
-    ElMessage.error('手持身份证照片处理失败，请重选图片')
+    notifyError('手持身份证照片上传失败，请重试')
   }
 }
 
@@ -175,45 +207,45 @@ const idCardReg = /^[1-9]\d{5}(18|19|20)\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01]
 
 function validateForm() {
   if (!form.value.name.trim()) {
-    ElMessage.warning('请填写姓名')
+    notifyWarning('请填写姓名')
     return false
   }
   if (!phoneReg.test(form.value.phone.trim())) {
-    ElMessage.warning('请输入正确的手机号')
+    notifyWarning('请输入正确的手机号')
     return false
   }
   if (!/^\d{6}$/.test(form.value.smsCode.trim())) {
-    ElMessage.warning('请输入 6 位短信验证码')
+    notifyWarning('请输入 6 位短信验证码')
     return false
   }
   const pwd = form.value.password.trim()
   if (pwd.length < 6) {
-    ElMessage.warning('登录密码至少 6 位')
+    notifyWarning('登录密码至少 6 位')
     return false
   }
   if (pwd !== form.value.passwordConfirm.trim()) {
-    ElMessage.warning('两次输入的密码不一致')
+    notifyWarning('两次输入的密码不一致')
     return false
   }
   const idUpper = form.value.idNumber.trim().toUpperCase()
   if (!idUpper) {
-    ElMessage.warning('请填写身份证号码')
+    notifyWarning('请填写身份证号码')
     return false
   }
   if (!idCardReg.test(idUpper)) {
-    ElMessage.warning('身份证号码格式不正确')
+    notifyWarning('身份证号码格式不正确')
     return false
   }
   if (!form.value.idCardFront) {
-    ElMessage.warning('请上传身份证正面')
+    notifyWarning('请上传身份证正面')
     return false
   }
   if (!form.value.idCardBack) {
-    ElMessage.warning('请上传身份证反面')
+    notifyWarning('请上传身份证反面')
     return false
   }
   if (!form.value.idCardHandheld) {
-    ElMessage.warning('请上传手持身份证照片')
+    notifyWarning('请上传手持身份证照片')
     return false
   }
   return true
@@ -224,7 +256,7 @@ async function handleSubmit() {
     return
   }
   if (!agree.value) {
-    ElMessage.warning('请先阅读并同意用户注册协议和隐私政策')
+    notifyWarning('请先阅读并同意用户注册协议和隐私政策')
     return
   }
 
@@ -243,7 +275,7 @@ async function handleSubmit() {
 
   try {
     await register(payload)
-    ElMessage.success('注册成功')
+    notifySuccess('注册成功')
 
     const raw = typeof route.query.redirect === 'string' ? route.query.redirect.trim() : ''
     const redirect = raw.startsWith('/') ? raw : '/my'
@@ -252,13 +284,13 @@ async function handleSubmit() {
   catch (error) {
     const text = (error as Error).message || '注册失败，请稍后重试'
     if (text.includes('已注册')) {
-      ElMessage.warning(text)
+      notifyWarning(text)
     }
     else if (text.includes('413') || text.toLowerCase().includes('entity too large')) {
-      ElMessage.error('提交数据过大，请重新选择较小的照片或稍后重试（若仍失败请联系管理员放宽网关限制）')
+      notifyError('提交数据过大，请重新选择较小的照片或稍后重试（若仍失败请联系管理员放宽网关限制）')
     }
     else {
-      ElMessage.error(text)
+      notifyError(text)
     }
   }
   finally {
@@ -269,7 +301,7 @@ async function handleSubmit() {
 async function handleSendSms() {
   const p = form.value.phone.trim()
   if (!phoneReg.test(p)) {
-    ElMessage.warning('请先填写正确的手机号')
+    notifyWarning('请先填写正确的手机号')
     return
   }
   if (smsCooldown.value > 0 || smsSending.value) {
@@ -278,7 +310,7 @@ async function handleSendSms() {
   smsSending.value = true
   try {
     await sendRegisterSms(p)
-    ElMessage.success('验证码已发送')
+    notifySuccess('验证码已发送')
     smsCooldown.value = 60
     if (smsTimer) {
       clearInterval(smsTimer)
@@ -294,10 +326,10 @@ async function handleSendSms() {
   catch (e) {
     const text = (e as Error).message || '发送失败，请稍后重试'
     if (text.includes('已注册')) {
-      ElMessage.warning(text)
+      notifyWarning(text)
     }
     else {
-      ElMessage.error(text)
+      notifyError(text)
     }
   }
   finally {

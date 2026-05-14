@@ -1,10 +1,8 @@
 <script setup lang="ts">
 import AppTabbar from '~/components/App/AppTabbar.vue'
-import IndexInstallmentZone from '~/components/index/installment-zone.vue'
-import IndexInstallmentZoneM from '~/components/index/installment-zone-m.vue'
+import InstallmentZoneMobile from '~/components/index/InstallmentZoneMobile.vue'
 import { useTeaProducts, ensureMallProductsLoaded } from '~/composables/useTeaProducts'
 
-const device = useDevice()
 const installmentProducts = useTeaProducts()
 
 if (!import.meta.env.SSR) {
@@ -18,14 +16,7 @@ if (!import.meta.env.SSR) {
     style="padding-bottom: calc(4rem + env(safe-area-inset-bottom));"
   >
     <section id="installment-zone">
-      <IndexInstallmentZoneM
-        v-if="device.isMobile"
-        :products="installmentProducts"
-      />
-      <IndexInstallmentZone
-        v-else
-        :products="installmentProducts"
-      />
+      <InstallmentZoneMobile :products="installmentProducts" />
     </section>
     <AppTabbar />
   </div>

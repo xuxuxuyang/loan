@@ -1,12 +1,18 @@
 <script setup lang="ts">
-import { ElMessageBox } from 'element-plus'
 import type { MallCardPackageDTO } from '~/api/modules/mall'
 import kefuQrUrl from '~/assets/kefu.png'
+import { useCardPackageContractMeta } from '~/composables/useCardPackageContractMeta'
 import {
   isValidEmergencyContactPersonName,
   isValidEmergencyContactPhoneDigits,
   normalizeEmergencyContactPersonName,
 } from '~/utils/emergencyContactValidate'
+import { alertDialog, notifyError, notifySuccess, notifyWarning } from '~/utils/epFeedback'
+const CardPackagePreClaimDialog = defineAsyncComponent(() => import('~/components/my/card-package/dialogs/CardPackagePreClaimDialog.vue'))
+const CardPackageEmergencyDialog = defineAsyncComponent(() => import('~/components/my/card-package/dialogs/CardPackageEmergencyDialog.vue'))
+const CardPackageClaimDialog = defineAsyncComponent(() => import('~/components/my/card-package/dialogs/CardPackageClaimDialog.vue'))
+const CardPackageContractDialogs = defineAsyncComponent(() => import('~/components/my/card-package/dialogs/CardPackageContractDialogs.vue'))
+let contractDialogsPrefetchPromise: Promise<unknown> | null = null
 
 defineProps<{
   /** 为 true 时使用更紧凑的移动端字号与间距 */
@@ -20,7 +26,6 @@ const {
   cardPackages,
   fetchCardPackages,
   fetchCardPackageContractFlow,
-  downloadCardPackageContractBlob,
   saveMallEmergencyContacts,
 } = useMallMy()
 
@@ -68,12 +73,6 @@ const contractDialogVisible = ref(false)
 /** 领取入口：先问是否去签署（小弹窗） */
 const preClaimPromptVisible = ref(false)
 const contractLoading = ref(false)
-/** 合同 PDF 下载中：全屏遮罩 + 按钮禁用，避免重复点击（不依赖 ElLoading，避免被弹层盖住） */
-const contractDownloadBusy = ref(false)
-/** 当前下载请求的 AbortController，供「取消下载」调用 */
-const contractDownloadAbort = ref<AbortController | null>(null)
-/** 用户主动点取消（与超时触发的 abort 区分） */
-const contractDownloadCancelledByUser = ref(false)
 const contractError = ref('')
 const contractRoot = ref<Record<string, unknown> | null>(null)
 /** 独立弹层：阅读签署 / 仅查看 */
@@ -94,10 +93,13 @@ const needsEmergencyBeforeKefu = computed(() => {
 })
 
 /** API 返回中含上游对接提示时，展示简要运维说明 */
-const showContractUpstreamHint = computed(() => {
-  const e = contractError.value || ''
-  return /签名|签署方|serialNo|signAuthSerialNo|MALL_CARD_PACKAGE/i.test(e)
-})
+const {
+  contractData,
+  contractShowsSigned,
+  contractBinaryStatusLabel,
+  contractEmbedUrl,
+  showContractUpstreamHint,
+} = useCardPackageContractMeta(contractRoot, contractError)
 
 async function refreshList() {
   const phone = account.value
@@ -132,50 +134,6 @@ function formatTime(iso: string) {
   const day = `${d.getDate()}`.padStart(2, '0')
   return `${y}-${m}-${day}`
 }
-
-function contractPayloadData(root: Record<string, unknown> | null) {
-  if (!root || typeof root !== 'object') {
-    return null
-  }
-  const d = root.data
-  return d && typeof d === 'object' && !Array.isArray(d) ? (d as Record<string, unknown>) : null
-}
-
-const contractData = computed(() => contractPayloadData(contractRoot.value))
-
-const contractShowsSigned = computed(() => {
-  const s = contractData.value?.status
-  return String(s ?? '') === '2'
-})
-
-/** 仅展示：未签约 / 已签约（不对用户展示「签约中」等中间态） */
-const contractBinaryStatusLabel = computed(() => {
-  return contractShowsSigned.value ? '已签约' : '未签约'
-})
-
-const contractSignUrl = computed(() => {
-  const d = contractData.value
-  if (!d) {
-    return ''
-  }
-  const users = Array.isArray(d.signUser) ? (d.signUser as Record<string, unknown>[]) : []
-  const first = users.find(u => u && String(u.signUrl || '').trim())
-  if (first) {
-    return String(first.signUrl).trim()
-  }
-  return String(d.signUrl || d.sign_url || '').trim()
-})
-
-const contractPreviewUrl = computed(() => {
-  const d = contractData.value
-  if (!d) {
-    return ''
-  }
-  return String(d.previewUrl || d.preview_url || d.embeddedUrl || d.embedded_url || '').trim()
-})
-
-/** 本页 iframe 使用的签署/预览地址 */
-const contractEmbedUrl = computed(() => contractSignUrl.value || contractPreviewUrl.value)
 
 function trustedContractPostMessageOrigin(ev: MessageEvent): boolean {
   const url = contractEmbedUrl.value
@@ -213,7 +171,7 @@ function onContractEmbedPostMessage(ev: MessageEvent) {
   }
   if (data.type === CARD_PACKAGE_CONTRACT_SIGNATURE_HINT_MSG) {
     const msg = String(data.message || '').trim() || '签名校验未通过，请按页面说明重新书写后提交。'
-    void ElMessageBox.alert(msg, '签署提示', {
+    void alertDialog(msg, '签署提示', {
       confirmButtonText: '我知道了',
       type: 'warning',
       appendTo: document.body,
@@ -221,8 +179,33 @@ function onContractEmbedPostMessage(ev: MessageEvent) {
   }
 }
 
+function prefetchContractDialogs() {
+  if (!contractDialogsPrefetchPromise) {
+    contractDialogsPrefetchPromise = import('~/components/my/card-package/dialogs/CardPackageContractDialogs.vue')
+  }
+  return contractDialogsPrefetchPromise
+}
+
+const contractMessageListening = ref(false)
+
+function bindContractMessageListener() {
+  if (import.meta.env.SSR || contractMessageListening.value) {
+    return
+  }
+  window.addEventListener('message', onContractEmbedPostMessage)
+  contractMessageListening.value = true
+}
+
+function unbindContractMessageListener() {
+  if (import.meta.env.SSR || !contractMessageListening.value) {
+    return
+  }
+  window.removeEventListener('message', onContractEmbedPostMessage)
+  contractMessageListening.value = false
+}
+
 async function handleContractSignedFromEmbed() {
-  ElMessage.success('签署已成功')
+  notifySuccess('签署已成功')
   contractSignFrameVisible.value = false
   contractDialogVisible.value = false
   await loadContractFlow()
@@ -240,16 +223,20 @@ async function handleContractSignedFromEmbed() {
   }
 }
 
-onMounted(() => {
-  if (!import.meta.env.SSR) {
-    window.addEventListener('message', onContractEmbedPostMessage)
-  }
-})
+watch(
+  () => contractDialogVisible.value || contractSignFrameVisible.value,
+  (active) => {
+    if (active) {
+      bindContractMessageListener()
+      return
+    }
+    unbindContractMessageListener()
+  },
+  { immediate: true },
+)
 
 onUnmounted(() => {
-  if (!import.meta.env.SSR) {
-    window.removeEventListener('message', onContractEmbedPostMessage)
-  }
+  unbindContractMessageListener()
 })
 
 watch(contractDialogVisible, (open) => {
@@ -259,6 +246,7 @@ watch(contractDialogVisible, (open) => {
 })
 
 async function startClaim(item: MallCardPackageDTO) {
+  void prefetchContractDialogs()
   activeItem.value = item
   contractError.value = ''
   contractRoot.value = null
@@ -306,41 +294,6 @@ function mallApiErrorText(e: unknown): string {
   ).trim() || '请求失败'
 }
 
-/** 合同下载：把服务端 Chromium/Puppeteer 原始报错换成可读说明 */
-function contractDownloadErrorText(e: unknown): string {
-  const raw = mallApiErrorText(e)
-  if (/Failed to launch the browser|libatk|shared libraries|puppeteer|TROUBLESHOOTING:\s*https:\/\/pptr\.dev/i.test(raw)) {
-    return '合同文件暂时无法生成，请稍后重试或联系客服。若多次失败，请联系运维检查服务器上的 PDF 生成环境。'
-  }
-  if (/ECONNRESET|ETIMEDOUT|socket hang up|aborted|ECONNABORTED|502|504|Gateway|timed out|Timeout/i.test(raw)) {
-    return '合同下载超时或连接中断，请稍后重试。若多次失败，请让运维调大网关指向本服务的超时时间（如 Nginx proxy_read_timeout），首次生成 PDF 可能需一至数分钟。'
-  }
-  if (/Target closed|Protocol error|setAutoAttach|setDiscoverTargets|Session closed|Browser disconnected/i.test(raw)) {
-    return '合同生成时浏览器进程异常，请稍后重试。若多次失败，可尝试在服务器安装系统 Chrome 并配置环境变量 PUPPETEER_EXECUTABLE_PATH。'
-  }
-  return raw
-}
-
-function isContractDownloadAbortError(e: unknown): boolean {
-  if (!e || typeof e !== 'object') {
-    return false
-  }
-  const o = e as { name?: string, message?: string }
-  if (o.name === 'AbortError') {
-    return true
-  }
-  const m = String(o.message || '')
-  return /aborted|AbortError|signal is aborted|The user aborted/i.test(m)
-}
-
-function cancelContractDownload() {
-  if (!contractDownloadBusy.value) {
-    return
-  }
-  contractDownloadCancelledByUser.value = true
-  contractDownloadAbort.value?.abort()
-}
-
 async function loadContractFlow() {
   const item = activeItem.value
   if (!item || !/^1\d{10}$/.test(account.value)) {
@@ -365,7 +318,7 @@ async function loadContractFlow() {
 
 function openContractSignDialog() {
   if (!contractEmbedUrl.value) {
-    ElMessage.warning('暂无签署链接，请稍后再试或下载合同')
+    notifyWarning('暂无签署链接，请稍后再试')
     return
   }
   contractFrameMode.value = 'sign'
@@ -375,7 +328,7 @@ function openContractSignDialog() {
 
 function openContractViewDialog() {
   if (!contractEmbedUrl.value) {
-    ElMessage.warning('暂无合同链接')
+    notifyWarning('暂无合同链接')
     return
   }
   contractFrameMode.value = 'view'
@@ -387,52 +340,9 @@ function closeContractSignDialog() {
   contractSignFrameVisible.value = false
 }
 
-async function downloadContractFile() {
-  const item = activeItem.value
-  if (!item || !/^1\d{10}$/.test(account.value)) {
-    return
-  }
-  if (contractDownloadBusy.value) {
-    return
-  }
-  contractDownloadBusy.value = true
-  contractDownloadCancelledByUser.value = false
-  const ac = new AbortController()
-  contractDownloadAbort.value = ac
-  try {
-    await nextTick()
-    const { blob, fileName } = await downloadCardPackageContractBlob(account.value, item.orderId, {
-      signal: ac.signal,
-    })
-    if (!blob || blob.size === 0) {
-      ElMessage.warning('暂无可下载的文件，请稍后再试或联系客服')
-      return
-    }
-    const href = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = href
-    a.download = fileName || '合同.pdf'
-    a.click()
-    URL.revokeObjectURL(href)
-    ElMessage.success('已下载完成')
-  }
-  catch (e: unknown) {
-    if (contractDownloadCancelledByUser.value && isContractDownloadAbortError(e)) {
-      ElMessage.info('已取消下载')
-      return
-    }
-    ElMessage.error(contractDownloadErrorText(e))
-  }
-  finally {
-    contractDownloadAbort.value = null
-    contractDownloadCancelledByUser.value = false
-    contractDownloadBusy.value = false
-  }
-}
-
 function openClaimKefuFromContract() {
   if (needsEmergencyBeforeKefu.value) {
-    ElMessage.warning('请先填写两位紧急联系人后再联系客服领取')
+    notifyWarning('请先填写两位紧急联系人后再联系客服领取')
     contractDialogVisible.value = false
     emergencyForm.c1Name = ''
     emergencyForm.c1Phone = ''
@@ -456,15 +366,15 @@ async function submitEmergencyContacts() {
   ] as const
   for (const { idx, nameRaw, phoneRaw } of pairs) {
     if (!String(nameRaw || '').trim()) {
-      ElMessage.warning(`请填写第 ${idx} 位联系人的姓名`)
+      notifyWarning(`请填写第 ${idx} 位联系人的姓名`)
       return
     }
     if (!isValidEmergencyContactPersonName(nameRaw)) {
-      ElMessage.warning(`第 ${idx} 位联系人姓名须为汉字或英文字母，不可含数字、标点及其它符号（仅允许「·」与空格）`)
+      notifyWarning(`第 ${idx} 位联系人姓名须为汉字或英文字母，不可含数字、标点及其它符号（仅允许「·」与空格）`)
       return
     }
     if (!isValidEmergencyContactPhoneDigits(phoneRaw)) {
-      ElMessage.warning(`第 ${idx} 位联系人手机号须为以 1 开头的 11 位大陆号码`)
+      notifyWarning(`第 ${idx} 位联系人手机号须为以 1 开头的 11 位大陆号码`)
       return
     }
   }
@@ -473,7 +383,7 @@ async function submitEmergencyContacts() {
   const p1 = emergencyForm.c1Phone.trim().replace(/\D/g, '')
   const p2 = emergencyForm.c2Phone.trim().replace(/\D/g, '')
   if (p1 === p2) {
-    ElMessage.warning('两位联系人手机号不能相同')
+    notifyWarning('两位联系人手机号不能相同')
     return
   }
   emergencySubmitting.value = true
@@ -482,13 +392,13 @@ async function submitEmergencyContacts() {
       { name: n1, phone: p1 },
       { name: n2, phone: p2 },
     ])
-    ElMessage.success('已保存')
+    notifySuccess('已保存')
     emergencyDialogVisible.value = false
     await syncFromStorage()
     dialogVisible.value = true
   }
   catch (e: unknown) {
-    ElMessage.error(mallApiErrorText(e))
+    notifyError(mallApiErrorText(e))
   }
   finally {
     emergencySubmitting.value = false
@@ -509,6 +419,10 @@ function closeDialog() {
   dialogVisible.value = false
   activeItem.value = null
 }
+
+const claimDialogAmountText = computed(() => {
+  return activeItem.value ? formatReverseCardPackageDisplay(activeItem.value) : '0.00'
+})
 </script>
 
 <template>
@@ -570,15 +484,6 @@ function closeDialog() {
             单号 {{ item.orderId }} · {{ formatTime(item.createdAt) }}
           </p>
           <p
-            class="leading-snug"
-            :class="[
-              compact ? 'text-xs' : 'text-[13px]',
-              item.cardPackageIssued ? 'font-medium text-[#0f766e]' : 'text-[#b45309]',
-            ]"
-          >
-            {{ item.cardPackageIssued ? '平台已登记发放' : '请联系客服领取' }}
-          </p>
-          <p
             class="pt-0.5 font-semibold tabular-nums text-[#c0354a]"
             :class="compact ? 'text-base' : 'text-lg'"
           >
@@ -595,6 +500,8 @@ function closeDialog() {
             type="button"
             class="rounded-xl bg-gradient-to-r from-[#0b7b6e] to-[#18a08f] px-3 py-2 font-medium text-white shadow-sm active:opacity-92"
             :class="compact ? 'text-xs px-3.5' : 'text-sm px-4 py-2.5'"
+            @pointerenter="prefetchContractDialogs"
+            @touchstart.passive="prefetchContractDialogs"
             @click="startClaim(item)"
           >
             领取
@@ -610,377 +517,75 @@ function closeDialog() {
       </li>
     </ul>
 
-    <!-- 领取入口：需签署时先小窗确认 -->
-    <el-dialog
-      v-model="preClaimPromptVisible"
-      title="领取现金礼"
-      :width="compact ? 'min(92vw, 320px)' : '360px'"
-      align-center
-      append-to-body
-      :close-on-click-modal="false"
-      class="card-package-pre-claim-dialog"
+    <CardPackagePreClaimDialog
+      v-if="preClaimPromptVisible"
+      :visible="preClaimPromptVisible"
+      :compact="compact"
+      :active-item="activeItem"
+      @update:visible="preClaimPromptVisible = $event"
+      @cancel="cancelPreClaimPrompt"
+      @go-sign="onPreClaimGoSign"
       @closed="onPreClaimDialogClosed"
-    >
-      <div
-        v-if="activeItem"
-        class="space-y-2 text-sm leading-relaxed text-black/80"
-      >
-        <p>
-          领取现金礼前需先签署电子合同。
-        </p>
-        <p class="text-xs text-black/50">
-          订单：<span class="font-medium text-black/75">{{ activeItem.title }}</span>
-          （{{ activeItem.orderId }}）
-        </p>
-      </div>
-      <template #footer>
-        <div class="flex flex-wrap justify-end gap-2">
-          <el-button @click="cancelPreClaimPrompt">
-            取消
-          </el-button>
-          <el-button
-            type="primary"
-            class="!bg-gradient-to-r !from-[#0b7b6e] !to-[#18a08f] !border-0"
-            @click="onPreClaimGoSign"
-          >
-            去签署
-          </el-button>
-        </div>
-      </template>
-    </el-dialog>
+    />
 
-    <!-- 已签约：合同摘要 + 下载 / 查看 / 联系客服；异常时展示错误 -->
-    <el-dialog
-      v-model="contractDialogVisible"
-      :title="contractShowsSigned ? '电子合同' : '合同信息'"
-      :width="compact ? '94%' : '440px'"
-      destroy-on-close
-      align-center
-      class="card-package-contract-dialog"
-      :close-on-click-modal="!contractDownloadBusy"
-      @closed="onContractDialogClosed"
-    >
-      <div
-        v-if="activeItem"
-        class="space-y-3 text-black/80"
-      >
-        <p
-          v-if="contractShowsSigned && contractData && !contractLoading && !contractError"
-          class="text-sm text-black/55"
-        >
-          订单 <span class="font-medium text-black/85">{{ activeItem.title }}</span>
-          （{{ activeItem.orderId }}）电子合同已签署。可下载或查看合同；领取现金礼请联系客服。
-        </p>
-        <p
-          v-else-if="contractError"
-          class="text-sm text-black/55"
-        >
-          订单 <span class="font-medium text-black/85">{{ activeItem.title }}</span>
-          （{{ activeItem.orderId }}）合同信息获取异常，请稍后重试或联系客服。
-        </p>
+    <CardPackageContractDialogs
+      v-if="contractDialogVisible || contractSignFrameVisible"
+      :compact="compact"
+      :active-item="activeItem"
+      :contract-dialog-visible="contractDialogVisible"
+      :contract-sign-frame-visible="contractSignFrameVisible"
+      :contract-shows-signed="contractShowsSigned"
+      :contract-data="contractData as Record<string, unknown> | null"
+      :contract-loading="contractLoading"
+      :contract-error="contractError"
+      :show-contract-upstream-hint="showContractUpstreamHint"
+      :contract-binary-status-label="contractBinaryStatusLabel"
+      :contract-frame-mode="contractFrameMode"
+      :contract-embed-url="contractEmbedUrl"
+      :contract-iframe-key="contractIframeKey"
+      @update:contract-dialog-visible="contractDialogVisible = $event"
+      @update:contract-sign-frame-visible="contractSignFrameVisible = $event"
+      @contract-dialog-closed="onContractDialogClosed"
+      @open-contract-view-dialog="openContractViewDialog"
+      @open-claim-kefu-from-contract="openClaimKefuFromContract"
+      @close-contract-sign-dialog="closeContractSignDialog"
+    />
 
-        <div
-          v-if="contractLoading"
-          class="py-8 text-center text-sm text-black/45"
-        >
-          正在准备合同…
-        </div>
-        <div
-          v-else-if="contractError"
-          class="rounded-xl border border-amber-200/80 bg-amber-50 px-3 py-2.5 text-sm text-amber-900"
-        >
-          <p class="whitespace-pre-wrap">
-            {{ contractError }}
-          </p>
-          <p
-            v-if="showContractUpstreamHint"
-            class="mt-2 border-t border-amber-200/60 pt-2 text-xs leading-relaxed text-amber-950/75"
-          >
-            常见处理：在签约开放平台完成「添加个人用户」(addPersonalUser)，将人脸/实名认证返回的 serialNo 通过管理端写入该用户的 signAuthSerialNo；联调可临时配置 API 环境变量 MALL_CARD_PACKAGE_SIGN_AUTH_SERIAL。
-          </p>
-        </div>
-        <div
-          v-else-if="contractData && contractShowsSigned"
-          class="card-contract-card space-y-3 rounded-2xl border border-black/[0.08] bg-gradient-to-b from-white to-[#f8fafc] p-4 shadow-sm"
-        >
-          <div class="flex items-start justify-between gap-2">
-            <div class="min-w-0">
-              <p class="text-xs text-black/45">
-                合同名称
-              </p>
-              <p class="mt-0.5 text-sm font-semibold leading-snug text-black/85">
-                {{ String(contractData.contractName || contractData.contract_name || activeItem.title) }}
-              </p>
-            </div>
-            <span class="shrink-0 rounded-full bg-[#ecfdf5] px-2.5 py-1 text-xs font-medium text-[#047857]">
-              {{ contractBinaryStatusLabel }}
-            </span>
-          </div>
-        </div>
-      </div>
-      <template #footer>
-        <div
-          v-if="contractShowsSigned && contractData && !contractLoading && !contractError"
-          class="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:justify-end"
-        >
-          <el-button
-            :disabled="contractDownloadBusy"
-            @click="downloadContractFile"
-          >
-            下载合同
-          </el-button>
-          <el-button
-            type="primary"
-            plain
-            class="!border-[#0b7b6e] !text-[#0b7b6e]"
-            @click="openContractViewDialog"
-          >
-            查看合同
-          </el-button>
-          <el-button
-            type="primary"
-            class="!bg-gradient-to-r !from-[#0b7b6e] !to-[#18a08f] !border-0"
-            @click="openClaimKefuFromContract"
-          >
-            联系客服领取
-          </el-button>
-        </div>
-        <div
-          v-else
-          class="flex flex-wrap justify-end gap-2"
-        >
-          <el-button @click="contractDialogVisible = false">
-            关闭
-          </el-button>
-        </div>
-      </template>
-    </el-dialog>
+    <CardPackageEmergencyDialog
+      v-if="emergencyDialogVisible"
+      :visible="emergencyDialogVisible"
+      :compact="compact"
+      :submitting="emergencySubmitting"
+      :c1-name="emergencyForm.c1Name"
+      :c1-phone="emergencyForm.c1Phone"
+      :c2-name="emergencyForm.c2Name"
+      :c2-phone="emergencyForm.c2Phone"
+      @update:visible="emergencyDialogVisible = $event"
+      @update:c1-name="emergencyForm.c1Name = $event"
+      @update:c1-phone="emergencyForm.c1Phone = $event"
+      @update:c2-name="emergencyForm.c2Name = $event"
+      @update:c2-phone="emergencyForm.c2Phone = $event"
+      @submit="submitEmergencyContacts"
+    />
 
-    <!-- 合同页：签署或仅查看（独立弹层） -->
-    <el-dialog
-      v-model="contractSignFrameVisible"
-      :title="contractFrameMode === 'view' ? '查看合同' : '阅读并签署合同'"
-      :width="compact ? '96vw' : 'min(720px, 96vw)'"
-      append-to-body
-      align-center
-      :close-on-click-modal="false"
-      class="card-package-contract-sign-frame-dialog"
-    >
-      <p
-        v-if="activeItem"
-        class="mb-2 text-xs leading-relaxed text-black/50"
-      >
-        <template v-if="contractFrameMode === 'view'">
-          订单 {{ activeItem.orderId }} · 以下为合同原文（含签署记录）。
-        </template>
-        <template v-else>
-          订单 {{ activeItem.orderId }} · 请在内嵌合同页阅读条款，在签名区按<strong>浅色姓名笔画</strong>描摹书写后点击「提交签署」。若打开的是第三方签约页，请按其页面完成签署。
-        </template>
-      </p>
-      <div
-        v-if="contractEmbedUrl && activeItem"
-        class="overflow-hidden rounded-lg border border-black/[0.08] bg-white"
-      >
-        <iframe
-          :key="`${activeItem.orderId}-${contractIframeKey}`"
-          title="电子合同"
-          class="h-[min(72vh,560px)] w-full border-0 bg-white"
-          :src="contractEmbedUrl"
-        />
-      </div>
-      <template #footer>
-        <div class="flex flex-wrap justify-end gap-2">
-          <el-button
-            type="primary"
-            plain
-            class="!border-[#0b7b6e] !text-[#0b7b6e]"
-            @click="closeContractSignDialog"
-          >
-            返回
-          </el-button>
-        </div>
-      </template>
-    </el-dialog>
+    <CardPackageClaimDialog
+      v-if="dialogVisible"
+      :visible="dialogVisible"
+      :compact="compact"
+      :active-item="activeItem"
+      :kefu-qr-url="kefuQrUrl"
+      :amount-text="claimDialogAmountText"
+      @update:visible="dialogVisible = $event"
+      @close="closeDialog"
+    />
 
-    <!-- 已下单用户：签署后必填两位紧急联系人，完成后方可查看客服二维码 -->
-    <el-dialog
-      v-model="emergencyDialogVisible"
-      title="填写紧急联系人"
-      :width="compact ? 'min(94vw, 400px)' : '420px'"
-      destroy-on-close
-      align-center
-      :close-on-click-modal="false"
-      append-to-body
-      class="card-package-emergency-dialog"
-    >
-      <p class="mb-3 text-sm leading-relaxed text-black/70">
-        您已有商城订单，领取前需登记 <strong class="text-black/85">两位紧急联系人</strong>（姓名与手机号，用于必要时的联络）。信息将加密保存，仅用于服务与风控相关用途。
-      </p>
-      <p class="mb-3 text-xs leading-relaxed text-black/45">
-        姓名仅可为<strong>汉字或英文字母</strong>，可含间隔符「·」与空格；<strong>不可含数字、标点及其它符号</strong>。手机号为大陆 11 位号码（以 1 开头）。
-      </p>
-      <div class="space-y-3">
-        <div class="rounded-xl border border-black/[0.08] bg-[#f8fafc] p-3">
-          <p class="mb-2 text-xs font-semibold text-black/55">
-            紧急联系人 1
-          </p>
-          <div class="flex flex-col gap-2 sm:flex-row">
-            <el-input
-              v-model="emergencyForm.c1Name"
-              maxlength="32"
-              show-word-limit
-              placeholder="姓名"
-              class="flex-1"
-            />
-            <el-input
-              v-model="emergencyForm.c1Phone"
-              maxlength="11"
-              inputmode="numeric"
-              placeholder="11 位手机号"
-              class="flex-1"
-            />
-          </div>
-        </div>
-        <div class="rounded-xl border border-black/[0.08] bg-[#f8fafc] p-3">
-          <p class="mb-2 text-xs font-semibold text-black/55">
-            紧急联系人 2
-          </p>
-          <div class="flex flex-col gap-2 sm:flex-row">
-            <el-input
-              v-model="emergencyForm.c2Name"
-              maxlength="32"
-              show-word-limit
-              placeholder="姓名"
-              class="flex-1"
-            />
-            <el-input
-              v-model="emergencyForm.c2Phone"
-              maxlength="11"
-              inputmode="numeric"
-              placeholder="11 位手机号"
-              class="flex-1"
-            />
-          </div>
-        </div>
-      </div>
-      <template #footer>
-        <div class="flex flex-wrap justify-end gap-2">
-          <el-button
-            :disabled="emergencySubmitting"
-            @click="emergencyDialogVisible = false"
-          >
-            稍后
-          </el-button>
-          <el-button
-            type="primary"
-            class="!bg-gradient-to-r !from-[#0b7b6e] !to-[#18a08f] !border-0"
-            :loading="emergencySubmitting"
-            @click="submitEmergencyContacts"
-          >
-            保存并继续
-          </el-button>
-        </div>
-      </template>
-    </el-dialog>
-
-    <!-- 联系客服 -->
-    <el-dialog
-      v-model="dialogVisible"
-      title="联系客服领取卡包"
-      :width="compact ? 'min(92vw, 360px)' : '360px'"
-      destroy-on-close
-      align-center
-      class="card-package-claim-dialog"
-      @closed="closeDialog"
-    >
-      <div
-        v-if="activeItem"
-        class="space-y-3 text-black/75"
-      >
-        <p class="text-sm leading-relaxed">
-          订单 <span class="font-medium text-black/85">{{ activeItem.title }}</span>
-          （{{ activeItem.orderId }}）现金礼 ¥{{ formatReverseCardPackageDisplay(activeItem) }}，请使用微信扫描下方二维码，添加企业微信客服为您办理领取。
-        </p>
-        <div class="card-package-claim-qr-wrap overflow-hidden rounded-xl bg-[#0b7bff] shadow-inner ring-1 ring-black/[0.06]">
-          <img
-            :src="kefuQrUrl"
-            alt="请使用微信扫描图中二维码，添加荷花客服企业微信，联系办理现金礼领取"
-            class="card-package-claim-qr-img mx-auto block w-full max-w-[min(100%,280px)] object-contain"
-            loading="lazy"
-            decoding="async"
-          />
-        </div>
-        <p class="text-center text-xs text-black/45">
-          荷花客服 · 海曙文硕贸易
-        </p>
-      </div>
-      <template #footer>
-        <div class="flex flex-wrap justify-end gap-2">
-          <el-button
-            type="primary"
-            @click="closeDialog"
-          >
-            我知道了
-          </el-button>
-        </div>
-      </template>
-    </el-dialog>
-
-    <!-- 全屏下载遮罩：Teleport 到 body + 超高 z-index，保证盖过 append-to-body 的 el-dialog -->
-    <Teleport to="body">
-      <Transition name="contract-download-mask-fade">
-        <div
-          v-if="contractDownloadBusy"
-          class="fixed inset-0 z-[60000] flex flex-col items-center justify-center bg-black/50 px-6"
-          role="status"
-          aria-live="polite"
-          aria-busy="true"
-          @touchmove.prevent
-        >
-          <div class="flex max-w-[min(100%,20rem)] flex-col items-center rounded-2xl bg-white px-8 py-7 shadow-xl">
-            <span
-              class="mb-4 inline-block h-11 w-11 animate-spin rounded-full border-[3px] border-[#0b7b6e] border-t-transparent"
-            />
-            <p class="text-center text-base font-semibold text-black/88">
-              正在下载合同
-            </p>
-            <p class="mt-2 text-center text-xs leading-relaxed text-black/52">
-              请稍候…
-            </p>
-            <button
-              type="button"
-              class="mt-5 w-full rounded-xl border border-black/[0.12] bg-white py-2.5 text-sm font-medium text-black/78 shadow-sm active:bg-black/[0.04]"
-              @click="cancelContractDownload"
-            >
-              取消下载
-            </button>
-          </div>
-        </div>
-      </Transition>
-    </Teleport>
   </div>
 </template>
 
 <style scoped>
 .card-package-claim-dialog:deep(.el-dialog),
-.card-package-contract-dialog:deep(.el-dialog),
-.card-package-contract-sign-frame-dialog:deep(.el-dialog),
 .card-package-pre-claim-dialog:deep(.el-dialog),
 .card-package-emergency-dialog:deep(.el-dialog) {
   border-radius: 16px;
-}
-
-.card-package-contract-sign-frame-dialog:deep(.el-dialog__body) {
-  padding-top: 8px;
-}
-
-.contract-download-mask-fade-enter-active,
-.contract-download-mask-fade-leave-active {
-  transition: opacity 0.18s ease;
-}
-
-.contract-download-mask-fade-enter-from,
-.contract-download-mask-fade-leave-to {
-  opacity: 0;
 }
 </style>

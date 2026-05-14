@@ -21,6 +21,7 @@ declare global {
   const defineAsyncComponent: typeof import('vue').defineAsyncComponent
   const defineComponent: typeof import('vue').defineComponent
   const effectScope: typeof import('vue').effectScope
+  const effectiveMallOrderStatus: typeof import('./composables/useMallOrders').effectiveMallOrderStatus
   const ensureMallProductsLoaded: typeof import('./composables/useTeaProducts').ensureMallProductsLoaded
   const ensureMallShowcaseProductsLoaded: typeof import('./composables/useTeaProducts').ensureMallShowcaseProductsLoaded
   const ensureShopHomeProductsLoaded: typeof import('./composables/useTeaProducts').ensureShopHomeProductsLoaded
@@ -86,12 +87,11 @@ declare global {
   const triggerRef: typeof import('vue').triggerRef
   const unref: typeof import('vue').unref
   const useAttrs: typeof import('vue').useAttrs
+  const useCardPackageContractMeta: typeof import('./composables/useCardPackageContractMeta').useCardPackageContractMeta
   const useCookie: typeof import('@/spa-shim').useCookie
   const useCssModule: typeof import('vue').useCssModule
   const useCssVars: typeof import('vue').useCssVars
-  const useCustomDevice: typeof import('./composables/useCustomDevice').useCustomDevice
   const useCustomRouting: typeof import('./composables/useCustomRouting').useCustomRouting
-  const useDevice: typeof import('./composables/useDevice').useDevice
   const useId: typeof import('vue').useId
   const useLink: typeof import('vue-router').useLink
   const useMallAuth: typeof import('./composables/useMallAuth').useMallAuth
@@ -155,6 +155,7 @@ declare module 'vue' {
     readonly defineAsyncComponent: UnwrapRef<typeof import('vue')['defineAsyncComponent']>
     readonly defineComponent: UnwrapRef<typeof import('vue')['defineComponent']>
     readonly effectScope: UnwrapRef<typeof import('vue')['effectScope']>
+    readonly effectiveMallOrderStatus: UnwrapRef<typeof import('./composables/useMallOrders')['effectiveMallOrderStatus']>
     readonly ensureMallProductsLoaded: UnwrapRef<typeof import('./composables/useTeaProducts')['ensureMallProductsLoaded']>
     readonly ensureMallShowcaseProductsLoaded: UnwrapRef<typeof import('./composables/useTeaProducts')['ensureMallShowcaseProductsLoaded']>
     readonly ensureShopHomeProductsLoaded: UnwrapRef<typeof import('./composables/useTeaProducts')['ensureShopHomeProductsLoaded']>
@@ -220,12 +221,11 @@ declare module 'vue' {
     readonly triggerRef: UnwrapRef<typeof import('vue')['triggerRef']>
     readonly unref: UnwrapRef<typeof import('vue')['unref']>
     readonly useAttrs: UnwrapRef<typeof import('vue')['useAttrs']>
+    readonly useCardPackageContractMeta: UnwrapRef<typeof import('./composables/useCardPackageContractMeta')['useCardPackageContractMeta']>
     readonly useCookie: UnwrapRef<typeof import('@/spa-shim')['useCookie']>
     readonly useCssModule: UnwrapRef<typeof import('vue')['useCssModule']>
     readonly useCssVars: UnwrapRef<typeof import('vue')['useCssVars']>
-    readonly useCustomDevice: UnwrapRef<typeof import('./composables/useCustomDevice')['useCustomDevice']>
     readonly useCustomRouting: UnwrapRef<typeof import('./composables/useCustomRouting')['useCustomRouting']>
-    readonly useDevice: UnwrapRef<typeof import('./composables/useDevice')['useDevice']>
     readonly useId: UnwrapRef<typeof import('vue')['useId']>
     readonly useLink: UnwrapRef<typeof import('vue-router')['useLink']>
     readonly useMallAuth: UnwrapRef<typeof import('./composables/useMallAuth')['useMallAuth']>

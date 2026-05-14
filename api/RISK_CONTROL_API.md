@@ -285,18 +285,6 @@
 
 ---
 
-## `POST /v1/download-contract`
-
-- **用在哪：** 下载合同；服务端转发上游 `POST /api/sign/downloadContract`（可由 `RISK_UPSTREAM_DOWNLOAD_CONTRACT_PATH` 覆盖）。
-- **鉴权：** 与其它接口相同。
-- **传参（Body）：**
-  - **`data.contractNo`：** 必填（合同唯一编号）；亦可 **`data.contract_no`**（建议 ≤40 位）。
-  - 网关仅向上游发送 **`contractNo`**。
-- **返回备注：** 透传上游 JSON；开放平台示例中含 **`data.fileName`**、**`fileType`**（`0` PDF / `1` ZIP）、**`size`**、**`data`**（文件 Base64）等；Apipost 表格里 md5 字段疑似重复 **`fileName` 键名**，以实际上游为准。
-- **常见错误：** `40010`（缺合同编号或超长）；其余同上游代理。
-
----
-
 ## `POST /v1/cl-sms-send`
 
 - **用在哪：** 验证码短信发送；服务端转发上游 `POST /api/clSms/send`（可由 `RISK_UPSTREAM_CL_SMS_SEND_PATH` 覆盖）。与其它签名接口相同，使用我方 **`jsonData`** 验签后由 **`RISK_UPSTREAM_*`** 再签转发。

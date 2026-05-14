@@ -23,6 +23,7 @@ const {
 const draft = ref('')
 const imageInputRef = ref<HTMLInputElement | null>(null)
 const listRef = ref<HTMLElement | null>(null)
+const brokenImageMessageIds = ref<Record<string, true>>({})
 
 function formatMsgTime(iso: string) {
   const d = new Date(iso)
@@ -84,10 +85,23 @@ function isCsImageMessage(m: CsChatMessage) {
 }
 
 function csMessageImageSrc(m: CsChatMessage): string {
+  if (brokenImageMessageIds.value[m.id]) {
+    return ''
+  }
   if (!isCsImageMessage(m)) {
     return ''
   }
   return resolveCsImageDisplayUrl(m.imageUrl || '')
+}
+
+function onMessageImageError(m: CsChatMessage) {
+  if (brokenImageMessageIds.value[m.id]) {
+    return
+  }
+  brokenImageMessageIds.value = {
+    ...brokenImageMessageIds.value,
+    [m.id]: true,
+  }
 }
 
 function openImagePicker() {
@@ -172,11 +186,12 @@ function bubbleClass(m: CsChatMessage) {
             alt="图片消息"
             class="cs-chat-img block max-h-[min(52vh,280px)] max-w-full rounded-xl object-contain"
             loading="lazy"
+            @error="onMessageImageError(m)"
           >
           <span
             v-else-if="isCsImageMessage(m)"
-            class="whitespace-pre-wrap text-slate-400"
-          >[图片]</span>
+            class="inline-flex items-center rounded-lg bg-white/70 px-2.5 py-1.5 text-xs text-slate-500"
+          >图片已失效</span>
           <span
             v-else
             class="whitespace-pre-wrap"

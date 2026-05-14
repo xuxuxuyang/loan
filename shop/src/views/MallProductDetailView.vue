@@ -13,6 +13,7 @@ import {
   useMallShowcaseProducts,
   useTeaProducts,
 } from '~/composables/useTeaProducts'
+import { notifyWarning } from '~/utils/epFeedback'
 
 const route = useRoute()
 const { smartNavigate } = useCustomRouting(route)
@@ -120,7 +121,7 @@ async function goBuy() {
     return
   }
   if (exceedsCredit.value) {
-    ElMessage.warning(
+    notifyWarning(
       `该商品金额（￥${computeMallCreditOrderPrincipal(product.value.price, 1).toFixed(2)}）已超过您的授信额度（￥${creditQuota.value}）`,
     )
     return

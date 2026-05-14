@@ -5,22 +5,10 @@
 import { Icon } from '@iconify/vue'
 import { computed } from 'vue'
 
-import arrowRightUrl from '~/assets/icons/arrow-right.svg?url'
-import closeUrl from '~/assets/icons/close.svg?url'
 import menuUrl from '~/assets/icons/menu.svg?url'
-import socialFacebookUrl from '~/assets/icons/social-facebook.svg?url'
-import socialInsUrl from '~/assets/icons/social-ins.svg?url'
-import socialTiktokUrl from '~/assets/icons/social-tiktok.svg?url'
-import socialXUrl from '~/assets/icons/social-x.svg?url'
 
 const localUrlMap: Record<string, string> = {
   menu: menuUrl,
-  close: closeUrl,
-  'arrow-right': arrowRightUrl,
-  'social-facebook': socialFacebookUrl,
-  'social-ins': socialInsUrl,
-  'social-tiktok': socialTiktokUrl,
-  'social-x': socialXUrl,
 }
 
 const props = withDefaults(

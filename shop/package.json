@@ -28,6 +28,8 @@
     "@types/node": "^24.12.2",
     "@vitejs/plugin-vue": "^6.0.6",
     "@vue/tsconfig": "^0.9.1",
+    "imagemin": "^9.0.1",
+    "imagemin-pngquant": "^10.0.0",
     "typescript": "~6.0.2",
     "vite": "^8.0.10",
     "vue-tsc": "^3.2.7"

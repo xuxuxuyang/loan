@@ -46,10 +46,69 @@ interface CreateOrderPayload {
   idCardBack?: string
   /** 先享后付：已在浏览器侧完成 7 步风控 wave，下单时由服务端核销，避免重复调上游 */
   installmentRiskWaveId?: string
+  /** 老客户复购可申请免风控直过审核（由服务端二次校验是否满足条件） */
+  riskBypassReason?: 'returning_customer'
 }
 
 const ORDER_STORAGE_KEY = 'mall-orders'
 const ORDER_REMOTE_PATH = '/orders'
+
+function toNumber(value: unknown, fallback = 0) {
+  const n = Number(value)
+  return Number.isFinite(n) ? n : fallback
+}
+
+function normalizeMallOrderStatus(value: unknown): MallOrderStatus {
+  const status = String(value || '').trim()
+  if (status === 'reviewing' || status === 'shipping' || status === 'receiving' || status === 'enjoying') {
+    return status
+  }
+  return 'reviewing'
+}
+
+function normalizeMallPayType(value: unknown): MallPayType {
+  const payType = String(value || '').trim()
+  return payType === 'full' ? 'full' : 'installment'
+}
+
+function normalizeMallPayChannel(value: unknown): MallPayChannel {
+  const channel = String(value || '').trim()
+  if (channel === 'wechat' || channel === 'alipay' || channel === 'card') {
+    return channel
+  }
+  return 'wechat'
+}
+
+function normalizeMallOrder(item: unknown): MallOrder | null {
+  if (!item || typeof item !== 'object') {
+    return null
+  }
+  const raw = item as Record<string, unknown>
+  const id = String(raw.id || '').trim()
+  if (!id) {
+    return null
+  }
+  return {
+    id,
+    productId: toNumber(raw.productId),
+    name: String(raw.name || '').trim(),
+    spec: String(raw.spec || '').trim(),
+    totalAmount: toNumber(raw.totalAmount),
+    createdAt: String(raw.createdAt || '').trim(),
+    status: normalizeMallOrderStatus(raw.status),
+    riskStatus: raw.riskStatus === 'passed' || raw.riskStatus === 'failed' ? raw.riskStatus : undefined,
+    riskReason: String(raw.riskReason || '').trim() || undefined,
+    paid: Boolean(raw.paid),
+    payType: normalizeMallPayType(raw.payType),
+    installmentPeriods: Number.isFinite(Number(raw.installmentPeriods)) ? Number(raw.installmentPeriods) : undefined,
+    payChannel: normalizeMallPayChannel(raw.payChannel),
+    receiverName: String(raw.receiverName || '').trim(),
+    receiverPhone: String(raw.receiverPhone || '').trim(),
+    receiverAddress: String(raw.receiverAddress || '').trim(),
+    cardPackageIssued: raw.cardPackageIssued === undefined ? undefined : Boolean(raw.cardPackageIssued),
+    trackingNumber: String(raw.trackingNumber || '').trim() || undefined,
+  }
+}
 
 /** 与账单 API `normalizePhone` 一致：比较收货人与登录账号是否为同一手机号 */
 export function normalizeReceiverPhoneDigits(phone: string) {
@@ -103,13 +162,25 @@ export function normalizeOrderTrackingNumber(value: unknown): string {
   return String(value ?? '').trim()
 }
 
+/**
+ * 与后台一致：先享后付且卡包已发放即视为已完成（enjoying），
+ * 避免对账逻辑把 enjoying 回退为 receiving 后，商城仍显示「待收货」。
+ */
+export function effectiveMallOrderStatus(order: MallOrder): MallOrderStatus {
+  if (order.payType === 'installment' && Boolean(order.cardPackageIssued)) {
+    return 'enjoying'
+  }
+  return order.status
+}
+
 /** 有待展示运单号且处于发货后流程的订单（含待发货但已录单号的边界情况） */
 export function orderHasShippedTracking(order: MallOrder): boolean {
   const tn = normalizeOrderTrackingNumber(order.trackingNumber)
   if (!tn) {
     return false
   }
-  return order.status === 'shipping' || order.status === 'receiving' || order.status === 'enjoying'
+  const st = effectiveMallOrderStatus(order)
+  return st === 'shipping' || st === 'receiving' || st === 'enjoying'
 }
 
 export interface SimulatedLogisticsNode {
@@ -145,14 +216,15 @@ export function getSimulatedLogisticsTrace(order: MallOrder): SimulatedLogistics
   const t0 = addHours(base, 1)
   const t1 = addHours(base, 8)
   const t2 = addHours(base, 28)
-  const t3 = addHours(base, order.status === 'enjoying' ? 52 : 40)
+  const st = effectiveMallOrderStatus(order)
+  const t3 = addHours(base, st === 'enjoying' ? 52 : 40)
 
   const nodes: SimulatedLogisticsNode[] = [
     { timeLabel: fmt(t0), text: `【${carrier}】快递员已揽收，包裹运输中（运单号 ${tn}）` },
     { timeLabel: fmt(t1), text: '包裹已离开发货地分拨中心，正发往目的城市' },
     { timeLabel: fmt(t2), text: '包裹已到达收件城市分拨中心，等待安排派送' },
   ]
-  if (order.status === 'enjoying') {
+  if (st === 'enjoying') {
     nodes.push({ timeLabel: fmt(t3), text: '快件已签收，感谢您的支持与信任' })
   }
   else {
@@ -188,6 +260,8 @@ export function useMallOrders() {
       })
       if (Array.isArray(response?.data)) {
         orders.value = response.data
+          .map(normalizeMallOrder)
+          .filter((item): item is MallOrder => Boolean(item))
         saveOrdersToStorage(orders.value)
       }
     }
@@ -211,7 +285,10 @@ export function useMallOrders() {
       method: 'POST',
       body: payload,
     })
-    const order = response.data
+    const order = normalizeMallOrder(response.data)
+    if (!order) {
+      throw new Error('订单创建返回数据异常')
+    }
     orders.value = [order, ...orders.value.filter(item => item.id !== order.id)]
     saveOrdersToStorage(orders.value)
     return order

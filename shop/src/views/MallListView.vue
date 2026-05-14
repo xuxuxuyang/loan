@@ -1,11 +1,9 @@
 <script setup lang="ts">
 import AppTabbar from '~/components/App/AppTabbar.vue'
-import ListIndex from '~/components/list/index.vue'
-import ListIndexM from '~/components/list/index-m.vue'
+import MallListMobile from '~/components/list/MallListMobile.vue'
 import type { MallCategoryKey } from '~/composables/useTeaProducts'
 import { useMallCategories, isMallCategoryKey, useMallShowcaseProducts } from '~/composables/useTeaProducts'
 
-const device = useDevice()
 const products = useMallShowcaseProducts()
 const route = useRoute()
 const categories = useMallCategories()
@@ -29,15 +27,7 @@ function handleSelectCategory(category: MallCategoryKey) {
 
 <template>
   <div class="min-h-screen pb-16">
-    <ListIndexM
-      v-if="device.isMobile"
-      :products="filteredProducts"
-      :categories="categories"
-      :active-category="selectedCategory"
-      @select-category="handleSelectCategory"
-    />
-    <ListIndex
-      v-else
+    <MallListMobile
       :products="filteredProducts"
       :categories="categories"
       :active-category="selectedCategory"

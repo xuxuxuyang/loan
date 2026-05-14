@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { InstallmentItem, InstallmentNegotiationRecord, OrderItem } from '../stores/useOrdersStore'
@@ -7,13 +7,14 @@ import { getAdminSession, isSuperAdminRole } from '../composables/useAdminAuth'
 import { refreshOrdersMenuPendingReview } from '../composables/useAdminOrderReviewBadge'
 import { withAdminAuthHeaders } from '../composables/useAdminApi'
 import { useOrdersStore } from '../stores/useOrdersStore'
-import UserRiskDetailDialog, { type UserItem } from '../components/UserRiskDetailDialog.vue'
+import type { UserItem } from '../components/UserRiskDetailDialog.vue'
 import type { OrderShippingSnapshot } from '../components/UserRegistrationInfoScroll.vue'
 import { donePageProgress, startPageProgress } from '../utils/progress'
 
 const MALL_API_BASE = `${(import.meta.env.VITE_MALL_API_BASE || 'http://localhost:3110/api').replace(/\/$/, '')}`
 
 const route = useRoute()
+const UserRiskDetailDialog = defineAsyncComponent(() => import('../components/UserRiskDetailDialog.vue'))
 /** 订单数据页：仅展示后台已标记「卡包已发放」的订单 */
 const isCardPackageDataPage = computed(() => route.name === 'orders-card-data')
 
@@ -45,6 +46,11 @@ const canOperateOrders = computed(() => isSuperAdminRole(getAdminSession()?.role
 
 function normalizePhone(raw: string): string {
   return String(raw || '').replace(/\D/g, '')
+}
+
+/** 订单状态展示口径：卡包已发放即视为已完成（唯一标准） */
+function displayOrderStatus(order: OrderItem): OrderItem['status'] {
+  return order.cardPackageIssued ? '已完成' : order.status
 }
 
 watch(userRiskDialogVisible, (open) => {
@@ -101,7 +107,8 @@ async function openUserRiskFromOrder(order: OrderItem) {
 }
 
 function showTrackingEditor(item: OrderItem): boolean {
-  return item.status === '待发货' || item.status === '待收货'
+  const statusText = displayOrderStatus(item)
+  return statusText === '待发货' || statusText === '待收货'
 }
 
 function formatLocalYmd(d: Date) {
@@ -648,7 +655,8 @@ function hasTrackingNumber(order: OrderItem): boolean {
 
 /** 下拉项禁用：当前态、有单号不可选待发货、无单号不可选待收货、卡包未发不可选已完成 */
 function orderStatusOptionDisabled(order: OrderItem, opt: (typeof ORDER_STATUS_EDIT_OPTIONS)[number]): boolean {
-  if (order.status === opt) {
+  const statusText = displayOrderStatus(order)
+  if (statusText === opt) {
     return true
   }
   if (opt === '待发货' && hasTrackingNumber(order)) {
@@ -664,13 +672,14 @@ function orderStatusOptionDisabled(order: OrderItem, opt: (typeof ORDER_STATUS_E
 }
 
 function orderStatusOptionTitle(order: OrderItem, opt: (typeof ORDER_STATUS_EDIT_OPTIONS)[number]): string {
-  if (opt === '待发货' && hasTrackingNumber(order) && order.status !== '待发货') {
+  const statusText = displayOrderStatus(order)
+  if (opt === '待发货' && hasTrackingNumber(order) && statusText !== '待发货') {
     return '已填写快递单号，须先清空单号后才能改回待发货'
   }
-  if (opt === '待收货' && !hasTrackingNumber(order) && order.status !== '待收货') {
+  if (opt === '待收货' && !hasTrackingNumber(order) && statusText !== '待收货') {
     return '请填写快递单号'
   }
-  if (opt === '已完成' && !order.cardPackageIssued && order.status !== '已完成') {
+  if (opt === '已完成' && !order.cardPackageIssued && statusText !== '已完成') {
     return '请先标记卡包已发放，系统将同步为已完成'
   }
   return ''
@@ -700,7 +709,7 @@ async function handleOrderStatusCommand(order: OrderItem, label: string) {
     ElMessage.warning('卡包未发放时不可改为已完成，请先在「卡包发放」中标记已发放')
     return
   }
-  if (order.status === label) {
+  if (displayOrderStatus(order) === label) {
     return
   }
   if (changingStatusOrderId.value) {
@@ -1279,7 +1288,7 @@ watch(
         <tr>
           <th>订单号</th>
           <th>用户</th>
-          <th>是否老客户</th>
+          <th>新老客户</th>
           <th>备注</th>
           <th>商品</th>
           <th>下单时间</th>
@@ -1353,13 +1362,13 @@ watch(
             >
               <span class="order-status-dropdown-trigger">
                 <el-tag
-                  :type="orderStatusTagType(item.status)"
+                  :type="orderStatusTagType(displayOrderStatus(item))"
                   effect="light"
                   round
                   size="small"
                   class="order-status-tag order-status-tag--clickable"
                 >
-                  {{ item.status }}
+                  {{ displayOrderStatus(item) }}
                 </el-tag>
               </span>
               <template #dropdown>
@@ -1378,24 +1387,24 @@ watch(
             </el-dropdown>
             <el-tag
               v-else-if="canOperateOrders && item.cardPackageIssued"
-              :type="orderStatusTagType(item.status)"
+              :type="orderStatusTagType(displayOrderStatus(item))"
               effect="light"
               round
               size="small"
               class="order-status-tag order-status-tag--locked"
               title="卡包已发放，不可修改订单状态；请先将卡包改为未发放"
             >
-              {{ item.status }}
+              {{ displayOrderStatus(item) }}
             </el-tag>
             <el-tag
               v-else
-              :type="orderStatusTagType(item.status)"
+              :type="orderStatusTagType(displayOrderStatus(item))"
               effect="light"
               round
               size="small"
               class="order-status-tag"
             >
-              {{ item.status }}
+              {{ displayOrderStatus(item) }}
             </el-tag>
           </td>
           <td class="td-tracking">
@@ -1601,10 +1610,10 @@ watch(
               </button>
               <template v-if="canOperateOrders">
                 <button
-                  v-if="item.status !== '已完成' && !item.cardPackageIssued"
+                  v-if="displayOrderStatus(item) !== '已完成' && !item.cardPackageIssued"
                   class="btn btn-warning"
                   type="button"
-                  :disabled="changingStatusOrderId === item.id || item.status === '待审核'"
+                  :disabled="changingStatusOrderId === item.id || displayOrderStatus(item) === '待审核'"
                   @click="rollbackToReview(item)"
                 >
                   {{ changingStatusOrderId === item.id ? '处理中...' : '打回审核' }}
@@ -2094,6 +2103,7 @@ watch(
   </el-dialog>
 
   <UserRiskDetailDialog
+    v-if="userRiskDialogVisible"
     v-model="userRiskDialogVisible"
     :user-id="riskDialogUserId"
     :context-order-shipping="riskContextOrderShipping"
