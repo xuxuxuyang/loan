@@ -60,6 +60,67 @@ const filteredAccounts = computed(() => {
   )
 })
 
+type AccountTableRow =
+  | { kind: 'section'; key: string; title: string }
+  | { kind: 'account'; item: AdminAccountItem }
+  | { kind: 'super_admin_toggle'; count: number }
+
+/** 默认折叠；展开后显示系统管理员账号行 */
+const superAdminSectionExpanded = ref(false)
+
+const superAdminAccounts = computed(() => {
+  const list = filteredAccounts.value.filter(i => i.role === 'super_admin')
+  const byUsername = (a: AdminAccountItem, b: AdminAccountItem) =>
+    a.username.localeCompare(b.username, 'zh-CN')
+  return [...list].sort(byUsername)
+})
+
+/** 老板分区 → 员工（不含系统管理员） */
+const accountTableRowsRest = computed((): AccountTableRow[] => {
+  const list = filteredAccounts.value.filter(i => i.role !== 'super_admin')
+  if (!list.length)
+    return []
+
+  const byUsername = (a: AdminAccountItem, b: AdminAccountItem) =>
+    a.username.localeCompare(b.username, 'zh-CN')
+
+  const bosses = list.filter(i => i.role === 'boss').sort(byUsername)
+  const employees = list
+    .filter(i => i.role !== 'boss')
+    .sort((a, b) => {
+      const tier = (r: AccountRole) => (r === 'reviewer' ? 0 : r === 'collector' ? 1 : 2)
+      const d = tier(a.role) - tier(b.role)
+      return d !== 0 ? d : byUsername(a, b)
+    })
+
+  const rows: AccountTableRow[] = []
+  if (bosses.length) {
+    rows.push({ kind: 'section', key: 'sec-boss', title: '老板账号' })
+    bosses.forEach(item => rows.push({ kind: 'account', item }))
+  }
+  if (employees.length) {
+    rows.push({ kind: 'section', key: 'sec-staff', title: '员工账号' })
+    employees.forEach(item => rows.push({ kind: 'account', item }))
+  }
+  return rows
+})
+
+const accountTableBodyRows = computed((): AccountTableRow[] => {
+  const rows: AccountTableRow[] = []
+  const supers = superAdminAccounts.value
+  if (supers.length) {
+    rows.push({ kind: 'super_admin_toggle', count: supers.length })
+    if (superAdminSectionExpanded.value)
+      supers.forEach(item => rows.push({ kind: 'account', item }))
+  }
+  rows.push(...accountTableRowsRest.value)
+  return rows
+})
+
+function toggleSuperAdminSection() {
+  superAdminSectionExpanded.value = !superAdminSectionExpanded.value
+}
+
 function formatDateTime(value: string) {
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return value
@@ -80,13 +141,22 @@ function getRoleClass(role: AccountRole) {
 }
 
 function formatRoleCell(item: AdminAccountItem): string {
+  if (item.role === 'super_admin')
+    return '系统管理员'
   if (item.roleLabel?.trim())
     return item.roleLabel
-  if (item.role === 'super_admin') return '超级管理员'
   if (item.role === 'boss') return '老板'
   if (item.role === 'reviewer') return '审核员'
   if (item.role === 'collector') return '催收员'
   return '审核员'
+}
+
+function sectionHeaderClass(sectionKey: string) {
+  if (sectionKey === 'sec-super-admin')
+    return 'section-head section-head-super'
+  if (sectionKey === 'sec-boss')
+    return 'section-head section-head-boss'
+  return 'section-head section-head-staff'
 }
 
 async function fetchAccounts() {
@@ -106,7 +176,7 @@ async function fetchAccounts() {
     if (!response.ok || payload.success === false) {
       const msg = payload.msg || `加载账号失败 (${response.status})`
       if (response.status === 401 || response.status === 403) {
-        throw new Error(`${msg} — 请退出后使用超级管理员（xuyang）重新登录`)
+        throw new Error(`${msg} — 请退出后使用系统管理员（xuyang）重新登录`)
       }
       throw new Error(msg)
     }
@@ -372,93 +442,133 @@ onMounted(() => {
         </tr>
       </thead>
       <tbody>
-        <tr
-          v-for="item in filteredAccounts"
-          :key="item.id"
+        <template
+          v-for="row in accountTableBodyRows"
+          :key="row.kind === 'super_admin_toggle' ? 'super-admin-toggle' : row.kind === 'section' ? row.key : row.item.id"
         >
-          <td>{{ item.username }}</td>
-          <td>{{ item.name }}</td>
-          <td>{{ item.phone }}</td>
-          <td>
-            <span :class="getRoleClass(item.role)">
-              {{ formatRoleCell(item) }}
-            </span>
-          </td>
-          <td>
-            <span :class="item.status === 'active' ? 'badge badge-on' : 'badge badge-off'">
-              {{ item.status === 'active' ? '启用' : '禁用' }}
-            </span>
-          </td>
-          <td>{{ formatDateTime(item.updatedAt) }}</td>
-          <td>
-            <div class="actions">
+          <tr
+            v-if="row.kind === 'super_admin_toggle'"
+            class="table-section-row"
+          >
+            <td
+              colspan="7"
+              :class="['table-section-cell', sectionHeaderClass('sec-super-admin'), 'super-admin-collapse-cell']"
+            >
               <button
-                class="btn btn-warning"
                 type="button"
-                :disabled="item.username === 'xuyang'"
-                @click="switchStatus(item)"
+                class="super-admin-collapse-btn"
+                :aria-expanded="superAdminSectionExpanded"
+                @click="toggleSuperAdminSection"
               >
-                {{ item.status === 'active' ? '禁用' : '启用' }}
+                <span
+                  class="super-admin-chevron"
+                  :class="{ 'super-admin-chevron--open': superAdminSectionExpanded }"
+                  aria-hidden="true"
+                />
+                <span class="super-admin-collapse-label">系统管理员</span>
+                <span class="super-admin-collapse-meta">{{ row.count }} 个账号 · {{ superAdminSectionExpanded ? '点击收起' : '点击展开' }}</span>
               </button>
-              <button
-                class="btn btn-role-edit"
-                type="button"
-                :disabled="item.username === 'xuyang'"
-                @click="openRoleModal(item)"
-              >
-                修改角色
-              </button>
-              <button
-                class="btn btn-primary"
-                type="button"
-                :disabled="item.username === 'xuyang'"
-                @click="openPasswordModal(item)"
-              >
-                修改密码
-              </button>
-              <div class="delete-wrap">
+            </td>
+          </tr>
+          <tr
+            v-else-if="row.kind === 'section'"
+            class="table-section-row"
+          >
+            <td
+              colspan="7"
+              :class="['table-section-cell', sectionHeaderClass(row.key)]"
+            >
+              {{ row.title }}
+            </td>
+          </tr>
+          <tr
+            v-else
+            :class="['table-account-row', { 'account-row-boss-block': row.item.role === 'boss' }]"
+          >
+            <td>{{ row.item.username }}</td>
+            <td>{{ row.item.name }}</td>
+            <td>{{ row.item.phone }}</td>
+            <td>
+              <span :class="getRoleClass(row.item.role)">
+                {{ formatRoleCell(row.item) }}
+              </span>
+            </td>
+            <td>
+              <span :class="row.item.status === 'active' ? 'badge badge-on' : 'badge badge-off'">
+                {{ row.item.status === 'active' ? '启用' : '禁用' }}
+              </span>
+            </td>
+            <td>{{ formatDateTime(row.item.updatedAt) }}</td>
+            <td>
+              <div class="actions">
                 <button
-                  class="btn btn-danger"
+                  class="btn btn-warning"
                   type="button"
-                  :disabled="Boolean(deletingId) && deletingId !== item.id || item.username === 'xuyang'"
-                  @click="toggleDeleteConfirm(item.id)"
+                  :disabled="row.item.username === 'xuyang'"
+                  @click="switchStatus(row.item)"
                 >
-                  {{ deletingId === item.id ? '删除中...' : '删除' }}
+                  {{ row.item.status === 'active' ? '禁用' : '启用' }}
                 </button>
-                <div
-                  v-if="pendingDeleteId === item.id"
-                  class="delete-pop"
+                <button
+                  class="btn btn-role-edit"
+                  type="button"
+                  :disabled="row.item.username === 'xuyang'"
+                  @click="openRoleModal(row.item)"
                 >
-                  <p>确定删除该账号？</p>
-                  <div class="delete-pop-actions">
-                    <button
-                      class="btn btn-danger"
-                      type="button"
-                      :disabled="deletingId === item.id"
-                      @click="removeAccount(item)"
-                    >
-                      删除
-                    </button>
-                    <button
-                      class="btn btn-ghost"
-                      type="button"
-                      :disabled="deletingId === item.id"
-                      @click="cancelDelete"
-                    >
-                      取消
-                    </button>
+                  修改角色
+                </button>
+                <button
+                  class="btn btn-primary"
+                  type="button"
+                  :disabled="row.item.username === 'xuyang'"
+                  @click="openPasswordModal(row.item)"
+                >
+                  修改密码
+                </button>
+                <div class="delete-wrap">
+                  <button
+                    class="btn btn-danger"
+                    type="button"
+                    :disabled="Boolean(deletingId) && deletingId !== row.item.id || row.item.username === 'xuyang'"
+                    @click="toggleDeleteConfirm(row.item.id)"
+                  >
+                    {{ deletingId === row.item.id ? '删除中...' : '删除' }}
+                  </button>
+                  <div
+                    v-if="pendingDeleteId === row.item.id"
+                    class="delete-pop"
+                  >
+                    <p>确定删除该账号？</p>
+                    <div class="delete-pop-actions">
+                      <button
+                        class="btn btn-danger"
+                        type="button"
+                        :disabled="deletingId === row.item.id"
+                        @click="removeAccount(row.item)"
+                      >
+                        删除
+                      </button>
+                      <button
+                        class="btn btn-ghost"
+                        type="button"
+                        :disabled="deletingId === row.item.id"
+                        @click="cancelDelete"
+                      >
+                        取消
+                      </button>
+                    </div>
                   </div>
                 </div>
               </div>
-            </div>
-          </td>
-        </tr>
+            </td>
+          </tr>
+        </template>
         <tr v-if="!loading && !filteredAccounts.length">
           <td
             colspan="7"
             style="text-align: center; color: #9ca3af;"
           >
-            暂无后台账号。本页<strong>仅限超级管理员</strong>访问；请先检查是否误用客服/审核员账号登录。<br>
+            暂无后台账号。本页<strong>仅限系统管理员</strong>访问；请先检查是否误用客服/审核员账号登录。<br>
             「数据库重置」后请<strong>退出登录</strong>，再用 <strong>xuyang</strong> 登录；并确认 mall-api（默认 3110）已连通。
           </td>
         </tr>
@@ -565,7 +675,7 @@ onMounted(() => {
             v-model="roleForm.role"
             class="form-select"
           >
-            <el-option label="超级管理员" value="super_admin" />
+            <el-option label="系统管理员" value="super_admin" />
             <el-option label="老板" value="boss" />
             <el-option label="审核员" value="reviewer" />
             <el-option label="催收员" value="collector" />
@@ -699,6 +809,111 @@ onMounted(() => {
 
 .panel .table tbody td:last-child {
   vertical-align: middle;
+}
+
+.table-section-row td {
+  padding: 0;
+  border-bottom: none;
+}
+
+.table-section-cell {
+  padding: 10px 12px 8px !important;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: #64748b;
+  background: linear-gradient(180deg, #f1f5f9 0%, #f8fafc 100%);
+  border-top: 1px solid #e2e8f0;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.table-section-row:first-child .table-section-cell {
+  border-top: none;
+}
+
+.section-head-super {
+  border-left: 3px solid #ea580c;
+  padding-left: 9px !important;
+  color: #9a3412;
+}
+
+.section-head-boss {
+  border-left: 3px solid #d97706;
+  padding-left: 9px !important;
+  color: #92400e;
+}
+
+.section-head-staff {
+  border-left: 3px solid #64748b;
+  padding-left: 9px !important;
+}
+
+.super-admin-collapse-cell {
+  padding: 0 !important;
+}
+
+.super-admin-collapse-btn {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  margin: 0;
+  padding: 10px 12px 8px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  box-sizing: border-box;
+}
+
+.super-admin-collapse-btn:focus-visible {
+  outline: 2px solid #ea580c;
+  outline-offset: -2px;
+}
+
+.super-admin-chevron {
+  display: inline-block;
+  width: 0;
+  height: 0;
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+  border-top: 6px solid #9a3412;
+  flex-shrink: 0;
+  transition: transform 0.2s ease;
+  transform: rotate(-90deg);
+}
+
+.super-admin-chevron--open {
+  transform: rotate(0deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .super-admin-chevron {
+    transition: none;
+  }
+}
+
+.super-admin-collapse-label {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: #9a3412;
+}
+
+.super-admin-collapse-meta {
+  margin-left: auto;
+  font-size: 12px;
+  font-weight: 600;
+  color: #94a3b8;
+}
+
+.account-row-boss-block td {
+  background: #fffbeb;
+}
+
+.account-row-boss-block:hover td {
+  background: #fef3c7;
 }
 
 .actions-right {

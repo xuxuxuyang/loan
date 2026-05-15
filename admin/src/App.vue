@@ -20,7 +20,11 @@ import AdminRoleAvatar from './components/AdminRoleAvatar.vue'
 import MallBrandLogo from './components/MallBrandLogo.vue'
 import { adminSessionRoleAllowed, clearAdminSession, getAdminSession, isSuperAdminRole, type AdminSession } from './composables/useAdminAuth'
 import { csMenuUnreadTotal, useAdminCsUnreadBadge } from './composables/useAdminCsUnreadBadge'
-import { ordersMenuPendingReviewTotal, useAdminOrderReviewBadge } from './composables/useAdminOrderReviewBadge'
+import {
+  ordersMenuPendingReviewTotal,
+  ordersMenuReviewedListTotal,
+  useAdminOrderReviewBadge,
+} from './composables/useAdminOrderReviewBadge'
 
 type Role = NonNullable<AdminSession['role']>
 
@@ -176,6 +180,11 @@ const ordersSidebarBadgeEnabled = computed(() => {
   return isSuperAdminRole(r) || r === 'reviewer' || r === 'collector'
 })
 
+/** 订单管理主菜单角标 = 未审核订单 + 已审核订单（与子项角标口径一致） */
+const ordersMenuParentBadgeTotal = computed(
+  () => ordersMenuPendingReviewTotal.value + ordersMenuReviewedListTotal.value,
+)
+
 useAdminCsUnreadBadge(csSidebarBadgeEnabled)
 useAdminOrderReviewBadge(ordersSidebarBadgeEnabled)
 </script>
@@ -225,9 +234,9 @@ useAdminOrderReviewBadge(ordersSidebarBadgeEnabled)
                   </el-icon>
                   <span class="admin-menu-title">{{ item.label }}</span>
                   <span
-                    v-if="item.path === '/orders' && ordersMenuPendingReviewTotal > 0"
+                    v-if="item.path === '/orders' && ordersMenuParentBadgeTotal > 0"
                     class="admin-cs-menu-badge"
-                  >{{ ordersMenuPendingReviewTotal > 99 ? '99+' : ordersMenuPendingReviewTotal }}</span>
+                  >{{ ordersMenuParentBadgeTotal > 99 ? '99+' : ordersMenuParentBadgeTotal }}</span>
                 </span>
               </template>
               <el-menu-item
@@ -244,6 +253,10 @@ useAdminOrderReviewBadge(ordersSidebarBadgeEnabled)
                     v-if="child.path === '/orders/review' && ordersMenuPendingReviewTotal > 0"
                     class="admin-cs-menu-badge"
                   >{{ ordersMenuPendingReviewTotal > 99 ? '99+' : ordersMenuPendingReviewTotal }}</span>
+                  <span
+                    v-if="child.path === '/orders' && ordersMenuReviewedListTotal > 0"
+                    class="admin-cs-menu-badge"
+                  >{{ ordersMenuReviewedListTotal > 99 ? '99+' : ordersMenuReviewedListTotal }}</span>
                 </span>
               </el-menu-item>
             </el-sub-menu>

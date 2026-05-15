@@ -222,7 +222,7 @@ watch(
             :value-style="statisticRateStyle"
           />
           <p class="stat-sub">
-            应还早于统计日且未还 ÷ 应回不晚于统计日且未还
+            应还早于统计日且未还 ÷ 应还不晚于统计日且未还
           </p>
         </el-col>
       </el-row>

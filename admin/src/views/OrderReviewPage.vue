@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { CircleCheck, Postcard, WarningFilled } from '@element-plus/icons-vue'
+import { ElIcon, ElMessage, ElMessageBox } from 'element-plus'
+import { type VNode, computed, h, onMounted, ref, watch } from 'vue'
 import type { OrderItem } from '../stores/useOrdersStore'
 import { getAdminSession, isSuperAdminRole } from '../composables/useAdminAuth'
 import { useOrdersStore } from '../stores/useOrdersStore'
@@ -8,6 +9,11 @@ import { withAdminAuthHeaders } from '../composables/useAdminApi'
 import UserRiskDetailDialog, { type UserItem } from '../components/UserRiskDetailDialog.vue'
 import { refreshOrdersMenuPendingReview } from '../composables/useAdminOrderReviewBadge'
 import { donePageProgress, startPageProgress } from '../utils/progress'
+import {
+  mergeApiRiskViewToOrderSevenSnapshot,
+  orderRiskDataReadyForAdminApprove,
+  type AdminUserRiskViewPayload,
+} from '../utils/userRiskApproveReadiness'
 
 const MALL_API_BASE = `${(import.meta.env.VITE_MALL_API_BASE || 'http://localhost:3110/api').replace(/\/$/, '')}`
 
@@ -23,6 +29,10 @@ const resolvingRiskOrderId = ref<string | null>(null)
 const riskFilter = ref<'全部' | OrderItem['riskStatus']>('全部')
 const userFilter = ref('')
 const { orders, fetchOrders, updateOrderStatus, rejectOrderReview, deleteOrder } = useOrdersStore()
+
+/** 列表预拉：档案内下单七项 + 雷达是否齐全（仅用于弹窗内第二条提示，不拦截审核） */
+type RiskApproveGateState = 'idle' | 'loading' | 'ok' | 'blocked'
+const riskApproveGateByOrderId = ref<Record<string, RiskApproveGateState>>({})
 
 const canDeleteOrder = computed(() => isSuperAdminRole(getAdminSession()?.role))
 
@@ -53,6 +63,81 @@ const reviewOrders = computed(() => {
   return list
 })
 
+function riskApproveGateForOrder(order: OrderItem): RiskApproveGateState {
+  if (order.riskStatus !== 'passed') {
+    return 'ok'
+  }
+  return riskApproveGateByOrderId.value[order.id] ?? 'idle'
+}
+
+async function fetchAdminUserRiskViewForOrder(order: OrderItem): Promise<AdminUserRiskViewPayload | null> {
+  const digits = normalizePhone(order.receiverPhone || '')
+  if (digits.length !== 11) {
+    return null
+  }
+  const r1 = await fetch(`${MALL_API_BASE}/users/by-phone?phone=${encodeURIComponent(digits)}`, {
+    method: 'GET',
+    headers: withAdminAuthHeaders(),
+  })
+  if (!r1.ok) {
+    return null
+  }
+  const p1 = await r1.json() as { data?: { id?: string } | null }
+  const id = p1.data && typeof p1.data.id === 'string' ? p1.data.id.trim() : ''
+  if (!id) {
+    return null
+  }
+  const r2 = await fetch(`${MALL_API_BASE}/users/${encodeURIComponent(id)}`, {
+    method: 'GET',
+    headers: withAdminAuthHeaders(),
+  })
+  if (!r2.ok) {
+    return null
+  }
+  const p2 = await r2.json() as { data?: { riskView?: AdminUserRiskViewPayload } }
+  return p2.data?.riskView ?? null
+}
+
+async function computeRiskGateForOrder(order: OrderItem): Promise<'ok' | 'blocked'> {
+  try {
+    const rv = await fetchAdminUserRiskViewForOrder(order)
+    if (!rv) {
+      return 'blocked'
+    }
+    const snap = mergeApiRiskViewToOrderSevenSnapshot(rv)
+    return orderRiskDataReadyForAdminApprove(snap) ? 'ok' : 'blocked'
+  }
+  catch {
+    return 'blocked'
+  }
+}
+
+/** 点击「审核通过」前若尚未拉取风控档案，可即时补拉一条 */
+async function refreshRiskGateForSingleOrder(order: OrderItem) {
+  if (order.riskStatus !== 'passed' || !isReviewPageOrder(order)) {
+    return
+  }
+  riskApproveGateByOrderId.value = { ...riskApproveGateByOrderId.value, [order.id]: 'loading' }
+  const r = await computeRiskGateForOrder(order)
+  riskApproveGateByOrderId.value = { ...riskApproveGateByOrderId.value, [order.id]: r }
+}
+
+async function runRiskApproveGateChecks(list: OrderItem[]) {
+  const targets = list.filter(o => o.riskStatus === 'passed' && isReviewPageOrder(o))
+  const next = { ...riskApproveGateByOrderId.value }
+  for (const o of targets) {
+    next[o.id] = 'loading'
+  }
+  riskApproveGateByOrderId.value = next
+
+  await Promise.all(
+    targets.map(async (o) => {
+      const r = await computeRiskGateForOrder(o)
+      riskApproveGateByOrderId.value = { ...riskApproveGateByOrderId.value, [o.id]: r }
+    }),
+  )
+}
+
 async function loadReviewOrders() {
   loading.value = true
   startPageProgress()
@@ -65,7 +150,99 @@ async function loadReviewOrders() {
     loading.value = false
     donePageProgress()
     void refreshOrdersMenuPendingReview()
+    void runRiskApproveGateChecks(orders.value.filter(isReviewPageOrder))
   }
+}
+
+function buildApproveOrderConfirmContent(riskArchiveOk: boolean): VNode {
+  const idLine = '是否已检查用户上传的身份证照片信息和本人一致？'
+  const badgeStyles = riskArchiveOk
+    ? 'display:inline-block;padding:2px 8px;border-radius:4px;background:#ecfdf5;color:#059669;font-weight:700;font-size:12px;'
+    : 'display:inline-block;padding:2px 8px;border-radius:4px;background:#fef2f2;color:#dc2626;font-weight:700;font-size:12px;'
+  const badgeText = riskArchiveOk ? '已齐备' : '未齐备'
+  const riskBody = riskArchiveOk
+    ? '【风控档案】下单七项与全景雷达有历史记录，是否手动查询更新过最新雷达数据？'
+    : '【风控档案】下单七项或全景雷达数据尚不完整，或未查询到风控信息，建议先在「用户」或「风控结果」中打开档案完成查询后再审核。您仍可点击下方「已检查审核通过」继续。'
+  const riskTextColor = riskArchiveOk ? '#047857' : '#b45309'
+
+  const idIcon = h(
+    ElIcon,
+    { size: 22, color: '#409eff', style: { flexShrink: 0, marginTop: '2px' } },
+    () => h(Postcard),
+  )
+  const riskIcon = h(
+    ElIcon,
+    {
+      size: 22,
+      color: riskArchiveOk ? '#67c23a' : '#f56c6c',
+      style: { flexShrink: 0, marginTop: '2px' },
+    },
+    () => h(riskArchiveOk ? CircleCheck : WarningFilled),
+  )
+
+  return h(
+    'div',
+    { class: 'order-review-approve-confirm', style: { display: 'flex', flexDirection: 'column', gap: '16px' } },
+    [
+      h(
+        'div',
+        {
+          class: 'order-review-approve-confirm__row',
+          style: { display: 'flex', gap: '12px', alignItems: 'flex-start' },
+        },
+        [
+          idIcon,
+          h(
+            'div',
+            {
+              style: {
+                flex: 1,
+                minWidth: 0,
+                lineHeight: '1.6',
+                fontSize: '15px',
+                color: '#303133',
+                fontWeight: 500,
+              },
+            },
+            idLine,
+          ),
+        ],
+      ),
+      h('div', {
+        style: {
+          height: 1,
+          background: '#ebeef5',
+          margin: '0 2px',
+        },
+      }),
+      h(
+        'div',
+        {
+          class: 'order-review-approve-confirm__row',
+          style: { display: 'flex', gap: '12px', alignItems: 'flex-start' },
+        },
+        [
+          riskIcon,
+          h('div', { style: { flex: 1, minWidth: 0 } }, [
+            h('div', { style: { marginBottom: '8px' } }, [
+              h('span', { style: badgeStyles }, badgeText),
+            ]),
+            h(
+              'div',
+              {
+                style: {
+                  lineHeight: '1.6',
+                  fontSize: '13px',
+                  color: riskTextColor,
+                },
+              },
+              riskBody,
+            ),
+          ]),
+        ],
+      ),
+    ],
+  )
 }
 
 async function approveOrder(order: OrderItem) {
@@ -73,6 +250,22 @@ async function approveOrder(order: OrderItem) {
     return
   }
   if (order.riskStatus !== 'passed') {
+    return
+  }
+  await refreshRiskGateForSingleOrder(order)
+  const riskArchiveOk = riskApproveGateForOrder(order) === 'ok'
+  try {
+    await ElMessageBox.confirm(
+      buildApproveOrderConfirmContent(riskArchiveOk),
+      '审核通过前请确认',
+      {
+        confirmButtonText: '已检查审核通过',
+        cancelButtonText: '取消',
+        customClass: 'order-review-approve-msgbox',
+      },
+    )
+  }
+  catch {
     return
   }
   reviewingId.value = order.id
@@ -97,7 +290,7 @@ async function rejectOrder(order: OrderItem) {
   }
   try {
     await ElMessageBox.confirm(
-      `确定将订单 ${order.id} 标记为审核不通过？提交后该单将视为风控未通过，无法审核通过发货。`,
+      `确定将订单 ${order.id} 标记为审核不通过？提交后该单将视为风控未通过，无法再次审核。`,
       '审核不通过',
       {
         confirmButtonText: '确定',
@@ -160,7 +353,10 @@ async function handleDeleteOrder(order: OrderItem) {
 
 function onRiskDialogUserUpdated(_user: UserItem) {
   void fetchOrders({ status: '待审核' })
-    .then(() => void refreshOrdersMenuPendingReview())
+    .then(async () => {
+      await refreshOrdersMenuPendingReview()
+      await runRiskApproveGateChecks(orders.value.filter(isReviewPageOrder))
+    })
     .catch(() => {})
 }
 
@@ -500,5 +696,20 @@ onMounted(() => {
 
 .order-user-risk-tag:active:not(.is-disabled) {
   transform: scale(0.98);
+}
+</style>
+
+<!-- MessageBox 挂载到 body，需非 scoped；隐藏全局状态图标，改由内容区各行自带图标 -->
+<style>
+.order-review-approve-msgbox .el-message-box__status {
+  display: none !important;
+}
+
+.order-review-approve-msgbox .el-message-box__message {
+  padding-left: 0 !important;
+}
+
+.order-review-approve-msgbox .el-message-box__container {
+  align-items: flex-start;
 }
 </style>

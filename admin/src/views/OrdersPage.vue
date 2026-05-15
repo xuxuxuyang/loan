@@ -1292,13 +1292,13 @@ watch(
           <th>备注</th>
           <th>商品</th>
           <th>下单时间</th>
-          <th>总金额</th>
-          <th>本期应还</th>
+          <th>订单金额</th>
           <th>订单状态</th>
           <th>快递单号</th>
           <th>合同签署</th>
           <th>紧急联系人</th>
           <th>卡包发放</th>
+          <th>到期应还</th>
           <th>还款到期日</th>
           <th v-if="isCardPackageDataPage">
             还款状态
@@ -1352,7 +1352,6 @@ watch(
           </td>
           <td>{{ item.createdAt }}</td>
           <td>¥ {{ item.totalAmount }}</td>
-          <td>¥ {{ item.periodAmount }}</td>
           <td class="td-order-status">
             <el-dropdown
               v-if="canOperateOrders && !item.cardPackageIssued"
@@ -1587,6 +1586,7 @@ watch(
               {{ item.cardPackageIssued ? '已发放' : '未发放' }}
             </el-tag>
           </td>
+          <td>¥ {{ item.periodAmount }}</td>
           <td>{{ item.nextRepayDate }}</td>
           <td v-if="isCardPackageDataPage">
             <el-tag
@@ -1669,7 +1669,7 @@ watch(
         >
           查看风控档案
         </button>
-        <span> ｜ 商品：{{ selectedOrder.product }} ｜ 总金额：¥ {{ selectedOrder.totalAmount }}</span>
+        <span> ｜ 商品：{{ selectedOrder.product }} </span>
       </p>
 
       <table class="table table--plan-modal">

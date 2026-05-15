@@ -162,20 +162,39 @@ async function handleService(key: string) {
           <button
             v-if="!isLoggedIn"
             type="button"
-            class="text-left text-[1.55rem] font-semibold leading-none text-[#2a2f3c]"
+            class="login-entry flex w-full min-w-0 items-center justify-between gap-3 rounded-2xl border border-white/80 bg-white/45 py-2.5 pl-3 pr-2 text-left shadow-[inset_0_1px_0_rgba(255,255,255,0.85),0_2px_10px_rgba(180,120,150,0.08)] backdrop-blur-[6px] transition [--login-cta-shadow:0_4px_14px_rgba(232,90,122,0.32)] active:scale-[0.99] active:bg-white/65 active:[--login-cta-shadow:0_2px_8px_rgba(232,90,122,0.28)]"
+            aria-label="去登录或注册"
             @click="handleGoRegister"
           >
-            {{ displayName }}
+            <div class="min-w-0 flex-1 pr-1">
+              <span class="block text-[1.4rem] font-semibold leading-tight tracking-tight text-[#2a2f3c] sm:text-[1.5rem]">
+                {{ displayName }}
+              </span>
+              <span class="mt-1.5 block line-clamp-2 text-[13px] leading-snug text-[#5f6a82]">
+                {{ displaySubText }}
+              </span>
+            </div>
+            <span
+              class="login-entry-cta flex shrink-0 items-center gap-0.5 pl-3 pr-2.5 py-2"
+              aria-hidden="true"
+            >
+              <span class="text-[13px] font-semibold leading-none tracking-wide">去登录</span>
+              <Icon
+                name="tabler:chevron-right"
+                size="1.05rem"
+                class="shrink-0 opacity-95"
+                stroke-width="2.25"
+              />
+            </span>
           </button>
-          <p
-            v-else
-            class="truncate text-[1.55rem] font-semibold leading-none text-[#2a2f3c]"
-          >
-            {{ displayName }}
-          </p>
-          <p class="mt-1 line-clamp-2 text-xs text-[#4e5974]">
-            {{ displaySubText }}
-          </p>
+          <template v-else>
+            <p class="truncate text-[1.55rem] font-semibold leading-none text-[#2a2f3c]">
+              {{ displayName }}
+            </p>
+            <p class="mt-1 line-clamp-2 text-xs text-[#4e5974]">
+              {{ displaySubText }}
+            </p>
+          </template>
         </div>
       </div>
       <button
@@ -391,6 +410,19 @@ async function handleService(key: string) {
   background: linear-gradient(135deg, #fff4f7, #eef6ff);
   border: 1px solid rgba(236, 141, 164, 0.22);
   box-shadow: 0 10px 24px rgba(120, 140, 220, 0.12);
+}
+
+.login-entry:focus-visible {
+  outline: 2px solid rgba(228, 106, 132, 0.5);
+  outline-offset: 2px;
+}
+
+.login-entry-cta {
+  border-radius: 999px;
+  color: #fff;
+  background: linear-gradient(135deg, #ff93a8 0%, #ff6e8e 48%, #ff5c7c 100%);
+  box-shadow: var(--login-cta-shadow);
+  border: 1px solid rgba(255, 255, 255, 0.35);
 }
 
 .avatar-shell {

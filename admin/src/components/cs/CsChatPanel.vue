@@ -63,7 +63,6 @@ function onDraftInput(value: string) {
           {{ detailOnline ? '在线' : '离线' }}
         </span>
       </div>
-      <span class="cs-chat-sub">会话 ID：{{ activeSessionId || activeId || '—' }}</span>
     </header>
 
     <div class="cs-messages">

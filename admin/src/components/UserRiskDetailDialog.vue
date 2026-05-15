@@ -698,6 +698,7 @@ watch(
       selectedUserForRisk.value = null
     }
   },
+  { immediate: true },
 )
 
 function handleUserRiskDialogClosed() {
@@ -793,18 +794,7 @@ function handleUserRiskDialogClosed() {
               {{ userRiskSnapshot.summaryMessage }}
             </el-alert>
 
-            <el-alert
-              v-else-if="String(displayedUserRiskDetail.reason || '').trim()"
-              class="risk-reason-alert"
-              type="info"
-              :closable="false"
-              show-icon
-            >
-              <template #title>
-                提示
-              </template>
-              {{ displayedUserRiskDetail.reason }}
-            </el-alert>
+            
 
             <el-alert
               v-if="!userRiskSnapshot.configured"

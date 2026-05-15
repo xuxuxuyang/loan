@@ -1,5 +1,6 @@
 import { onUnmounted, ref, watch, type ComputedRef } from 'vue'
 import { useRoute } from 'vue-router'
+import { computeAdminOrderSidebarCounts } from '../stores/useOrdersStore'
 import { getAdminSession } from './useAdminAuth'
 import { withAdminAuthHeaders } from './useAdminApi'
 
@@ -11,25 +12,28 @@ const MALL_API_BASE = `${(import.meta.env.VITE_MALL_API_BASE || 'http://localhos
  */
 export const ordersMenuPendingReviewTotal = ref(0)
 
+/**
+ * 侧栏「已审核订单」：OrdersPage 主列表（已人工审核且卡包未发放）条数。
+ */
+export const ordersMenuReviewedListTotal = ref(0)
+
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
-async function fetchPendingReviewCount() {
+async function fetchOrderSidebarBadgeCounts() {
   const s = getAdminSession()
   if (!s?.token) {
     ordersMenuPendingReviewTotal.value = 0
+    ordersMenuReviewedListTotal.value = 0
     return
   }
   const role = s.role
   if (role !== 'super_admin' && role !== 'reviewer' && role !== 'collector') {
     ordersMenuPendingReviewTotal.value = 0
+    ordersMenuReviewedListTotal.value = 0
     return
   }
   try {
-    const qs = new URLSearchParams({
-      status: 'reviewing',
-      adminStatus: '待审核',
-    })
-    const response = await fetch(`${MALL_API_BASE}/orders?${qs.toString()}`, {
+    const response = await fetch(`${MALL_API_BASE}/orders`, {
       method: 'GET',
       headers: withAdminAuthHeaders(),
     })
@@ -41,16 +45,18 @@ async function fetchPendingReviewCount() {
       return
     }
     const list = Array.isArray(payload.data) ? payload.data : []
-    ordersMenuPendingReviewTotal.value = list.length
+    const { pendingReview, reviewedOrdersList } = computeAdminOrderSidebarCounts(list)
+    ordersMenuPendingReviewTotal.value = pendingReview
+    ordersMenuReviewedListTotal.value = reviewedOrdersList
   }
   catch {
     /* 静默失败，保留上次数字 */
   }
 }
 
-/** 列表变更或审核操作后调用，立即同步侧栏「订单管理」未审核（风控通过）角标，不必等轮询 */
+/** 列表变更或审核操作后调用，立即同步侧栏「订单管理」未审核与已审核列表角标，不必等轮询 */
 export function refreshOrdersMenuPendingReview() {
-  return fetchPendingReviewCount()
+  return fetchOrderSidebarBadgeCounts()
 }
 
 function stopPolling() {
@@ -62,8 +68,8 @@ function stopPolling() {
 
 function startPolling() {
   stopPolling()
-  void fetchPendingReviewCount()
-  pollTimer = setInterval(() => void fetchPendingReviewCount(), 2500)
+  void fetchOrderSidebarBadgeCounts()
+  pollTimer = setInterval(() => void fetchOrderSidebarBadgeCounts(), 2500)
 }
 
 /**
@@ -81,6 +87,7 @@ export function useAdminOrderReviewBadge(enabled: ComputedRef<boolean>) {
       else {
         stopPolling()
         ordersMenuPendingReviewTotal.value = 0
+        ordersMenuReviewedListTotal.value = 0
       }
     },
     { immediate: true },
@@ -90,7 +97,7 @@ export function useAdminOrderReviewBadge(enabled: ComputedRef<boolean>) {
     () => route.path,
     (path) => {
       if (enabled.value && path.startsWith('/orders')) {
-        void fetchPendingReviewCount()
+        void fetchOrderSidebarBadgeCounts()
       }
     },
   )
@@ -98,6 +105,7 @@ export function useAdminOrderReviewBadge(enabled: ComputedRef<boolean>) {
   onUnmounted(() => {
     stopPolling()
     ordersMenuPendingReviewTotal.value = 0
+    ordersMenuReviewedListTotal.value = 0
   })
 
   return { refreshOrdersMenuPendingReview }
