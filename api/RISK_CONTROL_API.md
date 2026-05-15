@@ -11,7 +11,7 @@
 - **业务字段：** 放在 `data`；签名字段 **`jsonData`** = 对 `data` 做递归按键名升序后的紧凑 JSON（实现：`signing.js` 的 `stableStringify`）。签名时不含 `appid`、`time`、`rand`/`nostr`、`sign`。
 - **公式：** `sign = md5(appid + "#" + jsonData + "#" + time + "#" + appkey + "#" + randOrNostr)`，MD5 小写 32 位；拼接用的 **`time` 字符串**须与 Body 里 `time` 的文本形式一致。
 - **时间：** `time` 可为毫秒或秒；默认允许与服务器偏差 ±300 秒（`RISK_CONTROL_TIMESTAMP_SKEW_SECONDS`）。
-- **凭证：** 我方对接方用 `RISK_CONTROL_APP_ID` / `RISK_CONTROL_APP_KEY` 或 `RISK_CONTROL_CREDENTIALS_JSON`（详见 `api/.env.example`）；转发上游另配 `RISK_UPSTREAM_*`。
+- **凭证：** 我方对接方用 `RISK_CONTROL_APP_ID` / `RISK_CONTROL_APP_KEY` 或 `RISK_CONTROL_CREDENTIALS_JSON`（详见 `api/.env.example`）；转发上游另配 `RISK_UPSTREAM_*`。`HD_CLOUD_*` 与 `CLOUD_*` 可作上游配置别名。
 
 ---
 

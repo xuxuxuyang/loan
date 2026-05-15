@@ -1,6 +1,6 @@
 # API 说明（按接口分条）
 
-服务前缀：`/api`，完整示例：`http://localhost:3110/api/...`。
+服务前缀：`/api`，完整示例：`http://localhost:3110/api/...`。默认端口可用 `PORT` 调整；环境变量全量字典见 `api/.env.example`（含兼容别名）。
 
 **后台鉴权（需权限的接口）：** 请求头常带 `x-admin-role: super_admin | reviewer | collector`，或使用 `Authorization: Bearer mock-token-手机号`（该手机号在 `adminAccounts` 中有记录时可解析角色）。细节见 `api/src/index.js` 中 `resolveAdminRole`。
 

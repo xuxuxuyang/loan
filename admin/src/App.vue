@@ -238,7 +238,13 @@ useAdminOrderReviewBadge(ordersSidebarBadgeEnabled)
                 <el-icon class="admin-menu-icon admin-menu-icon--child">
                   <component :is="child.icon" />
                 </el-icon>
-                <span>{{ child.label }}</span>
+                <span class="admin-menu-child-label-row">
+                  <span class="admin-menu-child-label-text">{{ child.label }}</span>
+                  <span
+                    v-if="child.path === '/orders/review' && ordersMenuPendingReviewTotal > 0"
+                    class="admin-cs-menu-badge"
+                  >{{ ordersMenuPendingReviewTotal > 99 ? '99+' : ordersMenuPendingReviewTotal }}</span>
+                </span>
               </el-menu-item>
             </el-sub-menu>
             <el-menu-item
@@ -393,6 +399,22 @@ useAdminOrderReviewBadge(ordersSidebarBadgeEnabled)
 }
 
 .admin-menu-top-label-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.admin-menu-child-label-row {
+  flex: 1;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.admin-menu-child-label-text {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

@@ -33,6 +33,7 @@ declare module 'vue' {
     LoginForm: typeof import('./components/auth/LoginForm.vue')['default']
     MallListMobile: typeof import('./components/list/MallListMobile.vue')['default']
     MallProductDetailGallery: typeof import('./components/mall/MallProductDetailGallery.vue')['default']
+    MallSearchMobile: typeof import('./components/search/MallSearchMobile.vue')['default']
     MyAddressMobile: typeof import('./components/my/address/MyAddressMobile.vue')['default']
     MyBankCardMobile: typeof import('./components/my/bank-card/MyBankCardMobile.vue')['default']
     MyBillMobile: typeof import('./components/my/bill/MyBillMobile.vue')['default']

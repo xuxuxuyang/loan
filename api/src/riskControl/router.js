@@ -211,6 +211,15 @@ async function runUpstreamProxy(ctx, upstreamFetch, payload) {
   }
 }
 
+function respondMissingFields(ctx, fields) {
+  ctx.status = 400
+  ctx.body = {
+    success: false,
+    code: 40010,
+    msg: `缺少必填字段：${fields.join('、')}`,
+  }
+}
+
 /** idNumber / userName / phoneNumber 验签转发上游 */
 async function forwardIdentityUpstream(ctx, upstreamFetch) {
   const data = ctx.state.riskControl.data || {}
@@ -223,12 +232,7 @@ async function forwardIdentityUpstream(ctx, upstreamFetch) {
   if (!userName) missing.push('data.userName')
   if (!phoneNumber) missing.push('data.phoneNumber')
   if (missing.length) {
-    ctx.status = 400
-    ctx.body = {
-      success: false,
-      code: 40010,
-      msg: `缺少必填字段：${missing.join('、')}`,
-    }
+    respondMissingFields(ctx, missing)
     return
   }
 
@@ -246,12 +250,7 @@ async function forwardOcrIdentify(ctx) {
   if (!image) missing.push('data.image')
   if (!sideNorm) missing.push('data.side')
   if (missing.length) {
-    ctx.status = 400
-    ctx.body = {
-      success: false,
-      code: 40010,
-      msg: `缺少必填字段：${missing.join('、')}`,
-    }
+    respondMissingFields(ctx, missing)
     return
   }
 
@@ -280,12 +279,7 @@ async function forwardNameIdCardMobileUpstream(ctx, upstreamFetch) {
   if (!id_card) missing.push('data.id_card（或 idNumber）')
   if (!mobile) missing.push('data.mobile（或 phoneNumber）')
   if (missing.length) {
-    ctx.status = 400
-    ctx.body = {
-      success: false,
-      code: 40010,
-      msg: `缺少必填字段：${missing.join('、')}`,
-    }
+    respondMissingFields(ctx, missing)
     return
   }
 
@@ -313,12 +307,7 @@ async function forwardAuthCompanyMobile3(ctx) {
   if (!company_name) missing.push('data.company_name（或 companyName）')
   if (!credit_code) missing.push('data.credit_code（或 creditCode）')
   if (missing.length) {
-    ctx.status = 400
-    ctx.body = {
-      success: false,
-      code: 40010,
-      msg: `缺少必填字段：${missing.join('、')}`,
-    }
+    respondMissingFields(ctx, missing)
     return
   }
 
@@ -341,12 +330,7 @@ async function forwardCaptchaVerify(ctx) {
   if (!serialNo) missing.push('data.serialNo（或 serial_no）')
   if (!captcha) missing.push('data.captcha')
   if (missing.length) {
-    ctx.status = 400
-    ctx.body = {
-      success: false,
-      code: 40010,
-      msg: `缺少必填字段：${missing.join('、')}`,
-    }
+    respondMissingFields(ctx, missing)
     return
   }
 
@@ -386,12 +370,7 @@ async function forwardAuthPersonFace(ctx) {
   if (!name) missing.push('data.name（或 userName）')
   if (!id_card) missing.push('data.id_card（或 idNumber）')
   if (missing.length) {
-    ctx.status = 400
-    ctx.body = {
-      success: false,
-      code: 40010,
-      msg: `缺少必填字段：${missing.join('、')}`,
-    }
+    respondMissingFields(ctx, missing)
     return
   }
 
@@ -479,12 +458,7 @@ async function forwardPhoneMsgUpstream(ctx, upstreamFetch) {
   if (!phone) missing.push('data.phone（或 mobile、phoneNumber）')
   if (!msg) missing.push('data.msg')
   if (missing.length) {
-    ctx.status = 400
-    ctx.body = {
-      success: false,
-      code: 40010,
-      msg: `缺少必填字段：${missing.join('、')}`,
-    }
+    respondMissingFields(ctx, missing)
     return
   }
 
@@ -502,7 +476,7 @@ async function forwardClSmsNotify(ctx) {
 }
 
 /** 添加个人用户信息：上游 account（用户唯一识别码）、serialNo（实名认证流水号） */
-async function forwardAddPersonalUser(ctx) {
+async function forwardAccountSerialNoUpstream(ctx, upstreamFetch) {
   const data = ctx.state.riskControl.data || {}
   const account = String(data.account ?? '').trim()
   const serialNo = String(data.serialNo ?? data.serial_no ?? '').trim()
@@ -511,38 +485,21 @@ async function forwardAddPersonalUser(ctx) {
   if (!account) missing.push('data.account')
   if (!serialNo) missing.push('data.serialNo（或 serial_no）')
   if (missing.length) {
-    ctx.status = 400
-    ctx.body = {
-      success: false,
-      code: 40010,
-      msg: `缺少必填字段：${missing.join('、')}`,
-    }
+    respondMissingFields(ctx, missing)
     return
   }
 
-  await runUpstreamProxy(ctx, postAddPersonalUser, { account, serialNo })
+  await runUpstreamProxy(ctx, upstreamFetch, { account, serialNo })
+}
+
+/** 添加个人用户信息：上游 account（用户唯一识别码）、serialNo（实名认证流水号） */
+async function forwardAddPersonalUser(ctx) {
+  await forwardAccountSerialNoUpstream(ctx, postAddPersonalUser)
 }
 
 /** 添加企业用户信息：上游 account（用户唯一识别码）、serialNo（实名认证流水号） */
 async function forwardAddEnterpriseUser(ctx) {
-  const data = ctx.state.riskControl.data || {}
-  const account = String(data.account ?? '').trim()
-  const serialNo = String(data.serialNo ?? data.serial_no ?? '').trim()
-
-  const missing = []
-  if (!account) missing.push('data.account')
-  if (!serialNo) missing.push('data.serialNo（或 serial_no）')
-  if (missing.length) {
-    ctx.status = 400
-    ctx.body = {
-      success: false,
-      code: 40010,
-      msg: `缺少必填字段：${missing.join('、')}`,
-    }
-    return
-  }
-
-  await runUpstreamProxy(ctx, postAddEnterpriseUser, { account, serialNo })
+  await forwardAccountSerialNoUpstream(ctx, postAddEnterpriseUser)
 }
 
 /** 上传待签署文件（创建合同）：上游 POST /api/sign/createContract */
@@ -560,15 +517,9 @@ async function forwardCreateContract(ctx) {
     missing.push('data.signOrder（或 sign_order）')
   }
   if (missing.length) {
-    ctx.status = 400
-    ctx.body = {
-      success: false,
-      code: 40010,
-      msg: `缺少必填字段：${missing.join('、')}`,
-    }
+    respondMissingFields(ctx, missing)
     return
   }
-
   if (contractNo.length > 40) {
     ctx.status = 400
     ctx.body = {
@@ -896,6 +847,12 @@ async function forwardDsPhoneNumberUpstream(ctx, upstreamFetch) {
   await runUpstreamProxy(ctx, upstreamFetch, { phoneNumber })
 }
 
+function registerSignedRoute(path, handler) {
+  router.post(path, verifyRiskSignature, async (ctx) => {
+    await handler(ctx)
+  })
+}
+
 router.get('/health', (ctx) => {
   ctx.body = {
     success: true,
@@ -921,119 +878,73 @@ router.post('/v1/ping', verifyRiskSignature, (ctx) => {
 })
 
 /** 法院信息-个人高级版：验签后转发上游 POST /api/risk.v4/courtDetailPro */
-router.post('/v1/court-detail-pro', verifyRiskSignature, async (ctx) => {
-  await forwardIdentityUpstream(ctx, postCourtDetailPro)
-})
+registerSignedRoute('/v1/court-detail-pro', ctx => forwardIdentityUpstream(ctx, postCourtDetailPro))
 
 /** 法院被执行-高级版：验签后转发上游 POST /api/risk.v4/executionPro */
-router.post('/v1/execution-pro', verifyRiskSignature, async (ctx) => {
-  await forwardIdentityUpstream(ctx, postExecutionPro)
-})
+registerSignedRoute('/v1/execution-pro', ctx => forwardIdentityUpstream(ctx, postExecutionPro))
 
 /** 探针 C-md5：验签后转发上游 POST /api/risk.V5/probeCEnc */
-router.post('/v1/probe-c-enc', verifyRiskSignature, async (ctx) => {
-  await forwardIdentityUpstream(ctx, postProbeCEnc)
-})
+registerSignedRoute('/v1/probe-c-enc', ctx => forwardIdentityUpstream(ctx, postProbeCEnc))
 
 /** 全景雷达 v4-MD5：验签后转发上游 POST /api/risk.V5/radarV4Enc */
-router.post('/v1/radar-v4-enc', verifyRiskSignature, async (ctx) => {
-  await forwardIdentityUpstream(ctx, postRadarV4Enc)
-})
+registerSignedRoute('/v1/radar-v4-enc', ctx => forwardIdentityUpstream(ctx, postRadarV4Enc))
 
 /** 身份证 OCR：验签后转发上游 POST /api/sign/ocrIdentify */
-router.post('/v1/ocr-identify', verifyRiskSignature, async (ctx) => {
-  await forwardOcrIdentify(ctx)
-})
+registerSignedRoute('/v1/ocr-identify', forwardOcrIdentify)
 
 /** 个人三要素对比 v2：验签后转发上游 POST /api/datapay/personal3 */
-router.post('/v1/personal3', verifyRiskSignature, async (ctx) => {
-  await forwardPersonal3(ctx)
-})
+registerSignedRoute('/v1/personal3', forwardPersonal3)
 
 /** 在网时长：验签后转发上游 POST /api/risk/dsPhoneTime */
-router.post('/v1/ds-phone-time', verifyRiskSignature, async (ctx) => {
-  await forwardDsPhoneNumberUpstream(ctx, postDsPhoneTime)
-})
+registerSignedRoute('/v1/ds-phone-time', ctx => forwardDsPhoneNumberUpstream(ctx, postDsPhoneTime))
 
 /** 运营商状态：验签后转发上游 POST /api/risk/dsPhoneState */
-router.post('/v1/ds-phone-state', verifyRiskSignature, async (ctx) => {
-  await forwardDsPhoneNumberUpstream(ctx, postDsPhoneState)
-})
+registerSignedRoute('/v1/ds-phone-state', ctx => forwardDsPhoneNumberUpstream(ctx, postDsPhoneState))
 
 /** 运营商二要素验证：验签后转发上游 POST /api/datapay/mobile2 */
-router.post('/v1/mobile2', verifyRiskSignature, async (ctx) => {
-  await forwardMobile2(ctx)
-})
+registerSignedRoute('/v1/mobile2', forwardMobile2)
 
 /** 个人运营商三要素认证：验签后转发上游 POST /api/sign/authPersonMobile3 */
-router.post('/v1/auth-person-mobile3', verifyRiskSignature, async (ctx) => {
-  await forwardNameIdCardMobileUpstream(ctx, postAuthPersonMobile3)
-})
+registerSignedRoute('/v1/auth-person-mobile3', ctx => forwardNameIdCardMobileUpstream(ctx, postAuthPersonMobile3))
 
 /** 企业运营商三要素认证：验签后转发上游 POST /api/sign/authCompanyMobile3 */
-router.post('/v1/auth-company-mobile3', verifyRiskSignature, async (ctx) => {
-  await forwardAuthCompanyMobile3(ctx)
-})
+registerSignedRoute('/v1/auth-company-mobile3', forwardAuthCompanyMobile3)
 
 /** 认证校验码校验：验签后转发上游 POST /api/sign/captchaVerify */
-router.post('/v1/captcha-verify', verifyRiskSignature, async (ctx) => {
-  await forwardCaptchaVerify(ctx)
-})
+registerSignedRoute('/v1/captcha-verify', forwardCaptchaVerify)
 
 /** 重新发送认证验证码：验签后转发上游 POST /api/sign/captchaResend */
-router.post('/v1/captcha-resend', verifyRiskSignature, async (ctx) => {
-  await forwardCaptchaResend(ctx)
-})
+registerSignedRoute('/v1/captcha-resend', forwardCaptchaResend)
 
 /** 实名认证信息查询：验签后转发上游 POST /api/sign/getAuthRecordInfo */
-router.post('/v1/get-auth-record-info', verifyRiskSignature, async (ctx) => {
-  await forwardSerialNoOnlyUpstream(ctx, postGetAuthRecordInfo)
-})
+registerSignedRoute('/v1/get-auth-record-info', ctx => forwardSerialNoOnlyUpstream(ctx, postGetAuthRecordInfo))
 
 /** 个人人脸活体认证：验签后转发上游 POST /api/sign/authPersonFace */
-router.post('/v1/auth-person-face', verifyRiskSignature, async (ctx) => {
-  await forwardAuthPersonFace(ctx)
-})
+registerSignedRoute('/v1/auth-person-face', forwardAuthPersonFace)
 
 /** 查询人脸核身结果：验签后转发上游 POST /api/sign/userFaceResult */
-router.post('/v1/user-face-result', verifyRiskSignature, async (ctx) => {
-  await forwardUserFaceResult(ctx)
-})
+registerSignedRoute('/v1/user-face-result', forwardUserFaceResult)
 
 /** 添加个人用户信息：验签后转发上游 POST /api/sign/addPersonalUser */
-router.post('/v1/add-personal-user', verifyRiskSignature, async (ctx) => {
-  await forwardAddPersonalUser(ctx)
-})
+registerSignedRoute('/v1/add-personal-user', forwardAddPersonalUser)
 
 /** 添加企业用户信息：验签后转发上游 POST /api/sign/addEnterpriseUser */
-router.post('/v1/add-enterprise-user', verifyRiskSignature, async (ctx) => {
-  await forwardAddEnterpriseUser(ctx)
-})
+registerSignedRoute('/v1/add-enterprise-user', forwardAddEnterpriseUser)
 
 /** 上传待签署文件（创建合同）：验签后转发上游 POST /api/sign/createContract */
-router.post('/v1/create-contract', verifyRiskSignature, async (ctx) => {
-  await forwardCreateContract(ctx)
-})
+registerSignedRoute('/v1/create-contract', forwardCreateContract)
 
 /** 添加签署方：验签后转发上游 POST /api/sign/addSigner */
-router.post('/v1/add-signer', verifyRiskSignature, async (ctx) => {
-  await forwardAddSigner(ctx)
-})
+registerSignedRoute('/v1/add-signer', forwardAddSigner)
 
 /** 查询合同信息：验签后转发上游 POST /api/sign/getContract */
-router.post('/v1/get-contract', verifyRiskSignature, async (ctx) => {
-  await forwardGetContract(ctx)
-})
+registerSignedRoute('/v1/get-contract', forwardGetContract)
 
 /** 验证码短信发送：验签后转发上游 POST /api/clSms/send */
-router.post('/v1/cl-sms-send', verifyRiskSignature, async (ctx) => {
-  await forwardClSmsSend(ctx)
-})
+registerSignedRoute('/v1/cl-sms-send', forwardClSmsSend)
 
 /** 通知短信发送：验签后转发上游 POST /api/clSms/notify */
-router.post('/v1/cl-sms-notify', verifyRiskSignature, async (ctx) => {
-  await forwardClSmsNotify(ctx)
-})
+registerSignedRoute('/v1/cl-sms-notify', forwardClSmsNotify)
 
 module.exports = {
   router,

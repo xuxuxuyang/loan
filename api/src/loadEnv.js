@@ -10,6 +10,16 @@ const fs = require('node:fs')
 const path = require('node:path')
 const dotenv = require('dotenv')
 
+const PROXY_ENV_KEYS = [
+  'HTTP_PROXY',
+  'http_proxy',
+  'HTTPS_PROXY',
+  'https_proxy',
+  'ALL_PROXY',
+  'all_proxy',
+]
+const REQUIRED_NO_PROXY = ['127.0.0.1', 'localhost', '.aliyuncs.com']
+
 function fileExists(p) {
   try {
     fs.accessSync(p, fs.constants.R_OK)
@@ -18,6 +28,19 @@ function fileExists(p) {
   catch {
     return false
   }
+}
+
+function hardenProxyEnv() {
+  for (const key of PROXY_ENV_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(process.env, key)) {
+      delete process.env[key]
+    }
+  }
+  const existed = String(process.env.NO_PROXY || process.env.no_proxy || '').trim()
+  const merged = [...new Set([...existed.split(',').map(s => s.trim()).filter(Boolean), ...REQUIRED_NO_PROXY])]
+  const noProxy = merged.join(',')
+  process.env.NO_PROXY = noProxy
+  process.env.no_proxy = noProxy
 }
 
 /** 调用方一般为 api/src 下的模块，传入 __dirname */
@@ -41,6 +64,7 @@ function loadDotenvExports(entryDirname) {
   if (fileExists(rootEnv)) {
     dotenv.config({ path: rootEnv, override: false })
   }
+  hardenProxyEnv()
 }
 
 module.exports = { loadDotenvExports }

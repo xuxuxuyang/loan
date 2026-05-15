@@ -3,6 +3,7 @@ import { createRouter, createWebHistory } from 'vue-router'
 import {
   ensureMallProductsLoaded,
   ensureMallShowcaseProductsLoaded,
+  ensureShopHomeProductsLoaded,
 } from '../composables/useTeaProducts'
 
 /** 商城 SPA：与原 Nuxt 页面等价的 tab + 登录/下单/个人信息子场景 */
@@ -22,6 +23,7 @@ const MallCardPackageView = () => import('../views/MallCardPackageView.vue')
 const MallCsChatView = () => import('../views/MallCsChatView.vue')
 const MallPrivacyPolicyView = () => import('../views/MallPrivacyPolicyView.vue')
 const MallUserAgreementView = () => import('../views/MallUserAgreementView.vue')
+const MallSearchView = () => import('../views/MallSearchView.vue')
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -42,6 +44,7 @@ const router = createRouter({
     { path: '/cs-chat', name: 'cs-chat', component: MallCsChatView },
     { path: '/privacy-policy', name: 'privacy-policy', component: MallPrivacyPolicyView },
     { path: '/user-agreement', name: 'user-agreement', component: MallUserAgreementView },
+    { path: '/search', name: 'search', component: MallSearchView },
     // 兜底：未知路径交给首页底部 Tab 的体验更一致（亦可改为 404）
     { path: '/:pathMatch(.*)*', name: 'not-found', redirect: '/' },
   ],
@@ -52,12 +55,15 @@ router.afterEach((to) => {
   if (import.meta.env.SSR) {
     return
   }
-  if (to.name !== 'index' && to.name !== 'list' && to.name !== 'installment') {
+  if (to.name !== 'index' && to.name !== 'list' && to.name !== 'installment' && to.name !== 'search') {
     return
   }
   nextTick(() => {
     if (to.name === 'installment') {
       void ensureMallProductsLoaded()
+    }
+    else if (to.name === 'search') {
+      void ensureShopHomeProductsLoaded()
     }
     else {
       void ensureMallShowcaseProductsLoaded()
