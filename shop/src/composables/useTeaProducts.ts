@@ -1,5 +1,10 @@
 export type ProductSalesMode = 'mall' | 'installment'
 
+/** 商品归属品类（后端/筛选用）；不含 Tab 专有项「全部」「先享后付」 */
+export type MallShelfCategoryKey = 'phones' | 'digital' | 'appliances' | 'cosmetics'
+
+export type MallCategoryKey = 'all' | 'installment' | MallShelfCategoryKey
+
 export interface TeaProduct {
   id: number
   name: string
@@ -10,7 +15,7 @@ export interface TeaProduct {
   image: string
   /** 商品详情页展示的多张详情图（URL 或 data URL） */
   detailImages?: string[]
-  category: MallCategoryKey
+  category: MallShelfCategoryKey
   /** mall=首页商城；installment=先享后付；均可下单 */
   salesMode: ProductSalesMode
   /** 先享后付卡包现金礼金额（元） */
@@ -20,12 +25,14 @@ export interface TeaProduct {
   updatedAt?: string
 }
 
-export type MallCategoryKey = 'all' | 'phones' | 'digital' | 'appliances' | 'cosmetics'
-
 export interface MallCategoryItem {
   key: MallCategoryKey
   name: string
   icon: string
+  /** 列表页顶部主标题 */
+  heroTitle: string
+  /** 列表页顶部副文案 */
+  heroSubtitle: string
 }
 
 const STATE_INSTALLMENT = 'index-tea-products-installment'
@@ -33,11 +40,48 @@ const STATE_MALL = 'index-tea-products-mall'
 const STATE_FETCH_OK_PREFIX = 'index-tea-products-fetch-ok-'
 
 const mallCategories: MallCategoryItem[] = [
-  { key: 'all', name: '全部', icon: 'tabler:apps' },
-  { key: 'phones', name: '手机', icon: 'tabler:device-mobile' },
-  { key: 'digital', name: '数码产品', icon: 'tabler:device-laptop' },
-  { key: 'appliances', name: '家用电器', icon: 'tabler:fridge' },
-  { key: 'cosmetics', name: '化妆品', icon: 'tabler:sparkles' },
+  {
+    key: 'all',
+    name: '全部',
+    icon: 'tabler:apps',
+    heroTitle: '全部商品',
+    heroSubtitle: '手机数码 · 家电美妆 · 正品速达',
+  },
+  {
+    key: 'installment',
+    name: '先享后付',
+    icon: 'tabler:credit-card-pay',
+    heroTitle: '先享后付',
+    heroSubtitle: '先用后付 · 灵活分期 · 正品速达',
+  },
+  {
+    key: 'phones',
+    name: '手机',
+    icon: 'tabler:device-mobile',
+    heroTitle: '手机专区',
+    heroSubtitle: '旗舰新品 · 品质通信 · 快速发货',
+  },
+  {
+    key: 'digital',
+    name: '数码产品',
+    icon: 'tabler:device-laptop',
+    heroTitle: '数码产品',
+    heroSubtitle: '电脑影音 · 智能配件 · 严选热卖',
+  },
+  {
+    key: 'appliances',
+    name: '家用电器',
+    icon: 'tabler:fridge',
+    heroTitle: '家用电器',
+    heroSubtitle: '厨房生活 · 小电大家电 · 送到家',
+  },
+  {
+    key: 'cosmetics',
+    name: '化妆品',
+    icon: 'tabler:sparkles',
+    heroTitle: '美妆护肤',
+    heroSubtitle: '口碑爆款 · 温和呵护 · 正品保障',
+  },
 ]
 
 function resolveMallApiBase() {
@@ -45,7 +89,7 @@ function resolveMallApiBase() {
   return runtimeConfig.public.mallApiBase || '/api'
 }
 
-const CATEGORY_LEGACY: Record<string, MallCategoryKey> = {
+const CATEGORY_LEGACY: Record<string, MallShelfCategoryKey> = {
   travel: 'digital',
   calligraphy: 'digital',
   mobile: 'phones',
@@ -54,9 +98,15 @@ const CATEGORY_LEGACY: Record<string, MallCategoryKey> = {
   appliance: 'appliances',
 }
 
-function resolveShopCategory(raw: string): MallCategoryKey {
+const MALL_SHELF_KEYS = new Set<MallShelfCategoryKey>(['phones', 'digital', 'appliances', 'cosmetics'])
+
+function isMallShelfCategoryKey(value: string): value is MallShelfCategoryKey {
+  return MALL_SHELF_KEYS.has(value as MallShelfCategoryKey)
+}
+
+function resolveShopCategory(raw: string): MallShelfCategoryKey {
   const t = String(raw || '').trim()
-  if (isMallCategoryKey(t) && t !== 'all') {
+  if (isMallShelfCategoryKey(t)) {
     return t
   }
   const mapped = CATEGORY_LEGACY[t]

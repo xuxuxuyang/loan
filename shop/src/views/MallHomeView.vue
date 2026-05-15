@@ -14,13 +14,20 @@ import {
 const route = useRoute()
 const installmentProducts = useTeaProducts()
 const mallProducts = useMallShowcaseProducts()
-const categories = useMallCategories().filter(item => item.key !== 'all')
+/** 首页分类条仅展示商城品类；「先享后付」由顶部分区切换，避免与 installment 商品维度混淆 */
+const categories = useMallCategories().filter(item => item.key !== 'all' && item.key !== 'installment')
 const selectedCategory = ref<MallCategoryKey>('phones')
 /** 首页默认展示先享后付；点「商城专区」再切商城数据 */
 const activeHomeZone = ref<'installment' | 'mall'>('installment')
 
-if (typeof route.query.category === 'string' && isMallCategoryKey(route.query.category) && route.query.category !== 'all') {
-  selectedCategory.value = route.query.category
+if (typeof route.query.category === 'string' && isMallCategoryKey(route.query.category)) {
+  if (route.query.category === 'installment') {
+    activeHomeZone.value = 'installment'
+  }
+  else if (route.query.category !== 'all') {
+    activeHomeZone.value = 'mall'
+    selectedCategory.value = route.query.category
+  }
 }
 
 if (!import.meta.env.SSR) {
@@ -55,7 +62,7 @@ watch(
       return
     }
     const first = list[0]?.category
-    if (first && isMallCategoryKey(first)) {
+    if (first) {
       selectedCategory.value = first
     }
   },

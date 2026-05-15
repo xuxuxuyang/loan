@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { MallCategoryItem, MallCategoryKey, TeaProduct } from '~/composables/useTeaProducts'
 
-defineProps<{
+const props = defineProps<{
   products: TeaProduct[]
   categories: MallCategoryItem[]
   activeCategory: MallCategoryKey
@@ -10,6 +10,17 @@ defineProps<{
 const emit = defineEmits<{
   'select-category': [category: MallCategoryKey]
 }>()
+
+const banner = computed(() => {
+  const row = props.categories.find(c => c.key === props.activeCategory)
+  if (row) {
+    return { title: row.heroTitle, subtitle: row.heroSubtitle }
+  }
+  return {
+    title: '商城精选',
+    subtitle: '好物汇聚 · 正品速达',
+  }
+})
 
 const route = useRoute()
 const { smartNavigate } = useCustomRouting(route)
@@ -27,20 +38,26 @@ async function openProductDetail(item: TeaProduct) {
       <p class="mb-1 text-[11px] tracking-[0.16em] uppercase text-white/80">
         Mall
       </p>
-      <h2 class="mb-1 text-xl font-semibold">
-        全部商品
+      <h2 class="hero-title mb-1 text-xl font-semibold transition-opacity duration-200">
+        {{ banner.title }}
       </h2>
-      <p class="text-xs text-white/85">
-        手机数码 · 家电美妆 · 正品速达
+      <p class="hero-sub text-xs text-white/85 transition-opacity duration-200">
+        {{ banner.subtitle }}
       </p>
     </div>
 
-    <div class="mb-4 flex gap-2 overflow-x-auto pb-1">
+    <div
+      class="category-scroll mb-4 flex gap-2 overflow-x-auto pb-1 [-ms-overflow-style:none] [scrollbar-width:none]"
+      role="tablist"
+      aria-label="商品分类"
+    >
       <button
         v-for="item in categories"
         :key="item.key"
         type="button"
-        class="shrink-0 rounded-full border px-3 py-1.5 text-xs transition"
+        role="tab"
+        :aria-selected="activeCategory === item.key"
+        class="shrink-0 snap-start rounded-full border px-3 py-1.5 text-xs transition"
         :class="activeCategory === item.key ? 'category-active border-[#f07b98] bg-gradient-to-r from-[#ff8ea5] to-[#ff7bb0] text-white shadow-[0_6px_14px_rgba(237,116,152,0.35)]' : 'border-[#e9d7df] bg-white text-[#5a6072]'"
         @click="emit('select-category', item.key)"
       >
@@ -104,6 +121,14 @@ async function openProductDetail(item: TeaProduct) {
 
 .category-active {
   border-color: transparent;
+}
+
+.category-scroll {
+  scroll-snap-type: x proximity;
+}
+
+.category-scroll::-webkit-scrollbar {
+  display: none;
 }
 
 .product-card {

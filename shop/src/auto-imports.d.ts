@@ -131,7 +131,7 @@ declare global {
   export type { MallOrderStatus, MallPayType, MallPayChannel, MallOrder, SimulatedLogisticsNode } from './composables/useMallOrders'
   import('./composables/useMallOrders')
   // @ts-ignore
-  export type { ProductSalesMode, TeaProduct, MallCategoryKey, MallCategoryItem } from './composables/useTeaProducts'
+  export type { ProductSalesMode, MallShelfCategoryKey, MallCategoryKey, TeaProduct, MallCategoryItem } from './composables/useTeaProducts'
   import('./composables/useTeaProducts')
 }
 
