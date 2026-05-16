@@ -2859,12 +2859,69 @@ function toAdminAccountView(account) {
   }
 }
 
+function isBossAccount(account) {
+  return normalizeAdminRole(account && account.role ? account.role : '') === ADMIN_ROLES.BOSS
+}
+
+function listTenantAdminAccountsForValidation(extraTenantIds = []) {
+  const set = new Set(collectKnownTenantIds())
+  extraTenantIds
+    .map(item => normalizeTenantId(item))
+    .filter(item => item && item !== DEFAULT_TENANT_ID)
+    .forEach(item => set.add(item))
+  const rows = []
+  for (const tenantId of set) {
+    const db = readDbByTenantId(tenantId)
+    const accounts = Array.isArray(db.adminAccounts) ? db.adminAccounts : []
+    accounts.forEach((item) => {
+      rows.push({
+        account: normalizeAdminAccount(item),
+        tenantId,
+      })
+    })
+  }
+  return rows
+}
+
+function findDuplicatedBossUsername(username, extraTenantIds = [], excludeAccountId = '') {
+  const key = String(username || '').trim()
+  if (!key) return null
+  const rows = listTenantAdminAccountsForValidation(extraTenantIds)
+  return rows.find(({ account }) => {
+    if (!account || account.id === excludeAccountId) return false
+    if (!isBossAccount(account)) return false
+    return String(account.username || '').trim() === key
+  }) || null
+}
+
+function findDuplicatedBossPhone(phone, extraTenantIds = [], excludeAccountId = '') {
+  const key = normalizePhone(phone)
+  if (!key) return null
+  const rows = listTenantAdminAccountsForValidation(extraTenantIds)
+  return rows.find(({ account }) => {
+    if (!account || account.id === excludeAccountId) return false
+    if (!isBossAccount(account)) return false
+    return normalizePhone(account.phone) === key
+  }) || null
+}
+
 function createTenantScopedAdminAccount(targetTenantId, payload) {
   return runWithTenant(targetTenantId, () => {
     const db = readDb()
     ensureAdminAccounts(db)
     const username = String(payload.username || '').trim()
     const phone = normalizePhone(payload.phone)
+    const role = normalizeAdminRole(payload.role)
+    if (role === ADMIN_ROLES.BOSS) {
+      const duplicatedBossUsername = findDuplicatedBossUsername(username, [targetTenantId])
+      if (duplicatedBossUsername) {
+        return { ok: false, code: 409, msg: '老板账号已存在，请更换账号' }
+      }
+      const duplicatedBossPhone = findDuplicatedBossPhone(phone, [targetTenantId])
+      if (duplicatedBossPhone) {
+        return { ok: false, code: 409, msg: '老板手机号已存在，请更换手机号' }
+      }
+    }
     if (db.adminAccounts.some(item => item.username === username)) {
       return { ok: false, code: 409, msg: '该租户已存在同名后台账号' }
     }
@@ -2940,6 +2997,28 @@ function parseKnownTenantIdsFromMeta(meta) {
   return out
 }
 
+function parseTenantCreatedAtMapFromMeta(meta) {
+  if (!meta || typeof meta !== 'object' || !meta.tenantCreatedAtById || typeof meta.tenantCreatedAtById !== 'object') {
+    return {}
+  }
+  const out = {}
+  Object.entries(meta.tenantCreatedAtById).forEach(([rawTenantId, rawCreatedAt]) => {
+    const tenantId = normalizeTenantId(rawTenantId)
+    if (!tenantId || tenantId === DEFAULT_TENANT_ID) return
+    const createdAt = String(rawCreatedAt || '').trim()
+    if (!createdAt) return
+    out[tenantId] = createdAt
+  })
+  return out
+}
+
+function writeTenantCreatedAtMapMeta(db, createdAtById) {
+  if (!db._meta || typeof db._meta !== 'object') {
+    db._meta = {}
+  }
+  db._meta.tenantCreatedAtById = { ...createdAtById }
+}
+
 function writeKnownTenantIdsMeta(db, tenantIds) {
   const list = []
   for (const item of tenantIds) {
@@ -2956,12 +3035,26 @@ function writeKnownTenantIdsMeta(db, tenantIds) {
 
 function ensureTenantRegistered(db, tenantId) {
   const tenant = normalizeTenantId(tenantId)
+  if (!tenant || tenant === DEFAULT_TENANT_ID) {
+    return false
+  }
   const known = parseKnownTenantIdsFromMeta(db._meta)
+  const createdAtById = parseTenantCreatedAtMapFromMeta(db._meta)
+  let changed = false
   if (!known.includes(tenant)) {
     known.push(tenant)
+    changed = true
+  }
+  if (!createdAtById[tenant]) {
+    createdAtById[tenant] = new Date().toISOString()
+    changed = true
+  }
+  if (changed) {
     writeKnownTenantIdsMeta(db, known)
+    writeTenantCreatedAtMapMeta(db, createdAtById)
     writeDb(db)
   }
+  return true
 }
 
 function registerKnownTenantId(tenantId) {
@@ -2969,6 +3062,29 @@ function registerKnownTenantId(tenantId) {
   runWithWorkspace('core', DEFAULT_TENANT_ID, () => {
     const db = readDb()
     ensureTenantRegistered(db, nextTenantId)
+  })
+}
+
+function unregisterKnownTenantId(tenantId) {
+  const nextTenantId = normalizeTenantId(tenantId || DEFAULT_TENANT_ID)
+  if (!nextTenantId || nextTenantId === DEFAULT_TENANT_ID) {
+    return false
+  }
+  return runWithWorkspace('core', DEFAULT_TENANT_ID, () => {
+    const db = readDb()
+    const known = parseKnownTenantIdsFromMeta(db._meta)
+    const createdAtById = parseTenantCreatedAtMapFromMeta(db._meta)
+    const nextKnown = known.filter(item => item !== nextTenantId)
+    if (nextKnown.length === known.length && !createdAtById[nextTenantId]) {
+      return false
+    }
+    if (createdAtById[nextTenantId]) {
+      delete createdAtById[nextTenantId]
+    }
+    writeKnownTenantIdsMeta(db, nextKnown)
+    writeTenantCreatedAtMapMeta(db, createdAtById)
+    writeDb(db)
+    return true
   })
 }
 
@@ -3047,6 +3163,51 @@ async function readTenantAdminAccountsFromMongo(tenantId) {
   }
 }
 
+async function findGlobalBossConflict({ username, phone, excludeAccountId = '' }) {
+  const usernameKey = String(username || '').trim()
+  const phoneKey = normalizePhone(phone)
+  const known = await collectKnownTenantIdsForPlatform()
+  const tenantIds = [...new Set(known.filter(id => id && id !== DEFAULT_TENANT_ID))]
+
+  for (const tenantId of tenantIds) {
+    const mongoAccounts = await readTenantAdminAccountsFromMongo(tenantId)
+    const sourceAccounts = Array.isArray(mongoAccounts)
+      ? mongoAccounts
+      : (() => {
+          const db = readDbByTenantId(tenantId)
+          ensureAdminAccounts(db)
+          return db.adminAccounts
+        })()
+    for (const raw of sourceAccounts) {
+      const account = normalizeAdminAccount(raw)
+      if (!account || account.id === excludeAccountId) continue
+      if (normalizeAdminRole(account.role) !== ADMIN_ROLES.BOSS) continue
+      if (usernameKey && String(account.username || '').trim() === usernameKey) {
+        return { type: 'username', tenantId }
+      }
+      if (phoneKey && normalizePhone(account.phone) === phoneKey) {
+        return { type: 'phone', tenantId }
+      }
+    }
+  }
+
+  const coreDb = readCoreDb()
+  ensureAdminAccounts(coreDb)
+  for (const raw of coreDb.adminAccounts || []) {
+    const account = normalizeAdminAccount(raw)
+    if (!account || account.id === excludeAccountId) continue
+    if (normalizeAdminRole(account.role) !== ADMIN_ROLES.BOSS) continue
+    if (usernameKey && String(account.username || '').trim() === usernameKey) {
+      return { type: 'username', tenantId: DEFAULT_TENANT_ID }
+    }
+    if (phoneKey && normalizePhone(account.phone) === phoneKey) {
+      return { type: 'phone', tenantId: DEFAULT_TENANT_ID }
+    }
+  }
+
+  return null
+}
+
 router.get('/admin/accounts', (ctx) => {
   if (!requireAdminPermission(ctx, [ADMIN_ROLES.SUPER], '查看后台账号')) {
     return
@@ -3067,7 +3228,7 @@ router.get('/admin/accounts', (ctx) => {
   ctx.body = success(list)
 })
 
-router.post('/admin/accounts', (ctx) => {
+router.post('/admin/accounts', async (ctx) => {
   if (!requireAdminPermission(ctx, [ADMIN_ROLES.SUPER], '新增后台账号')) {
     return
   }
@@ -3119,6 +3280,13 @@ router.post('/admin/accounts', (ctx) => {
       fail(ctx, '租户账号不能创建到主系统租户 default', 403)
       return
     }
+    if (role === ADMIN_ROLES.BOSS) {
+      const bossConflict = await findGlobalBossConflict({ username, phone })
+      if (bossConflict) {
+        fail(ctx, bossConflict.type === 'username' ? '老板账号已存在，请更换账号' : '老板手机号已存在，请更换手机号', 409)
+        return
+      }
+    }
     const created = createTenantScopedAdminAccount(finalTenantId, {
       username,
       password,
@@ -3153,7 +3321,7 @@ router.post('/admin/accounts', (ctx) => {
   ctx.body = success(toAdminAccountView(created.account))
 })
 
-router.patch('/admin/accounts/:id', (ctx) => {
+router.patch('/admin/accounts/:id', async (ctx) => {
   if (!requireAdminPermission(ctx, [ADMIN_ROLES.SUPER], '修改后台账号')) {
     return
   }
@@ -3177,6 +3345,15 @@ router.patch('/admin/accounts/:id', (ctx) => {
     fail(ctx, '默认超级管理员账号角色不可修改')
     return
   }
+  const targetTenantId = normalizeTenantId(target.tenantId || operatorTenantId || DEFAULT_TENANT_ID)
+  const targetRole = normalizeAdminRole(target.role)
+  const nextRolePreview = payload.role !== undefined ? normalizeAdminRole(payload.role) : targetRole
+  const nextUsernamePreview = payload.username !== undefined
+    ? String(payload.username || '').trim()
+    : String(target.username || '').trim()
+  const nextPhonePreview = payload.phone !== undefined
+    ? normalizePhone(payload.phone)
+    : normalizePhone(target.phone)
   if (payload.username !== undefined) {
     const nextUsername = String(payload.username || '').trim()
     if (!/^[a-zA-Z][a-zA-Z0-9_]{3,20}$/.test(nextUsername)) {
@@ -3268,6 +3445,30 @@ router.patch('/admin/accounts/:id', (ctx) => {
     }
     target.password = nextPassword
   }
+  if (payload.phone !== undefined) {
+    const nextPhone = normalizePhone(payload.phone)
+    if (!/^1\d{10}$/.test(nextPhone)) {
+      fail(ctx, '手机号格式不正确')
+      return
+    }
+    const duplicatedPhone = db.adminAccounts.some(item => item.id !== target.id && normalizePhone(item.phone) === nextPhone)
+    if (duplicatedPhone) {
+      fail(ctx, '该租户手机号已被后台账号占用', 409)
+      return
+    }
+    target.phone = nextPhone
+  }
+  if (nextRolePreview === ADMIN_ROLES.BOSS) {
+    const bossConflict = await findGlobalBossConflict({
+      username: nextUsernamePreview,
+      phone: nextPhonePreview,
+      excludeAccountId: target.id,
+    })
+    if (bossConflict) {
+      fail(ctx, bossConflict.type === 'username' ? '老板账号已存在，请更换账号' : '老板手机号已存在，请更换手机号', 409)
+      return
+    }
+  }
   if (payload.name !== undefined) {
     target.name = String(payload.name || '').trim() || target.name
   }
@@ -3329,6 +3530,7 @@ router.get('/platform/tenants', async (ctx) => {
     return
   }
   const known = await collectKnownTenantIdsForPlatform()
+  const createdAtById = parseTenantCreatedAtMapFromMeta(readCoreDb()._meta)
   const allow = effectiveScopeTenantIds(account)
   const visibleAll = allow.includes('*')
     ? known
@@ -3337,20 +3539,29 @@ router.get('/platform/tenants', async (ctx) => {
   const list = visible
     .map((tenantId) => {
       const db = readDbByTenantId(tenantId)
+      const createdAt = createdAtById[tenantId] || null
       return {
         tenantId,
         tenantName: tenantId === DEFAULT_TENANT_ID ? '主系统' : tenantId,
         userCount: Array.isArray(db.users) ? db.users.length : 0,
         orderCount: Array.isArray(db.orders) ? db.orders.length : 0,
         productCount: Array.isArray(db.products) ? db.products.length : 0,
+        createdAt,
       }
     })
-    .sort((a, b) => a.tenantId.localeCompare(b.tenantId))
+    .sort((a, b) => {
+      const ta = new Date(String(a.createdAt || '')).getTime()
+      const tb = new Date(String(b.createdAt || '')).getTime()
+      const va = Number.isFinite(ta) ? ta : 0
+      const vb = Number.isFinite(tb) ? tb : 0
+      if (vb !== va) return vb - va
+      return a.tenantId.localeCompare(b.tenantId)
+    })
   platformAuditRecord(ctx, 'platform.tenants.list', { visibleTenantCount: list.length })
   ctx.body = success(list)
 })
 
-router.post('/platform/tenants', (ctx) => {
+router.post('/platform/tenants', async (ctx) => {
   const account = requirePlatformScope(ctx, '新增租户系统')
   if (!account) {
     return
@@ -3366,17 +3577,146 @@ router.post('/platform/tenants', (ctx) => {
     fail(ctx, 'tenantId 不可使用 default/main/platform/主系统')
     return
   }
+  if (!/^boss\d+$/i.test(rawTenantId)) {
+    fail(ctx, 'tenantId 仅支持 boss + 数字，例如 boss1、boss2')
+    return
+  }
   const tenantId = normalizeTenantId(rawTenantId)
   if (!tenantId || tenantId === DEFAULT_TENANT_ID) {
     fail(ctx, 'tenantId 不合法')
     return
   }
+  const known = await collectKnownTenantIdsForPlatform()
+  if (known.includes(tenantId)) {
+    fail(ctx, '租户系统ID已存在，请勿重复开通', 409)
+    return
+  }
   registerKnownTenantId(tenantId)
-  platformAuditRecord(ctx, 'platform.tenants.create', { tenantId })
+  const dbAfterRegister = readCoreDb()
+  const createdAtById = parseTenantCreatedAtMapFromMeta(dbAfterRegister._meta)
+  const createdAt = createdAtById[tenantId] || new Date().toISOString()
+  platformAuditRecord(ctx, 'platform.tenants.create', { tenantId, createdAt })
   ctx.body = success({
     tenantId,
     tenantName: tenantId,
+    createdAt,
   })
+})
+
+router.post('/platform/tenants/onboard', async (ctx) => {
+  const account = requirePlatformScope(ctx, '一体化开通租户系统')
+  if (!account) {
+    return
+  }
+  const payload = ctx.request.body || {}
+  const rawTenantId = String(payload.tenantId || '').trim()
+  const username = String(payload.username || '').trim()
+  const password = String(payload.password || '').trim()
+  const phone = normalizePhone(payload.phone)
+  const role = ADMIN_ROLES.BOSS
+  const name = String(payload.name || '').trim() || getRoleLabel(role)
+
+  if (!rawTenantId) {
+    fail(ctx, 'tenantId 不能为空')
+    return
+  }
+  const lowered = rawTenantId.toLowerCase()
+  if (lowered === 'default' || lowered === 'main' || lowered === 'platform' || rawTenantId === '主系统') {
+    fail(ctx, 'tenantId 不可使用 default/main/platform/主系统')
+    return
+  }
+  if (!/^boss\d+$/i.test(rawTenantId)) {
+    fail(ctx, 'tenantId 仅支持 boss + 数字，例如 boss1、boss2')
+    return
+  }
+  const tenantId = normalizeTenantId(rawTenantId)
+  if (!tenantId || tenantId === DEFAULT_TENANT_ID) {
+    fail(ctx, 'tenantId 不合法')
+    return
+  }
+  if (!/^[a-zA-Z][a-zA-Z0-9_]{3,20}$/.test(username)) {
+    fail(ctx, '账号格式不正确，需4-21位字母数字下划线且以字母开头')
+    return
+  }
+  if (password.length < 4) {
+    fail(ctx, '密码长度至少为4位')
+    return
+  }
+  if (!/^1\d{10}$/.test(phone)) {
+    fail(ctx, '手机号格式不正确')
+    return
+  }
+
+  const known = await collectKnownTenantIdsForPlatform()
+  if (known.includes(tenantId)) {
+    fail(ctx, '租户系统ID已存在，请勿重复开通', 409)
+    return
+  }
+  const bossConflict = await findGlobalBossConflict({ username, phone })
+  if (bossConflict) {
+    fail(ctx, bossConflict.type === 'username' ? '老板账号已存在，请更换账号' : '老板手机号已存在，请更换手机号', 409)
+    return
+  }
+
+  registerKnownTenantId(tenantId)
+  try {
+    const created = createTenantScopedAdminAccount(tenantId, {
+      username,
+      password,
+      role,
+      phone,
+      name,
+    })
+    if (!created.ok) {
+      fail(ctx, created.msg, created.code)
+      void unregisterKnownTenantId(tenantId)
+      return
+    }
+    const dbAfterRegister = readCoreDb()
+    const createdAtById = parseTenantCreatedAtMapFromMeta(dbAfterRegister._meta)
+    const createdAt = createdAtById[tenantId] || new Date().toISOString()
+    platformAuditRecord(ctx, 'platform.tenants.onboard', { tenantId, createdAt, username })
+    ctx.body = success({
+      tenantId,
+      tenantName: tenantId,
+      createdAt,
+      bossAccount: toAdminAccountView(created.account),
+    })
+  }
+  catch (error) {
+    void unregisterKnownTenantId(tenantId)
+    fail(ctx, error instanceof Error ? error.message : '开通失败，已自动回滚', 500)
+  }
+})
+
+router.delete('/platform/tenants/:tenantId', (ctx) => {
+  const account = requirePlatformScope(ctx, '回滚租户系统')
+  if (!account) {
+    return
+  }
+  const tenantId = normalizeTenantId(ctx.params?.tenantId || '')
+  if (!tenantId || tenantId === DEFAULT_TENANT_ID) {
+    fail(ctx, 'tenantId 不合法')
+    return
+  }
+  const tenantDb = readDbByTenantId(tenantId)
+  const hasTenantData = Boolean(
+    (Array.isArray(tenantDb.users) && tenantDb.users.length)
+    || (Array.isArray(tenantDb.orders) && tenantDb.orders.length)
+    || (Array.isArray(tenantDb.products) && tenantDb.products.length)
+    || (Array.isArray(tenantDb.adminAccounts) && tenantDb.adminAccounts.length),
+  )
+  if (hasTenantData) {
+    fail(ctx, '租户系统已存在数据，不允许回滚删除', 409)
+    return
+  }
+  const removed = unregisterKnownTenantId(tenantId)
+  if (!removed) {
+    fail(ctx, '租户系统不存在或已被回滚', 404)
+    return
+  }
+  platformAuditRecord(ctx, 'platform.tenants.rollback', { tenantId })
+  ctx.body = success({ tenantId })
 })
 
 router.get('/platform/dashboard/summary', async (ctx) => {

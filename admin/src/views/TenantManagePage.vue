@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { withAdminAuthHeaders } from '../composables/useAdminApi'
 import { useTenantScope } from '../composables/useTenantScope'
 
@@ -10,6 +10,7 @@ interface TenantSummary {
   userCount: number
   orderCount: number
   productCount: number
+  createdAt?: string
 }
 
 interface TenantAdminAccount {
@@ -80,10 +81,16 @@ const filteredTenants = computed(() => {
 
 const filteredTenantAccounts = computed(() => {
   const key = accountKeyword.value.trim().toLowerCase()
-  if (!key) {
-    return tenantAccounts.value
-  }
   return tenantAccounts.value.filter((item) => {
+    if (selectedTenantId.value) {
+      const itemTenantId = normalizeTenantInput(String(item.tenantId || item.sourceTenantId || ''))
+      if (itemTenantId !== normalizeTenantInput(selectedTenantId.value)) {
+        return false
+      }
+    }
+    if (!key) {
+      return true
+    }
     const fields = [
       item.username,
       item.name,
@@ -96,15 +103,19 @@ const filteredTenantAccounts = computed(() => {
   })
 })
 
-const tenantBossNameMap = computed(() => {
-  const map = new Map<string, string>()
+const tenantBossInfoMap = computed(() => {
+  const map = new Map<string, { name: string, username: string, phone: string }>()
   tenantAccounts.value.forEach((item) => {
     const tenantId = normalizeTenantInput(String(item.tenantId || item.sourceTenantId || ''))
     if (!tenantId) return
     const isBoss = item.role === 'boss' || item.roleLabel === '老板'
     const ownerName = String(item.name || '').trim()
     if (!isBoss || !ownerName || map.has(tenantId)) return
-    map.set(tenantId, ownerName)
+    map.set(tenantId, {
+      name: ownerName,
+      username: String(item.username || '').trim(),
+      phone: String(item.phone || '').trim(),
+    })
   })
   return map
 })
@@ -113,7 +124,7 @@ function resolveTenantDisplayName(rawTenantId?: string, rawTenantName?: string) 
   const tenantId = normalizeTenantInput(String(rawTenantId || ''))
   if (!tenantId) return '-'
 
-  const bossName = tenantBossNameMap.value.get(tenantId)
+  const bossName = tenantBossInfoMap.value.get(tenantId)?.name
   if (bossName) {
     return `${bossName}（${tenantId}）`
   }
@@ -129,7 +140,19 @@ function resolveTenantDisplayName(rawTenantId?: string, rawTenantName?: string) 
 function resolveTenantOwnerName(rawTenantId?: string) {
   const tenantId = normalizeTenantInput(String(rawTenantId || ''))
   if (!tenantId) return '-'
-  return tenantBossNameMap.value.get(tenantId) || '-'
+  return tenantBossInfoMap.value.get(tenantId)?.name || '-'
+}
+
+function resolveTenantOwnerUsername(rawTenantId?: string) {
+  const tenantId = normalizeTenantInput(String(rawTenantId || ''))
+  if (!tenantId) return '-'
+  return tenantBossInfoMap.value.get(tenantId)?.username || '-'
+}
+
+function resolveTenantOwnerPhone(rawTenantId?: string) {
+  const tenantId = normalizeTenantInput(String(rawTenantId || ''))
+  if (!tenantId) return '-'
+  return tenantBossInfoMap.value.get(tenantId)?.phone || '-'
 }
 
 function resolveTenantBossAccount(rawTenantId?: string) {
@@ -172,11 +195,46 @@ async function fetchTenants() {
   }
 }
 
+function sleep(ms: number) {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+async function refreshTenantsAfterCreate(createdTenantId: string) {
+  const normalizedCreatedId = normalizeTenantInput(createdTenantId)
+  for (let i = 0; i < 3; i += 1) {
+    await fetchTenants()
+    const exists = tenants.value.some(item => normalizeTenantInput(item.tenantId) === normalizedCreatedId)
+    if (exists) {
+      return
+    }
+    await sleep(250 * (i + 1))
+  }
+  if (!tenants.value.some(item => normalizeTenantInput(item.tenantId) === normalizedCreatedId)) {
+    tenants.value = [
+      ...tenants.value,
+      {
+        tenantId: normalizedCreatedId,
+        tenantName: normalizedCreatedId,
+        userCount: 0,
+        orderCount: 0,
+        productCount: 0,
+        createdAt: new Date().toISOString(),
+      },
+    ].sort((a, b) => {
+      const ta = new Date(String(a.createdAt || '')).getTime()
+      const tb = new Date(String(b.createdAt || '')).getTime()
+      const va = Number.isFinite(ta) ? ta : 0
+      const vb = Number.isFinite(tb) ? tb : 0
+      if (vb !== va) return vb - va
+      return String(a.tenantId || '').localeCompare(String(b.tenantId || ''))
+    })
+  }
+}
+
 async function fetchTenantAccounts() {
   accountLoading.value = true
   try {
-    const tenantQuery = selectedTenantId.value ? `&tenantId=${encodeURIComponent(selectedTenantId.value)}` : ''
-    const response = await fetch(`${MALL_API_BASE}/platform/admin-accounts?scopeType=tenant${tenantQuery}`, {
+    const response = await fetch(`${MALL_API_BASE}/platform/admin-accounts?scopeType=tenant`, {
       method: 'GET',
       headers: withAdminAuthHeaders(),
     })
@@ -206,6 +264,10 @@ function normalizeTenantInput(raw: string) {
     return ''
   }
   return normalized
+}
+
+function isValidOnboardTenantId(raw: string) {
+  return /^bo?s{2}\d+$/i.test(String(raw || '').trim()) || /^boss\d+$/i.test(String(raw || '').trim()) || /^boos\d+$/i.test(String(raw || '').trim())
 }
 
 function resolveAccountTenantId(item: TenantAdminAccount) {
@@ -250,7 +312,27 @@ function openEditTenantBossAccount(tenantId = '') {
 function openCreateTenantWithBossModal() {
   const tenantId = normalizeTenantInput(newTenantId.value)
   if (!tenantId) {
-    errorMessage.value = '请输入有效的租户系统ID（不能为 default / 主系统）'
+    errorMessage.value = '请输入有效的租户系统ID（仅支持 boss/boos + 数字，例如 boss1 或 boos1）'
+    void ElMessageBox.alert(errorMessage.value, '提示', {
+      type: 'warning',
+      confirmButtonText: '我知道了',
+    })
+    return
+  }
+  if (!isValidOnboardTenantId(tenantId)) {
+    errorMessage.value = '租户系统ID仅支持 boss/boos + 数字，例如 boss1、boos1'
+    void ElMessageBox.alert(errorMessage.value, '提示', {
+      type: 'warning',
+      confirmButtonText: '我知道了',
+    })
+    return
+  }
+  if (tenants.value.some(item => normalizeTenantInput(item.tenantId) === tenantId)) {
+    errorMessage.value = `租户系统ID ${tenantId} 已存在，请勿重复开通`
+    void ElMessageBox.alert(errorMessage.value, '提示', {
+      type: 'warning',
+      confirmButtonText: '我知道了',
+    })
     return
   }
   editingBossAccount.value = null
@@ -297,16 +379,38 @@ function closePasswordDialog() {
   passwordTarget.value = null
 }
 
-async function createTenantSystem(tenantId: string) {
-  const response = await fetch(`${MALL_API_BASE}/platform/tenants`, {
+async function onboardTenantWithBoss(tenantId: string) {
+  const response = await fetch(`${MALL_API_BASE}/platform/tenants/onboard`, {
     method: 'POST',
     headers: withAdminAuthHeaders({ 'Content-Type': 'application/json' }),
-    body: JSON.stringify({ tenantId }),
+    body: JSON.stringify({
+      tenantId,
+      username: createAccountForm.value.username.trim(),
+      name: createAccountForm.value.name.trim(),
+      phone: createAccountForm.value.phone.trim(),
+      password: createAccountForm.value.password.trim(),
+    }),
   })
-  const payload = await response.json() as { success?: boolean, msg?: string }
+  const payload = await response.json() as { success?: boolean, msg?: string, data?: { bossAccount?: Partial<TenantAdminAccount> } }
   if (!response.ok || payload.success === false) {
     throw new Error(payload.msg || `开通租户系统失败 (${response.status})`)
   }
+  const account = payload.data?.bossAccount || {}
+  return {
+    id: String(account.id || `temp-${tenantId}-${Date.now()}`),
+    username: String(account.username || createAccountForm.value.username || '').trim(),
+    name: String(account.name || createAccountForm.value.name || '').trim(),
+    phone: String(account.phone || createAccountForm.value.phone || '').trim(),
+    role: (account.role as TenantAdminAccount['role']) || 'boss',
+    roleLabel: String(account.roleLabel || '老板'),
+    scopeType: 'tenant',
+    tenantId,
+    tenantName: tenantId,
+    sourceTenantId: tenantId,
+    sourceTenantName: tenantId,
+    status: (account.status as TenantAdminAccount['status']) || 'active',
+    updatedAt: String(account.updatedAt || new Date().toISOString()),
+  } satisfies TenantAdminAccount
 }
 
 async function createBossAccount(tenantId: string) {
@@ -327,10 +431,26 @@ async function createBossAccount(tenantId: string) {
       tenantId,
     }),
   })
-  const payload = await response.json() as { success?: boolean, msg?: string }
+  const payload = await response.json() as { success?: boolean, msg?: string, data?: Partial<TenantAdminAccount> }
   if (!response.ok || payload.success === false) {
     throw new Error(payload.msg || `新增租户账号失败 (${response.status})`)
   }
+  const data = payload.data || {}
+  return {
+    id: String(data.id || `temp-${tenantId}-${Date.now()}`),
+    username: String(data.username || createAccountForm.value.username || '').trim(),
+    name: String(data.name || createAccountForm.value.name || '').trim(),
+    phone: String(data.phone || createAccountForm.value.phone || '').trim(),
+    role: (data.role as TenantAdminAccount['role']) || 'boss',
+    roleLabel: String(data.roleLabel || '老板'),
+    scopeType: 'tenant',
+    tenantId,
+    tenantName: tenantId,
+    sourceTenantId: tenantId,
+    sourceTenantName: tenantId,
+    status: (data.status as TenantAdminAccount['status']) || 'active',
+    updatedAt: String(data.updatedAt || new Date().toISOString()),
+  } satisfies TenantAdminAccount
 }
 
 async function updateBossAccount(item: TenantAdminAccount, tenantId: string) {
@@ -349,19 +469,44 @@ async function updateBossAccount(item: TenantAdminAccount, tenantId: string) {
   await updateTenantAccount(item, body)
 }
 
+function upsertTenantAccountLocal(account: TenantAdminAccount) {
+  const index = tenantAccounts.value.findIndex(item => item.id === account.id)
+  if (index >= 0) {
+    tenantAccounts.value[index] = { ...tenantAccounts.value[index], ...account }
+    return
+  }
+  tenantAccounts.value = [account, ...tenantAccounts.value]
+}
+
+async function refreshTenantAccountsAfterCreate(tenantId: string, fallbackBoss: TenantAdminAccount) {
+  const normalizedTenantId = normalizeTenantInput(tenantId)
+  for (let i = 0; i < 3; i += 1) {
+    await fetchTenantAccounts()
+    const found = resolveTenantBossAccount(normalizedTenantId)
+    if (found) {
+      return
+    }
+    await sleep(250 * (i + 1))
+  }
+  upsertTenantAccountLocal(fallbackBoss)
+}
+
 async function createTenantAccount() {
   if (creatingTenantAccount.value) return
   const tenantId = normalizeTenantInput(createAccountForm.value.tenantId)
   if (!tenantId) {
     errorMessage.value = '请先选择所属租户系统'
+    ElMessage.error(errorMessage.value)
     return
   }
   creatingTenantAccount.value = true
   errorMessage.value = ''
+  let createdTenantId = ''
+  let createdBossAccount: TenantAdminAccount | null = null
   try {
     if (createAccountMode.value === 'onboard') {
-      await createTenantSystem(tenantId)
-      await createBossAccount(tenantId)
+      createdTenantId = tenantId
+      createdBossAccount = await onboardTenantWithBoss(tenantId)
       ElMessage.success('租户系统与老板账号开通成功')
       newTenantId.value = ''
     }
@@ -374,12 +519,27 @@ async function createTenantAccount() {
       ElMessage.success('租户老板账号创建成功')
     }
     showCreateAccountModal.value = false
-    await fetchTenants()
-    await fetchTenantAccounts()
+    if (createdTenantId) {
+      await refreshTenantsAfterCreate(createdTenantId)
+    }
+    else {
+      await fetchTenants()
+    }
+    if (createdBossAccount) {
+      upsertTenantAccountLocal(createdBossAccount)
+      await refreshTenantAccountsAfterCreate(createdTenantId, createdBossAccount)
+    }
+    else {
+      await fetchTenantAccounts()
+    }
   }
   catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '新增失败'
     ElMessage.error(errorMessage.value)
+    void ElMessageBox.alert(errorMessage.value, '开通失败', {
+      type: 'error',
+      confirmButtonText: '我知道了',
+    })
   }
   finally {
     creatingTenantAccount.value = false
@@ -428,10 +588,12 @@ async function submitPasswordChange() {
   const confirmPassword = passwordForm.value.confirmPassword.trim()
   if (password.length < 4) {
     errorMessage.value = '新密码长度不能少于4位'
+    ElMessage.error(errorMessage.value)
     return
   }
   if (password !== confirmPassword) {
     errorMessage.value = '两次输入的新密码不一致'
+    ElMessage.error(errorMessage.value)
     return
   }
   updatingPassword.value = true
@@ -525,7 +687,7 @@ onMounted(() => {
           v-model="newTenantId"
           class="toolbar-input"
           clearable
-          placeholder="请输入租户系统ID（如 tenant_a）"
+          placeholder="请输入租户系统ID（如 boss1 或 boos1）"
         />
         <button
           class="btn btn-primary"
@@ -537,13 +699,6 @@ onMounted(() => {
         </button>
       </div>
     </div>
-
-    <p
-      v-if="errorMessage"
-      class="error"
-    >
-      {{ errorMessage }}
-    </p>
 
     <div class="panel">
       <div class="panel-title">
@@ -562,7 +717,9 @@ onMounted(() => {
         <thead>
           <tr>
             <th>租户系统</th>
-            <th>租户老板</th>
+            <th>老板姓名</th>
+            <th>老板账号</th>
+            <th>老板手机号</th>
             <th>用户数</th>
             <th>订单数</th>
             <th>商品数</th>
@@ -576,6 +733,8 @@ onMounted(() => {
           >
             <td>{{ item.tenantName || item.tenantId }}</td>
             <td>{{ resolveTenantOwnerName(item.tenantId) }}</td>
+            <td>{{ resolveTenantOwnerUsername(item.tenantId) }}</td>
+            <td>{{ resolveTenantOwnerPhone(item.tenantId) }}</td>
             <td>{{ item.userCount }}</td>
             <td>{{ item.orderCount }}</td>
             <td>{{ item.productCount }}</td>
@@ -600,7 +759,7 @@ onMounted(() => {
           </tr>
           <tr v-if="!loading && filteredTenants.length === 0">
             <td
-              colspan="6"
+              colspan="8"
               class="empty"
             >
               暂无租户系统
@@ -629,7 +788,6 @@ onMounted(() => {
           class="toolbar-input"
           clearable
           placeholder="按租户系统筛选"
-          @change="fetchTenantAccounts"
         >
           <el-option
             v-for="item in tenants"
@@ -1049,12 +1207,6 @@ onMounted(() => {
 .empty {
   text-align: center;
   color: #94a3b8;
-}
-
-.error {
-  margin: 0;
-  color: #b91c1c;
-  font-size: 13px;
 }
 
 .modal-mask {
