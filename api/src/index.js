@@ -18,6 +18,7 @@ const {
   hasScopeCache,
   isMongoPersistenceEnabled,
   flushMongoPersist,
+  evictTenantMemoryCache,
 } = require('./store')
 const {
   runWithTenant,
@@ -3784,7 +3785,7 @@ router.post('/platform/tenants/onboard', async (ctx) => {
   }
 })
 
-router.delete('/platform/tenants/:tenantId', (ctx) => {
+router.delete('/platform/tenants/:tenantId', async (ctx) => {
   const account = requirePlatformScope(ctx, '回滚租户系统')
   if (!account) {
     return
@@ -3805,11 +3806,29 @@ router.delete('/platform/tenants/:tenantId', (ctx) => {
     fail(ctx, '租户系统已存在数据，不允许回滚删除', 409)
     return
   }
+  let droppedMongoDb = false
+  const client = mongo.getMongoClient && mongo.getMongoClient()
+  if (client) {
+    try {
+      const dbName = String(mongoConfig.getMongoConfig().dbName || 'mall').trim() || 'mall'
+      const scopedName = `${dbName}__tenant_${tenantId}`
+      await client.db(scopedName).dropDatabase()
+      droppedMongoDb = true
+    }
+    catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      if (!/not found|does not exist|ns not found/i.test(msg)) {
+        fail(ctx, `删除租户数据库失败：${msg}`, 502)
+        return
+      }
+    }
+  }
   const removed = unregisterKnownTenantId(tenantId)
-  if (!removed) {
+  if (!removed && !droppedMongoDb) {
     fail(ctx, '租户系统不存在或已被回滚', 404)
     return
   }
+  evictTenantMemoryCache(tenantId)
   platformAuditRecord(ctx, 'platform.tenants.rollback', { tenantId })
   ctx.body = success({ tenantId })
 })

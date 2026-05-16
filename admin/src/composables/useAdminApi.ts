@@ -3,6 +3,7 @@ import { getAdminSession } from './useAdminAuth'
 /**
  * 请求头工作区约定（与 api mongo 分库一致）：
  * - **withMallTenantHeaders**：商城业务（users、products、orders、admin/traffic-channels、admin/cs、账单/待收 等），须与 H5 的 tenant + x-tenant-id 一致。
+ * - 平台账号在 **租户工作区**（`isPlatformManagingTenantWorkspace`）时，业务接口须统一用 `withMallTenantHeaders`；勿再按 `scopeType === 'platform'` 直连 `/platform/accounts` 等 core 接口（见 `shouldUseHeadquartersPlatformApi`）。
  * - **withAdminAuthHeaders({ 'x-workspace-type': 'core' })**：总部元数据（platform/tenants、platform/accounts、platform/dashboard 等）→ mall__core。
  * - **withAdminAuthHeaders()**：平台默认 self → mall__self；仅当确实有「平台自营库」需求时使用，勿用于对上述商城业务的管理。
  * - **登录**：LoginPage 不加工作区头。

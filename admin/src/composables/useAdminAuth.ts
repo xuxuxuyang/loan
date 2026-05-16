@@ -58,6 +58,23 @@ export interface AdminSession {
   scopeTenantIds?: string[]
 }
 
+/** 平台总览账号已切到 mall__tenant_x（与 withMallTenantHeaders 一致） */
+export function isPlatformManagingTenantWorkspace(session: AdminSession | null | undefined): boolean {
+  if (!session || session.scopeType !== 'platform')
+    return false
+  return String(session.workspaceType || '').trim().toLowerCase() === 'tenant'
+}
+
+/**
+ * 是否应对接 mall__core 上的 /platform/*（总部账号等）。
+ * 平台账号在租户工作区时必须为 false，避免误读主系统数据。
+ */
+export function shouldUseHeadquartersPlatformApi(session: AdminSession | null | undefined): boolean {
+  if (!session || session.scopeType !== 'platform')
+    return false
+  return !isPlatformManagingTenantWorkspace(session)
+}
+
 const STORAGE_KEY = 'mall-admin-session'
 
 function safeParseSession(value: string | null): AdminSession | null {

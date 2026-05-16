@@ -20,7 +20,8 @@ import {
 import { useRoute, useRouter } from 'vue-router'
 import AdminRoleAvatar from './components/AdminRoleAvatar.vue'
 import MallBrandLogo from './components/MallBrandLogo.vue'
-import { adminSessionRoleAllowed, clearAdminSession, getAdminSession, isSuperAdminRole, type AdminSession } from './composables/useAdminAuth'
+import { adminSessionRoleAllowed, clearAdminSession, getAdminSession, isPlatformManagingTenantWorkspace, isSuperAdminRole, type AdminSession } from './composables/useAdminAuth'
+import { useTenantScope } from './composables/useTenantScope'
 import { csMenuUnreadTotal, useAdminCsUnreadBadge } from './composables/useAdminCsUnreadBadge'
 import {
   ordersMenuPendingReviewTotal,
@@ -48,9 +49,24 @@ interface MenuEntry {
 
 const route = useRoute()
 const router = useRouter()
+const { switchWorkspace } = useTenantScope()
 const pageTitle = computed(() => String(route.meta.title || '后台管理'))
 const session = ref<AdminSession | null>(getAdminSession())
 const isLoginPage = computed(() => route.name === 'login')
+
+/** 平台总览账号已切到具体租户的 mall__tenant_x 工作区：侧栏与顶栏按「租户后台」呈现 */
+const isPlatformManagingTenant = computed(() => isPlatformManagingTenantWorkspace(session.value))
+
+const managedTenantHeadline = computed(() => {
+  if (!isPlatformManagingTenant.value) {
+    return ''
+  }
+  const id = String(session.value?.tenantId || '').trim().toLowerCase()
+  if (!id || id === 'default') {
+    return '主系统'
+  }
+  return id
+})
 
 const allMenus: MenuEntry[] = [
 { label: '客服消息', path: '/cs-messages', icon: ChatDotRound, roles: ['super_admin', 'reviewer'] },
@@ -115,9 +131,10 @@ const allMenus: MenuEntry[] = [
 const menus = computed(() => {
   const role = session.value?.role
   const scopeType = session.value?.scopeType || 'tenant'
+  const hideHeadquartersEntries = scopeType !== 'platform' || isPlatformManagingTenant.value
   return allMenus
     .filter((item) => {
-      if (item.platformOnly && scopeType !== 'platform') {
+      if (item.platformOnly && hideHeadquartersEntries) {
         return false
       }
       return !item.roles || adminSessionRoleAllowed(role, item.roles)
@@ -173,6 +190,12 @@ function logout() {
   void router.replace('/login')
 }
 
+function backToPlatformHeadquarters() {
+  switchWorkspace('core')
+  session.value = getAdminSession()
+  void router.push({ name: 'platform-console' })
+}
+
 watch(
   () => route.fullPath,
   () => {
@@ -223,7 +246,10 @@ useAdminOrderReviewBadge(ordersSidebarBadgeEnabled)
           <MallBrandLogo class="admin-logo-mark" />
           <div class="admin-logo-titles">
             <span class="admin-logo-text">琥珀商城</span>
-            <span class="admin-logo-sub">后台管理</span>
+            <span class="admin-logo-sub">
+              <template v-if="isPlatformManagingTenant">租户后台 · {{ managedTenantHeadline }}</template>
+              <template v-else>后台管理</template>
+            </span>
           </div>
         </div>
         <el-menu
@@ -307,11 +333,29 @@ useAdminOrderReviewBadge(ordersSidebarBadgeEnabled)
           v-if="session"
           class="admin-header-right"
         >
+          <button
+            v-if="isPlatformManagingTenant"
+            class="admin-back-hq-btn"
+            type="button"
+            @click="backToPlatformHeadquarters"
+          >
+            返回总部
+          </button>
+          <span
+            v-if="isPlatformManagingTenant"
+            class="admin-tenant-scope-pill"
+            :title="`数据与操作均指向租户「${managedTenantHeadline}」`"
+          >
+            当前租户 · {{ managedTenantHeadline }}
+          </span>
           <AdminRoleAvatar
             :role="session.role"
             :size="36"
           />
-          <span class="admin-role">{{ roleText(session.role) }}</span>
+          <span class="admin-role">
+            <template v-if="isPlatformManagingTenant">平台代管（{{ roleText(session.role) }}）</template>
+            <template v-else>{{ roleText(session.role) }}</template>
+          </span>
           <span class="admin-user">{{ session.username }}</span>
           <el-popconfirm
             width="240"

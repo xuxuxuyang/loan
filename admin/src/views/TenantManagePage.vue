@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { useRouter } from 'vue-router'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { withAdminAuthHeaders, withMallTenantHeaders } from '../composables/useAdminApi'
+import { getAdminSession } from '../composables/useAdminAuth'
 import { useTenantScope } from '../composables/useTenantScope'
 
 interface TenantSummary {
@@ -52,7 +54,9 @@ const createAccountMode = ref<'existing' | 'onboard' | 'edit'>('existing')
 const editingBossAccount = ref<TenantAdminAccount | null>(null)
 const roleTarget = ref<TenantAdminAccount | null>(null)
 const passwordTarget = ref<TenantAdminAccount | null>(null)
-const { switchTenant } = useTenantScope()
+const router = useRouter()
+const { isPlatform, switchTenant } = useTenantScope()
+const deletingTenantId = ref('')
 const createAccountForm = ref({
   tenantId: '',
   username: '',
@@ -285,6 +289,58 @@ async function fetchTenants() {
   }
   finally {
     loading.value = false
+  }
+}
+
+async function deleteTenantSystem(rawTenantId: string) {
+  const tenantId = normalizeTenantInput(rawTenantId)
+  if (!tenantId) {
+    ElMessage.error('租户系统ID无效')
+    return
+  }
+  try {
+    await ElMessageBox.confirm(
+      `确定删除租户系统「${tenantId}」吗？仅当该租户尚未产生任何用户、订单、商品且无后台账号时才能删除；若已开通老板账号或存在业务数据，接口将拒绝操作。`,
+      '删除租户系统',
+      {
+        type: 'warning',
+        confirmButtonText: '删除',
+        cancelButtonText: '取消',
+      },
+    )
+  }
+  catch {
+    return
+  }
+  deletingTenantId.value = tenantId
+  errorMessage.value = ''
+  try {
+    const response = await fetch(
+      `${MALL_API_BASE}/platform/tenants/${encodeURIComponent(tenantId)}`,
+      {
+        method: 'DELETE',
+        headers: withAdminAuthHeaders({ 'x-workspace-type': 'core' }),
+      },
+    )
+    const payload = await response.json() as { success?: boolean, msg?: string }
+    if (!response.ok || payload.success === false) {
+      throw new Error(payload.msg || `删除失败 (${response.status})`)
+    }
+    if (normalizeTenantInput(selectedTenantId.value) === tenantId) {
+      selectedTenantId.value = ''
+    }
+    ElMessage.success('已删除该租户系统')
+    await fetchTenants()
+    void fetchTenantAccounts()
+    newTenantId.value = computeNextSuggestedBossTenantId()
+  }
+  catch (error) {
+    const msg = error instanceof Error ? error.message : '删除租户系统失败'
+    errorMessage.value = msg
+    ElMessage.error(msg)
+  }
+  finally {
+    deletingTenantId.value = ''
   }
 }
 
@@ -753,8 +809,35 @@ async function removeTenantAccount(item: TenantAdminAccount) {
   }
 }
 
-function jumpToTenant(tenantId: string) {
+function jumpToTenant(rawTenantId: string) {
+  if (!isPlatform.value) {
+    ElMessage.warning('仅平台管理员可使用此功能')
+    return
+  }
+  const tenantId = normalizeTenantInput(rawTenantId)
+  if (!tenantId) {
+    ElMessage.warning('无效的租户系统')
+    return
+  }
+  if (!getAdminSession()) {
+    ElMessage.warning('请先登录')
+    return
+  }
   switchTenant(tenantId)
+  const sess = getAdminSession()
+  const targetLc = tenantId.toLowerCase()
+  const currentLc = normalizeTenantInput(String(sess?.tenantId || '')).toLowerCase()
+  const ok = Boolean(
+    sess
+    && sess.workspaceType === 'tenant'
+    && currentLc === targetLc,
+  )
+  if (!ok) {
+    ElMessage.warning('无法切换到该租户（可能没有权限或租户 ID 无效）')
+    return
+  }
+  ElMessage.success(`已进入租户「${tenantId}」后台视图（侧栏已隐藏总部菜单，顶栏可点「返回总部」）`)
+  void router.replace({ name: 'orders' })
 }
 
 onMounted(() => {
@@ -851,7 +934,15 @@ onMounted(() => {
                   type="button"
                   @click="jumpToTenant(item.tenantId)"
                 >
-                  切到该租户
+                  切换到该租户
+                </button>
+                <button
+                  class="btn btn-danger"
+                  type="button"
+                  :disabled="!!deletingTenantId"
+                  @click="deleteTenantSystem(item.tenantId)"
+                >
+                  {{ deletingTenantId === normalizeTenantInput(item.tenantId) ? '删除中…' : '删除租户系统' }}
                 </button>
               </div>
             </td>

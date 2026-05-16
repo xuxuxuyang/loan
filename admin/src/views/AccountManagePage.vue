@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { getAdminSession } from '../composables/useAdminAuth'
+import { getAdminSession, shouldUseHeadquartersPlatformApi } from '../composables/useAdminAuth'
 import { withAdminAuthHeaders, withMallTenantHeaders } from '../composables/useAdminApi'
 import { donePageProgress, startPageProgress } from '../utils/progress'
 
@@ -43,6 +43,8 @@ const roleSubmitting = ref(false)
 const roleTarget = ref<AdminAccountItem | null>(null)
 const session = computed(() => getAdminSession())
 const isPlatformSession = computed(() => session.value?.scopeType === 'platform')
+/** 使用 /platform/accounts（core）；租户工作区下同纯租户，走 /admin/accounts */
+const usePlatformAccountsApi = computed(() => shouldUseHeadquartersPlatformApi(session.value))
 const sessionUsername = computed(() => String(session.value?.username || '').trim())
 const tableColumnCount = computed(() => 7)
 
@@ -210,7 +212,7 @@ function sectionHeaderClass(sectionKey: string) {
 }
 
 function isProtectedPlatformSuperRow(item: AdminAccountItem): boolean {
-  return isPlatformSession.value && item.username === 'xuyang'
+  return usePlatformAccountsApi.value && item.username === 'xuyang'
 }
 
 /** 租户侧不可删除/禁用的老板行；平台侧 xuyang 不可动 */
@@ -228,7 +230,7 @@ function isCurrentSessionRow(item: AdminAccountItem): boolean {
 }
 
 function roleModalHint(): string {
-  return isPlatformSession.value ? '当前账号范围：主系统账号' : '当前账号范围：本租户（员工仅审核员、催收员）'
+  return usePlatformAccountsApi.value ? '当前账号范围：主系统账号' : '当前账号范围：本租户（员工仅审核员、催收员）'
 }
 
 async function fetchAccounts() {
@@ -236,7 +238,7 @@ async function fetchAccounts() {
   startPageProgress()
   errorMessage.value = ''
   try {
-    if (isPlatformSession.value) {
+    if (usePlatformAccountsApi.value) {
       const response = await fetch(`${MALL_API_BASE}/platform/accounts`, {
         method: 'GET',
         headers: withAdminAuthHeaders({ 'x-workspace-type': 'core' }),
@@ -340,7 +342,7 @@ async function createAccount() {
   submitting.value = true
   clearCreateFormErrors()
   try {
-    if (isPlatformSession.value) {
+    if (usePlatformAccountsApi.value) {
       const response = await fetch(`${MALL_API_BASE}/platform/accounts`, {
         method: 'POST',
         headers: withAdminAuthHeaders({ 'Content-Type': 'application/json', 'x-workspace-type': 'core' }),
@@ -393,7 +395,7 @@ async function createAccount() {
 }
 
 async function updateAccount(id: string, body: Record<string, unknown>) {
-  if (isPlatformSession.value) {
+  if (usePlatformAccountsApi.value) {
     const response = await fetch(`${MALL_API_BASE}/platform/accounts/${encodeURIComponent(id)}`, {
       method: 'PATCH',
       headers: withAdminAuthHeaders({ 'Content-Type': 'application/json', 'x-workspace-type': 'core' }),
@@ -496,12 +498,12 @@ async function removeAccount(item: AdminAccountItem) {
   }
   deletingId.value = item.id
   try {
-    const url = isPlatformSession.value
+    const url = usePlatformAccountsApi.value
       ? `${MALL_API_BASE}/platform/accounts/${encodeURIComponent(item.id)}`
       : `${MALL_API_BASE}/admin/accounts/${encodeURIComponent(item.id)}`
     const response = await fetch(url, {
       method: 'DELETE',
-      headers: isPlatformSession.value
+      headers: usePlatformAccountsApi.value
         ? withAdminAuthHeaders({ 'x-workspace-type': 'core' })
         : withMallTenantHeaders(),
     })
@@ -826,7 +828,7 @@ onMounted(() => {
             <el-option label="审核员" value="reviewer" />
             <el-option label="催收员" value="collector" />
             <el-option
-              v-if="isPlatformSession"
+              v-if="usePlatformAccountsApi"
               label="老板"
               value="boss"
             />
@@ -871,12 +873,12 @@ onMounted(() => {
             class="form-select"
           >
             <el-option
-              v-if="isPlatformSession"
+              v-if="usePlatformAccountsApi"
               label="系统管理员"
               value="super_admin"
             />
             <el-option
-              v-if="isPlatformSession"
+              v-if="usePlatformAccountsApi"
               label="老板"
               value="boss"
             />

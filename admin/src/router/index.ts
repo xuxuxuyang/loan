@@ -1,6 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import type { AdminSession } from '../composables/useAdminAuth'
-import { adminSessionRoleAllowed, getAdminSession, isAdminAuthenticated } from '../composables/useAdminAuth'
+import { adminSessionRoleAllowed, getAdminSession, isAdminAuthenticated, isPlatformManagingTenantWorkspace } from '../composables/useAdminAuth'
 
 const LoginPage = () => import('../views/LoginPage.vue')
 const DashboardPage = () => import('../views/DashboardPage.vue')
@@ -21,6 +21,10 @@ function adminHomeRoute(session: AdminSession | null) {
   }
   /** 审核员/催收员固定进订单侧；避免 scopeType 被标成 platform 时误进总部台造成路由死循环 */
   if (session.role === 'reviewer' || session.role === 'collector') {
+    return { name: 'orders' as const }
+  }
+  /** 平台账号切到具体租户库后，默认进入订单端（与租户后台使用习惯一致） */
+  if (session.scopeType === 'platform' && session.workspaceType === 'tenant') {
     return { name: 'orders' as const }
   }
   if (session.scopeType === 'platform' && session.workspaceType === 'self') {
@@ -174,6 +178,10 @@ router.beforeEach((to) => {
   }
   if (to.meta.platformOnly && session?.scopeType !== 'platform') {
     return adminHomeRoute(session)
+  }
+  /** 租户工作区下禁止 deep-link 进总部专页，避免误以为在读租户数据（须先「返回总部」） */
+  if (to.meta.platformOnly && isPlatformManagingTenantWorkspace(session)) {
+    return { name: 'orders' as const }
   }
   return true
 })
