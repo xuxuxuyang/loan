@@ -401,7 +401,7 @@ function ensureAdminAccounts(db) {
     .filter(item => item.username)
   const currentTenantId = normalizeTenantId(getCurrentTenantId() || DEFAULT_TENANT_ID)
   if (currentTenantId !== DEFAULT_TENANT_ID) {
-    // 租户库只保留本租户账号，不展示主系统账号。
+    // 子系统库只保留本子系统账号，不展示主系统账号。
     accounts = accounts.filter((item) => {
       if (item.scopeType === 'platform' || item.role === ADMIN_ROLES.SUPER) {
         return false
@@ -617,7 +617,7 @@ function getAdminAccountByUsernameAcrossTenants(username, preferredTenantId) {
 
 /**
  * core/self 映射到独立 MongoDB，仅信任 Authorization 中 Bearer 对应「平台 scope」且状态为 active 的后台账号；
- * 租户后台、商城会话或伪造 x-workspace-type 时一律回落到 tenant 库，避免未授权读平台库。
+ * 子系统后台、商城会话或伪造 x-workspace-type 时一律回落到 tenant 库，避免未授权读平台库。
  */
 function isPlatformAdminBearerForWorkspace(ctx, preferredTenantId) {
   const phone = normalizePhone(parsePhoneFromToken(ctx.headers && ctx.headers.authorization))
@@ -727,7 +727,7 @@ function enforcePlatformReadonlyForTenantWrite(ctx, actionLabel) {
   if (!account || account.scopeType !== 'platform') {
     return true
   }
-  // 新策略：主系统平台账号拥有租户系统完整权限（读/写/删）。
+  // 新策略：主系统平台账号拥有子系统完整权限（读/写/删）。
   void actionLabel
   return true
 }
@@ -781,7 +781,7 @@ function resolveEffectiveTenantId(ctx) {
   }
   if (account.scopeType === 'platform') {
     if (requestWorkspaceType === 'tenant' && !accountCanAccessTenant(account, requestTenant)) {
-      fail(ctx, '当前平台账号无权限访问该租户', 403)
+      fail(ctx, '当前平台账号无权限访问该子系统', 403)
       return ''
     }
     ctx.state.effectiveTenantId = requestTenant
@@ -2889,7 +2889,7 @@ function handleAdminLogin(ctx) {
     ? requestTenantId
     : normalizeTenantId(account.tenantId || DEFAULT_TENANT_ID)
   if (!accountCanAccessTenant(account, effectiveTenant)) {
-    fail(ctx, '当前账号无权访问该租户', 403)
+    fail(ctx, '当前账号无权访问该子系统', 403)
     return
   }
 
@@ -3019,10 +3019,10 @@ function createTenantScopedAdminAccount(targetTenantId, payload) {
       }
     }
     if (db.adminAccounts.some(item => item.username === username)) {
-      return { ok: false, code: 409, msg: '该租户已存在同名后台账号' }
+      return { ok: false, code: 409, msg: '该子系统已存在同名后台账号' }
     }
     if (db.adminAccounts.some(item => item.phone === phone)) {
-      return { ok: false, code: 409, msg: '该租户手机号已被后台账号占用' }
+      return { ok: false, code: 409, msg: '该子系统手机号已被后台账号占用' }
     }
     const now = new Date().toISOString()
     const next = normalizeAdminAccount({
@@ -3369,11 +3369,11 @@ router.post('/admin/accounts', async (ctx) => {
   if (finalScopeType === 'tenant') {
     const currentTenantId = normalizeTenantId(currentAccount && currentAccount.tenantId ? currentAccount.tenantId : DEFAULT_TENANT_ID)
     if (currentAccount && currentAccount.scopeType !== 'platform' && finalTenantId !== currentTenantId) {
-      fail(ctx, '租户账号只能创建在当前租户内', 403)
+      fail(ctx, '子系统账号只能创建在当前子系统内', 403)
       return
     }
     if (finalTenantId === DEFAULT_TENANT_ID && currentAccount && currentAccount.scopeType !== 'platform') {
-      fail(ctx, '租户账号不能创建到主系统租户 default', 403)
+      fail(ctx, '子系统账号不能创建到主系统子系统 default', 403)
       return
     }
     if (role === ADMIN_ROLES.BOSS) {
@@ -3434,7 +3434,7 @@ router.patch('/admin/accounts/:id', async (ctx) => {
     return
   }
   if (!isPlatformOperator && String(target.scopeType || 'tenant') === 'platform') {
-    fail(ctx, '租户系统不可修改主系统账号', 403)
+    fail(ctx, '子系统不可修改主系统账号', 403)
     return
   }
   if (target.username === DEFAULT_SUPER_ADMIN_USERNAME && payload.role && !isSuperEquivalentRole(normalizeAdminRole(payload.role))) {
@@ -3462,7 +3462,7 @@ router.patch('/admin/accounts/:id', async (ctx) => {
     }
     const duplicated = db.adminAccounts.some(item => item.id !== target.id && item.username === nextUsername)
     if (duplicated) {
-      fail(ctx, '该租户已存在同名后台账号', 409)
+      fail(ctx, '该子系统已存在同名后台账号', 409)
       return
     }
     target.username = nextUsername
@@ -3482,7 +3482,7 @@ router.patch('/admin/accounts/:id', async (ctx) => {
   if (payload.scopeType !== undefined) {
     const nextScopeType = String(payload.scopeType || '').trim()
     if (!isPlatformOperator && nextScopeType !== 'tenant') {
-      fail(ctx, '租户系统仅允许设置租户账号')
+      fail(ctx, '子系统仅允许设置子系统账号')
       return
     }
     if (!ADMIN_SCOPE_TYPES.has(nextScopeType)) {
@@ -3494,7 +3494,7 @@ router.patch('/admin/accounts/:id', async (ctx) => {
   if (payload.tenantId !== undefined) {
     const nextTenantId = normalizeTenantId(payload.tenantId || 'default')
     if (!isPlatformOperator && nextTenantId !== operatorTenantId) {
-      fail(ctx, '租户系统仅允许设置当前租户ID', 403)
+      fail(ctx, '子系统仅允许设置当前子系统ID', 403)
       return
     }
     target.tenantId = nextTenantId
@@ -3512,7 +3512,7 @@ router.patch('/admin/accounts/:id', async (ctx) => {
       const onlyCurrent = nextScopeTenantIds.length === 0
         || (nextScopeTenantIds.length === 1 && nextScopeTenantIds[0] === operatorTenantId)
       if (!onlyCurrent) {
-        fail(ctx, '租户系统仅允许当前租户范围', 403)
+        fail(ctx, '子系统仅允许当前子系统范围', 403)
         return
       }
       target.scopeTenantIds = [operatorTenantId]
@@ -3549,7 +3549,7 @@ router.patch('/admin/accounts/:id', async (ctx) => {
     }
     const duplicatedPhone = db.adminAccounts.some(item => item.id !== target.id && normalizePhone(item.phone) === nextPhone)
     if (duplicatedPhone) {
-      fail(ctx, '该租户手机号已被后台账号占用', 409)
+      fail(ctx, '该子系统手机号已被后台账号占用', 409)
       return
     }
     target.phone = nextPhone
@@ -3590,7 +3590,7 @@ router.delete('/admin/accounts/:id', (ctx) => {
       fail(ctx, '后台账号不存在', 404)
       return
     }
-    // 平台兜底：历史脏数据可能落在其他租户库，按已知租户逐库删除同 ID 租户账号
+    // 平台兜底：历史脏数据可能落在其他子系统库，按已知子系统逐库删除同 ID 子系统账号
     const knownTenantIds = collectKnownTenantIds()
     for (const tenantId of knownTenantIds) {
       const result = deleteTenantScopedAdminAccountInTenantDbById(tenantId, id)
@@ -3598,7 +3598,7 @@ router.delete('/admin/accounts/:id', (ctx) => {
         continue
       }
       if (result.blocked) {
-        fail(ctx, result.reason === 'default-super' ? '默认超级管理员账号不可删除' : '租户系统不可删除主系统账号', 403)
+        fail(ctx, result.reason === 'default-super' ? '默认超级管理员账号不可删除' : '子系统不可删除主系统账号', 403)
         return
       }
       ctx.body = success({ id, sourceTenantId: tenantId })
@@ -3608,7 +3608,7 @@ router.delete('/admin/accounts/:id', (ctx) => {
     return
   }
   if (!isPlatformOperator && String(target.scopeType || 'tenant') === 'platform') {
-    fail(ctx, '租户系统不可删除主系统账号', 403)
+    fail(ctx, '子系统不可删除主系统账号', 403)
     return
   }
   if (target.username === DEFAULT_SUPER_ADMIN_USERNAME) {
@@ -3621,7 +3621,7 @@ router.delete('/admin/accounts/:id', (ctx) => {
 })
 
 router.get('/platform/tenants', async (ctx) => {
-  const account = requirePlatformScope(ctx, '查看租户列表')
+  const account = requirePlatformScope(ctx, '查看子系统列表')
   if (!account) {
     return
   }
@@ -3658,7 +3658,7 @@ router.get('/platform/tenants', async (ctx) => {
 })
 
 router.post('/platform/tenants', async (ctx) => {
-  const account = requirePlatformScope(ctx, '新增租户系统')
+  const account = requirePlatformScope(ctx, '新增子系统')
   if (!account) {
     return
   }
@@ -3684,7 +3684,7 @@ router.post('/platform/tenants', async (ctx) => {
   }
   const known = await collectKnownTenantIdsForPlatform()
   if (known.includes(tenantId)) {
-    fail(ctx, '租户系统ID已存在，请勿重复开通', 409)
+    fail(ctx, '子系统ID已存在，请勿重复开通', 409)
     return
   }
   registerKnownTenantId(tenantId)
@@ -3700,7 +3700,7 @@ router.post('/platform/tenants', async (ctx) => {
 })
 
 router.post('/platform/tenants/onboard', async (ctx) => {
-  const account = requirePlatformScope(ctx, '一体化开通租户系统')
+  const account = requirePlatformScope(ctx, '一体化开通子系统')
   if (!account) {
     return
   }
@@ -3745,7 +3745,7 @@ router.post('/platform/tenants/onboard', async (ctx) => {
 
   const known = await collectKnownTenantIdsForPlatform()
   if (known.includes(tenantId)) {
-    fail(ctx, '租户系统ID已存在，请勿重复开通', 409)
+    fail(ctx, '子系统ID已存在，请勿重复开通', 409)
     return
   }
   const bossConflict = await findGlobalBossConflict({ username, phone })
@@ -3786,7 +3786,7 @@ router.post('/platform/tenants/onboard', async (ctx) => {
 })
 
 router.delete('/platform/tenants/:tenantId', async (ctx) => {
-  const account = requirePlatformScope(ctx, '回滚租户系统')
+  const account = requirePlatformScope(ctx, '回滚子系统')
   if (!account) {
     return
   }
@@ -3803,7 +3803,7 @@ router.delete('/platform/tenants/:tenantId', async (ctx) => {
     || (Array.isArray(tenantDb.adminAccounts) && tenantDb.adminAccounts.length),
   )
   if (hasTenantData) {
-    fail(ctx, '租户系统已存在数据，不允许回滚删除', 409)
+    fail(ctx, '子系统已存在数据，不允许回滚删除', 409)
     return
   }
   let droppedMongoDb = false
@@ -3818,14 +3818,14 @@ router.delete('/platform/tenants/:tenantId', async (ctx) => {
     catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       if (!/not found|does not exist|ns not found/i.test(msg)) {
-        fail(ctx, `删除租户数据库失败：${msg}`, 502)
+        fail(ctx, `删除子系统数据库失败：${msg}`, 502)
         return
       }
     }
   }
   const removed = unregisterKnownTenantId(tenantId)
   if (!removed && !droppedMongoDb) {
-    fail(ctx, '租户系统不存在或已被回滚', 404)
+    fail(ctx, '子系统系统不存在或已被回滚', 404)
     return
   }
   evictTenantMemoryCache(tenantId)
@@ -3895,7 +3895,7 @@ router.get('/platform/audit-logs', (ctx) => {
 })
 
 router.get('/platform/admin-accounts', async (ctx) => {
-  const account = requirePlatformScope(ctx, '查看全租户后台账号')
+  const account = requirePlatformScope(ctx, '查看全子系统后台账号')
   if (!account) {
     return
   }

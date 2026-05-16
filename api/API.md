@@ -4,9 +4,9 @@
 
 **后台鉴权（需权限的接口）：** 请求头常带 `x-admin-role: super_admin | reviewer | collector`，或使用 `Authorization: Bearer mock-token-手机号`（该手机号在 `adminAccounts` 中有记录时可解析角色）。细节见 `api/src/index.js` 中 `resolveAdminRole`。
 
-**多租户（最小实现）：** 后端优先读取 `x-tenant-id`（兼容 `x-tenant` / `x-org-id` / `x-client-id`）作为租户；未传时尝试从 `Host` 子域首段推断，仍无值则回退 `default`。所有读写按租户隔离。
+**多子系统（最小实现）：** 后端优先读取 `x-tenant-id`（兼容 `x-tenant` / `x-org-id` / `x-client-id`）作为子系统；未传时尝试从 `Host` 子域首段推断，仍无值则回退 `default`。所有读写按子系统隔离。
 
-**平台接口安全：** `/platform/*` 接口要求后台登录态且账号 `scopeType=platform`；仅前端隐藏菜单不足以绕过。平台访问会写入平台审计日志（存于 default 租户 `_meta.platformAuditLogs`）。
+**平台接口安全：** `/platform/*` 接口要求后台登录态且账号 `scopeType=platform`；仅前端隐藏菜单不足以绕过。平台访问会写入平台审计日志（存于 default 子系统 `_meta.platformAuditLogs`）。
 
 ---
 

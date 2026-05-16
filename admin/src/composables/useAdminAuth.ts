@@ -67,7 +67,7 @@ export function isPlatformManagingTenantWorkspace(session: AdminSession | null |
 
 /**
  * 是否应对接 mall__core 上的 /platform/*（总部账号等）。
- * 平台账号在租户工作区时必须为 false，避免误读主系统数据。
+ * 平台账号在子系统工作区时必须为 false，避免误读主系统数据。
  */
 export function shouldUseHeadquartersPlatformApi(session: AdminSession | null | undefined): boolean {
   if (!session || session.scopeType !== 'platform')

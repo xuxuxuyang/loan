@@ -73,7 +73,7 @@ export function useTenantScope() {
     try {
       const resp = await fetch(`${apiBase.replace(/\/$/, '')}/platform/tenants`, {
         method: 'GET',
-        /** 租户清单在 core 库；勿用默认 self，否则平台超管会扫错库 */
+        /** 子系统清单在 core 库；勿用默认 self，否则平台超管会扫错库 */
         headers: withAdminAuthHeaders({ 'x-workspace-type': 'core' }),
       })
       const payload = await resp.json() as { success?: boolean, data?: Array<Record<string, unknown>> }

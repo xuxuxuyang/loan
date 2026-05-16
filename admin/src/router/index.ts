@@ -4,7 +4,6 @@ import { adminSessionRoleAllowed, getAdminSession, isAdminAuthenticated, isPlatf
 
 const LoginPage = () => import('../views/LoginPage.vue')
 const DashboardPage = () => import('../views/DashboardPage.vue')
-const PlatformConsolePage = () => import('../views/PlatformConsolePage.vue')
 const OrdersPage = () => import('../views/OrdersPage.vue')
 const OrderReviewPage = () => import('../views/OrderReviewPage.vue')
 const ReceivableByDatePage = () => import('../views/ReceivableByDatePage.vue')
@@ -19,11 +18,11 @@ function adminHomeRoute(session: AdminSession | null) {
   if (!session) {
     return { name: 'dashboard-overview' as const }
   }
-  /** 审核员/催收员固定进订单侧；避免 scopeType 被标成 platform 时误进总部台造成路由死循环 */
+  /** 审核员/催收员固定进订单侧；避免 scopeType 被标成 platform 时误进非订单首页造成路由死循环 */
   if (session.role === 'reviewer' || session.role === 'collector') {
     return { name: 'orders' as const }
   }
-  /** 平台账号切到具体租户库后，默认进入订单端（与租户后台使用习惯一致） */
+  /** 平台账号切到具体子系统库后，默认进入订单端（与子系统后台使用习惯一致） */
   if (session.scopeType === 'platform' && session.workspaceType === 'tenant') {
     return { name: 'orders' as const }
   }
@@ -31,9 +30,9 @@ function adminHomeRoute(session: AdminSession | null) {
     return { name: 'orders' as const }
   }
   if (session.scopeType === 'platform') {
-    return { name: 'platform-console' as const }
+    return { name: 'tenants' as const }
   }
-  /** 租户侧（老板/租户域账号）：不可进 platformOnly 的总部路由，默认与大屏订单端一致 */
+  /** 子系统侧（老板/子系统域账号）：不可进 platformOnly 的总部路由，默认与大屏订单端一致 */
   return { name: 'orders' as const }
 }
 
@@ -55,9 +54,7 @@ const router = createRouter({
     },
     {
       path: '/platform',
-      name: 'platform-console',
-      component: PlatformConsolePage,
-      meta: { title: '总部控制台', roles: ['super_admin'], platformOnly: true },
+      redirect: '/tenants',
     },
     {
       path: '/dashboard',
@@ -125,7 +122,7 @@ const router = createRouter({
       path: '/tenants',
       name: 'tenants',
       component: TenantManagePage,
-      meta: { title: '租户管理', roles: ['super_admin'], platformOnly: true },
+      meta: { title: '子系统管理', roles: ['super_admin'], platformOnly: true },
     },
     {
       path: '/traffic',
@@ -179,7 +176,7 @@ router.beforeEach((to) => {
   if (to.meta.platformOnly && session?.scopeType !== 'platform') {
     return adminHomeRoute(session)
   }
-  /** 租户工作区下禁止 deep-link 进总部专页，避免误以为在读租户数据（须先「返回总部」） */
+  /** 子系统工作区下禁止 deep-link 进总部专页，避免误以为在读子系统数据（须先「返回总部」） */
   if (to.meta.platformOnly && isPlatformManagingTenantWorkspace(session)) {
     return { name: 'orders' as const }
   }

@@ -43,7 +43,7 @@ const roleSubmitting = ref(false)
 const roleTarget = ref<AdminAccountItem | null>(null)
 const session = computed(() => getAdminSession())
 const isPlatformSession = computed(() => session.value?.scopeType === 'platform')
-/** 使用 /platform/accounts（core）；租户工作区下同纯租户，走 /admin/accounts */
+/** 使用 /platform/accounts（core）；子系统工作区下同纯子系统，走 /admin/accounts */
 const usePlatformAccountsApi = computed(() => shouldUseHeadquartersPlatformApi(session.value))
 const sessionUsername = computed(() => String(session.value?.username || '').trim())
 const tableColumnCount = computed(() => 7)
@@ -215,7 +215,7 @@ function isProtectedPlatformSuperRow(item: AdminAccountItem): boolean {
   return usePlatformAccountsApi.value && item.username === 'xuyang'
 }
 
-/** 租户侧不可删除/禁用的老板行；平台侧 xuyang 不可动 */
+/** 子系统侧不可删除/禁用的老板行；平台侧 xuyang 不可动 */
 function isAccountRowImmutable(item: AdminAccountItem): boolean {
   if (isProtectedPlatformSuperRow(item))
     return true
@@ -230,7 +230,7 @@ function isCurrentSessionRow(item: AdminAccountItem): boolean {
 }
 
 function roleModalHint(): string {
-  return usePlatformAccountsApi.value ? '当前账号范围：主系统账号' : '当前账号范围：本租户（员工仅审核员、催收员）'
+  return usePlatformAccountsApi.value ? '当前账号范围：主系统账号' : '当前账号范围：本子系统（员工仅审核员、催收员）'
 }
 
 async function fetchAccounts() {
@@ -438,7 +438,7 @@ async function submitRoleChange() {
     return
   }
   if (!isPlatformSession.value && (roleForm.role === 'super_admin' || roleForm.role === 'boss')) {
-    ElMessage.error('租户内员工角色仅可为审核员或催收员')
+    ElMessage.error('子系统内员工角色仅可为审核员或催收员')
     return
   }
   roleSubmitting.value = true

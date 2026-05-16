@@ -1,5 +1,5 @@
 /**
- * 删除 api/data/db.json 与按租户命名的 db.{tenant}.json（ALLOW_JSON_FALLBACK 本地存储）。
+ * 删除 api/data/db.json 与按子系统命名的 db.{tenant}.json（ALLOW_JSON_FALLBACK 本地存储）。
  * npm run json:fresh
  */
 const fs = require('node:fs')

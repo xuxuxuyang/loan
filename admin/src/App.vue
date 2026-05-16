@@ -9,7 +9,6 @@ import {
   DataAnalysis,
   DataBoard,
   Goods,
-  Grid,
   List,
   Promotion,
   ShoppingCart,
@@ -54,7 +53,7 @@ const pageTitle = computed(() => String(route.meta.title || '后台管理'))
 const session = ref<AdminSession | null>(getAdminSession())
 const isLoginPage = computed(() => route.name === 'login')
 
-/** 平台总览账号已切到具体租户的 mall__tenant_x 工作区：侧栏与顶栏按「租户后台」呈现 */
+/** 平台总览账号已切到具体子系统的 mall__tenant_x 工作区：侧栏与顶栏按「子系统后台」呈现 */
 const isPlatformManagingTenant = computed(() => isPlatformManagingTenantWorkspace(session.value))
 
 const managedTenantHeadline = computed(() => {
@@ -71,13 +70,7 @@ const managedTenantHeadline = computed(() => {
 const allMenus: MenuEntry[] = [
 { label: '客服消息', path: '/cs-messages', icon: ChatDotRound, roles: ['super_admin', 'reviewer'] },
   
-  {
-    label: '总部控制台',
-    path: '/platform',
-    icon: Grid,
-    roles: ['super_admin'],
-    platformOnly: true,
-  },
+
   {
     label: '订单管理',
     path: '/orders',
@@ -122,10 +115,9 @@ const allMenus: MenuEntry[] = [
     ],
   },
   { label: '账号管理', path: '/accounts', icon: Avatar, roles: ['super_admin', 'boss'] },
-  { label: '租户管理', path: '/tenants', icon: Setting, roles: ['super_admin'], platformOnly: true },
   { label: '流量管理', path: '/traffic', icon: Promotion, roles: ['super_admin'] },
   { label: '财务报表', path: '/dashboard', icon: DataAnalysis, roles: ['super_admin'], platformOnly: true },
-
+  { label: '子系统管理', path: '/tenants', icon: Setting, roles: ['super_admin'], platformOnly: true },
 ]
 
 const menus = computed(() => {
@@ -193,7 +185,7 @@ function logout() {
 function backToPlatformHeadquarters() {
   switchWorkspace('core')
   session.value = getAdminSession()
-  void router.push({ name: 'platform-console' })
+  void router.push({ name: 'tenants' })
 }
 
 watch(
@@ -247,7 +239,7 @@ useAdminOrderReviewBadge(ordersSidebarBadgeEnabled)
           <div class="admin-logo-titles">
             <span class="admin-logo-text">琥珀商城</span>
             <span class="admin-logo-sub">
-              <template v-if="isPlatformManagingTenant">租户后台 · {{ managedTenantHeadline }}</template>
+              <template v-if="isPlatformManagingTenant">子系统后台 · {{ managedTenantHeadline }}</template>
               <template v-else>后台管理</template>
             </span>
           </div>
@@ -344,9 +336,9 @@ useAdminOrderReviewBadge(ordersSidebarBadgeEnabled)
           <span
             v-if="isPlatformManagingTenant"
             class="admin-tenant-scope-pill"
-            :title="`数据与操作均指向租户「${managedTenantHeadline}」`"
+            :title="`数据与操作均指向子系统「${managedTenantHeadline}」`"
           >
-            当前租户 · {{ managedTenantHeadline }}
+            当前子系统 · {{ managedTenantHeadline }}
           </span>
           <AdminRoleAvatar
             :role="session.role"

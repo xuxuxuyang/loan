@@ -677,7 +677,7 @@ function isMongoPersistenceEnabled() {
   return mongoBacked
 }
 
-/** 租户物理库删除后剔除内存快照，避免后续 read 命中陈旧缓存 */
+/** 子系统物理库删除后剔除内存快照，避免后续 read 命中陈旧缓存 */
 function evictTenantMemoryCache(rawTenantId) {
   const t = normalizeTenantId(rawTenantId || DEFAULT_TENANT_ID)
   if (!t || t === DEFAULT_TENANT_ID) {
@@ -701,7 +701,7 @@ module.exports = {
   clonePayloadForMongo,
   /** 脚本：清空云库 mall 相关集合并写入 buildSeedDb() */
   wipeAllMongoPersistence,
-  /** 脚本：删除根库 + mall__* 后缀库（完整重置多租户/workspace 数据） */
+  /** 脚本：删除根库 + mall__* 后缀库（完整重置多子系统/workspace 数据） */
   dropAllMongoProjectDatabases,
   persistShardedSnapshot,
 }

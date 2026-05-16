@@ -205,7 +205,7 @@ function resolveTenantDisplayName(rawTenantId?: string, rawTenantName?: string) 
   if (tenantName && tenantName !== tenantId) {
     return `${tenantName}（${tenantId}）`
   }
-  return `租户系统（${tenantId}）`
+  return `子系统（${tenantId}）`
 }
 
 function resolveTenantOwnerName(rawTenantId?: string) {
@@ -280,12 +280,12 @@ async function fetchTenants() {
       data?: TenantSummary[]
     }
     if (!response.ok || payload.success === false) {
-      throw new Error(payload.msg || `加载租户列表失败 (${response.status})`)
+      throw new Error(payload.msg || `加载子系统列表失败 (${response.status})`)
     }
     tenants.value = Array.isArray(payload.data) ? payload.data : []
   }
   catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : '加载租户列表失败'
+    errorMessage.value = error instanceof Error ? error.message : '加载子系统列表失败'
   }
   finally {
     loading.value = false
@@ -295,13 +295,13 @@ async function fetchTenants() {
 async function deleteTenantSystem(rawTenantId: string) {
   const tenantId = normalizeTenantInput(rawTenantId)
   if (!tenantId) {
-    ElMessage.error('租户系统ID无效')
+    ElMessage.error('子系统ID无效')
     return
   }
   try {
     await ElMessageBox.confirm(
-      `确定删除租户系统「${tenantId}」吗？仅当该租户尚未产生任何用户、订单、商品且无后台账号时才能删除；若已开通老板账号或存在业务数据，接口将拒绝操作。`,
-      '删除租户系统',
+      `确定删除子系统「${tenantId}」吗？仅当该子系统尚未产生任何用户、订单、商品且无后台账号时才能删除；若已开通老板账号或存在业务数据，接口将拒绝操作。`,
+      '删除子系统',
       {
         type: 'warning',
         confirmButtonText: '删除',
@@ -329,13 +329,13 @@ async function deleteTenantSystem(rawTenantId: string) {
     if (normalizeTenantInput(selectedTenantId.value) === tenantId) {
       selectedTenantId.value = ''
     }
-    ElMessage.success('已删除该租户系统')
+    ElMessage.success('已删除该子系统')
     await fetchTenants()
     void fetchTenantAccounts()
     newTenantId.value = computeNextSuggestedBossTenantId()
   }
   catch (error) {
-    const msg = error instanceof Error ? error.message : '删除租户系统失败'
+    const msg = error instanceof Error ? error.message : '删除子系统失败'
     errorMessage.value = msg
     ElMessage.error(msg)
   }
@@ -393,12 +393,12 @@ async function fetchTenantAccounts() {
       data?: TenantAdminAccount[]
     }
     if (!response.ok || payload.success === false) {
-      throw new Error(payload.msg || `加载租户账号失败 (${response.status})`)
+      throw new Error(payload.msg || `加载子系统账号失败 (${response.status})`)
     }
     tenantAccounts.value = Array.isArray(payload.data) ? payload.data : []
   }
   catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : '加载租户账号失败'
+    errorMessage.value = error instanceof Error ? error.message : '加载子系统账号失败'
   }
   finally {
     accountLoading.value = false
@@ -440,7 +440,7 @@ function openEditTenantBossAccount(tenantId = '') {
   const normalizedTenantId = normalizeTenantInput(tenantId || selectedTenantId.value)
   const bossAccount = resolveTenantBossAccount(normalizedTenantId)
   if (!bossAccount) {
-    errorMessage.value = '该租户未找到老板账号，请先检查开通流程'
+    errorMessage.value = '该子系统未找到老板账号，请先检查开通流程'
     ElMessage.error(errorMessage.value)
     return
   }
@@ -462,15 +462,15 @@ function openCreateTenantWithBossModal() {
   newTenantIdError.value = ''
   const tenantId = normalizeTenantInput(newTenantId.value)
   if (!tenantId) {
-    newTenantIdError.value = '请输入有效的租户系统ID（仅支持 boss/boos + 数字，例如 boss1 或 boos1）'
+    newTenantIdError.value = '请输入有效的子系统ID（仅支持 boss/boos + 数字，例如 boss1 或 boos1）'
     return
   }
   if (!isValidOnboardTenantId(tenantId)) {
-    newTenantIdError.value = '租户系统ID仅支持 boss/boos + 数字，例如 boss1、boos1'
+    newTenantIdError.value = '子系统ID仅支持 boss/boos + 数字，例如 boss1、boos1'
     return
   }
   if (tenants.value.some(item => normalizeTenantInput(item.tenantId) === tenantId)) {
-    newTenantIdError.value = `租户系统ID ${tenantId} 已存在，请勿重复开通`
+    newTenantIdError.value = `子系统ID ${tenantId} 已存在，请勿重复开通`
     return
   }
   editingBossAccount.value = null
@@ -533,7 +533,7 @@ async function onboardTenantWithBoss(tenantId: string) {
   })
   const payload = await response.json() as { success?: boolean, msg?: string, data?: { bossAccount?: Partial<TenantAdminAccount> } }
   if (!response.ok || payload.success === false) {
-    throw new Error(payload.msg || `开通租户系统失败 (${response.status})`)
+    throw new Error(payload.msg || `开通子系统失败 (${response.status})`)
   }
   const account = payload.data?.bossAccount || {}
   return {
@@ -572,7 +572,7 @@ async function createBossAccount(tenantId: string) {
   })
   const payload = await response.json() as { success?: boolean, msg?: string, data?: Partial<TenantAdminAccount> }
   if (!response.ok || payload.success === false) {
-    throw new Error(payload.msg || `新增租户账号失败 (${response.status})`)
+    throw new Error(payload.msg || `新增子系统账号失败 (${response.status})`)
   }
   const data = payload.data || {}
   return {
@@ -634,7 +634,7 @@ async function createTenantAccount() {
   if (creatingTenantAccount.value) return
   const tenantId = normalizeTenantInput(createAccountForm.value.tenantId)
   if (!tenantId) {
-    errorMessage.value = '请先选择所属租户系统'
+    errorMessage.value = '请先选择所属子系统'
     ElMessage.error(errorMessage.value)
     return
   }
@@ -649,7 +649,7 @@ async function createTenantAccount() {
     if (createAccountMode.value === 'onboard') {
       createdTenantId = tenantId
       createdBossAccount = await onboardTenantWithBoss(tenantId)
-      ElMessage.success('租户系统与老板账号开通成功')
+      ElMessage.success('子系统与老板账号开通成功')
     }
     else if (createAccountMode.value === 'edit' && editingBossAccount.value) {
       await updateBossAccount(editingBossAccount.value, tenantId)
@@ -657,7 +657,7 @@ async function createTenantAccount() {
     }
     else {
       await createBossAccount(tenantId)
-      ElMessage.success('租户老板账号创建成功')
+      ElMessage.success('子系统老板账号创建成功')
     }
     showCreateAccountModal.value = false
     if (createdTenantId) {
@@ -696,7 +696,7 @@ async function createTenantAccount() {
 async function updateTenantAccount(item: TenantAdminAccount, body: Record<string, unknown>) {
   const tenantId = resolveAccountTenantId(item)
   if (!tenantId) {
-    throw new Error('无法识别该账号所属租户系统')
+    throw new Error('无法识别该账号所属子系统')
   }
   const response = await fetch(`${MALL_API_BASE}/admin/accounts/${encodeURIComponent(item.id)}`, {
     method: 'PATCH',
@@ -705,7 +705,7 @@ async function updateTenantAccount(item: TenantAdminAccount, body: Record<string
   })
   const payload = await response.json() as { success?: boolean, msg?: string }
   if (!response.ok || payload.success === false) {
-    throw new Error(payload.msg || `更新租户账号失败 (${response.status})`)
+    throw new Error(payload.msg || `更新子系统账号失败 (${response.status})`)
   }
 }
 
@@ -715,13 +715,13 @@ async function submitRoleChange() {
   errorMessage.value = ''
   try {
     await updateTenantAccount(roleTarget.value, { role: roleForm.value.role, scopeType: 'tenant' })
-    ElMessage.success('租户账号角色已更新')
+    ElMessage.success('子系统账号角色已更新')
     showRoleModal.value = false
     roleTarget.value = null
     await fetchTenantAccounts()
   }
   catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : '更新租户账号角色失败'
+    errorMessage.value = error instanceof Error ? error.message : '更新子系统账号角色失败'
     ElMessage.error(errorMessage.value)
   }
   finally {
@@ -747,12 +747,12 @@ async function submitPasswordChange() {
   errorMessage.value = ''
   try {
     await updateTenantAccount(passwordTarget.value, { password })
-    ElMessage.success('租户账号密码已更新')
+    ElMessage.success('子系统账号密码已更新')
     showPasswordModal.value = false
     passwordTarget.value = null
   }
   catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : '修改租户账号密码失败'
+    errorMessage.value = error instanceof Error ? error.message : '修改子系统账号密码失败'
     ElMessage.error(errorMessage.value)
   }
   finally {
@@ -769,7 +769,7 @@ async function toggleAccountStatus(item: TenantAdminAccount) {
     await fetchTenantAccounts()
   }
   catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : '更新租户账号状态失败'
+    errorMessage.value = error instanceof Error ? error.message : '更新子系统账号状态失败'
     ElMessage.error(errorMessage.value)
   }
   finally {
@@ -779,11 +779,11 @@ async function toggleAccountStatus(item: TenantAdminAccount) {
 
 async function removeTenantAccount(item: TenantAdminAccount) {
   if (deletingAccountId.value) return
-  const confirmed = window.confirm(`确认删除租户账号 ${item.username} 吗？`)
+  const confirmed = window.confirm(`确认删除子系统账号 ${item.username} 吗？`)
   if (!confirmed) return
   const tenantId = resolveAccountTenantId(item)
   if (!tenantId) {
-    errorMessage.value = '无法识别该账号所属租户系统'
+    errorMessage.value = '无法识别该账号所属子系统'
     ElMessage.error(errorMessage.value)
     return
   }
@@ -795,13 +795,13 @@ async function removeTenantAccount(item: TenantAdminAccount) {
     })
     const payload = await response.json() as { success?: boolean, msg?: string }
     if (!response.ok || payload.success === false) {
-      throw new Error(payload.msg || `删除租户账号失败 (${response.status})`)
+      throw new Error(payload.msg || `删除子系统账号失败 (${response.status})`)
     }
-    ElMessage.success('租户账号已删除')
+    ElMessage.success('子系统账号已删除')
     await fetchTenantAccounts()
   }
   catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : '删除租户账号失败'
+    errorMessage.value = error instanceof Error ? error.message : '删除子系统账号失败'
     ElMessage.error(errorMessage.value)
   }
   finally {
@@ -816,7 +816,7 @@ function jumpToTenant(rawTenantId: string) {
   }
   const tenantId = normalizeTenantInput(rawTenantId)
   if (!tenantId) {
-    ElMessage.warning('无效的租户系统')
+    ElMessage.warning('无效的子系统')
     return
   }
   if (!getAdminSession()) {
@@ -833,10 +833,10 @@ function jumpToTenant(rawTenantId: string) {
     && currentLc === targetLc,
   )
   if (!ok) {
-    ElMessage.warning('无法切换到该租户（可能没有权限或租户 ID 无效）')
+    ElMessage.warning('无法切换到该子系统（可能没有权限或子系统 ID 无效）')
     return
   }
-  ElMessage.success(`已进入租户「${tenantId}」后台视图（侧栏已隐藏总部菜单，顶栏可点「返回总部」）`)
+  ElMessage.success(`已进入子系统「${tenantId}」后台视图（侧栏已隐藏总部菜单，顶栏可点「返回总部」）`)
   void router.replace({ name: 'orders' })
 }
 
@@ -862,7 +862,7 @@ onMounted(() => {
           class="toolbar-input tenant-page__quick-input"
           :class="{ 'is-error': !!newTenantIdError }"
           clearable
-          placeholder="请输入租户系统ID（如 boss1 或 boos1）"
+          placeholder="请输入子系统ID（如 boss1 或 boos1）"
           @update:model-value="newTenantIdError = ''"
         />
         <button
@@ -871,7 +871,7 @@ onMounted(() => {
           :disabled="creatingTenantAccount"
           @click="openCreateTenantWithBossModal"
         >
-          {{ creatingTenantAccount && createAccountMode === 'onboard' ? '开通中...' : '开通租户系统' }}
+          {{ creatingTenantAccount && createAccountMode === 'onboard' ? '开通中...' : '开通子系统' }}
         </button>
       </div>
       <p
@@ -884,21 +884,21 @@ onMounted(() => {
 
     <div class="panel">
       <div class="panel-title">
-        <h3>租户系统列表</h3>
+        <h3>子系统列表</h3>
       </div>
       <div class="toolbar toolbar-left">
         <el-input
           v-model="keyword"
           class="toolbar-input"
           clearable
-          placeholder="搜索租户系统ID"
+          placeholder="搜索子系统ID"
         />
       </div>
 
       <table class="table">
         <thead>
           <tr>
-            <th>租户系统</th>
+            <th>子系统</th>
             <th>老板姓名</th>
             <th>老板账号</th>
             <th>老板手机号</th>
@@ -934,7 +934,7 @@ onMounted(() => {
                   type="button"
                   @click="jumpToTenant(item.tenantId)"
                 >
-                  切换到该租户
+                  切换到该子系统
                 </button>
                 <button
                   class="btn btn-danger"
@@ -942,7 +942,7 @@ onMounted(() => {
                   :disabled="!!deletingTenantId"
                   @click="deleteTenantSystem(item.tenantId)"
                 >
-                  {{ deletingTenantId === normalizeTenantInput(item.tenantId) ? '删除中…' : '删除租户系统' }}
+                  {{ deletingTenantId === normalizeTenantInput(item.tenantId) ? '删除中…' : '删除子系统' }}
                 </button>
               </div>
             </td>
@@ -952,7 +952,7 @@ onMounted(() => {
               colspan="8"
               class="empty"
             >
-              暂无租户系统
+              暂无子系统
             </td>
           </tr>
         </tbody>
@@ -964,7 +964,7 @@ onMounted(() => {
       class="panel"
     >
       <div class="panel-title">
-        <h3>租户账号数据</h3>
+        <h3>子系统账号数据</h3>
       </div>
       <div class="toolbar toolbar-left">
         <el-input
@@ -977,7 +977,7 @@ onMounted(() => {
           v-model="selectedTenantId"
           class="toolbar-input"
           clearable
-          placeholder="按租户系统筛选"
+          placeholder="按子系统筛选"
         >
           <el-option
             v-for="item in tenants"
@@ -1063,7 +1063,7 @@ onMounted(() => {
               colspan="9"
               class="empty"
             >
-              暂无租户账号数据
+              暂无子系统账号数据
             </td>
           </tr>
         </tbody>
@@ -1077,7 +1077,7 @@ onMounted(() => {
     >
       <div class="modal-panel">
         <div class="modal-header">
-          <h3>{{ createAccountMode === 'onboard' ? '开通租户系统并新增老板账号' : (createAccountMode === 'edit' ? '修改老板账号' : '新增老板账号') }}</h3>
+          <h3>{{ createAccountMode === 'onboard' ? '开通子系统并新增老板账号' : (createAccountMode === 'edit' ? '修改老板账号' : '新增老板账号') }}</h3>
           <button
             class="btn btn-secondary"
             type="button"
@@ -1088,7 +1088,7 @@ onMounted(() => {
         </div>
         <div class="form-grid">
           <label v-if="createAccountMode === 'onboard'">
-            所属租户系统ID
+            所属子系统ID
             <el-input
               v-model="createAccountForm.tenantId"
               class="form-input"
@@ -1096,14 +1096,14 @@ onMounted(() => {
             />
           </label>
           <label v-else>
-            所属租户系统
+            所属子系统
             <el-select
               v-model="createAccountForm.tenantId"
               class="form-select"
               filterable
               allow-create
               default-first-option
-              placeholder="选择租户系统ID"
+              placeholder="选择子系统ID"
             >
               <el-option
                 v-for="item in tenants"
