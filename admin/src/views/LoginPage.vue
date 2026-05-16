@@ -3,7 +3,7 @@ import { onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import LoginCard from '../components/auth/LoginCard.vue'
 import LoginWelcomeCelebration from '../components/auth/LoginWelcomeCelebration.vue'
-import { adminRoleDisplayLabel, setAdminSession, type AdminRole } from '../composables/useAdminAuth'
+import { adminRoleDisplayLabel, isPlatformBootstrapUser, setAdminSession, type AdminRole } from '../composables/useAdminAuth'
 
 const route = useRoute()
 const router = useRouter()
@@ -19,6 +19,21 @@ const loginWelcomeRole = ref<AdminRole>('super_admin')
 const loginWelcomeName = ref('')
 
 let loginWelcomeTimer: ReturnType<typeof setTimeout> | undefined
+
+function inferSessionScopeType(
+  username: string,
+  role: AdminRole,
+  scopeType?: 'platform' | 'tenant',
+): 'platform' | 'tenant' {
+  if (scopeType === 'platform')
+    return 'platform'
+  if (scopeType === 'tenant')
+    return 'tenant'
+  if (role === 'super_admin' && isPlatformBootstrapUser(username)) {
+    return 'platform'
+  }
+  return 'tenant'
+}
 
 function clearLoginWelcomeTimer() {
   if (loginWelcomeTimer) {
@@ -57,6 +72,10 @@ async function handleLogin(payload: { username: string, password: string }) {
         token: string
         adminRole: AdminRole
         roleLabel?: string
+        scopeType?: 'platform' | 'tenant'
+        workspaceType?: 'core' | 'self' | 'tenant'
+        tenantId?: string
+        scopeTenantIds?: string[]
       }
     } = {}
     try {
@@ -77,6 +96,26 @@ async function handleLogin(payload: { username: string, password: string }) {
       token: result.data.token,
       role,
       loginAt: new Date().toISOString(),
+      scopeType: inferSessionScopeType(
+        result.data.username || payload.username,
+        role,
+        result.data.scopeType,
+      ),
+      workspaceType: ((): 'core' | 'self' | 'tenant' => {
+        const raw = String(result.data.workspaceType || '').trim().toLowerCase()
+        if (raw === 'core' || raw === 'self' || raw === 'tenant') {
+          return raw
+        }
+        return inferSessionScopeType(
+          result.data.username || payload.username,
+          role,
+          result.data.scopeType,
+        ) === 'platform' ? 'core' : 'tenant'
+      })(),
+      tenantId: String(result.data.tenantId || 'default'),
+      scopeTenantIds: Array.isArray(result.data.scopeTenantIds)
+        ? result.data.scopeTenantIds.map(item => String(item || '').trim()).filter(Boolean)
+        : undefined,
     })
 
     loginWelcomeRole.value = role

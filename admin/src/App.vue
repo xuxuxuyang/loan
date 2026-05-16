@@ -9,10 +9,12 @@ import {
   DataAnalysis,
   DataBoard,
   Goods,
+  Grid,
   List,
   Promotion,
   ShoppingCart,
   Tickets,
+  Setting,
   User,
 } from '@element-plus/icons-vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -39,6 +41,7 @@ interface MenuEntry {
   label: string
   path: string
   roles?: Role[]
+  platformOnly?: boolean
   icon: Component
   children?: MenuChild[]
 }
@@ -52,6 +55,13 @@ const isLoginPage = computed(() => route.name === 'login')
 const allMenus: MenuEntry[] = [
 { label: '客服消息', path: '/cs-messages', icon: ChatDotRound, roles: ['super_admin', 'reviewer'] },
   
+  {
+    label: '总部控制台',
+    path: '/platform',
+    icon: Grid,
+    roles: ['super_admin'],
+    platformOnly: true,
+  },
   {
     label: '订单管理',
     path: '/orders',
@@ -95,16 +105,23 @@ const allMenus: MenuEntry[] = [
       { label: '商城产品', path: '/products/mall', icon: Goods },
     ],
   },
-  { label: '账号管理', path: '/accounts', icon: Avatar, roles: ['super_admin'] },
+  { label: '账号管理', path: '/accounts', icon: Avatar, roles: ['super_admin'], platformOnly: true },
+  { label: '租户管理', path: '/tenants', icon: Setting, roles: ['super_admin'], platformOnly: true },
   { label: '流量管理', path: '/traffic', icon: Promotion, roles: ['super_admin'] },
-  { label: '财务报表', path: '/dashboard', icon: DataAnalysis, roles: ['super_admin'] },
+  { label: '财务报表', path: '/dashboard', icon: DataAnalysis, roles: ['super_admin'], platformOnly: true },
 
 ]
 
 const menus = computed(() => {
   const role = session.value?.role
+  const scopeType = session.value?.scopeType || 'tenant'
   return allMenus
-    .filter(item => !item.roles || adminSessionRoleAllowed(role, item.roles))
+    .filter((item) => {
+      if (item.platformOnly && scopeType !== 'platform') {
+        return false
+      }
+      return !item.roles || adminSessionRoleAllowed(role, item.roles)
+    })
     .map((item) => {
       if (!item.children) return item
       return {
@@ -446,6 +463,7 @@ useAdminOrderReviewBadge(ordersSidebarBadgeEnabled)
   line-height: 18px;
   text-align: center;
 }
+
 </style>
 
 <style>

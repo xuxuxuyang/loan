@@ -3,6 +3,15 @@ const path = require('node:path')
 const mongo = require('./mongo')
 const mongoConfig = require('./mongoConfig')
 const {
+  getCurrentTenantId,
+  getCurrentWorkspaceType,
+  DEFAULT_TENANT_ID,
+  runWithTenant,
+  runWithWorkspace,
+  setCurrentTenant,
+  setCurrentWorkspace,
+} = require('./tenantContext')
+const {
   BOOTSTRAP_ADMIN_USER,
   BOOTSTRAP_ADMIN_ACCOUNTS,
   DEFAULT_SUPER_ADMIN_USERNAME,
@@ -26,9 +35,47 @@ const ENTITY_SPECS = mongo.SHARDED_ENTITY_KEYS.map((key) => ({
 let mongoBacked = false
 /** 使用 Mongo 时 readDb/writeDb 均针对该常驻对象 */
 let mongoMemoryDb = null
+let mongoMemoryDbByTenant = new Map()
 
 /** 串行写入，避免并发持久化乱序 */
 let persistTail = Promise.resolve()
+let persistTailByTenant = new Map()
+
+function normalizeWorkspaceForKey(raw) {
+  const value = String(raw || '').trim().toLowerCase()
+  if (value === 'core' || value === 'self' || value === 'tenant') {
+    return value
+  }
+  return 'tenant'
+}
+
+function buildScopeKey(workspaceType, tenantId) {
+  const ws = normalizeWorkspaceForKey(workspaceType)
+  if (ws === 'core') {
+    return 'core'
+  }
+  if (ws === 'self') {
+    return 'self'
+  }
+  const t = String(tenantId || DEFAULT_TENANT_ID).trim().toLowerCase() || DEFAULT_TENANT_ID
+  return `tenant:${t}`
+}
+
+function getScopeState() {
+  const workspaceType = String(getCurrentWorkspaceType && getCurrentWorkspaceType() || 'tenant').trim().toLowerCase() || 'tenant'
+  if (workspaceType === 'core') {
+    return { workspaceType, tenantId: DEFAULT_TENANT_ID, key: 'core' }
+  }
+  if (workspaceType === 'self') {
+    return { workspaceType, tenantId: DEFAULT_TENANT_ID, key: 'self' }
+  }
+  const tenantId = getCurrentTenantId()
+  return { workspaceType: 'tenant', tenantId, key: `tenant:${tenantId}` }
+}
+
+function hasScopeCache(workspaceType, tenantId) {
+  return mongoMemoryDbByTenant.has(buildScopeKey(workspaceType, tenantId))
+}
 
 function ensureDbFile() {
   if (!mongoConfig.isJsonFallbackAllowed()) {
@@ -66,6 +113,10 @@ function buildSeedDb() {
 }
 
 function ensureAdminUser(list) {
+  const tenantId = getCurrentTenantId()
+  if (tenantId !== DEFAULT_TENANT_ID) {
+    return Array.isArray(list) ? list : []
+  }
   const hasAdmin = list.some(item => item && (item.phone === ADMIN_PHONE || item.id === ADMIN_USER_ID))
   if (hasAdmin) {
     return list
@@ -89,6 +140,20 @@ function dedupeUsersById(list) {
 }
 
 function ensureAdminAccounts(list) {
+  const tenantId = getCurrentTenantId()
+  if (tenantId !== DEFAULT_TENANT_ID) {
+    const normalizedOnly = Array.isArray(list) ? list : []
+    const mapOnly = new Map()
+    normalizedOnly.forEach((item) => {
+      if (!item || !item.username) {
+        return
+      }
+      if (!mapOnly.has(item.username)) {
+        mapOnly.set(item.username, item)
+      }
+    })
+    return [...mapOnly.values()]
+  }
   const normalized = Array.isArray(list) ? list : []
   const map = new Map()
   normalized.forEach((item) => {
@@ -139,9 +204,22 @@ function shapeDbFromParsed(parsed) {
   }
 }
 
+function tenantDbFile(tenantId) {
+  const safe = String(tenantId || DEFAULT_TENANT_ID).replace(/[^a-z0-9_-]/gi, '').toLowerCase() || DEFAULT_TENANT_ID
+  return safe === DEFAULT_TENANT_ID
+    ? DB_FILE
+    : path.join(DB_DIR, `db.${safe}.json`)
+}
+
 function readDbFromFile() {
+  const tenantId = getCurrentTenantId()
+  const file = tenantDbFile(tenantId)
   ensureDbFile()
-  const raw = fs.readFileSync(DB_FILE, 'utf-8')
+  if (!fs.existsSync(file)) {
+    const seed = buildSeedDb()
+    fs.writeFileSync(file, JSON.stringify(seed, null, 2), 'utf-8')
+  }
+  const raw = fs.readFileSync(file, 'utf-8')
   try {
     const parsed = JSON.parse(raw)
     return shapeDbFromParsed(parsed)
@@ -318,7 +396,9 @@ function legacyAppStateDocToRaw(legacyDoc) {
 }
 
 function scheduleMongoPersist(snapshot) {
-  persistTail = persistTail
+  const scope = getScopeState()
+  const currentTail = persistTailByTenant.get(scope.key) || Promise.resolve()
+  const nextTail = currentTail
     .then(async () => {
       const dbm = mongo.getMongoDb()
       if (!dbm || !mongoBacked) {
@@ -334,6 +414,10 @@ function scheduleMongoPersist(snapshot) {
     .catch((err) => {
       console.error('[store] MongoDB 持久化队列失败:', err?.message || err)
     })
+  persistTailByTenant.set(scope.key, nextTail)
+  if (scope.key === 'tenant:default') {
+    persistTail = nextTail
+  }
 }
 
 function assertDatastoreReady() {
@@ -351,6 +435,7 @@ function assertDatastoreReady() {
  * @returns {Promise<boolean>}
  */
 async function hydrateFromMongoAfterConnect() {
+  const scope = getScopeState()
   const dbm = mongo.getMongoDb()
   if (!dbm) {
     return false
@@ -384,38 +469,99 @@ async function hydrateFromMongoAfterConnect() {
   }
 
   mongoBacked = true
+  mongoMemoryDbByTenant.set(scope.key, mongoMemoryDb)
   return true
 }
 
+async function hydrateTenantDbFromMongo(workspaceType, tenantId) {
+  const prevTenant = getCurrentTenantId()
+  const prevWorkspace = String(getCurrentWorkspaceType && getCurrentWorkspaceType() || 'tenant').trim().toLowerCase() || 'tenant'
+  const targetWorkspace = String(workspaceType || 'tenant').trim().toLowerCase() || 'tenant'
+  const targetTenant = String(tenantId || DEFAULT_TENANT_ID)
+  const runner = targetWorkspace === 'tenant'
+    ? (fn) => runWithTenant(targetTenant, fn)
+    : (fn) => runWithWorkspace(targetWorkspace, DEFAULT_TENANT_ID, fn)
+  return runner(async () => {
+    const dbm = mongo.getMongoDb()
+    if (!dbm) {
+      return false
+    }
+    const raw = await loadShardedRawFromDb(dbm)
+    let nextDb
+    if (isRawShardedPayloadEmpty(raw)) {
+      nextDb = buildSeedDb()
+      await persistShardedSnapshot(dbm, clonePayloadForMongo(nextDb))
+    }
+    else {
+      nextDb = shapeDbFromParsed(raw)
+    }
+    const scoped = getScopeState()
+    mongoMemoryDbByTenant.set(scoped.key, nextDb)
+    if (scoped.key === 'tenant:default') {
+      mongoMemoryDb = nextDb
+    }
+    return true
+  })
+    .finally(() => {
+      if (prevWorkspace === 'tenant') {
+        setCurrentTenant(prevTenant || DEFAULT_TENANT_ID)
+      }
+      else {
+        setCurrentWorkspace(prevWorkspace, DEFAULT_TENANT_ID)
+      }
+    })
+}
+
 function readDb() {
-  if (mongoBacked && mongoMemoryDb) {
-    return mongoMemoryDb
+  const scope = getScopeState()
+  if (mongoBacked) {
+    const scoped = mongoMemoryDbByTenant.get(scope.key)
+    if (scoped) {
+      return scoped
+    }
+    const seeded = buildSeedDb()
+    mongoMemoryDbByTenant.set(scope.key, seeded)
+    if (scope.key === 'tenant:default') {
+      mongoMemoryDb = seeded
+    }
+    return seeded
   }
   assertDatastoreReady()
   return readDbFromFile()
 }
 
 function writeDb(db) {
+  const scope = getScopeState()
   if (mongoBacked) {
+    mongoMemoryDbByTenant.set(scope.key, db)
+    if (scope.key === 'tenant:default') {
+      mongoMemoryDb = db
+    }
     scheduleMongoPersist(clonePayloadForMongo(db))
     return
   }
   assertDatastoreReady()
   ensureDbFile()
-  fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2), 'utf-8')
+  const file = tenantDbFile(scope.tenantId)
+  fs.writeFileSync(file, JSON.stringify(db, null, 2), 'utf-8')
 }
 
 /** 供脚本在 writeDb 后 await，确保 Mongo 持久化已完成再断开连接 */
 function flushMongoPersist() {
-  return persistTail
+  const scope = getScopeState()
+  return persistTailByTenant.get(scope.key) || persistTail
 }
 
 function resetDb() {
+  const scope = getScopeState()
   const seed = buildSeedDb()
   if (mongoBacked) {
-    mongoMemoryDb = seed
-    scheduleMongoPersist(clonePayloadForMongo(mongoMemoryDb))
-    return mongoMemoryDb
+    mongoMemoryDbByTenant.set(scope.key, seed)
+    if (scope.key === 'tenant:default') {
+      mongoMemoryDb = seed
+    }
+    scheduleMongoPersist(clonePayloadForMongo(seed))
+    return seed
   }
   writeDb(seed)
   return seed
@@ -460,7 +606,11 @@ async function importLocalSnapshotToMongo() {
   await persistShardedSnapshot(dbm, clonePayloadForMongo(snapshot))
   await dbm.collection(mongo.APP_STATE).deleteOne({ _id: MAIN_STATE_ID }).catch(() => {})
   if (mongoBacked) {
-    mongoMemoryDb = snapshot
+    const scope = getScopeState()
+    mongoMemoryDbByTenant.set(scope.key, snapshot)
+    if (scope.key === 'tenant:default') {
+      mongoMemoryDb = snapshot
+    }
   }
   const counts = {
     products: snapshot.products.length,
@@ -487,6 +637,8 @@ module.exports = {
   writeDb,
   flushMongoPersist,
   hydrateFromMongoAfterConnect,
+  hydrateTenantDbFromMongo,
+  hasScopeCache,
   importLocalSnapshotToMongo,
   isMongoPersistenceEnabled,
   clonePayloadForMongo,

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
+import { getAdminSession } from '../composables/useAdminAuth'
 import { withAdminAuthHeaders } from '../composables/useAdminApi'
 import { donePageProgress, startPageProgress } from '../utils/progress'
 
@@ -15,6 +16,12 @@ interface AdminAccountItem {
   name: string
   phone: string
   status: AccountStatus
+  scopeType?: 'platform' | 'tenant'
+  tenantId?: string
+  tenantName?: string
+  scopeTenantIds?: string[]
+  sourceTenantId?: string
+  sourceTenantName?: string
   createdAt: string
   updatedAt: string
 }
@@ -34,12 +41,15 @@ const passwordSubmitting = ref(false)
 const passwordTarget = ref<AdminAccountItem | null>(null)
 const roleSubmitting = ref(false)
 const roleTarget = ref<AdminAccountItem | null>(null)
+const session = computed(() => getAdminSession())
+const isPlatformSession = computed(() => session.value?.scopeType === 'platform')
+const tableColumnCount = computed(() => 7)
 
 const createForm = reactive({
   username: '',
   name: '',
   phone: '',
-  password: '1234',
+  password: '123456',
   role: 'reviewer' as Exclude<AccountRole, 'super_admin'>,
 })
 
@@ -54,8 +64,9 @@ const roleForm = reactive({
 
 const filteredAccounts = computed(() => {
   const key = keyword.value.trim()
-  if (!key) return accounts.value
-  return accounts.value.filter(item =>
+  const source = accounts.value
+  if (!key) return source
+  return source.filter(item =>
     item.username.includes(key) || item.name.includes(key) || item.phone.includes(key),
   )
 })
@@ -164,7 +175,7 @@ async function fetchAccounts() {
   startPageProgress()
   errorMessage.value = ''
   try {
-    const response = await fetch(`${MALL_API_BASE}/admin/accounts`, {
+    const response = await fetch(`${MALL_API_BASE}/platform/accounts`, {
       method: 'GET',
       headers: withAdminAuthHeaders(),
     })
@@ -198,7 +209,7 @@ function openCreateModal() {
   createForm.username = ''
   createForm.name = ''
   createForm.phone = ''
-  createForm.password = '1234'
+  createForm.password = '123456'
   createForm.role = 'reviewer'
   errorMessage.value = ''
 }
@@ -245,7 +256,7 @@ async function createAccount() {
   submitting.value = true
   errorMessage.value = ''
   try {
-    const response = await fetch(`${MALL_API_BASE}/admin/accounts`, {
+    const response = await fetch(`${MALL_API_BASE}/platform/accounts`, {
       method: 'POST',
       headers: withAdminAuthHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({
@@ -254,6 +265,8 @@ async function createAccount() {
         phone: createForm.phone.trim(),
         password: createForm.password.trim(),
         role: createForm.role,
+        scopeType: 'platform',
+        scopeTenantIds: [],
       }),
     })
     const payload = await response.json() as { msg?: string }
@@ -272,7 +285,7 @@ async function createAccount() {
 }
 
 async function updateAccount(id: string, body: Record<string, unknown>) {
-  const response = await fetch(`${MALL_API_BASE}/admin/accounts/${encodeURIComponent(id)}`, {
+  const response = await fetch(`${MALL_API_BASE}/platform/accounts/${encodeURIComponent(id)}`, {
     method: 'PATCH',
     headers: withAdminAuthHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(body),
@@ -358,7 +371,7 @@ async function removeAccount(item: AdminAccountItem) {
   }
   deletingId.value = item.id
   try {
-    const response = await fetch(`${MALL_API_BASE}/admin/accounts/${encodeURIComponent(item.id)}`, {
+    const response = await fetch(`${MALL_API_BASE}/platform/accounts/${encodeURIComponent(item.id)}`, {
       method: 'DELETE',
       headers: withAdminAuthHeaders(),
     })
@@ -392,6 +405,7 @@ function cancelDelete() {
 }
 
 onMounted(() => {
+  if (!isPlatformSession.value) return
   void fetchAccounts()
 })
 </script>
@@ -451,7 +465,7 @@ onMounted(() => {
             class="table-section-row"
           >
             <td
-              colspan="7"
+              :colspan="tableColumnCount"
               :class="['table-section-cell', sectionHeaderClass('sec-super-admin'), 'super-admin-collapse-cell']"
             >
               <button
@@ -475,7 +489,7 @@ onMounted(() => {
             class="table-section-row"
           >
             <td
-              colspan="7"
+              :colspan="tableColumnCount"
               :class="['table-section-cell', sectionHeaderClass(row.key)]"
             >
               {{ row.title }}
@@ -565,11 +579,10 @@ onMounted(() => {
         </template>
         <tr v-if="!loading && !filteredAccounts.length">
           <td
-            colspan="7"
+            :colspan="tableColumnCount"
             style="text-align: center; color: #9ca3af;"
           >
-            暂无后台账号。本页<strong>仅限系统管理员</strong>访问；请先检查是否误用客服/审核员账号登录。<br>
-            「数据库重置」后请<strong>退出登录</strong>，再用 <strong>xuyang</strong> 登录；并确认 mall-api（默认 3110）已连通。
+            当前暂无账号。
           </td>
         </tr>
       </tbody>
@@ -583,7 +596,7 @@ onMounted(() => {
   >
     <div class="modal-panel">
       <div class="modal-header">
-        <h3>新增后台账号</h3>
+        <h3>新增账号</h3>
         <button
           class="btn btn-secondary"
           type="button"
@@ -680,6 +693,11 @@ onMounted(() => {
             <el-option label="审核员" value="reviewer" />
             <el-option label="催收员" value="collector" />
           </el-select>
+        </label>
+        <label
+          class="full"
+        >
+          当前账号范围：主系统账号
         </label>
       </div>
       <div class="actions actions-right">
@@ -923,6 +941,10 @@ onMounted(() => {
 
 .toolbar-input {
   width: 260px;
+}
+
+.scope-switch {
+  margin-left: 8px;
 }
 
 .badge {

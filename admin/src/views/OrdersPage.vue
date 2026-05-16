@@ -1214,14 +1214,6 @@ watch(
 
 <template>
   <div class="panel">
-    <el-alert
-      v-if="isCardPackageDataPage"
-      class="card-data-hint"
-      type="info"
-      :closable="false"
-      show-icon
-      title="本页以卡包发放状态为准，仅展示已标记为「卡包已发放」的订单。筛选为还款维度：结合各期「还款日」与当前日期、以及是否已还。"
-    />
     <div class="toolbar">
       <el-input
         v-model="keyword"

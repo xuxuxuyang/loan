@@ -14,9 +14,22 @@ const {
   writeDb,
   resetDb,
   hydrateFromMongoAfterConnect,
+  hydrateTenantDbFromMongo,
+  hasScopeCache,
   isMongoPersistenceEnabled,
   flushMongoPersist,
 } = require('./store')
+const {
+  runWithTenant,
+  runWithWorkspace,
+  normalizeTenantId,
+  normalizeWorkspaceType,
+  DEFAULT_TENANT_ID,
+  setCurrentTenant,
+  setCurrentWorkspace,
+  getCurrentTenantId,
+} = require('./tenantContext')
+const { resolveTenantIdFromRequest, resolveWorkspaceTypeFromRequest } = require('./tenantResolver')
 const { DEFAULT_SUPER_ADMIN_USERNAME, BOOTSTRAP_ADMIN_ACCOUNTS } = require('./defaultBootstrap')
 const crypto = require('node:crypto')
 const path = require('node:path')
@@ -237,6 +250,7 @@ function normalizeUserQuota(value) {
 }
 const ENFORCE_ADMIN_RBAC = normalizeBoolean(process.env.ENFORCE_ADMIN_RBAC, false)
 const ADMIN_ACCOUNT_STATUS_SET = new Set(['active', 'disabled'])
+const ADMIN_SCOPE_TYPES = new Set(['tenant', 'platform'])
 
 function success(data) {
   return { success: true, code: 0, msg: 'ok', data }
@@ -348,6 +362,18 @@ function normalizeAdminAccount(account) {
     : ADMIN_ROLES.REVIEWER
   const role = normalizedRole || fallbackRole
   const status = ADMIN_ACCOUNT_STATUS_SET.has(String(account.status || '').trim()) ? String(account.status).trim() : 'active'
+  const tenantId = normalizeTenantId(account.tenantId || 'default')
+  const scopeType = ADMIN_SCOPE_TYPES.has(String(account.scopeType || '').trim())
+    ? String(account.scopeType).trim()
+    : ((tenantId === DEFAULT_TENANT_ID && isSuperEquivalentRole(role)) ? 'platform' : 'tenant')
+  const scopeTenantIdsRaw = Array.isArray(account.scopeTenantIds) ? account.scopeTenantIds : []
+  const scopeTenantIds = scopeTenantIdsRaw
+    .map(item => String(item || '').trim())
+    .filter(Boolean)
+    .map(item => (item === '*' ? '*' : normalizeTenantId(item)))
+  if (scopeType === 'platform' && !scopeTenantIds.includes('*')) {
+    scopeTenantIds.unshift('*')
+  }
   return {
     id: String(account.id || `A${Date.now()}`),
     username: uname,
@@ -356,6 +382,9 @@ function normalizeAdminAccount(account) {
     name: String(account.name || '').trim() || getRoleLabel(role),
     phone: normalizePhone(account.phone || ''),
     status,
+    scopeType,
+    tenantId,
+    scopeTenantIds,
     createdAt: account.createdAt || now,
     updatedAt: account.updatedAt || account.createdAt || now,
   }
@@ -365,17 +394,42 @@ function ensureAdminAccounts(db) {
   if (!Array.isArray(db.adminAccounts)) {
     db.adminAccounts = []
   }
-  db.adminAccounts = db.adminAccounts
+  let accounts = db.adminAccounts
     .map(normalizeAdminAccount)
     .filter(item => item.username)
+  const currentTenantId = normalizeTenantId(getCurrentTenantId() || DEFAULT_TENANT_ID)
+  if (currentTenantId !== DEFAULT_TENANT_ID) {
+    // 租户库只保留本租户账号，不展示主系统账号。
+    accounts = accounts.filter((item) => {
+      if (item.scopeType === 'platform' || item.role === ADMIN_ROLES.SUPER) {
+        return false
+      }
+      return normalizeTenantId(item.tenantId || currentTenantId) === currentTenantId
+    })
+    db.adminAccounts = accounts
+    return
+  }
+  // 主系统仅保留唯一超级管理员账号（DEFAULT_SUPER_ADMIN_USERNAME）
+  const superAdmins = accounts.filter(item => item.role === ADMIN_ROLES.SUPER)
+  if (superAdmins.length > 1) {
+    let keeper = accounts.find(item => item.username === DEFAULT_SUPER_ADMIN_USERNAME)
+    if (!keeper) {
+      keeper = superAdmins[0]
+    }
+    accounts = accounts.filter((item) => {
+      if (item.role !== ADMIN_ROLES.SUPER) return true
+      return item.id === keeper.id
+    })
+  }
   /** 云上缺字段时仍可补回内置账号（defaultBootstrap），避免列表为空且无权限访问 */
-  const have = new Set(db.adminAccounts.map(a => a.username))
+  const have = new Set(accounts.map(a => a.username))
   BOOTSTRAP_ADMIN_ACCOUNTS.forEach((seed) => {
     if (!have.has(seed.username)) {
-      db.adminAccounts.push(normalizeAdminAccount(seed))
+      accounts.push(normalizeAdminAccount(seed))
       have.add(seed.username)
     }
   })
+  db.adminAccounts = accounts
 }
 
 function getAdminRoleByPhone(db, phone) {
@@ -388,10 +442,154 @@ function getAdminAccountByUsername(db, username) {
   return db.adminAccounts.find(item => item.username === key) || null
 }
 
+function getAdminAccountByPhone(db, phone) {
+  return db.adminAccounts.find(item => item.phone === phone && item.status === 'active') || null
+}
+
+function readDbByTenantId(tenantId) {
+  return runWithTenant(normalizeTenantId(tenantId || DEFAULT_TENANT_ID), () => {
+    const db = readDb()
+    ensureAdminAccounts(db)
+    return db
+  })
+}
+
+function deleteTenantScopedAdminAccountInTenantDbById(tenantId, accountId) {
+  return runWithTenant(normalizeTenantId(tenantId || DEFAULT_TENANT_ID), () => {
+    const db = readDb()
+    ensureAdminAccounts(db)
+    const index = db.adminAccounts.findIndex(item => item.id === accountId)
+    if (index < 0) {
+      return { found: false }
+    }
+    const target = db.adminAccounts[index]
+    if (!target || String(target.scopeType || 'tenant') === 'platform') {
+      return { found: true, blocked: true, reason: 'platform' }
+    }
+    if (target.username === DEFAULT_SUPER_ADMIN_USERNAME) {
+      return { found: true, blocked: true, reason: 'default-super' }
+    }
+    db.adminAccounts.splice(index, 1)
+    writeDb(db)
+    return { found: true, deleted: true, target }
+  })
+}
+
+function readCoreDb() {
+  return runWithWorkspace('core', DEFAULT_TENANT_ID, () => {
+    const db = readDb()
+    ensureAdminAccounts(db)
+    return db
+  })
+}
+
+function writeCoreDb(db) {
+  runWithWorkspace('core', DEFAULT_TENANT_ID, () => {
+    writeDb(db)
+  })
+}
+
+function getAdminAccountByPhoneAcrossTenants(phone, preferredTenantId) {
+  const preferred = normalizeTenantId(preferredTenantId || DEFAULT_TENANT_ID)
+  const dbPreferred = readDbByTenantId(preferred)
+  const foundPreferred = getAdminAccountByPhone(dbPreferred, phone)
+  if (foundPreferred) {
+    return foundPreferred
+  }
+  const searched = new Set([preferred])
+  const dbCore = readCoreDb()
+  const foundCore = getAdminAccountByPhone(dbCore, phone)
+  if (foundCore) {
+    return foundCore
+  }
+  const known = collectKnownTenantIds()
+  for (const tenantId of known) {
+    if (searched.has(tenantId)) {
+      continue
+    }
+    const db = readDbByTenantId(tenantId)
+    const found = getAdminAccountByPhone(db, phone)
+    if (found) {
+      return found
+    }
+  }
+  return null
+}
+
+function getAdminAccountByUsernameAcrossTenants(username, preferredTenantId) {
+  const preferred = normalizeTenantId(preferredTenantId || DEFAULT_TENANT_ID)
+  const dbPreferred = readDbByTenantId(preferred)
+  const foundPreferred = getAdminAccountByUsername(dbPreferred, username)
+  if (foundPreferred) {
+    return foundPreferred
+  }
+  const searched = new Set([preferred])
+  const dbCore = readCoreDb()
+  const foundCore = getAdminAccountByUsername(dbCore, username)
+  if (foundCore) {
+    return foundCore
+  }
+  const known = collectKnownTenantIds()
+  for (const tenantId of known) {
+    if (searched.has(tenantId)) {
+      continue
+    }
+    const db = readDbByTenantId(tenantId)
+    const found = getAdminAccountByUsername(db, username)
+    if (found) {
+      return found
+    }
+  }
+  return null
+}
+
+function effectiveScopeTenantIds(account) {
+  if (account && account.scopeType === 'platform') {
+    return ['*']
+  }
+  if (!account || !Array.isArray(account.scopeTenantIds) || account.scopeTenantIds.length === 0) {
+    const single = normalizeTenantId(account && account.tenantId ? account.tenantId : 'default')
+    return [single]
+  }
+  return account.scopeTenantIds
+}
+
+function accountCanAccessTenant(account, tenantId) {
+  if (!account) return false
+  if (account.scopeType === 'platform') {
+    return true
+  }
+  const tenant = normalizeTenantId(tenantId || 'default')
+  const allows = effectiveScopeTenantIds(account)
+  if (allows.includes('*')) return true
+  return allows.includes(tenant)
+}
+
 function resolveAdminRole(ctx) {
   if (ctx.state && ctx.state._resolvedAdminRole) {
     return ctx.state.adminRole || ''
   }
+  const requestTenantId = normalizeTenantId(ctx.state && ctx.state.tenantId ? ctx.state.tenantId : DEFAULT_TENANT_ID)
+  const tokenPhone = normalizePhone(parsePhoneFromToken(ctx.headers.authorization))
+  const tokenAccount = tokenPhone ? getAdminAccountByPhoneAcrossTenants(tokenPhone, requestTenantId) : null
+  const tokenPhoneRole = tokenAccount ? tokenAccount.role : ''
+  if (tokenPhoneRole) {
+    ctx.state.adminRole = tokenPhoneRole
+    ctx.state.adminAccount = tokenAccount
+    ctx.state._resolvedAdminRole = true
+    return ctx.state.adminRole
+  }
+
+  const headerPhone = normalizePhone(ctx.headers['x-admin-phone'] || ctx.headers['x-user-phone'])
+  const headerPhoneAccount = headerPhone ? getAdminAccountByPhoneAcrossTenants(headerPhone, requestTenantId) : null
+  const headerPhoneRole = headerPhoneAccount ? headerPhoneAccount.role : ''
+  if (headerPhoneRole) {
+    ctx.state.adminRole = headerPhoneRole
+    ctx.state.adminAccount = headerPhoneAccount
+    ctx.state._resolvedAdminRole = true
+    return ctx.state.adminRole
+  }
+
   const headerRole = normalizeAdminRole(ctx.headers['x-admin-role'] || ctx.headers['x-user-role'])
   if (headerRole) {
     ctx.state.adminRole = headerRole
@@ -406,29 +604,19 @@ function resolveAdminRole(ctx) {
     return queryRole
   }
 
-  const db = readDb()
-  ensureAdminAccounts(db)
-
-  const headerPhone = normalizePhone(ctx.headers['x-admin-phone'] || ctx.headers['x-user-phone'])
-  const headerPhoneRole = headerPhone ? getAdminRoleByPhone(db, headerPhone) : ''
-  if (headerPhoneRole) {
-    ctx.state.adminRole = headerPhoneRole
-    ctx.state._resolvedAdminRole = true
-    return ctx.state.adminRole
-  }
-
-  const tokenPhone = normalizePhone(parsePhoneFromToken(ctx.headers.authorization))
-  const tokenPhoneRole = tokenPhone ? getAdminRoleByPhone(db, tokenPhone) : ''
-  if (tokenPhoneRole) {
-    ctx.state.adminRole = tokenPhoneRole
-    ctx.state._resolvedAdminRole = true
-    return ctx.state.adminRole
-  }
-
   // 兼容旧前端：未携带角色信息时默认超管；开启 ENFORCE_ADMIN_RBAC 后必须显式传入角色。
   ctx.state.adminRole = ENFORCE_ADMIN_RBAC ? '' : ADMIN_ROLES.SUPER
   ctx.state._resolvedAdminRole = true
   return ctx.state.adminRole
+}
+
+function resolveAdminAccount(ctx) {
+  if (ctx.state && ctx.state._resolvedAdminAccount) {
+    return ctx.state.adminAccount || null
+  }
+  resolveAdminRole(ctx)
+  ctx.state._resolvedAdminAccount = true
+  return ctx.state.adminAccount || null
 }
 
 function roleMatchesAllowedRoles(role, allowedRoles) {
@@ -436,6 +624,16 @@ function roleMatchesAllowedRoles(role, allowedRoles) {
   if (allowedRoles.includes(role)) return true
   if (isSuperEquivalentRole(role) && allowedRoles.some(a => isSuperEquivalentRole(a))) return true
   return false
+}
+
+function enforcePlatformReadonlyForTenantWrite(ctx, actionLabel) {
+  const account = resolveAdminAccount(ctx)
+  if (!account || account.scopeType !== 'platform') {
+    return true
+  }
+  // 新策略：主系统平台账号拥有租户系统完整权限（读/写/删）。
+  void actionLabel
+  return true
 }
 
 function requireAdminPermission(ctx, allowedRoles, actionLabel) {
@@ -452,7 +650,57 @@ function requireAdminPermission(ctx, allowedRoles, actionLabel) {
     fail(ctx, `当前角色【${getRoleLabel(role)}】无权限执行${actionLabel}`, 403)
     return ''
   }
+  const account = resolveAdminAccount(ctx)
+  if (!account) {
+    fail(ctx, '未识别到有效后台账号，请重新登录', 401)
+    return ''
+  }
+  if (account.scopeType === 'platform') {
+    if (!resolveEffectiveTenantId(ctx)) {
+      return ''
+    }
+    if (!enforcePlatformReadonlyForTenantWrite(ctx, actionLabel)) {
+      return ''
+    }
+    return role || ADMIN_ROLES.SUPER
+  }
+  if (!resolveEffectiveTenantId(ctx)) {
+    return ''
+  }
+  if (!enforcePlatformReadonlyForTenantWrite(ctx, actionLabel)) {
+    return ''
+  }
   return role
+}
+
+function resolveEffectiveTenantId(ctx) {
+  const requestTenant = normalizeTenantId(ctx.state && ctx.state.tenantId ? ctx.state.tenantId : 'default')
+  const requestWorkspaceType = normalizeWorkspaceType(ctx.state && ctx.state.workspaceType ? ctx.state.workspaceType : 'tenant')
+  const account = resolveAdminAccount(ctx)
+  if (!account) {
+    ctx.state.effectiveTenantId = requestTenant
+    ctx.state.effectiveWorkspaceType = requestWorkspaceType
+    setCurrentWorkspace(requestWorkspaceType, requestTenant)
+    return requestTenant
+  }
+  if (account.scopeType === 'platform') {
+    if (requestWorkspaceType === 'tenant' && !accountCanAccessTenant(account, requestTenant)) {
+      fail(ctx, '当前平台账号无权限访问该租户', 403)
+      return ''
+    }
+    ctx.state.effectiveTenantId = requestTenant
+    ctx.state.effectiveWorkspaceType = requestWorkspaceType
+    setCurrentWorkspace(requestWorkspaceType, requestTenant)
+    return requestTenant
+  }
+  const accountTenant = normalizeTenantId(account.tenantId || 'default')
+  ctx.state.effectiveTenantId = accountTenant
+  ctx.state.effectiveWorkspaceType = 'tenant'
+  setCurrentTenant(accountTenant)
+  if (requestTenant !== accountTenant) {
+    ctx.set('x-tenant-id', accountTenant)
+  }
+  return accountTenant
 }
 
 /** 从副标题文案解析「赠送价值2000现金卡包」类金额（元），无匹配则 0 */
@@ -1401,6 +1649,56 @@ function isOrderCardPackageEligible(order) {
 function fail(ctx, msg, code = 400) {
   ctx.status = code
   ctx.body = { success: false, code, msg, data: null }
+}
+
+function platformAuditRecord(ctx, action, detail = {}) {
+  try {
+    const account = resolveAdminAccount(ctx)
+    if (!account || account.scopeType !== 'platform') {
+      return
+    }
+    const db = readCoreDb()
+    if (!db._meta || typeof db._meta !== 'object') {
+      db._meta = {}
+    }
+    if (!Array.isArray(db._meta.platformAuditLogs)) {
+      db._meta.platformAuditLogs = []
+    }
+    db._meta.platformAuditLogs.unshift({
+      id: `PAL${Date.now()}${Math.floor(Math.random() * 1000)}`,
+      at: new Date().toISOString(),
+      actor: {
+        username: account.username,
+        phone: account.phone,
+        role: account.role,
+      },
+      action: String(action || ''),
+      tenantId: normalizeTenantId(ctx?.state?.effectiveTenantId || ctx?.state?.tenantId || DEFAULT_TENANT_ID),
+      path: String(ctx?.path || ''),
+      method: String(ctx?.method || ''),
+      detail,
+    })
+    if (db._meta.platformAuditLogs.length > 2000) {
+      db._meta.platformAuditLogs.length = 2000
+    }
+    writeCoreDb(db)
+  }
+  catch {
+    // ignore audit write failures
+  }
+}
+
+function requirePlatformScope(ctx, actionLabel = '访问平台接口') {
+  const role = requireAdminPermission(ctx, [ADMIN_ROLES.SUPER, ADMIN_ROLES.BOSS], actionLabel)
+  if (!role) {
+    return null
+  }
+  const account = resolveAdminAccount(ctx)
+  if (!account || account.scopeType !== 'platform') {
+    fail(ctx, '仅平台账号可访问该接口', 403)
+    return null
+  }
+  return account
 }
 
 function normalizePhone(phone) {
@@ -2477,12 +2775,11 @@ router.post('/auth/login', (ctx) => {
 })
 
 function handleAdminLogin(ctx) {
-  const db = readDb()
-  ensureAdminAccounts(db)
   const payload = ctx.request.body || {}
   const username = String(payload.username || '').trim()
   const password = String(payload.password || '').trim()
-  const account = getAdminAccountByUsername(db, username)
+  const requestTenantId = normalizeTenantId(ctx.state && ctx.state.tenantId ? ctx.state.tenantId : DEFAULT_TENANT_ID)
+  const account = getAdminAccountByUsernameAcrossTenants(username, requestTenantId)
   if (!account || account.password !== password) {
     fail(ctx, '账号或密码错误', 401)
     return
@@ -2492,8 +2789,19 @@ function handleAdminLogin(ctx) {
     return
   }
 
+  const effectiveTenant = account.scopeType === 'platform'
+    ? requestTenantId
+    : normalizeTenantId(account.tenantId || DEFAULT_TENANT_ID)
+  if (!accountCanAccessTenant(account, effectiveTenant)) {
+    fail(ctx, '当前账号无权访问该租户', 403)
+    return
+  }
+
+  const db = readDbByTenantId(effectiveTenant)
+
+  const allowAutoSeedUser = effectiveTenant === DEFAULT_TENANT_ID
   const existed = db.users.find(item => item.phone === account.phone)
-  if (!existed) {
+  if (allowAutoSeedUser && !existed) {
     db.users.unshift({
       id: `U${account.phone}`,
       name: account.name,
@@ -2516,6 +2824,10 @@ function handleAdminLogin(ctx) {
     token: `mock-token-${account.phone}`,
     adminRole: account.role,
     roleLabel: getRoleLabel(account.role),
+    scopeType: account.scopeType || 'tenant',
+    tenantId: normalizeTenantId(account.tenantId || 'default'),
+    tenantName: effectiveTenant === DEFAULT_TENANT_ID ? '主系统' : effectiveTenant,
+    scopeTenantIds: effectiveScopeTenantIds(account),
   })
 }
 
@@ -2529,6 +2841,7 @@ router.post('/login', (ctx) => {
 })
 
 function toAdminAccountView(account) {
+  const tenantId = normalizeTenantId(account.tenantId || 'default')
   return {
     id: account.id,
     username: account.username,
@@ -2537,8 +2850,200 @@ function toAdminAccountView(account) {
     name: account.name,
     phone: account.phone,
     status: account.status,
+    scopeType: account.scopeType || 'tenant',
+    tenantId,
+    tenantName: tenantId === DEFAULT_TENANT_ID ? '主系统' : tenantId,
+    scopeTenantIds: effectiveScopeTenantIds(account),
     createdAt: account.createdAt,
     updatedAt: account.updatedAt,
+  }
+}
+
+function createTenantScopedAdminAccount(targetTenantId, payload) {
+  return runWithTenant(targetTenantId, () => {
+    const db = readDb()
+    ensureAdminAccounts(db)
+    const username = String(payload.username || '').trim()
+    const phone = normalizePhone(payload.phone)
+    if (db.adminAccounts.some(item => item.username === username)) {
+      return { ok: false, code: 409, msg: '该租户已存在同名后台账号' }
+    }
+    if (db.adminAccounts.some(item => item.phone === phone)) {
+      return { ok: false, code: 409, msg: '该租户手机号已被后台账号占用' }
+    }
+    const now = new Date().toISOString()
+    const next = normalizeAdminAccount({
+      id: `A${Date.now()}`,
+      username,
+      password: String(payload.password || '').trim(),
+      role: payload.role,
+      phone,
+      name: String(payload.name || '').trim() || getRoleLabel(payload.role),
+      status: 'active',
+      scopeType: 'tenant',
+      tenantId: targetTenantId,
+      scopeTenantIds: [targetTenantId],
+      createdAt: now,
+      updatedAt: now,
+    })
+    db.adminAccounts.unshift(next)
+    writeDb(db)
+    return { ok: true, account: next }
+  })
+}
+
+function createPlatformScopedAdminAccount(payload) {
+  return runWithWorkspace('core', DEFAULT_TENANT_ID, () => {
+    const db = readCoreDb()
+    ensureAdminAccounts(db)
+    const username = String(payload.username || '').trim()
+    const phone = normalizePhone(payload.phone)
+    if (db.adminAccounts.some(item => item.username === username)) {
+      return { ok: false, code: 409, msg: '主系统已存在同名后台账号' }
+    }
+    if (db.adminAccounts.some(item => item.phone === phone)) {
+      return { ok: false, code: 409, msg: '主系统手机号已被后台账号占用' }
+    }
+    const now = new Date().toISOString()
+    const next = normalizeAdminAccount({
+      id: `A${Date.now()}`,
+      username,
+      password: String(payload.password || '').trim(),
+      role: payload.role,
+      phone,
+      name: String(payload.name || '').trim() || getRoleLabel(payload.role),
+      status: 'active',
+      scopeType: 'platform',
+      tenantId: DEFAULT_TENANT_ID,
+      scopeTenantIds: payload.scopeTenantIds,
+      createdAt: now,
+      updatedAt: now,
+    })
+    db.adminAccounts.unshift(next)
+    writeCoreDb(db)
+    return { ok: true, account: next }
+  })
+}
+
+function parseKnownTenantIdsFromMeta(meta) {
+  if (!meta || typeof meta !== 'object') {
+    return []
+  }
+  const raw = Array.isArray(meta.knownTenantIds) ? meta.knownTenantIds : []
+  const out = []
+  for (const item of raw) {
+    const t = normalizeTenantId(item)
+    if (!out.includes(t)) {
+      out.push(t)
+    }
+  }
+  return out
+}
+
+function writeKnownTenantIdsMeta(db, tenantIds) {
+  const list = []
+  for (const item of tenantIds) {
+    const t = normalizeTenantId(item)
+    if (!list.includes(t)) {
+      list.push(t)
+    }
+  }
+  if (!db._meta || typeof db._meta !== 'object') {
+    db._meta = {}
+  }
+  db._meta.knownTenantIds = list
+}
+
+function ensureTenantRegistered(db, tenantId) {
+  const tenant = normalizeTenantId(tenantId)
+  const known = parseKnownTenantIdsFromMeta(db._meta)
+  if (!known.includes(tenant)) {
+    known.push(tenant)
+    writeKnownTenantIdsMeta(db, known)
+    writeDb(db)
+  }
+}
+
+function registerKnownTenantId(tenantId) {
+  const nextTenantId = normalizeTenantId(tenantId || DEFAULT_TENANT_ID)
+  runWithWorkspace('core', DEFAULT_TENANT_ID, () => {
+    const db = readDb()
+    ensureTenantRegistered(db, nextTenantId)
+  })
+}
+
+function collectKnownTenantIds() {
+  const set = new Set()
+  const dbCore = readCoreDb()
+  parseKnownTenantIdsFromMeta(dbCore._meta)
+    .filter(id => id !== DEFAULT_TENANT_ID)
+    .forEach(id => set.add(id))
+  return [...set]
+}
+
+async function collectKnownTenantIdsForPlatform() {
+  const set = new Set(collectKnownTenantIds())
+  const client = mongo.getMongoClient ? mongo.getMongoClient() : null
+  if (client) {
+    try {
+      const admin = client.db().admin()
+      const all = await admin.listDatabases()
+      const dbName = String(mongoConfig.getMongoConfig().dbName || 'mall').trim() || 'mall'
+      const prefix = `${dbName}__tenant_`
+      const list = Array.isArray(all?.databases) ? all.databases : []
+      list.forEach((item) => {
+        const name = String(item?.name || '')
+        if (!name.startsWith(prefix)) {
+          return
+        }
+        const suffix = name.slice(prefix.length)
+        const tenantId = normalizeTenantId(suffix || DEFAULT_TENANT_ID)
+        if (tenantId && tenantId !== DEFAULT_TENANT_ID) {
+          set.add(tenantId)
+        }
+      })
+    }
+    catch {
+      // ignore mongo list failure, fallback to meta-known tenants
+    }
+  }
+  const out = [...set].filter(id => id !== DEFAULT_TENANT_ID)
+  runWithWorkspace('core', DEFAULT_TENANT_ID, () => {
+    const db = readDb()
+    const known = parseKnownTenantIdsFromMeta(db._meta).filter(id => id !== DEFAULT_TENANT_ID)
+    const merged = [...new Set([...known, ...out])]
+    if (merged.length !== known.length || merged.some((item, idx) => known[idx] !== item)) {
+      writeKnownTenantIdsMeta(db, merged)
+      writeDb(db)
+    }
+  })
+  return out
+}
+
+async function readTenantAdminAccountsFromMongo(tenantId) {
+  if (!mongo.getMongoClient || !mongo.getMongoClient()) {
+    return null
+  }
+  try {
+    const t = normalizeTenantId(tenantId || DEFAULT_TENANT_ID)
+    const cfg = mongoConfig.getMongoConfig()
+    const dbName = String(cfg.dbName || 'mall').trim() || 'mall'
+    const scopedDbName = t === DEFAULT_TENANT_ID ? dbName : `${dbName}__tenant_${t}`
+    const client = mongo.getMongoClient()
+    const docs = await client.db(scopedDbName).collection(mongo.COLLECTIONS.adminAccounts).find({}).toArray()
+    return docs
+      .map((doc) => {
+        if (!doc || typeof doc !== 'object') {
+          return null
+        }
+        const { _id, ...rest } = doc
+        const id = _id !== undefined && _id !== null ? _id : rest.id
+        return normalizeAdminAccount({ ...rest, id })
+      })
+      .filter(Boolean)
+  }
+  catch {
+    return null
   }
 }
 
@@ -2548,9 +3053,17 @@ router.get('/admin/accounts', (ctx) => {
   }
   const db = readDb()
   ensureAdminAccounts(db)
-  const list = db.adminAccounts
+  const scopeTypeQuery = String(ctx.query?.scopeType || '').trim()
+  let list = db.adminAccounts
     .map(toAdminAccountView)
     .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)))
+  if (scopeTypeQuery === 'platform' || scopeTypeQuery === 'tenant') {
+    list = list.filter(item => item.scopeType === scopeTypeQuery)
+  }
+  const currentAccount = resolveAdminAccount(ctx)
+  if (!currentAccount || currentAccount.scopeType !== 'platform') {
+    list = list.filter(item => item.scopeType !== 'platform')
+  }
   ctx.body = success(list)
 })
 
@@ -2566,6 +3079,13 @@ router.post('/admin/accounts', (ctx) => {
   const role = normalizeAdminRole(payload.role)
   const phone = normalizePhone(payload.phone)
   const name = String(payload.name || '').trim() || getRoleLabel(role)
+  const tenantId = normalizeTenantId(payload.tenantId || ctx.state.tenantId || 'default')
+  const scopeType = ADMIN_SCOPE_TYPES.has(String(payload.scopeType || '').trim())
+    ? String(payload.scopeType).trim()
+    : ((tenantId === DEFAULT_TENANT_ID && [ADMIN_ROLES.SUPER, ADMIN_ROLES.BOSS].includes(role)) ? 'platform' : 'tenant')
+  const scopeTenantIds = Array.isArray(payload.scopeTenantIds)
+    ? payload.scopeTenantIds.map(x => String(x || '').trim()).filter(Boolean).map(x => (x === '*' ? '*' : normalizeTenantId(x)))
+    : []
   if (!/^[a-zA-Z][a-zA-Z0-9_]{3,20}$/.test(username)) {
     fail(ctx, '账号格式不正确，需4-21位字母数字下划线且以字母开头')
     return
@@ -2578,33 +3098,59 @@ router.post('/admin/accounts', (ctx) => {
     fail(ctx, '仅允许新增审核员、催收员或老板账号（审核员含原客服进线与订单审核权限；老板与超级管理员同权）')
     return
   }
+  if (role === ADMIN_ROLES.SUPER) {
+    fail(ctx, '系统仅允许一个主系统管理员，不支持新增超级管理员账号', 403)
+    return
+  }
   if (!/^1\d{10}$/.test(phone)) {
     fail(ctx, '手机号格式不正确')
     return
   }
-  if (db.adminAccounts.some(item => item.username === username)) {
-    fail(ctx, '账号已存在', 409)
+  const currentAccount = resolveAdminAccount(ctx)
+  const finalScopeType = scopeType
+  const finalTenantId = normalizeTenantId(tenantId || 'default')
+  if (finalScopeType === 'tenant') {
+    const currentTenantId = normalizeTenantId(currentAccount && currentAccount.tenantId ? currentAccount.tenantId : DEFAULT_TENANT_ID)
+    if (currentAccount && currentAccount.scopeType !== 'platform' && finalTenantId !== currentTenantId) {
+      fail(ctx, '租户账号只能创建在当前租户内', 403)
+      return
+    }
+    if (finalTenantId === DEFAULT_TENANT_ID && currentAccount && currentAccount.scopeType !== 'platform') {
+      fail(ctx, '租户账号不能创建到主系统租户 default', 403)
+      return
+    }
+    const created = createTenantScopedAdminAccount(finalTenantId, {
+      username,
+      password,
+      role,
+      phone,
+      name,
+    })
+    if (!created.ok) {
+      fail(ctx, created.msg, created.code)
+      return
+    }
+    registerKnownTenantId(finalTenantId)
+    ctx.body = success(toAdminAccountView(created.account))
     return
   }
-  if (db.adminAccounts.some(item => item.phone === phone)) {
-    fail(ctx, '手机号已被后台账号占用', 409)
+  if (!currentAccount || currentAccount.scopeType !== 'platform') {
+    fail(ctx, '仅主系统账号可创建平台账号', 403)
     return
   }
-  const now = new Date().toISOString()
-  const next = normalizeAdminAccount({
-    id: `A${Date.now()}`,
+  const created = createPlatformScopedAdminAccount({
     username,
     password,
     role,
     phone,
     name,
-    status: 'active',
-    createdAt: now,
-    updatedAt: now,
+    scopeTenantIds,
   })
-  db.adminAccounts.unshift(next)
-  writeDb(db)
-  ctx.body = success(toAdminAccountView(next))
+  if (!created.ok) {
+    fail(ctx, created.msg, created.code)
+    return
+  }
+  ctx.body = success(toAdminAccountView(created.account))
 })
 
 router.patch('/admin/accounts/:id', (ctx) => {
@@ -2615,14 +3161,38 @@ router.patch('/admin/accounts/:id', (ctx) => {
   ensureAdminAccounts(db)
   const { id } = ctx.params
   const payload = ctx.request.body || {}
+  const currentAccount = resolveAdminAccount(ctx)
+  const isPlatformOperator = Boolean(currentAccount && currentAccount.scopeType === 'platform')
+  const operatorTenantId = normalizeTenantId(currentAccount && currentAccount.tenantId ? currentAccount.tenantId : DEFAULT_TENANT_ID)
   const target = db.adminAccounts.find(item => item.id === id)
   if (!target) {
     fail(ctx, '后台账号不存在', 404)
     return
   }
+  if (!isPlatformOperator && String(target.scopeType || 'tenant') === 'platform') {
+    fail(ctx, '租户系统不可修改主系统账号', 403)
+    return
+  }
   if (target.username === DEFAULT_SUPER_ADMIN_USERNAME && payload.role && !isSuperEquivalentRole(normalizeAdminRole(payload.role))) {
     fail(ctx, '默认超级管理员账号角色不可修改')
     return
+  }
+  if (payload.username !== undefined) {
+    const nextUsername = String(payload.username || '').trim()
+    if (!/^[a-zA-Z][a-zA-Z0-9_]{3,20}$/.test(nextUsername)) {
+      fail(ctx, '账号格式不正确，需4-21位字母数字下划线且以字母开头')
+      return
+    }
+    if (target.username === DEFAULT_SUPER_ADMIN_USERNAME && nextUsername !== DEFAULT_SUPER_ADMIN_USERNAME) {
+      fail(ctx, '默认超级管理员账号不可修改账号名')
+      return
+    }
+    const duplicated = db.adminAccounts.some(item => item.id !== target.id && item.username === nextUsername)
+    if (duplicated) {
+      fail(ctx, '该租户已存在同名后台账号', 409)
+      return
+    }
+    target.username = nextUsername
   }
   if (payload.role !== undefined) {
     const nextRole = normalizeAdminRole(payload.role)
@@ -2630,7 +3200,53 @@ router.patch('/admin/accounts/:id', (ctx) => {
       fail(ctx, '角色不正确')
       return
     }
+    if (nextRole === ADMIN_ROLES.SUPER && target.username !== DEFAULT_SUPER_ADMIN_USERNAME) {
+      fail(ctx, '系统仅允许一个主系统管理员，不能将其他账号改为超级管理员', 403)
+      return
+    }
     target.role = nextRole
+  }
+  if (payload.scopeType !== undefined) {
+    const nextScopeType = String(payload.scopeType || '').trim()
+    if (!isPlatformOperator && nextScopeType !== 'tenant') {
+      fail(ctx, '租户系统仅允许设置租户账号')
+      return
+    }
+    if (!ADMIN_SCOPE_TYPES.has(nextScopeType)) {
+      fail(ctx, 'scopeType 仅支持 tenant / platform')
+      return
+    }
+    target.scopeType = nextScopeType
+  }
+  if (payload.tenantId !== undefined) {
+    const nextTenantId = normalizeTenantId(payload.tenantId || 'default')
+    if (!isPlatformOperator && nextTenantId !== operatorTenantId) {
+      fail(ctx, '租户系统仅允许设置当前租户ID', 403)
+      return
+    }
+    target.tenantId = nextTenantId
+  }
+  if (payload.scopeTenantIds !== undefined) {
+    if (!Array.isArray(payload.scopeTenantIds)) {
+      fail(ctx, 'scopeTenantIds 必须为数组')
+      return
+    }
+    const nextScopeTenantIds = payload.scopeTenantIds
+      .map(x => String(x || '').trim())
+      .filter(Boolean)
+      .map(x => (x === '*' ? '*' : normalizeTenantId(x)))
+    if (!isPlatformOperator) {
+      const onlyCurrent = nextScopeTenantIds.length === 0
+        || (nextScopeTenantIds.length === 1 && nextScopeTenantIds[0] === operatorTenantId)
+      if (!onlyCurrent) {
+        fail(ctx, '租户系统仅允许当前租户范围', 403)
+        return
+      }
+      target.scopeTenantIds = [operatorTenantId]
+    }
+    else {
+      target.scopeTenantIds = nextScopeTenantIds
+    }
   }
   if (payload.status !== undefined) {
     const nextStatus = String(payload.status || '').trim()
@@ -2667,9 +3283,35 @@ router.delete('/admin/accounts/:id', (ctx) => {
   const db = readDb()
   ensureAdminAccounts(db)
   const { id } = ctx.params
+  const currentAccount = resolveAdminAccount(ctx)
+  const isPlatformOperator = Boolean(currentAccount && currentAccount.scopeType === 'platform')
+  const role = resolveAdminRole(ctx)
+  const canCrossTenantCleanup = isPlatformOperator || isSuperEquivalentRole(role)
   const target = db.adminAccounts.find(item => item.id === id)
   if (!target) {
+    if (!canCrossTenantCleanup) {
+      fail(ctx, '后台账号不存在', 404)
+      return
+    }
+    // 平台兜底：历史脏数据可能落在其他租户库，按已知租户逐库删除同 ID 租户账号
+    const knownTenantIds = collectKnownTenantIds()
+    for (const tenantId of knownTenantIds) {
+      const result = deleteTenantScopedAdminAccountInTenantDbById(tenantId, id)
+      if (!result || !result.found) {
+        continue
+      }
+      if (result.blocked) {
+        fail(ctx, result.reason === 'default-super' ? '默认超级管理员账号不可删除' : '租户系统不可删除主系统账号', 403)
+        return
+      }
+      ctx.body = success({ id, sourceTenantId: tenantId })
+      return
+    }
     fail(ctx, '后台账号不存在', 404)
+    return
+  }
+  if (!isPlatformOperator && String(target.scopeType || 'tenant') === 'platform') {
+    fail(ctx, '租户系统不可删除主系统账号', 403)
     return
   }
   if (target.username === DEFAULT_SUPER_ADMIN_USERNAME) {
@@ -2678,6 +3320,337 @@ router.delete('/admin/accounts/:id', (ctx) => {
   }
   db.adminAccounts = db.adminAccounts.filter(item => item.id !== id)
   writeDb(db)
+  ctx.body = success({ id })
+})
+
+router.get('/platform/tenants', async (ctx) => {
+  const account = requirePlatformScope(ctx, '查看租户列表')
+  if (!account) {
+    return
+  }
+  const known = await collectKnownTenantIdsForPlatform()
+  const allow = effectiveScopeTenantIds(account)
+  const visibleAll = allow.includes('*')
+    ? known
+    : known.filter(item => allow.includes(item))
+  const visible = visibleAll.filter(item => item !== DEFAULT_TENANT_ID)
+  const list = visible
+    .map((tenantId) => {
+      const db = readDbByTenantId(tenantId)
+      return {
+        tenantId,
+        tenantName: tenantId === DEFAULT_TENANT_ID ? '主系统' : tenantId,
+        userCount: Array.isArray(db.users) ? db.users.length : 0,
+        orderCount: Array.isArray(db.orders) ? db.orders.length : 0,
+        productCount: Array.isArray(db.products) ? db.products.length : 0,
+      }
+    })
+    .sort((a, b) => a.tenantId.localeCompare(b.tenantId))
+  platformAuditRecord(ctx, 'platform.tenants.list', { visibleTenantCount: list.length })
+  ctx.body = success(list)
+})
+
+router.post('/platform/tenants', (ctx) => {
+  const account = requirePlatformScope(ctx, '新增租户系统')
+  if (!account) {
+    return
+  }
+  const payload = ctx.request.body || {}
+  const rawTenantId = String(payload.tenantId || '').trim()
+  if (!rawTenantId) {
+    fail(ctx, 'tenantId 不能为空')
+    return
+  }
+  const lowered = rawTenantId.toLowerCase()
+  if (lowered === 'default' || lowered === 'main' || lowered === 'platform' || rawTenantId === '主系统') {
+    fail(ctx, 'tenantId 不可使用 default/main/platform/主系统')
+    return
+  }
+  const tenantId = normalizeTenantId(rawTenantId)
+  if (!tenantId || tenantId === DEFAULT_TENANT_ID) {
+    fail(ctx, 'tenantId 不合法')
+    return
+  }
+  registerKnownTenantId(tenantId)
+  platformAuditRecord(ctx, 'platform.tenants.create', { tenantId })
+  ctx.body = success({
+    tenantId,
+    tenantName: tenantId,
+  })
+})
+
+router.get('/platform/dashboard/summary', async (ctx) => {
+  const account = requirePlatformScope(ctx, '查看总部汇总')
+  if (!account) {
+    return
+  }
+  const known = await collectKnownTenantIdsForPlatform()
+  const allow = effectiveScopeTenantIds(account)
+  const visibleAll = allow.includes('*')
+    ? known
+    : known.filter(item => allow.includes(item))
+  const visible = visibleAll.filter(item => item !== DEFAULT_TENANT_ID)
+  let totalUsers = 0
+  let totalOrders = 0
+  let totalProducts = 0
+  const tenants = []
+  for (const tenantId of visible) {
+    const db = readDbByTenantId(tenantId)
+    const userCount = Array.isArray(db.users) ? db.users.length : 0
+    const orderCount = Array.isArray(db.orders) ? db.orders.length : 0
+    const productCount = Array.isArray(db.products) ? db.products.length : 0
+    totalUsers += userCount
+    totalOrders += orderCount
+    totalProducts += productCount
+    tenants.push({
+      tenantId,
+      tenantName: tenantId === DEFAULT_TENANT_ID ? '主系统' : tenantId,
+      userCount,
+      orderCount,
+      productCount,
+    })
+  }
+  ctx.body = success({
+    tenantCount: visible.length,
+    totalUsers,
+    totalOrders,
+    totalProducts,
+    tenants,
+  })
+  platformAuditRecord(ctx, 'platform.dashboard.summary', {
+    tenantCount: visible.length,
+    totalUsers,
+    totalOrders,
+    totalProducts,
+  })
+})
+
+router.get('/platform/audit-logs', (ctx) => {
+  const account = requirePlatformScope(ctx, '查看平台审计日志')
+  if (!account) {
+    return
+  }
+  const limitRaw = Number(ctx.query?.limit || 100)
+  const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(500, Math.floor(limitRaw))) : 100
+  const db = readCoreDb()
+  const logs = db?._meta && Array.isArray(db._meta.platformAuditLogs)
+    ? db._meta.platformAuditLogs.slice(0, limit)
+    : []
+  platformAuditRecord(ctx, 'platform.audit.list', { limit, returned: logs.length })
+  ctx.body = success(logs)
+})
+
+router.get('/platform/admin-accounts', async (ctx) => {
+  const account = requirePlatformScope(ctx, '查看全租户后台账号')
+  if (!account) {
+    return
+  }
+  const tenantQuery = String(ctx.query?.tenantId || '').trim()
+  const scopeTypeQuery = String(ctx.query?.scopeType || '').trim()
+  if (scopeTypeQuery && !ADMIN_SCOPE_TYPES.has(scopeTypeQuery)) {
+    fail(ctx, 'scopeType 仅支持 tenant / platform')
+    return
+  }
+  const known = await collectKnownTenantIdsForPlatform()
+  const allow = effectiveScopeTenantIds(account)
+  const visible = allow.includes('*')
+    ? known
+    : known.filter(item => allow.includes(item))
+  const targetTenants = tenantQuery
+    ? visible.filter(item => item === normalizeTenantId(tenantQuery))
+    : visible
+  const list = []
+  for (const tenantId of targetTenants) {
+    const mongoAccounts = await readTenantAdminAccountsFromMongo(tenantId)
+    const sourceAccounts = Array.isArray(mongoAccounts)
+      ? mongoAccounts
+      : (() => {
+          const db = readDbByTenantId(tenantId)
+          ensureAdminAccounts(db)
+          return db.adminAccounts
+        })()
+    sourceAccounts.forEach((item) => {
+      if (scopeTypeQuery && String(item.scopeType || 'tenant') !== scopeTypeQuery) {
+        return
+      }
+      list.push({
+        ...toAdminAccountView(item),
+        sourceTenantId: tenantId,
+        sourceTenantName: tenantId === DEFAULT_TENANT_ID ? '主系统' : tenantId,
+      })
+    })
+  }
+  platformAuditRecord(ctx, 'platform.admin-accounts.list', {
+    tenantQuery: tenantQuery || 'all',
+    tenantCount: targetTenants.length,
+    accountCount: list.length,
+  })
+  ctx.body = success(list)
+})
+
+router.get('/platform/accounts', (ctx) => {
+  const account = requirePlatformScope(ctx, '查看主系统账号')
+  if (!account) {
+    return
+  }
+  const db = readCoreDb()
+  ensureAdminAccounts(db)
+  const list = db.adminAccounts
+    .filter(item => String(item.scopeType || 'tenant') === 'platform')
+    .map(item => ({
+      ...toAdminAccountView(item),
+      sourceTenantId: DEFAULT_TENANT_ID,
+      sourceTenantName: '主系统',
+    }))
+    .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)))
+  platformAuditRecord(ctx, 'platform.accounts.list', { accountCount: list.length })
+  ctx.body = success(list)
+})
+
+router.post('/platform/accounts', (ctx) => {
+  const current = requirePlatformScope(ctx, '新增主系统账号')
+  if (!current) {
+    return
+  }
+  const payload = ctx.request.body || {}
+  const username = String(payload.username || '').trim()
+  const password = String(payload.password || '').trim()
+  const role = normalizeAdminRole(payload.role)
+  const phone = normalizePhone(payload.phone)
+  const name = String(payload.name || '').trim() || getRoleLabel(role)
+  const scopeTenantIds = Array.isArray(payload.scopeTenantIds)
+    ? payload.scopeTenantIds.map(x => String(x || '').trim()).filter(Boolean).map(x => (x === '*' ? '*' : normalizeTenantId(x)))
+    : []
+  if (!/^[a-zA-Z][a-zA-Z0-9_]{3,20}$/.test(username)) {
+    fail(ctx, '账号格式不正确，需4-21位字母数字下划线且以字母开头')
+    return
+  }
+  if (password.length < 4) {
+    fail(ctx, '密码长度至少为4位')
+    return
+  }
+  if (![ADMIN_ROLES.REVIEWER, ADMIN_ROLES.COLLECTOR, ADMIN_ROLES.BOSS].includes(role)) {
+    fail(ctx, '仅允许新增审核员、催收员或老板账号')
+    return
+  }
+  if (role === ADMIN_ROLES.SUPER) {
+    fail(ctx, '系统仅允许一个主系统管理员，不支持新增超级管理员账号', 403)
+    return
+  }
+  if (!/^1\d{10}$/.test(phone)) {
+    fail(ctx, '手机号格式不正确')
+    return
+  }
+  const created = createPlatformScopedAdminAccount({
+    username,
+    password,
+    role,
+    phone,
+    name,
+    scopeTenantIds,
+  })
+  if (!created.ok) {
+    fail(ctx, created.msg, created.code)
+    return
+  }
+  registerKnownTenantId(DEFAULT_TENANT_ID)
+  platformAuditRecord(ctx, 'platform.accounts.create', { username, role })
+  ctx.body = success(toAdminAccountView(created.account))
+})
+
+router.patch('/platform/accounts/:id', (ctx) => {
+  if (!requirePlatformScope(ctx, '修改主系统账号')) {
+    return
+  }
+  const payload = ctx.request.body || {}
+  const { id } = ctx.params
+  const db = readCoreDb()
+  ensureAdminAccounts(db)
+  const target = db.adminAccounts.find(item => item.id === id && String(item.scopeType || 'tenant') === 'platform')
+  if (!target) {
+    fail(ctx, '主系统账号不存在', 404)
+    return
+  }
+  if (target.username === DEFAULT_SUPER_ADMIN_USERNAME && payload.role && !isSuperEquivalentRole(normalizeAdminRole(payload.role))) {
+    fail(ctx, '默认超级管理员账号角色不可修改')
+    return
+  }
+  if (payload.role !== undefined) {
+    const nextRole = normalizeAdminRole(payload.role)
+    if (!nextRole) {
+      fail(ctx, '角色不正确')
+      return
+    }
+    if (nextRole === ADMIN_ROLES.SUPER && target.username !== DEFAULT_SUPER_ADMIN_USERNAME) {
+      fail(ctx, '系统仅允许一个主系统管理员，不能将其他账号改为超级管理员', 403)
+      return
+    }
+    target.role = nextRole
+  }
+  if (payload.scopeType !== undefined && String(payload.scopeType || '').trim() !== 'platform') {
+    fail(ctx, '主系统账号 scopeType 仅支持 platform')
+    return
+  }
+  if (payload.scopeTenantIds !== undefined) {
+    if (!Array.isArray(payload.scopeTenantIds)) {
+      fail(ctx, 'scopeTenantIds 必须为数组')
+      return
+    }
+    target.scopeTenantIds = payload.scopeTenantIds
+      .map(x => String(x || '').trim())
+      .filter(Boolean)
+      .map(x => (x === '*' ? '*' : normalizeTenantId(x)))
+  }
+  if (payload.status !== undefined) {
+    const nextStatus = String(payload.status || '').trim()
+    if (!ADMIN_ACCOUNT_STATUS_SET.has(nextStatus)) {
+      fail(ctx, '账号状态不正确')
+      return
+    }
+    if (target.username === DEFAULT_SUPER_ADMIN_USERNAME && nextStatus !== 'active') {
+      fail(ctx, '默认超级管理员账号不可禁用')
+      return
+    }
+    target.status = nextStatus
+  }
+  if (payload.password !== undefined) {
+    const nextPassword = String(payload.password || '').trim()
+    if (nextPassword.length < 4) {
+      fail(ctx, '密码长度至少为4位')
+      return
+    }
+    target.password = nextPassword
+  }
+  if (payload.name !== undefined) {
+    target.name = String(payload.name || '').trim() || target.name
+  }
+  target.scopeType = 'platform'
+  target.tenantId = DEFAULT_TENANT_ID
+  target.updatedAt = new Date().toISOString()
+  writeCoreDb(db)
+  platformAuditRecord(ctx, 'platform.accounts.update', { id: target.id, username: target.username })
+  ctx.body = success(toAdminAccountView(target))
+})
+
+router.delete('/platform/accounts/:id', (ctx) => {
+  if (!requirePlatformScope(ctx, '删除主系统账号')) {
+    return
+  }
+  const { id } = ctx.params
+  const db = readCoreDb()
+  ensureAdminAccounts(db)
+  const target = db.adminAccounts.find(item => item.id === id && String(item.scopeType || 'tenant') === 'platform')
+  if (!target) {
+    fail(ctx, '主系统账号不存在', 404)
+    return
+  }
+  if (target.username === DEFAULT_SUPER_ADMIN_USERNAME) {
+    fail(ctx, '默认超级管理员账号不可删除')
+    return
+  }
+  db.adminAccounts = db.adminAccounts.filter(item => item.id !== id)
+  writeCoreDb(db)
+  platformAuditRecord(ctx, 'platform.accounts.delete', { id, username: target.username })
   ctx.body = success({ id })
 })
 
@@ -5479,6 +6452,44 @@ app.use(bodyParser({
   formLimit: '12mb',
   textLimit: '12mb',
 }))
+app.use(async (ctx, next) => {
+  const tenantId = resolveTenantIdFromRequest(ctx)
+  const workspaceType = resolveWorkspaceTypeFromRequest(ctx)
+  ctx.state.tenantId = tenantId
+  ctx.state.workspaceType = workspaceType
+  ctx.set('x-tenant-id', tenantId)
+  ctx.set('x-workspace-type', workspaceType)
+  await runWithWorkspace(workspaceType, tenantId, () => next())
+})
+app.use(async (ctx, next) => {
+  if (String(ctx.path || '').startsWith('/api/') && isMongoPersistenceEnabled()) {
+    try {
+      const tenantId = normalizeTenantId(ctx.state && ctx.state.tenantId ? ctx.state.tenantId : DEFAULT_TENANT_ID)
+      const workspaceType = normalizeWorkspaceType(ctx.state && ctx.state.workspaceType ? ctx.state.workspaceType : 'tenant')
+      const hydrateTenantId = workspaceType === 'tenant' ? tenantId : DEFAULT_TENANT_ID
+      if (!hasScopeCache(workspaceType, hydrateTenantId)) {
+        await hydrateTenantDbFromMongo(workspaceType, hydrateTenantId)
+      }
+    }
+    catch {
+      // ignore on-demand hydrate failures and fallback to in-memory snapshot
+    }
+  }
+  await next()
+})
+app.use(async (ctx, next) => {
+  if (String(ctx.path || '').startsWith('/api/')) {
+    try {
+      const tenantId = normalizeTenantId(ctx.state && ctx.state.tenantId ? ctx.state.tenantId : DEFAULT_TENANT_ID)
+      const db = readDb()
+      ensureTenantRegistered(db, tenantId)
+    }
+    catch {
+      // ignore tenant meta register errors
+    }
+  }
+  await next()
+})
 app.use(router.routes())
 app.use(router.allowedMethods())
 app.use(riskControlRouter.routes())

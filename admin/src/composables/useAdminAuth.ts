@@ -26,11 +26,36 @@ export function adminRoleDisplayLabel(role?: AdminRole | string | null): string 
   return '管理员'
 }
 
+const PLATFORM_USERNAMES = String(import.meta.env.VITE_PLATFORM_USERNAMES || 'xuyang')
+  .split(',')
+  .map(item => item.trim())
+  .filter(Boolean)
+
+export function isPlatformBootstrapUser(username?: string | null): boolean {
+  const uname = String(username || '').trim()
+  return Boolean(uname) && PLATFORM_USERNAMES.includes(uname)
+}
+
+function inferScopeTypeFromLegacySession(parsed: Partial<AdminSession>, role: AdminRole): 'platform' | 'tenant' {
+  const raw = String(parsed.scopeType || '').trim()
+  if (raw === 'platform') return 'platform'
+  if (raw === 'tenant') return 'tenant'
+  // 兼容历史会话：平台用户名白名单 + super_admin 兜底为 platform（通过 VITE_PLATFORM_USERNAMES 配置）
+  if (role === 'super_admin' && isPlatformBootstrapUser(String(parsed.username || '').trim())) {
+    return 'platform'
+  }
+  return 'tenant'
+}
+
 export interface AdminSession {
   username: string
   role: AdminRole
   token: string
   loginAt: string
+  scopeType?: 'platform' | 'tenant'
+  workspaceType?: 'core' | 'self' | 'tenant'
+  tenantId?: string
+  scopeTenantIds?: string[]
 }
 
 const STORAGE_KEY = 'mall-admin-session'
@@ -53,6 +78,18 @@ function safeParseSession(value: string | null): AdminSession | null {
       username: String(parsed.username),
       role,
       loginAt: String(parsed.loginAt),
+      scopeType: inferScopeTypeFromLegacySession(parsed, role),
+      workspaceType: ((): 'core' | 'self' | 'tenant' => {
+        const raw = String(parsed.workspaceType || '').trim().toLowerCase()
+        if (raw === 'core' || raw === 'self' || raw === 'tenant') {
+          return raw
+        }
+        return inferScopeTypeFromLegacySession(parsed, role) === 'platform' ? 'core' : 'tenant'
+      })(),
+      tenantId: String(parsed.tenantId || '').trim() || 'default',
+      scopeTenantIds: Array.isArray(parsed.scopeTenantIds)
+        ? parsed.scopeTenantIds.map(item => String(item || '').trim()).filter(Boolean)
+        : undefined,
     }
   }
   catch {

@@ -4,19 +4,27 @@ import { adminSessionRoleAllowed, getAdminSession, isAdminAuthenticated } from '
 
 const LoginPage = () => import('../views/LoginPage.vue')
 const DashboardPage = () => import('../views/DashboardPage.vue')
+const PlatformConsolePage = () => import('../views/PlatformConsolePage.vue')
 const OrdersPage = () => import('../views/OrdersPage.vue')
 const OrderReviewPage = () => import('../views/OrderReviewPage.vue')
 const ReceivableByDatePage = () => import('../views/ReceivableByDatePage.vue')
 const UsersPage = () => import('../views/UsersPage.vue')
 const AccountManagePage = () => import('../views/AccountManagePage.vue')
+const TenantManagePage = () => import('../views/TenantManagePage.vue')
 const TrafficManagementPage = () => import('../views/TrafficManagementPage.vue')
 const ProductsPage = () => import('../views/ProductsPage.vue')
 const CsMessagesPage = () => import('../views/CsMessagesPage.vue')
 
 function adminHomeRoute(session: AdminSession | null) {
+  if (session?.scopeType === 'platform' && session?.workspaceType === 'self') {
+    return { name: 'orders' as const }
+  }
+  if (session?.scopeType === 'platform') {
+    return { name: 'platform-console' as const }
+  }
   if (session?.role === 'reviewer' || session?.role === 'collector')
     return { name: 'orders' as const }
-  return { name: 'dashboard-overview' as const }
+  return { name: 'accounts' as const }
 }
 
 const router = createRouter({
@@ -31,6 +39,12 @@ const router = createRouter({
     {
       path: '/',
       redirect: '/dashboard',
+    },
+    {
+      path: '/platform',
+      name: 'platform-console',
+      component: PlatformConsolePage,
+      meta: { title: '总部控制台', roles: ['super_admin'], platformOnly: true },
     },
     {
       path: '/dashboard',
@@ -92,7 +106,13 @@ const router = createRouter({
       path: '/accounts',
       name: 'accounts',
       component: AccountManagePage,
-      meta: { title: '账号管理', roles: ['super_admin'] },
+      meta: { title: '账号管理', roles: ['super_admin'], platformOnly: true },
+    },
+    {
+      path: '/tenants',
+      name: 'tenants',
+      component: TenantManagePage,
+      meta: { title: '租户管理', roles: ['super_admin'], platformOnly: true },
     },
     {
       path: '/traffic',
@@ -139,8 +159,14 @@ router.beforeEach((to) => {
   if (authed && to.name === 'login') {
     return adminHomeRoute(session)
   }
+  if (authed && session?.scopeType === 'platform' && session?.workspaceType !== 'self' && (to.path === '/' || to.name === 'dashboard-overview')) {
+    return { name: 'platform-console' as const }
+  }
   const allowRoles = Array.isArray(to.meta.roles) ? to.meta.roles : []
   if (allowRoles.length > 0 && !adminSessionRoleAllowed(session?.role, allowRoles)) {
+    return adminHomeRoute(session)
+  }
+  if (to.meta.platformOnly && session?.scopeType !== 'platform') {
     return adminHomeRoute(session)
   }
   return true

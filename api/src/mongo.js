@@ -1,5 +1,6 @@
 const { MongoClient } = require('mongodb')
 const mongoConfig = require('./mongoConfig')
+const { getCurrentTenantId, getCurrentWorkspaceType, DEFAULT_TENANT_ID } = require('./tenantContext')
 
 /** 集合名约定：后续仓储实现可直接引用 */
 const COLLECTIONS = {
@@ -102,7 +103,20 @@ function getMongoDb() {
     return null
   }
   const { dbName } = mongoConfig.getMongoConfig()
-  return dbName ? client.db(dbName) : client.db()
+  const rootDb = dbName ? client.db(dbName) : client.db()
+  const workspaceType = getCurrentWorkspaceType()
+  if (workspaceType === 'core') {
+    return client.db(`${rootDb.databaseName}__core`)
+  }
+  if (workspaceType === 'self') {
+    return client.db(`${rootDb.databaseName}__self`)
+  }
+  const tenantId = getCurrentTenantId()
+  if (!tenantId || tenantId === DEFAULT_TENANT_ID) {
+    return rootDb
+  }
+  const scopedName = `${rootDb.databaseName}__tenant_${tenantId}`
+  return client.db(scopedName)
 }
 
 async function closeMongo() {
