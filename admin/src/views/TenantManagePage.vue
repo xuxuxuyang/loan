@@ -300,7 +300,7 @@ async function deleteTenantSystem(rawTenantId: string) {
   }
   try {
     await ElMessageBox.confirm(
-      `确定删除子系统「${tenantId}」吗？仅当该子系统尚未产生任何用户、订单、商品且无后台账号时才能删除；若已开通老板账号或存在业务数据，接口将拒绝操作。`,
+      `确定删除子系统「${tenantId}」吗？仅当该子系统尚未产生任何用户、订单、商品且无后台账号时才能删除；若已新建老板账号或存在业务数据，接口将拒绝操作。`,
       '删除子系统',
       {
         type: 'warning',
@@ -440,7 +440,7 @@ function openEditTenantBossAccount(tenantId = '') {
   const normalizedTenantId = normalizeTenantInput(tenantId || selectedTenantId.value)
   const bossAccount = resolveTenantBossAccount(normalizedTenantId)
   if (!bossAccount) {
-    errorMessage.value = '该子系统未找到老板账号，请先检查开通流程'
+    errorMessage.value = '该子系统未找到老板账号，请先检查新建流程'
     ElMessage.error(errorMessage.value)
     return
   }
@@ -470,7 +470,7 @@ function openCreateTenantWithBossModal() {
     return
   }
   if (tenants.value.some(item => normalizeTenantInput(item.tenantId) === tenantId)) {
-    newTenantIdError.value = `子系统ID ${tenantId} 已存在，请勿重复开通`
+    newTenantIdError.value = `子系统ID ${tenantId} 已存在，请勿重复新建`
     return
   }
   editingBossAccount.value = null
@@ -533,7 +533,7 @@ async function onboardTenantWithBoss(tenantId: string) {
   })
   const payload = await response.json() as { success?: boolean, msg?: string, data?: { bossAccount?: Partial<TenantAdminAccount> } }
   if (!response.ok || payload.success === false) {
-    throw new Error(payload.msg || `开通子系统失败 (${response.status})`)
+    throw new Error(payload.msg || `新建子系统失败 (${response.status})`)
   }
   const account = payload.data?.bossAccount || {}
   return {
@@ -649,7 +649,7 @@ async function createTenantAccount() {
     if (createAccountMode.value === 'onboard') {
       createdTenantId = tenantId
       createdBossAccount = await onboardTenantWithBoss(tenantId)
-      ElMessage.success('子系统与老板账号开通成功')
+      ElMessage.success('子系统与老板账号新建成功')
     }
     else if (createAccountMode.value === 'edit' && editingBossAccount.value) {
       await updateBossAccount(editingBossAccount.value, tenantId)
@@ -856,7 +856,7 @@ onMounted(() => {
   >
     <div class="tenant-page__quick-open">
       <div class="tenant-page__quick-open-row">
-        <span class="tenant-page__quick-label">子系统开通</span>
+        <span class="tenant-page__quick-label">新建子系统</span>
         <el-input
           v-model="newTenantId"
           class="toolbar-input tenant-page__quick-input"
@@ -871,7 +871,7 @@ onMounted(() => {
           :disabled="creatingTenantAccount"
           @click="openCreateTenantWithBossModal"
         >
-          {{ creatingTenantAccount && createAccountMode === 'onboard' ? '开通中...' : '开通子系统' }}
+          {{ creatingTenantAccount && createAccountMode === 'onboard' ? '新建中...' : '新建子系统' }}
         </button>
       </div>
       <p
@@ -1077,7 +1077,7 @@ onMounted(() => {
     >
       <div class="modal-panel">
         <div class="modal-header">
-          <h3>{{ createAccountMode === 'onboard' ? '开通子系统并新增老板账号' : (createAccountMode === 'edit' ? '修改老板账号' : '新增老板账号') }}</h3>
+          <h3>{{ createAccountMode === 'onboard' ? '新建子系统并新增老板账号' : (createAccountMode === 'edit' ? '修改老板账号' : '新增老板账号') }}</h3>
           <button
             class="btn btn-secondary"
             type="button"
@@ -1185,7 +1185,7 @@ onMounted(() => {
               creatingTenantAccount
                 ? '提交中...'
                 : (createAccountMode === 'onboard'
-                    ? '确认开通并创建老板'
+                    ? '确认新建并创建老板'
                     : (createAccountMode === 'edit' ? '确认修改老板账号' : '确认创建账号'))
             }}
           </button>
