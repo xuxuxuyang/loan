@@ -1,14 +1,14 @@
 import { onUnmounted, ref, watch, type ComputedRef } from 'vue'
 import { useRoute } from 'vue-router'
-import { computeAdminOrderSidebarCounts } from '../stores/useOrdersStore'
+import router from '../router'
+import { computeAdminOrderSidebarCounts, replaceOrdersFromMallPayloads } from '../stores/useOrdersStore'
 import { getAdminSession } from './useAdminAuth'
-import { withAdminAuthHeaders } from './useAdminApi'
+import { withMallTenantHeaders } from './useAdminApi'
 
 const MALL_API_BASE = `${(import.meta.env.VITE_MALL_API_BASE || 'http://localhost:3110/api').replace(/\/$/, '')}`
 
 /**
- * 侧栏「订单管理」：风控通过且仍处人工审核队列的订单数（与审核页「待审核」口径一致）。
- * 对应 GET /orders 在 status=reviewing 且 adminStatus=待审核 时的筛选结果。
+ * 侧栏「未审核订单」：与审核页一致，含「待审核」与「风控未通过」（仍处于 reviewing 人工队列）。
  */
 export const ordersMenuPendingReviewTotal = ref(0)
 
@@ -35,7 +35,7 @@ async function fetchOrderSidebarBadgeCounts() {
   try {
     const response = await fetch(`${MALL_API_BASE}/orders`, {
       method: 'GET',
-      headers: withAdminAuthHeaders(),
+      headers: withMallTenantHeaders(),
     })
     const payload = await response.json() as {
       success?: boolean
@@ -48,6 +48,9 @@ async function fetchOrderSidebarBadgeCounts() {
     const { pendingReview, reviewedOrdersList } = computeAdminOrderSidebarCounts(list)
     ordersMenuPendingReviewTotal.value = pendingReview
     ordersMenuReviewedListTotal.value = reviewedOrdersList
+    if (router.currentRoute.value.path === '/orders/review') {
+      replaceOrdersFromMallPayloads(list)
+    }
   }
   catch {
     /* 静默失败，保留上次数字 */
@@ -73,7 +76,7 @@ function startPolling() {
 }
 
 /**
- * 登录且角色可访问订单模块时轮询待审核（风控通过）数量；无权或登出时清零并停止。
+ * 登录且角色可访问订单模块时轮询未审核队列数量；无权或登出时清零并停止。
  */
 export function useAdminOrderReviewBadge(enabled: ComputedRef<boolean>) {
   const route = useRoute()

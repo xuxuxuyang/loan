@@ -73,6 +73,7 @@ declare global {
   const reactive: typeof import('vue').reactive
   const readonly: typeof import('vue').readonly
   const ref: typeof import('vue').ref
+  const resetMallProductsFetchState: typeof import('./composables/useTeaProducts').resetMallProductsFetchState
   const resolveChannelFromRouteQuery: typeof import('./composables/useRegisterChannel').resolveChannelFromRouteQuery
   const resolveComponent: typeof import('vue').resolveComponent
   const resolveCsImageDisplayUrl: typeof import('./composables/useMallCsChat').resolveCsImageDisplayUrl
@@ -207,6 +208,7 @@ declare module 'vue' {
     readonly reactive: UnwrapRef<typeof import('vue')['reactive']>
     readonly readonly: UnwrapRef<typeof import('vue')['readonly']>
     readonly ref: UnwrapRef<typeof import('vue')['ref']>
+    readonly resetMallProductsFetchState: UnwrapRef<typeof import('./composables/useTeaProducts')['resetMallProductsFetchState']>
     readonly resolveChannelFromRouteQuery: UnwrapRef<typeof import('./composables/useRegisterChannel')['resolveChannelFromRouteQuery']>
     readonly resolveComponent: UnwrapRef<typeof import('vue')['resolveComponent']>
     readonly resolveCsImageDisplayUrl: UnwrapRef<typeof import('./composables/useMallCsChat')['resolveCsImageDisplayUrl']>

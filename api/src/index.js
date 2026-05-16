@@ -6934,6 +6934,25 @@ app.use(async (ctx, next) => {
   }
   await next()
 })
+/**
+ * 开发/测试：响应返回前等待本次请求触发的 Mongo 写入完成（readDb 仍为内存快照，但落库与 HTTP 响应同步）。
+ * 生产关闭（默认 false），避免额外延迟。
+ */
+app.use(async (ctx, next) => {
+  await next()
+  if (!mongoConfig.isMongoAwaitPersistEnabled() || !isMongoPersistenceEnabled()) {
+    return
+  }
+  if (!String(ctx.path || '').startsWith('/api/')) {
+    return
+  }
+  try {
+    await flushMongoPersist()
+  }
+  catch (err) {
+    console.error('[store] MONGO_AWAIT_PERSIST 落库等待失败:', err?.message || err)
+  }
+})
 app.use(router.routes())
 app.use(router.allowedMethods())
 app.use(riskControlRouter.routes())

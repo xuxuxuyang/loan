@@ -152,6 +152,14 @@ function buildProductsUrl(base: string, salesMode: ProductSalesMode) {
 let installmentLoadInFlight: Promise<void> | null = null
 let mallLoadInFlight: Promise<void> | null = null
 
+/** 清除「只拉一次」标记与进行中的请求，便于后台改库后前端重新拉取 */
+export function resetMallProductsFetchState() {
+  installmentLoadInFlight = null
+  mallLoadInFlight = null
+  getInstallmentRefs().fetchOk.value = false
+  getMallRefs().fetchOk.value = false
+}
+
 function getInstallmentRefs() {
   const products = useState<TeaProduct[]>(STATE_INSTALLMENT, () => [])
   const fetchOk = useState<boolean>(`${STATE_FETCH_OK_PREFIX}installment`, () => false)
@@ -226,7 +234,10 @@ export async function ensureMallShowcaseProductsLoaded(): Promise<void> {
   return mallLoadInFlight
 }
 
-export async function ensureShopHomeProductsLoaded(): Promise<void> {
+export async function ensureShopHomeProductsLoaded(options?: { refresh?: boolean }) {
+  if (options?.refresh) {
+    resetMallProductsFetchState()
+  }
   await Promise.all([
     ensureMallProductsLoaded(),
     ensureMallShowcaseProductsLoaded(),

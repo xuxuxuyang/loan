@@ -5,7 +5,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import type { InstallmentItem, InstallmentNegotiationRecord, OrderItem } from '../stores/useOrdersStore'
 import { getAdminSession, isSuperAdminRole } from '../composables/useAdminAuth'
 import { refreshOrdersMenuPendingReview } from '../composables/useAdminOrderReviewBadge'
-import { withAdminAuthHeaders } from '../composables/useAdminApi'
+import { withMallTenantHeaders } from '../composables/useAdminApi'
 import { useOrdersStore } from '../stores/useOrdersStore'
 import type { UserItem } from '../components/UserRiskDetailDialog.vue'
 import type { OrderShippingSnapshot } from '../components/UserRegistrationInfoScroll.vue'
@@ -78,7 +78,7 @@ async function openUserRiskFromOrder(order: OrderItem) {
     const url = `${MALL_API_BASE}/users/by-phone?phone=${encodeURIComponent(digits)}`
     const response = await fetch(url, {
       method: 'GET',
-      headers: withAdminAuthHeaders(),
+      headers: withMallTenantHeaders(),
     })
     if (!response.ok) {
       throw new Error(`查询用户失败: ${response.status}`)

@@ -5,7 +5,7 @@ import { type VNode, computed, h, onMounted, ref, watch } from 'vue'
 import type { OrderItem } from '../stores/useOrdersStore'
 import { getAdminSession, isSuperAdminRole } from '../composables/useAdminAuth'
 import { useOrdersStore } from '../stores/useOrdersStore'
-import { withAdminAuthHeaders } from '../composables/useAdminApi'
+import { withMallTenantHeaders } from '../composables/useAdminApi'
 import UserRiskDetailDialog, { type UserItem } from '../components/UserRiskDetailDialog.vue'
 import { refreshOrdersMenuPendingReview } from '../composables/useAdminOrderReviewBadge'
 import { donePageProgress, startPageProgress } from '../utils/progress'
@@ -51,6 +51,18 @@ function isReviewPageOrder(item: OrderItem) {
 
 const reviewOrdersBase = computed(() => orders.value.filter(isReviewPageOrder))
 
+/** 侧栏轮询写入全量 orders 时，按审核队列签名补跑风控档案闸门（避免新单无闸门状态） */
+const reviewQueueSig = computed(() =>
+  reviewOrdersBase.value
+    .map(o => `${o.id}:${o.riskStatus}`)
+    .sort()
+    .join('|'),
+)
+
+watch(reviewQueueSig, () => {
+  void runRiskApproveGateChecks(orders.value.filter(isReviewPageOrder))
+})
+
 const reviewOrders = computed(() => {
   let list = reviewOrdersBase.value
   if (riskFilter.value !== '全部') {
@@ -77,7 +89,7 @@ async function fetchAdminUserRiskViewForOrder(order: OrderItem): Promise<AdminUs
   }
   const r1 = await fetch(`${MALL_API_BASE}/users/by-phone?phone=${encodeURIComponent(digits)}`, {
     method: 'GET',
-    headers: withAdminAuthHeaders(),
+    headers: withMallTenantHeaders(),
   })
   if (!r1.ok) {
     return null
@@ -89,7 +101,7 @@ async function fetchAdminUserRiskViewForOrder(order: OrderItem): Promise<AdminUs
   }
   const r2 = await fetch(`${MALL_API_BASE}/users/${encodeURIComponent(id)}`, {
     method: 'GET',
-    headers: withAdminAuthHeaders(),
+    headers: withMallTenantHeaders(),
   })
   if (!r2.ok) {
     return null
@@ -150,7 +162,6 @@ async function loadReviewOrders() {
     loading.value = false
     donePageProgress()
     void refreshOrdersMenuPendingReview()
-    void runRiskApproveGateChecks(orders.value.filter(isReviewPageOrder))
   }
 }
 
@@ -375,7 +386,7 @@ async function openRiskDetail(order: OrderItem, entry: 'user' | 'risk') {
     const url = `${MALL_API_BASE}/users/by-phone?phone=${encodeURIComponent(digits)}`
     const response = await fetch(url, {
       method: 'GET',
-      headers: withAdminAuthHeaders(),
+      headers: withMallTenantHeaders(),
     })
     if (!response.ok) {
       throw new Error(`查询用户失败: ${response.status}`)

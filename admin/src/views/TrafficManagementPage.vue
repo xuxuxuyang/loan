@@ -3,7 +3,7 @@ import { CirclePlus, CopyDocument, Delete, EditPen, Loading, Plus, Refresh } fro
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import TrafficChannelNameTag from '../components/TrafficChannelNameTag.vue'
-import { withAdminAuthHeaders } from '../composables/useAdminApi'
+import { withMallTenantHeaders } from '../composables/useAdminApi'
 import { donePageProgress, startPageProgress } from '../utils/progress'
 import { trafficChannelDisplayKey } from '../utils/trafficChannelTagStyle'
 
@@ -116,7 +116,7 @@ async function fetchChannels() {
   try {
     const response = await fetch(`${MALL_API_BASE}/admin/traffic-channels`, {
       method: 'GET',
-      headers: withAdminAuthHeaders(),
+      headers: withMallTenantHeaders(),
     })
     const payload = await response.json() as {
       success?: boolean
@@ -180,7 +180,7 @@ async function submitCreate() {
   try {
     const response = await fetch(`${MALL_API_BASE}/admin/traffic-channels`, {
       method: 'POST',
-      headers: withAdminAuthHeaders({ 'Content-Type': 'application/json' }),
+      headers: withMallTenantHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({
         code: createForm.code.trim(),
         name: createForm.name.trim(),
@@ -213,7 +213,7 @@ async function submitEdit() {
   try {
     const response = await fetch(`${MALL_API_BASE}/admin/traffic-channels/${encodeURIComponent(editForm.id)}`, {
       method: 'PATCH',
-      headers: withAdminAuthHeaders({ 'Content-Type': 'application/json' }),
+      headers: withMallTenantHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({
         name: editForm.name.trim(),
         remark: editForm.remark.trim(),
@@ -244,7 +244,7 @@ async function toggleChannelDisabled(row: TrafficChannelRow) {
   try {
     const response = await fetch(`${MALL_API_BASE}/admin/traffic-channels/${encodeURIComponent(row.id)}`, {
       method: 'PATCH',
-      headers: withAdminAuthHeaders({ 'Content-Type': 'application/json' }),
+      headers: withMallTenantHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ disabled: nextDisabled }),
     })
     const payload = await response.json() as { msg?: string; data?: TrafficChannelRow }
@@ -313,7 +313,7 @@ async function saveChannelRemark() {
   try {
     const response = await fetch(`${MALL_API_BASE}/admin/traffic-channels/${encodeURIComponent(row.id)}`, {
       method: 'PATCH',
-      headers: withAdminAuthHeaders({ 'Content-Type': 'application/json' }),
+      headers: withMallTenantHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ remark: remarkDraft.value.trim() }),
     })
     const payload = await response.json() as { msg?: string }
@@ -340,7 +340,7 @@ async function doDelete() {
   try {
     const response = await fetch(`${MALL_API_BASE}/admin/traffic-channels/${encodeURIComponent(row.id)}`, {
       method: 'DELETE',
-      headers: withAdminAuthHeaders(),
+      headers: withMallTenantHeaders(),
     })
     const payload = await response.json() as { msg?: string }
     if (!response.ok) {

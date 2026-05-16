@@ -1,5 +1,6 @@
 import { computed } from 'vue'
 import { getAdminSession, setAdminSession } from './useAdminAuth'
+import { withAdminAuthHeaders } from './useAdminApi'
 
 export interface TenantSummary {
   tenantId: string
@@ -65,14 +66,15 @@ export function useTenantScope() {
     }))
   })
 
-  async function fetchTenantOptions(apiBase: string, headers: HeadersInit): Promise<TenantSummary[]> {
+  async function fetchTenantOptions(apiBase: string, _headers?: HeadersInit): Promise<TenantSummary[]> {
     if (!isPlatform.value) {
       return tenantOptions.value
     }
     try {
       const resp = await fetch(`${apiBase.replace(/\/$/, '')}/platform/tenants`, {
         method: 'GET',
-        headers,
+        /** 租户清单在 core 库；勿用默认 self，否则平台超管会扫错库 */
+        headers: withAdminAuthHeaders({ 'x-workspace-type': 'core' }),
       })
       const payload = await resp.json() as { success?: boolean, data?: Array<Record<string, unknown>> }
       if (!resp.ok || payload.success === false || !Array.isArray(payload.data)) {

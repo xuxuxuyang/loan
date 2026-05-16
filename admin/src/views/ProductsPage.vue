@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import type { UploadProps } from 'element-plus'
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { withAdminAuthHeaders } from '../composables/useAdminApi'
+import { withMallTenantHeaders } from '../composables/useAdminApi'
 import { donePageProgress, startPageProgress } from '../utils/progress'
 
 import { useRoute } from 'vue-router'
@@ -10,6 +10,34 @@ import { useRoute } from 'vue-router'
 type SalesMode = 'mall' | 'installment'
 
 type ProductCategory = 'phones' | 'digital' | 'appliances' | 'cosmetics'
+
+/** 与 api/src/index.js PRODUCT_CATEGORIES 一致，提交接口须用这些键 */
+type ApiProductCategory = 'phone' | 'digital' | 'appliance' | 'cosmetics'
+
+const FORM_TO_API_CATEGORY: Record<ProductCategory, ApiProductCategory> = {
+  phones: 'phone',
+  digital: 'digital',
+  appliances: 'appliance',
+  cosmetics: 'cosmetics',
+}
+
+const API_TO_FORM_CATEGORY: Record<string, ProductCategory> = {
+  phone: 'phones',
+  phones: 'phones',
+  digital: 'digital',
+  appliance: 'appliances',
+  appliances: 'appliances',
+  cosmetics: 'cosmetics',
+}
+
+function normalizeProductCategory(raw: unknown): ProductCategory {
+  const key = String(raw || '').trim()
+  if (API_TO_FORM_CATEGORY[key])
+    return API_TO_FORM_CATEGORY[key]
+  if (categoryOptions.some(o => o.value === key))
+    return key as ProductCategory
+  return 'phones'
+}
 
 interface ProductItem {
   id: number
@@ -129,7 +157,7 @@ async function processProductCoverFile(file: File): Promise<string> {
     fd.append('scene', 'cover')
     const response = await fetch(`${MALL_API_BASE}/uploads/public-image`, {
       method: 'POST',
-      headers: withAdminAuthHeaders(),
+      headers: withMallTenantHeaders(),
       body: fd,
     })
     const payload = await response.json() as { success?: boolean, msg?: string, data?: { url?: string } }
@@ -171,6 +199,7 @@ const onProductCoverChange: UploadProps['onChange'] = async (uploadFile) => {
   imageCompressing.value = true
   try {
     form.image = await processProductCoverFile(raw)
+    clearProductField('image')
   }
   catch (e) {
     ElMessage.error(e instanceof Error ? e.message : '图片处理失败，请重新选择')
@@ -200,7 +229,7 @@ const onDetailImagesChange: UploadProps['onChange'] = async (uploadFile) => {
     fd.append('scene', 'detail')
     const response = await fetch(`${MALL_API_BASE}/uploads/public-image`, {
       method: 'POST',
-      headers: withAdminAuthHeaders(),
+      headers: withMallTenantHeaders(),
       body: fd,
     })
     const payload = await response.json() as { success?: boolean, msg?: string, data?: { url?: string } }
@@ -227,6 +256,7 @@ function removeDetailImage(index: number) {
 
 function clearProductCover() {
   form.image = ''
+  clearProductField('image')
 }
 const deletingId = ref<number | null>(null)
 const pendingDeleteId = ref<number | null>(null)
@@ -257,6 +287,53 @@ const form = reactive<ProductPayload>({
   cardPackageAmount: 0,
 })
 
+type ProductFieldKey = 'name' | 'subtitle' | 'description' | 'origin' |
+  'image' | 'price' | 'cardPackageAmount'
+
+const FIELD_SCROLL_ORDER: ProductFieldKey[] = [
+  'name',
+  'subtitle',
+  'origin',
+  'price',
+  'cardPackageAmount',
+  'description',
+  'image',
+]
+
+const fieldErrors = reactive<Record<ProductFieldKey, string>>({
+  name: '',
+  subtitle: '',
+  description: '',
+  origin: '',
+  image: '',
+  price: '',
+  cardPackageAmount: '',
+})
+
+function clearProductFieldErrors() {
+  fieldErrors.name = ''
+  fieldErrors.subtitle = ''
+  fieldErrors.description = ''
+  fieldErrors.origin = ''
+  fieldErrors.image = ''
+  fieldErrors.price = ''
+  fieldErrors.cardPackageAmount = ''
+}
+
+function clearProductField(key: ProductFieldKey) {
+  fieldErrors[key] = ''
+}
+
+async function scrollToFirstProductFieldError() {
+  await nextTick()
+  for (const key of FIELD_SCROLL_ORDER) {
+    if (fieldErrors[key]) {
+      document.getElementById(`product-field-${key}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      return
+    }
+  }
+}
+
 const categoryLabelMap = computed(() => {
   return Object.fromEntries(categoryOptions.map(item => [item.value, item.label]))
 })
@@ -286,9 +363,7 @@ const filteredProducts = computed(() => {
 })
 
 function normalizeProduct(item: Partial<ProductItem>): ProductItem {
-  const category = categoryOptions.some(option => option.value === item.category)
-    ? item.category as ProductCategory
-    : 'phones'
+  const category = normalizeProductCategory(item.category)
   return {
     id: Number(item.id || 0),
     name: String(item.name || ''),
@@ -310,6 +385,7 @@ function normalizeProduct(item: Partial<ProductItem>): ProductItem {
 }
 
 function resetForm() {
+  clearProductFieldErrors()
   form.name = ''
   form.subtitle = ''
   form.description = ''
@@ -327,9 +403,11 @@ function openCreate() {
   editingId.value = null
   resetForm()
   showEditor.value = true
+  syncInstallmentGiftSubtitle()
 }
 
 function openEdit(item: ProductItem) {
+  clearProductFieldErrors()
   editingId.value = item.id
   form.name = item.name
   form.subtitle = item.subtitle
@@ -368,23 +446,44 @@ watch(
   () => syncInstallmentGiftSubtitle(),
 )
 
-function validateForm() {
-  if (!form.name.trim() || !form.subtitle.trim() || !form.description.trim() || !form.origin.trim() || !form.image.trim()) {
-    ElMessage.warning('请完善商品名称、副标题、描述、产地并上传商品主图')
-    return false
+async function validateForm() {
+  clearProductFieldErrors()
+  if (!form.name.trim()) {
+    fieldErrors.name = '请填写商品名称'
+  }
+  if (salesMode.value === 'mall' && !form.subtitle.trim()) {
+    fieldErrors.subtitle = '请填写副标题'
+  }
+  if (salesMode.value === 'installment') {
+    syncInstallmentGiftSubtitle()
+    if (!form.subtitle.trim()) {
+      fieldErrors.subtitle = '请设置卡包金额，系统将根据金额生成副标题'
+    }
+  }
+  if (!form.description.trim()) {
+    fieldErrors.description = '请填写商品描述'
+  }
+  if (!form.origin.trim()) {
+    fieldErrors.origin = '请填写产地'
+  }
+  if (!form.image.trim()) {
+    fieldErrors.image = '请上传商品主图'
   }
   if (!Number.isFinite(form.price) || form.price <= 0) {
-    ElMessage.warning('价格必须大于 0')
-    return false
+    fieldErrors.price = '价格必须大于 0'
   }
   if (salesMode.value === 'installment') {
     const cap = Number(form.cardPackageAmount)
     if (!Number.isFinite(cap) || cap < 0) {
-      ElMessage.warning('卡包金额须为非负整数（元）')
-      return false
+      fieldErrors.cardPackageAmount = '卡包金额须为非负整数（元）'
     }
   }
-  return true
+
+  const hasErr = FIELD_SCROLL_ORDER.some(key => Boolean(fieldErrors[key]))
+  if (hasErr) {
+    await scrollToFirstProductFieldError()
+  }
+  return !hasErr
 }
 
 function buildPayload(): ProductPayload {
@@ -400,7 +499,7 @@ function buildPayload(): ProductPayload {
     image: form.image.trim(),
     detailImages: [...form.detailImages],
     price: Number(form.price),
-    category: form.category,
+    category: FORM_TO_API_CATEGORY[form.category],
     onSale: form.onSale,
     salesMode: salesMode.value,
     cardPackageAmount: salesMode.value === 'installment' ? cap : 0,
@@ -428,7 +527,7 @@ async function fetchProducts() {
     query.set('salesMode', salesMode.value)
     const response = await fetch(`${PRODUCTS_ENDPOINT}?${query.toString()}`, {
       method: 'GET',
-      headers: withAdminAuthHeaders(),
+      headers: withMallTenantHeaders(),
     })
     if (!response.ok) {
       throw new Error(`请求商品失败: ${response.status}`)
@@ -450,28 +549,34 @@ async function submitForm() {
   if (submitting.value) {
     return
   }
-  if (!validateForm()) {
+  if (!(await validateForm())) {
     return
   }
 
   submitting.value = true
   const method = editingId.value ? 'PATCH' : 'POST'
   const url = editingId.value ? `${PRODUCTS_ENDPOINT}/${editingId.value}` : PRODUCTS_ENDPOINT
+  const wasEdit = Boolean(editingId.value)
   try {
     const response = await fetch(url, {
       method,
-      headers: withAdminAuthHeaders({ 'Content-Type': 'application/json' }),
+      headers: withMallTenantHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(buildPayload()),
     })
-    if (!response.ok) {
-      throw new Error(`保存商品失败: ${response.status}`)
+    const payload = await response.json().catch(() => ({})) as { success?: boolean, msg?: string }
+    if (!response.ok || payload.success === false) {
+      const msg = typeof payload.msg === 'string' && payload.msg.trim()
+        ? payload.msg
+        : `保存商品失败: ${response.status}`
+      throw new Error(msg)
     }
     await fetchProducts()
     closeEditor()
+    ElMessage.success(wasEdit ? '商品已更新' : '商品已创建')
   }
   catch (error) {
     console.error('保存商品失败', error)
-    ElMessage.error('保存商品失败，请稍后重试')
+    ElMessage.error(error instanceof Error ? error.message : '保存商品失败，请稍后重试')
   }
   finally {
     submitting.value = false
@@ -482,7 +587,7 @@ async function toggleOnSale(item: ProductItem) {
   try {
     const response = await fetch(`${PRODUCTS_ENDPOINT}/${item.id}`, {
       method: 'PATCH',
-      headers: withAdminAuthHeaders({ 'Content-Type': 'application/json' }),
+      headers: withMallTenantHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ onSale: !item.onSale }),
     })
     if (!response.ok) {
@@ -516,7 +621,7 @@ async function removeProduct(item: ProductItem) {
   try {
     const response = await fetch(`${PRODUCTS_ENDPOINT}/${item.id}`, {
       method: 'DELETE',
-      headers: withAdminAuthHeaders(),
+      headers: withMallTenantHeaders(),
     })
     if (!response.ok) {
       throw new Error(`删除商品失败: ${response.status}`)
@@ -746,36 +851,70 @@ watch(salesMode, () => {
       </div>
 
       <div class="form-grid">
-        <label>
-          商品名称
+        <label
+          id="product-field-name"
+          class="form-field"
+          :class="{ 'form-field--error': fieldErrors.name }"
+        >
+          <span class="form-field__label">商品名称 <abbr class="form-req" title="必填">*</abbr></span>
           <el-input
             v-model="form.name"
             class="form-input"
             clearable
+            @input="clearProductField('name')"
           />
+          <p
+            v-if="fieldErrors.name"
+            class="form-field__error"
+          >
+            {{ fieldErrors.name }}
+          </p>
         </label>
-        <label v-if="salesMode === 'mall'">
-          副标题
+        <label
+          v-if="salesMode === 'mall'"
+          id="product-field-subtitle"
+          class="form-field"
+          :class="{ 'form-field--error': fieldErrors.subtitle }"
+        >
+          <span class="form-field__label">副标题 <abbr class="form-req" title="必填">*</abbr></span>
           <el-input
             v-model="form.subtitle"
             class="form-input"
             clearable
+            @input="clearProductField('subtitle')"
           />
+          <p
+            v-if="fieldErrors.subtitle"
+            class="form-field__error"
+          >
+            {{ fieldErrors.subtitle }}
+          </p>
         </label>
         <label
           v-else
-          class="subtitle-auto-label"
+          id="product-field-subtitle"
+          class="form-field subtitle-auto-label"
+          :class="{ 'form-field--error': fieldErrors.subtitle }"
         >
-          副标题
+          <span class="form-field__label">副标题 <abbr class="form-req" title="由卡包金额生成">*</abbr></span>
           <el-input
             :model-value="form.subtitle"
             class="form-input subtitle-generated"
             disabled
             readonly
           />
+          <p
+            v-if="fieldErrors.subtitle"
+            class="form-field__error"
+          >
+            {{ fieldErrors.subtitle }}
+          </p>
         </label>
-        <label v-if="salesMode === 'mall'">
-          商品分类
+        <label
+          v-if="salesMode === 'mall'"
+          class="form-field"
+        >
+          <span class="form-field__label">商品分类</span>
           <el-select
             v-model="form.category"
             class="pretty-select form-select"
@@ -789,50 +928,90 @@ watch(salesMode, () => {
             />
           </el-select>
         </label>
-        <label v-else>
-          前台专区
+        <label
+          v-else
+          class="form-field"
+        >
+          <span class="form-field__label">前台专区</span>
           <el-input
             class="form-input"
             :model-value="'先享后付'"
             disabled
           />
         </label>
-        <label>
-          产地
+        <label
+          id="product-field-origin"
+          class="form-field"
+          :class="{ 'form-field--error': fieldErrors.origin }"
+        >
+          <span class="form-field__label">产地 <abbr class="form-req" title="必填">*</abbr></span>
           <el-input
             v-model="form.origin"
             class="form-input"
             clearable
+            @input="clearProductField('origin')"
           />
+          <p
+            v-if="fieldErrors.origin"
+            class="form-field__error"
+          >
+            {{ fieldErrors.origin }}
+          </p>
         </label>
         <template v-if="salesMode === 'mall'">
-          <label>
-            价格
+          <label
+            id="product-field-price"
+            class="form-field"
+            :class="{ 'form-field--error': fieldErrors.price }"
+          >
+            <span class="form-field__label">价格 <abbr class="form-req" title="必填">*</abbr></span>
             <el-input-number
               v-model="form.price"
               class="form-input-number form-input-number--fill"
               :min="0"
               :step="0.01"
               :controls="false"
+              @change="clearProductField('price')"
             />
+            <p
+              v-if="fieldErrors.price"
+              class="form-field__error"
+            >
+              {{ fieldErrors.price }}
+            </p>
           </label>
         </template>
         <div
           v-else
           class="installment-price-row"
         >
-          <label class="form-field-compact">
-            价格
+          <label
+            id="product-field-price"
+            class="form-field form-field-compact"
+            :class="{ 'form-field--error': fieldErrors.price }"
+          >
+            <span class="form-field__label">价格 <abbr class="form-req" title="必填">*</abbr></span>
             <el-input-number
               v-model="form.price"
               class="form-input-number form-input-number--fill"
               :min="0"
               :step="0.01"
               :controls="false"
+              @change="clearProductField('price')"
             />
+            <p
+              v-if="fieldErrors.price"
+              class="form-field__error"
+            >
+              {{ fieldErrors.price }}
+            </p>
           </label>
-          <label class="form-field-compact">
-            卡包金额（元）
+          <label
+            id="product-field-cardPackageAmount"
+            class="form-field form-field-compact"
+            :class="{ 'form-field--error': fieldErrors.cardPackageAmount }"
+          >
+            <span class="form-field__label">卡包金额（元） <abbr class="form-req" title="必填">*</abbr></span>
             <el-input-number
               v-model="form.cardPackageAmount"
               class="form-input-number form-input-number--fill"
@@ -840,11 +1019,18 @@ watch(salesMode, () => {
               :step="1"
               :precision="0"
               :controls="false"
+              @change="clearProductField('cardPackageAmount'); clearProductField('subtitle')"
             />
+            <p
+              v-if="fieldErrors.cardPackageAmount"
+              class="form-field__error"
+            >
+              {{ fieldErrors.cardPackageAmount }}
+            </p>
           </label>
         </div>
-        <label>
-          上架状态
+        <label class="form-field">
+          <span class="form-field__label">上架状态</span>
           <el-select
             v-model="form.onSale"
             class="pretty-select form-select"
@@ -860,8 +1046,12 @@ watch(salesMode, () => {
             />
           </el-select>
         </label>
-        <label class="full">
-          商品主图
+        <label
+          id="product-field-image"
+          class="form-field full"
+          :class="{ 'form-field--error': fieldErrors.image }"
+        >
+          <span class="form-field__label">商品主图 <abbr class="form-req" title="必填">*</abbr></span>
           <div class="cover-upload-row">
             <el-upload
               class="cover-upload"
@@ -889,6 +1079,12 @@ watch(salesMode, () => {
               移除图片
             </button>
           </div>
+          <p
+            v-if="fieldErrors.image"
+            class="form-field__error"
+          >
+            {{ fieldErrors.image }}
+          </p>
           <div
             v-if="form.image"
             class="cover-preview-wrap"
@@ -900,8 +1096,8 @@ watch(salesMode, () => {
             >
           </div>
         </label>
-        <label class="full">
-          商品详情图
+        <label class="form-field full">
+          <span class="form-field__label">商品详情图 <span class="form-optional">选填</span></span>
           <div class="cover-upload-row">
             <el-upload
               class="cover-upload"
@@ -947,14 +1143,28 @@ watch(salesMode, () => {
             </div>
           </div>
         </label>
-        <label class="full">
-          商品描述
+        <label
+          id="product-field-description"
+          class="form-field full"
+          :class="{ 'form-field--error': fieldErrors.description }"
+        >
+          <span class="form-field__label">商品描述 <abbr class="form-req" title="必填">*</abbr></span>
           <el-input
             v-model="form.description"
             class="form-textarea"
             type="textarea"
             :rows="3"
+            maxlength="4000"
+            show-word-limit
+            placeholder="必填：卖点、规格、售后说明等"
+            @input="clearProductField('description')"
           />
+          <p
+            v-if="fieldErrors.description"
+            class="form-field__error"
+          >
+            {{ fieldErrors.description }}
+          </p>
         </label>
       </div>
 
@@ -1166,6 +1376,8 @@ watch(salesMode, () => {
 .modal-panel {
   width: 760px;
   max-width: 100%;
+  max-height: calc(100vh - 40px);
+  overflow-y: auto;
   border-radius: 12px;
   background: #fff;
   border: 1px solid #e5e7eb;
@@ -1189,11 +1401,54 @@ watch(salesMode, () => {
   gap: 10px;
 }
 
-.form-grid label {
+.form-grid .form-field {
   display: grid;
   gap: 6px;
   font-size: 14px;
-  color: #a8a1a1;
+}
+
+.form-field__label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #64748b;
+  font-weight: 500;
+}
+
+.form-req {
+  color: #dc2626;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.form-optional {
+  color: #94a3b8;
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.form-field__error {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: #dc2626;
+}
+
+.form-field--error :deep(.el-input__wrapper),
+.form-field--error :deep(.el-textarea__inner) {
+  box-shadow: 0 0 0 1px #dc2626 inset;
+}
+
+.form-field--error :deep(.el-input-number .el-input__wrapper) {
+  box-shadow: 0 0 0 1px #dc2626 inset;
+}
+
+.form-field--error .cover-upload-row {
+  outline: 1px solid #dc2626;
+  outline-offset: 2px;
+  border-radius: 8px;
+  width: fit-content;
+  max-width: 100%;
 }
 
 .form-grid .full {
@@ -1248,10 +1503,6 @@ watch(salesMode, () => {
 }
 
 .installment-price-row .form-field-compact {
-  display: grid;
-  gap: 6px;
-  font-size: 14px;
-  color: #a8a1a1;
   min-width: 0;
 }
 

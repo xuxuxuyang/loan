@@ -69,10 +69,17 @@ function isJsonFallbackAllowed() {
   return /^true$/i.test(String(process.env.ALLOW_JSON_FALLBACK || '').trim())
 }
 
+/** 为 true 时，每个 /api 请求结束会先 await 当前作用域的 Mongo 持久化队列（测试/联调用；生产勿开） */
+function isMongoAwaitPersistEnabled() {
+  const raw = String(process.env.MONGO_AWAIT_PERSIST || process.env.STORE_AWAIT_MONGO_PERSIST || '').trim().toLowerCase()
+  return raw === 'true' || raw === '1' || raw === 'yes'
+}
+
 module.exports = {
   getMongoConfig,
   isMongoConfigured,
   getMongoConfigSummary,
   isMongoRequired,
   isJsonFallbackAllowed,
+  isMongoAwaitPersistEnabled,
 }

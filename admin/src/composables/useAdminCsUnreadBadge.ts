@@ -1,7 +1,7 @@
 import { onUnmounted, ref, watch, type ComputedRef } from 'vue'
 import { useRoute } from 'vue-router'
 import { getAdminSession, isSuperAdminRole } from './useAdminAuth'
-import { withAdminAuthHeaders } from './useAdminApi'
+import { withMallTenantHeaders } from './useAdminApi'
 
 const MALL_API_BASE = `${(import.meta.env.VITE_MALL_API_BASE || 'http://localhost:3110/api').replace(/\/$/, '')}`
 
@@ -19,7 +19,7 @@ async function fetchCsUnreadSum() {
   try {
     const response = await fetch(`${MALL_API_BASE}/admin/cs/sessions`, {
       method: 'GET',
-      headers: withAdminAuthHeaders(),
+      headers: withMallTenantHeaders(),
     })
     const payload = await response.json() as {
       success?: boolean

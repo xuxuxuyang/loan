@@ -622,10 +622,7 @@ watch(
           金额明细
         </h2>
         <div class="space-y-1.5 text-sm text-black/68">
-          <p class="flex items-center justify-between">
-            <span>授信额度（可下单商品总额上限）</span>
-            <span class="tabular-nums">￥{{ creditQuota }}</span>
-          </p>
+          
           <p class="flex items-center justify-between">
             <span>商品金额</span>
             <span>￥{{ itemAmount.toFixed(2) }}</span>
@@ -684,9 +681,7 @@ watch(
         >
           {{ submitting ? '系统审核与提交中…' : '提交订单' }}
         </button>
-        <p class="mt-2 text-center text-xs text-black/45">
-          审核通过后可进入发货流程
-        </p>
+        
       </div>
     </div>
   </section>

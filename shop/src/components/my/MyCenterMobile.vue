@@ -162,7 +162,7 @@ async function handleService(key: string) {
           <button
             v-if="!isLoggedIn"
             type="button"
-            class="login-entry flex w-full min-w-0 items-center justify-between gap-3 rounded-2xl border border-white/80 bg-white/45 py-2.5 pl-3 pr-2 text-left shadow-[inset_0_1px_0_rgba(255,255,255,0.85),0_2px_10px_rgba(180,120,150,0.08)] backdrop-blur-[6px] transition [--login-cta-shadow:0_4px_14px_rgba(232,90,122,0.32)] active:scale-[0.99] active:bg-white/65 active:[--login-cta-shadow:0_2px_8px_rgba(232,90,122,0.28)]"
+            class="login-entry flex w-full min-w-0 items-center justify-between gap-3 py-1 text-left transition [--login-cta-shadow:0_4px_14px_rgba(232,90,122,0.32)] active:scale-[0.99] active:[--login-cta-shadow:0_2px_8px_rgba(232,90,122,0.28)]"
             aria-label="去登录或注册"
             @click="handleGoRegister"
           >

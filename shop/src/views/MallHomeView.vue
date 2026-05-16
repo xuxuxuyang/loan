@@ -8,7 +8,6 @@ import {
   isMallCategoryKey,
   useMallShowcaseProducts,
   useTeaProducts,
-  ensureShopHomeProductsLoaded,
 } from '~/composables/useTeaProducts'
 
 const route = useRoute()
@@ -28,10 +27,6 @@ if (typeof route.query.category === 'string' && isMallCategoryKey(route.query.ca
     activeHomeZone.value = 'mall'
     selectedCategory.value = route.query.category
   }
-}
-
-if (!import.meta.env.SSR) {
-  void ensureShopHomeProductsLoaded()
 }
 
 const homeProductList = computed(() =>

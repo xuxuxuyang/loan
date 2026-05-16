@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, onMounted, onUnmounted, ref } from 'vue'
 import { ChatDotRound } from '@element-plus/icons-vue'
-import { withAdminAuthHeaders } from '../composables/useAdminApi'
+import { withMallTenantHeaders } from '../composables/useAdminApi'
 
 const MALL_API_BASE = `${(import.meta.env.VITE_MALL_API_BASE || 'http://localhost:3110/api').replace(/\/$/, '')}`
 
@@ -166,7 +166,7 @@ async function onAgentImageSelected(ev: Event) {
     fd.append('image', file)
     const response = await fetch(
       `${MALL_API_BASE}/admin/cs/sessions/${encodeURIComponent(activeId.value)}/messages/image`,
-      { method: 'POST', headers: withAdminAuthHeaders(), body: fd },
+      { method: 'POST', headers: withMallTenantHeaders(), body: fd },
     )
     const payload = await response.json() as {
       success?: boolean
@@ -194,7 +194,7 @@ async function fetchSessions() {
   try {
     const response = await fetch(`${MALL_API_BASE}/admin/cs/sessions`, {
       method: 'GET',
-      headers: withAdminAuthHeaders(),
+      headers: withMallTenantHeaders(),
     })
     const payload = await response.json() as {
       success?: boolean
@@ -233,7 +233,7 @@ async function fetchDetail(id: string) {
   try {
     const response = await fetch(
       `${MALL_API_BASE}/admin/cs/sessions/${encodeURIComponent(id)}?read=1`,
-      { method: 'GET', headers: withAdminAuthHeaders() },
+      { method: 'GET', headers: withMallTenantHeaders() },
     )
     const payload = await response.json() as {
       success?: boolean
@@ -277,7 +277,7 @@ async function sendReply() {
       `${MALL_API_BASE}/admin/cs/sessions/${encodeURIComponent(activeId.value)}/messages`,
       {
         method: 'POST',
-        headers: withAdminAuthHeaders({ 'Content-Type': 'application/json' }),
+        headers: withMallTenantHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ text: t }),
       },
     )

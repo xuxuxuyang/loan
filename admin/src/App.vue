@@ -105,7 +105,7 @@ const allMenus: MenuEntry[] = [
       { label: '商城产品', path: '/products/mall', icon: Goods },
     ],
   },
-  { label: '账号管理', path: '/accounts', icon: Avatar, roles: ['super_admin'], platformOnly: true },
+  { label: '账号管理', path: '/accounts', icon: Avatar, roles: ['super_admin', 'boss'] },
   { label: '租户管理', path: '/tenants', icon: Setting, roles: ['super_admin'], platformOnly: true },
   { label: '流量管理', path: '/traffic', icon: Promotion, roles: ['super_admin'] },
   { label: '财务报表', path: '/dashboard', icon: DataAnalysis, roles: ['super_admin'], platformOnly: true },

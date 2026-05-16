@@ -1,5 +1,5 @@
 import { ref } from 'vue'
-import { withAdminAuthHeaders } from '../composables/useAdminApi'
+import { withMallTenantHeaders } from '../composables/useAdminApi'
 
 export interface InstallmentNegotiationRecord {
   negotiatedAmount: number
@@ -336,7 +336,7 @@ export function computeAdminOrderSidebarCounts(payloads: unknown[]): {
       continue
     }
     const o = mapMallOrderToAdminOrder(raw as MallOrderPayload)
-    if (o.status === '待审核') {
+    if (o.status === '待审核' || o.status === '风控未通过') {
       pendingReview += 1
     }
     if (o.status !== '待审核' && o.status !== '风控未通过' && !o.cardPackageIssued) {
@@ -344,6 +344,18 @@ export function computeAdminOrderSidebarCounts(payloads: unknown[]): {
     }
   }
   return { pendingReview, reviewedOrdersList }
+}
+
+/**
+ * 将 GET /orders 返回的原始列表写入共享 orders（与无查询参数请求一致）。
+ * 供侧栏轮询与「审核订单」页对齐：角标与列表同源，不另发请求、整页刷新。
+ */
+export function replaceOrdersFromMallPayloads(payloads: unknown[]) {
+  if (!Array.isArray(payloads)) {
+    orders.value = []
+    return
+  }
+  orders.value = payloads.map(raw => mapMallOrderToAdminOrder(raw as MallOrderPayload))
 }
 
 /** PATCH 返回的订单不含 buyerAdminRemark 时保留列表中已有的备注展示 */
@@ -427,7 +439,7 @@ async function fetchOrders(params: OrderFilterParams = {}) {
   const url = query.toString() ? `${MALL_ORDERS_ENDPOINT}?${query.toString()}` : MALL_ORDERS_ENDPOINT
   const response = await fetch(url, {
     method: 'GET',
-    headers: withAdminAuthHeaders(),
+    headers: withMallTenantHeaders(),
   })
   if (!response.ok) {
     throw new Error(`请求订单失败: ${response.status}`)
@@ -440,7 +452,7 @@ async function fetchOrders(params: OrderFilterParams = {}) {
 async function fetchOrderById(orderId: string): Promise<OrderItem> {
   const response = await fetch(`${MALL_ORDERS_ENDPOINT}/${encodeURIComponent(orderId)}`, {
     method: 'GET',
-    headers: withAdminAuthHeaders(),
+    headers: withMallTenantHeaders(),
   })
   const payload = await response.json().catch(() => ({})) as { success?: boolean, data?: MallOrderPayload, msg?: string }
   if (!response.ok) {
@@ -457,7 +469,7 @@ async function fetchOrderById(orderId: string): Promise<OrderItem> {
 async function updateInstallmentDueDate(orderId: string, period: number, addDays: number) {
   const response = await fetch(installmentDueDateUrl(orderId, period), {
     method: 'PATCH',
-    headers: withAdminAuthHeaders({ 'Content-Type': 'application/json' }),
+    headers: withMallTenantHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({ addDays }),
   })
   if (!response.ok) {
@@ -475,7 +487,7 @@ async function updateInstallmentDueDate(orderId: string, period: number, addDays
 async function updateInstallmentSettleAmount(orderId: string, period: number, amount: number) {
   const response = await fetch(installmentSettleAmountUrl(orderId, period), {
     method: 'PATCH',
-    headers: withAdminAuthHeaders({ 'Content-Type': 'application/json' }),
+    headers: withMallTenantHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({ amount }),
   })
   if (!response.ok) {
@@ -497,7 +509,7 @@ async function updateInstallmentNegotiate(
 ) {
   const response = await fetch(installmentNegotiateUrl(orderId, period), {
     method: 'PATCH',
-    headers: withAdminAuthHeaders({ 'Content-Type': 'application/json' }),
+    headers: withMallTenantHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(body),
   })
   if (!response.ok) {
@@ -515,7 +527,7 @@ async function updateInstallmentNegotiate(
 async function updateInstallmentNegotiationHistoryPaid(orderId: string, period: number, historyIndex: number, paid: boolean) {
   const response = await fetch(installmentNegotiationHistoryPaidUrl(orderId, period, historyIndex), {
     method: 'PATCH',
-    headers: withAdminAuthHeaders({ 'Content-Type': 'application/json' }),
+    headers: withMallTenantHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({ paid }),
   })
   if (!response.ok) {
@@ -533,7 +545,7 @@ async function updateInstallmentNegotiationHistoryPaid(orderId: string, period: 
 async function updateInstallmentPaid(orderId: string, period: number, paid: boolean) {
   const response = await fetch(installmentPayUrl(orderId, period), {
     method: 'PATCH',
-    headers: withAdminAuthHeaders({ 'Content-Type': 'application/json' }),
+    headers: withMallTenantHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({ paid }),
   })
   if (!response.ok) {
@@ -550,7 +562,7 @@ async function updateInstallmentPaid(orderId: string, period: number, paid: bool
 async function updateOrderCardPackage(orderId: string, cardPackageIssued: boolean) {
   const response = await fetch(`${MALL_ORDERS_ENDPOINT}/${encodeURIComponent(orderId)}/card-package`, {
     method: 'PATCH',
-    headers: withAdminAuthHeaders({ 'Content-Type': 'application/json' }),
+    headers: withMallTenantHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({ cardPackageIssued }),
   })
   if (!response.ok) {
@@ -568,7 +580,7 @@ async function updateOrderCardPackage(orderId: string, cardPackageIssued: boolea
 async function updateOrderCardPackageContract(orderId: string, signed: boolean) {
   const response = await fetch(cardPackageContractUrl(orderId), {
     method: 'PATCH',
-    headers: withAdminAuthHeaders({ 'Content-Type': 'application/json' }),
+    headers: withMallTenantHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({ signed }),
   })
   if (!response.ok) {
@@ -586,7 +598,7 @@ async function updateOrderCardPackageContract(orderId: string, signed: boolean) 
 async function updateOrderShipment(orderId: string, trackingNumber: string) {
   const response = await fetch(`${MALL_ORDERS_ENDPOINT}/${encodeURIComponent(orderId)}/shipment`, {
     method: 'PATCH',
-    headers: withAdminAuthHeaders({ 'Content-Type': 'application/json' }),
+    headers: withMallTenantHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({ trackingNumber }),
   })
   if (!response.ok) {
@@ -603,7 +615,7 @@ async function updateOrderShipment(orderId: string, trackingNumber: string) {
 async function updateOrderStatus(orderId: string, status: MallOrderPayload['status']) {
   const response = await fetch(`${MALL_ORDERS_ENDPOINT}/${encodeURIComponent(orderId)}/status`, {
     method: 'PATCH',
-    headers: withAdminAuthHeaders({ 'Content-Type': 'application/json' }),
+    headers: withMallTenantHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({ status }),
   })
   if (!response.ok) {
@@ -621,7 +633,7 @@ async function updateOrderStatus(orderId: string, status: MallOrderPayload['stat
 async function rejectOrderReview(orderId: string, riskReason?: string) {
   const response = await fetch(`${MALL_ORDERS_ENDPOINT}/${encodeURIComponent(orderId)}/status`, {
     method: 'PATCH',
-    headers: withAdminAuthHeaders({ 'Content-Type': 'application/json' }),
+    headers: withMallTenantHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({
       riskStatus: 'failed',
       ...(typeof riskReason === 'string' && riskReason.trim() ? { riskReason: riskReason.trim() } : {}),
@@ -642,7 +654,7 @@ async function rejectOrderReview(orderId: string, riskReason?: string) {
 async function fetchOrderRiskDetail(orderId: string): Promise<OrderRiskDetail> {
   const response = await fetch(riskDetailUrl(orderId), {
     method: 'GET',
-    headers: withAdminAuthHeaders(),
+    headers: withMallTenantHeaders(),
   })
   if (!response.ok) {
     throw new Error(`获取风控详情失败: ${response.status}`)
@@ -700,7 +712,7 @@ function recalculateOrderFields(order: OrderItem) {
 async function deleteOrder(orderId: string) {
   const response = await fetch(`${MALL_ORDERS_ENDPOINT}/${encodeURIComponent(orderId)}`, {
     method: 'DELETE',
-    headers: withAdminAuthHeaders(),
+    headers: withMallTenantHeaders(),
   })
   if (!response.ok) {
     const payload = await response.json().catch(() => ({})) as { msg?: string }

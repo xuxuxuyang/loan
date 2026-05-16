@@ -2,7 +2,7 @@
 import { CircleCheck, CircleClose, DataAnalysis, Minus } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { computed, ref, watch } from 'vue'
-import { withAdminAuthHeaders } from '../composables/useAdminApi'
+import { withMallTenantHeaders } from '../composables/useAdminApi'
 import { getAdminSession, isSuperAdminRole } from '../composables/useAdminAuth'
 import UserRegistrationInfoScroll, { type OrderShippingSnapshot } from './UserRegistrationInfoScroll.vue'
 import {
@@ -432,7 +432,7 @@ async function loadUserRiskDialogById(userId: string) {
   try {
     const response = await fetch(`${MALL_API_BASE}/users/${encodeURIComponent(userId)}`, {
       method: 'GET',
-      headers: withAdminAuthHeaders(),
+      headers: withMallTenantHeaders(),
     })
     const payload = await response.json().catch(() => ({})) as {
       msg?: string
@@ -479,7 +479,7 @@ async function fetchRiskSlotSnapshot(
     `${MALL_API_BASE}/users/${encodeURIComponent(u.id)}/risk-slot/${encodeURIComponent(row.slotKey)}`,
     {
       method: 'POST',
-      headers: withAdminAuthHeaders({ 'Content-Type': 'application/json' }),
+      headers: withMallTenantHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({
         ...buildAdminRiskCallBody(u),
         ...(row.slotKey === 'cl_sms_send' || row.slotKey === 'cl_sms_notify'

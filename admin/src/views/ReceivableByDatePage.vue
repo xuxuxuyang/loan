@@ -2,7 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { Refresh } from '@element-plus/icons-vue'
 import { useRoute } from 'vue-router'
-import { withAdminAuthHeaders } from '../composables/useAdminApi'
+import { withMallTenantHeaders } from '../composables/useAdminApi'
 
 interface PendingReceivableRow {
   orderId: string
@@ -74,7 +74,7 @@ async function load() {
   errorMsg.value = ''
   try {
     const url = `${base}/orders/pending-receivable?dueDate=${encodeURIComponent(dueDate.value)}`
-    const res = await fetch(url, { method: 'GET', headers: withAdminAuthHeaders() })
+    const res = await fetch(url, { method: 'GET', headers: withMallTenantHeaders() })
     const text = await res.text()
     let payload: {
       success?: boolean

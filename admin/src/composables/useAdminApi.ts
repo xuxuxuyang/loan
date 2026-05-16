@@ -1,5 +1,12 @@
 import { getAdminSession } from './useAdminAuth'
 
+/**
+ * 请求头工作区约定（与 api mongo 分库一致）：
+ * - **withMallTenantHeaders**：商城业务（users、products、orders、admin/traffic-channels、admin/cs、账单/待收 等），须与 H5 的 tenant + x-tenant-id 一致。
+ * - **withAdminAuthHeaders({ 'x-workspace-type': 'core' })**：总部元数据（platform/tenants、platform/accounts、platform/dashboard 等）→ mall__core。
+ * - **withAdminAuthHeaders()**：平台默认 self → mall__self；仅当确实有「平台自营库」需求时使用，勿用于对上述商城业务的管理。
+ * - **登录**：LoginPage 不加工作区头。
+ */
 function resolveRequestWorkspaceType(session: ReturnType<typeof getAdminSession>) {
   const raw = String(session?.workspaceType || '').trim().toLowerCase()
   if (raw === 'tenant') {
@@ -34,4 +41,16 @@ export function withAdminAuthHeaders(init: HeadersInit = {}) {
     headers.set(key, value)
   })
   return headers
+}
+
+/**
+ * 与商城 H5、主租户 default 共用根库 `mall` 中的业务数据（users / products / orders / trafficChannels / csSessions 等）。
+ * 平台账号在 withAdminAuthHeaders 中默认 x-workspace-type 为 self（mall__self），与 H5 不一致，
+ * 管「注册用户、商品」等须显式传 tenant。
+ */
+export function withMallTenantHeaders(extra: Record<string, string> = {}) {
+  return withAdminAuthHeaders({
+    'x-workspace-type': 'tenant',
+    ...extra,
+  })
 }

@@ -62,8 +62,8 @@ router.afterEach((to) => {
     if (to.name === 'installment') {
       void ensureMallProductsLoaded()
     }
-    else if (to.name === 'search') {
-      void ensureShopHomeProductsLoaded()
+    else if (to.name === 'search' || to.name === 'index') {
+      void ensureShopHomeProductsLoaded({ refresh: true })
     }
     else {
       void ensureMallShowcaseProductsLoaded()

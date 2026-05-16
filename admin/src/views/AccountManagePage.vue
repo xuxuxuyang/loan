@@ -2,7 +2,7 @@
 import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { getAdminSession } from '../composables/useAdminAuth'
-import { withAdminAuthHeaders } from '../composables/useAdminApi'
+import { withAdminAuthHeaders, withMallTenantHeaders } from '../composables/useAdminApi'
 import { donePageProgress, startPageProgress } from '../utils/progress'
 
 type AccountRole = 'super_admin' | 'boss' | 'reviewer' | 'collector'
@@ -43,6 +43,7 @@ const roleSubmitting = ref(false)
 const roleTarget = ref<AdminAccountItem | null>(null)
 const session = computed(() => getAdminSession())
 const isPlatformSession = computed(() => session.value?.scopeType === 'platform')
+const sessionUsername = computed(() => String(session.value?.username || '').trim())
 const tableColumnCount = computed(() => 7)
 
 const createForm = reactive({
@@ -52,6 +53,44 @@ const createForm = reactive({
   password: '123456',
   role: 'reviewer' as Exclude<AccountRole, 'super_admin'>,
 })
+
+const createFormErrors = reactive({
+  username: '',
+  name: '',
+  phone: '',
+  password: '',
+  general: '',
+})
+
+function clearCreateFormErrors() {
+  createFormErrors.username = ''
+  createFormErrors.name = ''
+  createFormErrors.phone = ''
+  createFormErrors.password = ''
+  createFormErrors.general = ''
+}
+
+function applyCreateAccountApiError(msg: string) {
+  const t = String(msg || '').trim()
+  clearCreateFormErrors()
+  if (!t) {
+    createFormErrors.general = '创建失败'
+    return
+  }
+  if (t.includes('手机号') || (t.includes('手机') && t.includes('占用'))) {
+    createFormErrors.phone = t
+    return
+  }
+  if (t.includes('账号')) {
+    createFormErrors.username = t
+    return
+  }
+  if (t.includes('密码')) {
+    createFormErrors.password = t
+    return
+  }
+  createFormErrors.general = t
+}
 
 const passwordForm = reactive({
   password: '',
@@ -170,28 +209,67 @@ function sectionHeaderClass(sectionKey: string) {
   return 'section-head section-head-staff'
 }
 
+function isProtectedPlatformSuperRow(item: AdminAccountItem): boolean {
+  return isPlatformSession.value && item.username === 'xuyang'
+}
+
+/** 租户侧不可删除/禁用的老板行；平台侧 xuyang 不可动 */
+function isAccountRowImmutable(item: AdminAccountItem): boolean {
+  if (isProtectedPlatformSuperRow(item))
+    return true
+  if (!isPlatformSession.value && item.role === 'boss')
+    return true
+  return false
+}
+
+/** 当前登录账号自身行：禁止删、禁角色、禁禁用（可改密码） */
+function isCurrentSessionRow(item: AdminAccountItem): boolean {
+  return Boolean(sessionUsername.value && item.username === sessionUsername.value)
+}
+
+function roleModalHint(): string {
+  return isPlatformSession.value ? '当前账号范围：主系统账号' : '当前账号范围：本租户（员工仅审核员、催收员）'
+}
+
 async function fetchAccounts() {
   loading.value = true
   startPageProgress()
   errorMessage.value = ''
   try {
-    const response = await fetch(`${MALL_API_BASE}/platform/accounts`, {
-      method: 'GET',
-      headers: withAdminAuthHeaders({ 'x-workspace-type': 'core' }),
-    })
-    const payload = await response.json() as {
-      success?: boolean
-      msg?: string
-      data?: AdminAccountItem[]
-    }
-    if (!response.ok || payload.success === false) {
-      const msg = payload.msg || `加载账号失败 (${response.status})`
-      if (response.status === 401 || response.status === 403) {
-        throw new Error(`${msg} — 请退出后使用系统管理员（xuyang）重新登录`)
+    if (isPlatformSession.value) {
+      const response = await fetch(`${MALL_API_BASE}/platform/accounts`, {
+        method: 'GET',
+        headers: withAdminAuthHeaders({ 'x-workspace-type': 'core' }),
+      })
+      const payload = await response.json() as {
+        success?: boolean
+        msg?: string
+        data?: AdminAccountItem[]
       }
-      throw new Error(msg)
+      if (!response.ok || payload.success === false) {
+        const msg = payload.msg || `加载账号失败 (${response.status})`
+        if (response.status === 401 || response.status === 403) {
+          throw new Error(`${msg} — 请退出后使用系统管理员（xuyang）重新登录`)
+        }
+        throw new Error(msg)
+      }
+      accounts.value = Array.isArray(payload.data) ? payload.data : []
     }
-    accounts.value = Array.isArray(payload.data) ? payload.data : []
+    else {
+      const response = await fetch(`${MALL_API_BASE}/admin/accounts?scopeType=tenant`, {
+        method: 'GET',
+        headers: withMallTenantHeaders(),
+      })
+      const payload = await response.json() as {
+        success?: boolean
+        msg?: string
+        data?: AdminAccountItem[]
+      }
+      if (!response.ok || payload.success === false) {
+        throw new Error(payload.msg || `加载账号失败 (${response.status})`)
+      }
+      accounts.value = Array.isArray(payload.data) ? payload.data : []
+    }
   }
   catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '加载账号失败'
@@ -211,11 +289,13 @@ function openCreateModal() {
   createForm.phone = ''
   createForm.password = '123456'
   createForm.role = 'reviewer'
+  clearCreateFormErrors()
   errorMessage.value = ''
 }
 
 function closeCreateModal() {
   if (submitting.value) return
+  clearCreateFormErrors()
   showCreate.value = false
 }
 
@@ -239,6 +319,10 @@ function closePasswordModal() {
 }
 
 function openRoleModal(item: AdminAccountItem) {
+  if (!isPlatformSession.value && item.role === 'boss') {
+    ElMessage.warning('不可修改老板账号角色')
+    return
+  }
   roleTarget.value = item
   roleForm.role = item.role
   errorMessage.value = ''
@@ -254,30 +338,54 @@ function closeRoleModal() {
 async function createAccount() {
   if (submitting.value) return
   submitting.value = true
-  errorMessage.value = ''
+  clearCreateFormErrors()
   try {
-    const response = await fetch(`${MALL_API_BASE}/platform/accounts`, {
-      method: 'POST',
-      headers: withAdminAuthHeaders({ 'Content-Type': 'application/json', 'x-workspace-type': 'core' }),
-      body: JSON.stringify({
-        username: createForm.username.trim(),
-        name: createForm.name.trim(),
-        phone: createForm.phone.trim(),
-        password: createForm.password.trim(),
-        role: createForm.role,
-        scopeType: 'platform',
-        scopeTenantIds: [],
-      }),
-    })
-    const payload = await response.json() as { msg?: string }
-    if (!response.ok) {
-      throw new Error(payload.msg || `创建账号失败: ${response.status}`)
+    if (isPlatformSession.value) {
+      const response = await fetch(`${MALL_API_BASE}/platform/accounts`, {
+        method: 'POST',
+        headers: withAdminAuthHeaders({ 'Content-Type': 'application/json', 'x-workspace-type': 'core' }),
+        body: JSON.stringify({
+          username: createForm.username.trim(),
+          name: createForm.name.trim(),
+          phone: createForm.phone.trim(),
+          password: createForm.password.trim(),
+          role: createForm.role,
+          scopeType: 'platform',
+          scopeTenantIds: [],
+        }),
+      })
+      const payload = await response.json() as { msg?: string }
+      if (!response.ok) {
+        throw new Error(payload.msg || `创建账号失败: ${response.status}`)
+      }
+    }
+    else {
+      const tenantId = String(session.value?.tenantId || '').trim()
+      const response = await fetch(`${MALL_API_BASE}/admin/accounts`, {
+        method: 'POST',
+        headers: withMallTenantHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({
+          username: createForm.username.trim(),
+          name: createForm.name.trim(),
+          phone: createForm.phone.trim(),
+          password: createForm.password.trim(),
+          role: createForm.role,
+          scopeType: 'tenant',
+          ...(tenantId ? { tenantId } : {}),
+        }),
+      })
+      const payload = await response.json() as { msg?: string }
+      if (!response.ok) {
+        throw new Error(payload.msg || `创建账号失败: ${response.status}`)
+      }
     }
     showCreate.value = false
+    clearCreateFormErrors()
     await fetchAccounts()
   }
   catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : '创建账号失败'
+    const msg = error instanceof Error ? error.message : '创建账号失败'
+    applyCreateAccountApiError(msg)
   }
   finally {
     submitting.value = false
@@ -285,14 +393,27 @@ async function createAccount() {
 }
 
 async function updateAccount(id: string, body: Record<string, unknown>) {
-  const response = await fetch(`${MALL_API_BASE}/platform/accounts/${encodeURIComponent(id)}`, {
-    method: 'PATCH',
-    headers: withAdminAuthHeaders({ 'Content-Type': 'application/json', 'x-workspace-type': 'core' }),
-    body: JSON.stringify(body),
-  })
-  const payload = await response.json() as { msg?: string }
-  if (!response.ok) {
-    throw new Error(payload.msg || `更新账号失败: ${response.status}`)
+  if (isPlatformSession.value) {
+    const response = await fetch(`${MALL_API_BASE}/platform/accounts/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      headers: withAdminAuthHeaders({ 'Content-Type': 'application/json', 'x-workspace-type': 'core' }),
+      body: JSON.stringify(body),
+    })
+    const payload = await response.json() as { msg?: string }
+    if (!response.ok) {
+      throw new Error(payload.msg || `更新账号失败: ${response.status}`)
+    }
+  }
+  else {
+    const response = await fetch(`${MALL_API_BASE}/admin/accounts/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      headers: withMallTenantHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify(body),
+    })
+    const payload = await response.json() as { msg?: string }
+    if (!response.ok) {
+      throw new Error(payload.msg || `更新账号失败: ${response.status}`)
+    }
   }
 }
 
@@ -312,6 +433,10 @@ async function submitRoleChange() {
   if (!roleTarget.value || roleSubmitting.value) return
   if (roleForm.role === roleTarget.value.role) {
     closeRoleModal()
+    return
+  }
+  if (!isPlatformSession.value && (roleForm.role === 'super_admin' || roleForm.role === 'boss')) {
+    ElMessage.error('租户内员工角色仅可为审核员或催收员')
     return
   }
   roleSubmitting.value = true
@@ -371,9 +496,14 @@ async function removeAccount(item: AdminAccountItem) {
   }
   deletingId.value = item.id
   try {
-    const response = await fetch(`${MALL_API_BASE}/platform/accounts/${encodeURIComponent(item.id)}`, {
+    const url = isPlatformSession.value
+      ? `${MALL_API_BASE}/platform/accounts/${encodeURIComponent(item.id)}`
+      : `${MALL_API_BASE}/admin/accounts/${encodeURIComponent(item.id)}`
+    const response = await fetch(url, {
       method: 'DELETE',
-      headers: withAdminAuthHeaders({ 'x-workspace-type': 'core' }),
+      headers: isPlatformSession.value
+        ? withAdminAuthHeaders({ 'x-workspace-type': 'core' })
+        : withMallTenantHeaders(),
     })
     const payload = await response.json() as { msg?: string }
     if (!response.ok) {
@@ -400,13 +530,35 @@ function toggleDeleteConfirm(accountId: string) {
   pendingDeleteId.value = accountId
 }
 
+function isStatusToggleLocked(item: AdminAccountItem): boolean {
+  return isAccountRowImmutable(item) || isCurrentSessionRow(item)
+}
+
+function isRoleEditLocked(item: AdminAccountItem): boolean {
+  return isProtectedPlatformSuperRow(item) || isCurrentSessionRow(item) || (!isPlatformSession.value && item.role === 'boss')
+}
+
+function isPasswordLocked(item: AdminAccountItem): boolean {
+  return isProtectedPlatformSuperRow(item)
+}
+
+function isDeleteButtonDisabled(item: AdminAccountItem): boolean {
+  if (isAccountRowImmutable(item) || isCurrentSessionRow(item))
+    return true
+  return Boolean(deletingId.value && deletingId.value !== item.id)
+}
+
 function cancelDelete() {
   pendingDeleteId.value = ''
 }
 
 onMounted(() => {
-  if (!isPlatformSession.value) return
-  void fetchAccounts()
+  const s = getAdminSession()
+  if (!s)
+    return
+  if (s.scopeType === 'platform' || s.role === 'boss') {
+    void fetchAccounts()
+  }
 })
 </script>
 
@@ -437,7 +589,7 @@ onMounted(() => {
     </div>
 
     <p
-      v-if="errorMessage"
+      v-if="errorMessage && !showCreate"
       class="error"
     >
       {{ errorMessage }}
@@ -518,7 +670,7 @@ onMounted(() => {
                 <button
                   class="btn btn-warning"
                   type="button"
-                  :disabled="row.item.username === 'xuyang'"
+                  :disabled="isStatusToggleLocked(row.item)"
                   @click="switchStatus(row.item)"
                 >
                   {{ row.item.status === 'active' ? '禁用' : '启用' }}
@@ -526,7 +678,7 @@ onMounted(() => {
                 <button
                   class="btn btn-role-edit"
                   type="button"
-                  :disabled="row.item.username === 'xuyang'"
+                  :disabled="isRoleEditLocked(row.item)"
                   @click="openRoleModal(row.item)"
                 >
                   修改角色
@@ -534,7 +686,7 @@ onMounted(() => {
                 <button
                   class="btn btn-primary"
                   type="button"
-                  :disabled="row.item.username === 'xuyang'"
+                  :disabled="isPasswordLocked(row.item)"
                   @click="openPasswordModal(row.item)"
                 >
                   修改密码
@@ -543,7 +695,7 @@ onMounted(() => {
                   <button
                     class="btn btn-danger"
                     type="button"
-                    :disabled="Boolean(deletingId) && deletingId !== row.item.id || row.item.username === 'xuyang'"
+                    :disabled="isDeleteButtonDisabled(row.item)"
                     @click="toggleDeleteConfirm(row.item.id)"
                   >
                     {{ deletingId === row.item.id ? '删除中...' : '删除' }}
@@ -606,13 +758,25 @@ onMounted(() => {
         </button>
       </div>
       <div class="form-grid">
+        <p
+          v-if="createFormErrors.general"
+          class="form-field-error form-field-error--full"
+        >
+          {{ createFormErrors.general }}
+        </p>
         <label>
           账号
           <el-input
             v-model="createForm.username"
             class="form-input"
+            :class="{ 'is-error': !!createFormErrors.username }"
             clearable
+            @update:model-value="createFormErrors.username = ''"
           />
+          <span
+            v-if="createFormErrors.username"
+            class="form-field-error"
+          >{{ createFormErrors.username }}</span>
         </label>
         <label>
           姓名
@@ -620,6 +784,7 @@ onMounted(() => {
             v-model="createForm.name"
             class="form-input"
             clearable
+            @update:model-value="createFormErrors.name = ''"
           />
         </label>
         <label>
@@ -627,27 +792,44 @@ onMounted(() => {
           <el-input
             v-model="createForm.phone"
             class="form-input"
+            :class="{ 'is-error': !!createFormErrors.phone }"
             clearable
+            @update:model-value="createFormErrors.phone = ''"
           />
+          <span
+            v-if="createFormErrors.phone"
+            class="form-field-error"
+          >{{ createFormErrors.phone }}</span>
         </label>
         <label>
           初始密码
           <el-input
             v-model="createForm.password"
             class="form-input"
+            :class="{ 'is-error': !!createFormErrors.password }"
             type="password"
             show-password
+            @update:model-value="createFormErrors.password = ''"
           />
+          <span
+            v-if="createFormErrors.password"
+            class="form-field-error"
+          >{{ createFormErrors.password }}</span>
         </label>
         <label class="full">
           角色
           <el-select
             v-model="createForm.role"
             class="form-select"
+            @change="createFormErrors.general = ''"
           >
             <el-option label="审核员" value="reviewer" />
             <el-option label="催收员" value="collector" />
-            <el-option label="老板" value="boss" />
+            <el-option
+              v-if="isPlatformSession"
+              label="老板"
+              value="boss"
+            />
           </el-select>
         </label>
       </div>
@@ -688,8 +870,16 @@ onMounted(() => {
             v-model="roleForm.role"
             class="form-select"
           >
-            <el-option label="系统管理员" value="super_admin" />
-            <el-option label="老板" value="boss" />
+            <el-option
+              v-if="isPlatformSession"
+              label="系统管理员"
+              value="super_admin"
+            />
+            <el-option
+              v-if="isPlatformSession"
+              label="老板"
+              value="boss"
+            />
             <el-option label="审核员" value="reviewer" />
             <el-option label="催收员" value="collector" />
           </el-select>
@@ -697,7 +887,7 @@ onMounted(() => {
         <label
           class="full"
         >
-          当前账号范围：主系统账号
+          {{ roleModalHint() }}
         </label>
       </div>
       <div class="actions actions-right">
@@ -1147,6 +1337,22 @@ onMounted(() => {
 .form-input,
 .form-select {
   width: 100%;
+}
+
+.form-field-error {
+  font-size: 12px;
+  color: var(--el-color-danger);
+  line-height: 1.35;
+  margin: 0;
+}
+
+.form-field-error--full {
+  grid-column: 1 / -1;
+  margin-bottom: 2px;
+}
+
+.form-input.is-error :deep(.el-input__wrapper) {
+  box-shadow: 0 0 0 1px var(--el-color-danger) inset;
 }
 
 .password-form-grid {

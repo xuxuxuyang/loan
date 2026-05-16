@@ -16,15 +16,21 @@ const ProductsPage = () => import('../views/ProductsPage.vue')
 const CsMessagesPage = () => import('../views/CsMessagesPage.vue')
 
 function adminHomeRoute(session: AdminSession | null) {
-  if (session?.scopeType === 'platform' && session?.workspaceType === 'self') {
+  if (!session) {
+    return { name: 'dashboard-overview' as const }
+  }
+  /** 审核员/催收员固定进订单侧；避免 scopeType 被标成 platform 时误进总部台造成路由死循环 */
+  if (session.role === 'reviewer' || session.role === 'collector') {
     return { name: 'orders' as const }
   }
-  if (session?.scopeType === 'platform') {
+  if (session.scopeType === 'platform' && session.workspaceType === 'self') {
+    return { name: 'orders' as const }
+  }
+  if (session.scopeType === 'platform') {
     return { name: 'platform-console' as const }
   }
-  if (session?.role === 'reviewer' || session?.role === 'collector')
-    return { name: 'orders' as const }
-  return { name: 'accounts' as const }
+  /** 租户侧（老板/租户域账号）：不可进 platformOnly 的总部路由，默认与大屏订单端一致 */
+  return { name: 'orders' as const }
 }
 
 const router = createRouter({
@@ -109,7 +115,7 @@ const router = createRouter({
       path: '/accounts',
       name: 'accounts',
       component: AccountManagePage,
-      meta: { title: '账号管理', roles: ['super_admin'], platformOnly: true },
+      meta: { title: '账号管理', roles: ['super_admin', 'boss'] },
     },
     {
       path: '/tenants',

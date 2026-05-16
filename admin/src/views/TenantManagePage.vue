@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
-import { withAdminAuthHeaders } from '../composables/useAdminApi'
+import { ElMessage } from 'element-plus'
+import { withAdminAuthHeaders, withMallTenantHeaders } from '../composables/useAdminApi'
 import { useTenantScope } from '../composables/useTenantScope'
 
 interface TenantSummary {
@@ -40,7 +40,8 @@ const deletingAccountId = ref('')
 const keyword = ref('')
 const accountKeyword = ref('')
 const errorMessage = ref('')
-const newTenantId = ref('')
+const newTenantId = ref('boss1')
+const newTenantIdError = ref('')
 const tenants = ref<TenantSummary[]>([])
 const selectedTenantId = ref('')
 const tenantAccounts = ref<TenantAdminAccount[]>([])
@@ -66,6 +67,72 @@ const passwordForm = ref({
   password: '',
   confirmPassword: '',
 })
+
+const createAccountFormErrors = ref({
+  username: '',
+  phone: '',
+  password: '',
+})
+
+function clearCreateAccountFormErrors() {
+  createAccountFormErrors.value = {
+    username: '',
+    phone: '',
+    password: '',
+  }
+}
+
+function validateCreateAccountFormFields(): boolean {
+  clearCreateAccountFormErrors()
+  const username = createAccountForm.value.username.trim()
+  const phoneDigits = String(createAccountForm.value.phone || '').replace(/\D/g, '')
+  const password = String(createAccountForm.value.password || '').trim()
+  let ok = true
+  if (!/^[a-zA-Z][a-zA-Z0-9_]{3,20}$/.test(username)) {
+    createAccountFormErrors.value.username = '账号格式不正确，需4-21位字母数字下划线且以字母开头'
+    ok = false
+  }
+  if (!/^1\d{10}$/.test(phoneDigits)) {
+    createAccountFormErrors.value.phone = '手机号格式不正确'
+    ok = false
+  }
+  const requirePassword = createAccountMode.value !== 'edit'
+  const pwdCheck = requirePassword ? password : (password.length > 0 ? password : '')
+  if (requirePassword && password.length < 4) {
+    createAccountFormErrors.value.password = '密码长度至少为4位'
+    ok = false
+  }
+  else if (!requirePassword && pwdCheck.length > 0 && pwdCheck.length < 4) {
+    createAccountFormErrors.value.password = '密码长度至少为4位'
+    ok = false
+  }
+  return ok
+}
+
+/** 将接口错误文案映射到表单项；命中则不再弹窗，仅表内标红 */
+function applyCreateAccountServerMessageToFields(msg: string): boolean {
+  const t = String(msg || '').trim()
+  if (!t) {
+    return false
+  }
+  if (t === '手机号格式不正确' || (t.includes('手机号') && t.includes('格式'))) {
+    createAccountFormErrors.value.phone = t
+    return true
+  }
+  if (t.includes('老板手机号已存在') || t.includes('更换手机号')) {
+    createAccountFormErrors.value.phone = t
+    return true
+  }
+  if (t.includes('账号格式不正确') || t.includes('老板账号已存在') || t.includes('更换账号')) {
+    createAccountFormErrors.value.username = t
+    return true
+  }
+  if (t.includes('密码长度')) {
+    createAccountFormErrors.value.password = t
+    return true
+  }
+  return false
+}
 
 const filteredTenants = computed(() => {
   const key = keyword.value.trim().toLowerCase()
@@ -167,6 +234,32 @@ function resolveTenantBossAccount(rawTenantId?: string) {
 
 function resolveTenantOptionLabel(item: TenantSummary) {
   return resolveTenantDisplayName(item.tenantId, item.tenantName)
+}
+
+function computeNextSuggestedBossTenantId(alsoReserveNormalizedId?: string): string {
+  const usedN = new Set<number>()
+  const markId = (raw: string) => {
+    const id = normalizeTenantInput(String(raw || ''))
+    const m = id ? /^boss(\d+)$/i.exec(id) : null
+    if (!m) {
+      return
+    }
+    const n = Number(m[1])
+    if (Number.isFinite(n) && n >= 1) {
+      usedN.add(Math.floor(n))
+    }
+  }
+  for (const item of tenants.value) {
+    markId(String(item.tenantId || ''))
+  }
+  if (alsoReserveNormalizedId) {
+    markId(alsoReserveNormalizedId)
+  }
+  let n = 1
+  while (usedN.has(n)) {
+    n += 1
+  }
+  return `boss${n}`
 }
 
 async function fetchTenants() {
@@ -274,11 +367,10 @@ function resolveAccountTenantId(item: TenantAdminAccount) {
   return normalizeTenantInput(String(item.sourceTenantId || item.tenantId || selectedTenantId.value || ''))
 }
 
-function buildTenantScopedHeaders(tenantId: string, init: HeadersInit = {}) {
-  return withAdminAuthHeaders({
-    ...init,
+function buildTenantScopedHeaders(tenantId: string, extra: Record<string, string> = {}) {
+  return withMallTenantHeaders({
+    ...extra,
     'x-tenant-id': tenantId,
-    'x-workspace-type': 'tenant',
   })
 }
 
@@ -306,33 +398,23 @@ function openEditTenantBossAccount(tenantId = '') {
     phone: String(bossAccount.phone || ''),
     password: '',
   }
+  clearCreateAccountFormErrors()
   errorMessage.value = ''
 }
 
 function openCreateTenantWithBossModal() {
+  newTenantIdError.value = ''
   const tenantId = normalizeTenantInput(newTenantId.value)
   if (!tenantId) {
-    errorMessage.value = '请输入有效的租户系统ID（仅支持 boss/boos + 数字，例如 boss1 或 boos1）'
-    void ElMessageBox.alert(errorMessage.value, '提示', {
-      type: 'warning',
-      confirmButtonText: '我知道了',
-    })
+    newTenantIdError.value = '请输入有效的租户系统ID（仅支持 boss/boos + 数字，例如 boss1 或 boos1）'
     return
   }
   if (!isValidOnboardTenantId(tenantId)) {
-    errorMessage.value = '租户系统ID仅支持 boss/boos + 数字，例如 boss1、boos1'
-    void ElMessageBox.alert(errorMessage.value, '提示', {
-      type: 'warning',
-      confirmButtonText: '我知道了',
-    })
+    newTenantIdError.value = '租户系统ID仅支持 boss/boos + 数字，例如 boss1、boos1'
     return
   }
   if (tenants.value.some(item => normalizeTenantInput(item.tenantId) === tenantId)) {
-    errorMessage.value = `租户系统ID ${tenantId} 已存在，请勿重复开通`
-    void ElMessageBox.alert(errorMessage.value, '提示', {
-      type: 'warning',
-      confirmButtonText: '我知道了',
-    })
+    newTenantIdError.value = `租户系统ID ${tenantId} 已存在，请勿重复开通`
     return
   }
   editingBossAccount.value = null
@@ -345,11 +427,13 @@ function openCreateTenantWithBossModal() {
     phone: '',
     password: '123456',
   }
+  clearCreateAccountFormErrors()
   errorMessage.value = ''
 }
 
 function closeCreateTenantAccount() {
   if (creatingTenantAccount.value) return
+  clearCreateAccountFormErrors()
   showCreateAccountModal.value = false
   editingBossAccount.value = null
 }
@@ -416,10 +500,9 @@ async function onboardTenantWithBoss(tenantId: string) {
 async function createBossAccount(tenantId: string) {
   const response = await fetch(`${MALL_API_BASE}/admin/accounts`, {
     method: 'POST',
-    headers: withAdminAuthHeaders({
+    headers: withMallTenantHeaders({
       'Content-Type': 'application/json',
       'x-tenant-id': tenantId,
-      'x-workspace-type': 'tenant',
     }),
     body: JSON.stringify({
       username: createAccountForm.value.username.trim(),
@@ -499,6 +582,9 @@ async function createTenantAccount() {
     ElMessage.error(errorMessage.value)
     return
   }
+  if (!validateCreateAccountFormFields()) {
+    return
+  }
   creatingTenantAccount.value = true
   errorMessage.value = ''
   let createdTenantId = ''
@@ -508,7 +594,6 @@ async function createTenantAccount() {
       createdTenantId = tenantId
       createdBossAccount = await onboardTenantWithBoss(tenantId)
       ElMessage.success('租户系统与老板账号开通成功')
-      newTenantId.value = ''
     }
     else if (createAccountMode.value === 'edit' && editingBossAccount.value) {
       await updateBossAccount(editingBossAccount.value, tenantId)
@@ -532,14 +617,20 @@ async function createTenantAccount() {
     else {
       await fetchTenantAccounts()
     }
+    if (createAccountMode.value === 'onboard' && createdTenantId) {
+      newTenantId.value = computeNextSuggestedBossTenantId(createdTenantId)
+      newTenantIdError.value = ''
+    }
+    clearCreateAccountFormErrors()
   }
   catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : '新增失败'
-    ElMessage.error(errorMessage.value)
-    void ElMessageBox.alert(errorMessage.value, '开通失败', {
-      type: 'error',
-      confirmButtonText: '我知道了',
-    })
+    const msg = error instanceof Error ? error.message : '新增失败'
+    errorMessage.value = msg
+    clearCreateAccountFormErrors()
+    if (applyCreateAccountServerMessageToFields(msg)) {
+      return
+    }
+    ElMessage.error(msg)
   }
   finally {
     creatingTenantAccount.value = false
@@ -667,8 +758,11 @@ function jumpToTenant(tenantId: string) {
 }
 
 onMounted(() => {
-  void fetchTenants()
-  void fetchTenantAccounts()
+  void (async () => {
+    await fetchTenants()
+    newTenantId.value = computeNextSuggestedBossTenantId()
+    void fetchTenantAccounts()
+  })()
 })
 </script>
 
@@ -677,17 +771,16 @@ onMounted(() => {
     v-loading="loading"
     class="tenant-manage-page"
   >
-    <div class="panel">
-      <div class="tenant-open-card__head">
-        <h3>租户系统开通</h3>
-        <p>新开租户的必选步骤：先登记租户系统ID，再为该租户创建老板账号，最后交付客户使用。</p>
-      </div>
-      <div class="toolbar toolbar-left">
+    <div class="tenant-page__quick-open">
+      <div class="tenant-page__quick-open-row">
+        <span class="tenant-page__quick-label">子系统开通</span>
         <el-input
           v-model="newTenantId"
-          class="toolbar-input"
+          class="toolbar-input tenant-page__quick-input"
+          :class="{ 'is-error': !!newTenantIdError }"
           clearable
           placeholder="请输入租户系统ID（如 boss1 或 boos1）"
+          @update:model-value="newTenantIdError = ''"
         />
         <button
           class="btn btn-primary"
@@ -698,6 +791,12 @@ onMounted(() => {
           {{ creatingTenantAccount && createAccountMode === 'onboard' ? '开通中...' : '开通租户系统' }}
         </button>
       </div>
+      <p
+        v-if="newTenantIdError"
+        class="form-field-error tenant-page__quick-open-hint"
+      >
+        {{ newTenantIdError }}
+      </p>
     </div>
 
     <div class="panel">
@@ -928,8 +1027,14 @@ onMounted(() => {
             <el-input
               v-model="createAccountForm.username"
               class="form-input"
+              :class="{ 'is-error': !!createAccountFormErrors.username }"
               clearable
+              @update:model-value="createAccountFormErrors.username = ''"
             />
+            <span
+              v-if="createAccountFormErrors.username"
+              class="form-field-error"
+            >{{ createAccountFormErrors.username }}</span>
           </label>
           <label>
             姓名
@@ -945,17 +1050,29 @@ onMounted(() => {
             <el-input
               v-model="createAccountForm.phone"
               class="form-input"
+              :class="{ 'is-error': !!createAccountFormErrors.phone }"
               clearable
+              @update:model-value="createAccountFormErrors.phone = ''"
             />
+            <span
+              v-if="createAccountFormErrors.phone"
+              class="form-field-error"
+            >{{ createAccountFormErrors.phone }}</span>
           </label>
           <label>
             {{ createAccountMode === 'edit' ? '新密码（留空则不修改）' : '初始密码' }}
             <el-input
               v-model="createAccountForm.password"
               class="form-input"
+              :class="{ 'is-error': !!createAccountFormErrors.password }"
               type="password"
               show-password
+              @update:model-value="createAccountFormErrors.password = ''"
             />
+            <span
+              v-if="createAccountFormErrors.password"
+              class="form-field-error"
+            >{{ createAccountFormErrors.password }}</span>
           </label>
           <label>
             角色（固定）
@@ -1083,7 +1200,43 @@ onMounted(() => {
 <style scoped>
 .tenant-manage-page {
   display: grid;
-  gap: 14px;
+  gap: 12px;
+  align-content: start;
+  width: 100%;
+  flex: 0 1 auto;
+  min-height: 0;
+}
+
+.tenant-page__quick-open {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+.tenant-page__quick-open-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.tenant-page__quick-label {
+  font-size: 14px;
+  font-weight: 600;
+  color: #334155;
+  margin-right: 4px;
+}
+
+.tenant-page__quick-input {
+  width: 260px;
+  max-width: 100%;
+}
+
+.tenant-page__quick-open-hint {
+  margin: 0;
+  padding-left: 0;
+  max-width: min(560px, 100%);
 }
 
 .panel {
@@ -1093,16 +1246,9 @@ onMounted(() => {
   padding: 12px;
 }
 
-.tenant-open-card__head h3,
 .panel-title h3 {
   margin: 0;
   font-size: 16px;
-}
-
-.tenant-open-card__head p {
-  margin: 6px 0 0;
-  color: #475569;
-  font-size: 13px;
 }
 
 .toolbar {
@@ -1256,6 +1402,18 @@ onMounted(() => {
 
 .form-grid--single {
   grid-template-columns: 1fr;
+}
+
+.form-field-error {
+  font-size: 12px;
+  color: var(--el-color-danger);
+  line-height: 1.35;
+  margin-top: 2px;
+}
+
+.form-input.is-error :deep(.el-input__wrapper),
+.toolbar-input.is-error :deep(.el-input__wrapper) {
+  box-shadow: 0 0 0 1px var(--el-color-danger) inset;
 }
 
 .modal-actions {

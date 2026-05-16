@@ -3,7 +3,7 @@ import { CirclePlus, EditPen } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import { withAdminAuthHeaders } from '../composables/useAdminApi'
+import { withMallTenantHeaders } from '../composables/useAdminApi'
 import { getAdminSession, isSuperAdminRole } from '../composables/useAdminAuth'
 import TrafficChannelNameTag from '../components/TrafficChannelNameTag.vue'
 import UserRegistrationInfoScroll from '../components/UserRegistrationInfoScroll.vue'
@@ -307,7 +307,7 @@ async function fetchUsers() {
     const query = keyword.value.trim() ? `?keyword=${encodeURIComponent(keyword.value.trim())}` : ''
     const response = await fetch(`${MALL_API_BASE}/users${query}`, {
       method: 'GET',
-      headers: withAdminAuthHeaders(),
+      headers: withMallTenantHeaders(),
     })
     if (!response.ok) {
       throw new Error(`请求用户失败: ${response.status}`)
@@ -386,7 +386,7 @@ async function createUser() {
   try {
     const response = await fetch(`${MALL_API_BASE}/users`, {
       method: 'POST',
-      headers: withAdminAuthHeaders({ 'Content-Type': 'application/json' }),
+      headers: withMallTenantHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({
         name: createForm.name.trim(),
         phone: createForm.phone.trim(),
@@ -438,7 +438,7 @@ async function saveEdit() {
   try {
     const response = await fetch(`${MALL_API_BASE}/users/${target.id}`, {
       method: 'PATCH',
-      headers: withAdminAuthHeaders({ 'Content-Type': 'application/json' }),
+      headers: withMallTenantHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({
         name: editForm.name.trim(),
         phone: editForm.phone.trim(),
@@ -481,7 +481,7 @@ async function confirmDelete(user: ListedUser) {
   try {
     const response = await fetch(`${MALL_API_BASE}/users/${encodeURIComponent(user.id)}`, {
       method: 'DELETE',
-      headers: withAdminAuthHeaders(),
+      headers: withMallTenantHeaders(),
     })
     if (!response.ok) {
       const payload = await response.json() as { msg?: string }
@@ -553,7 +553,7 @@ async function saveQuota() {
   try {
     const response = await fetch(`${MALL_API_BASE}/users/${encodeURIComponent(id)}`, {
       method: 'PATCH',
-      headers: withAdminAuthHeaders({ 'Content-Type': 'application/json' }),
+      headers: withMallTenantHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ quota: Math.round(n) }),
     })
     if (!response.ok) {
@@ -592,7 +592,7 @@ async function saveRemark() {
   try {
     const response = await fetch(`${MALL_API_BASE}/users/${encodeURIComponent(id)}`, {
       method: 'PATCH',
-      headers: withAdminAuthHeaders({ 'Content-Type': 'application/json' }),
+      headers: withMallTenantHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ adminRemark: remarkDraft.value.trim() }),
     })
     if (!response.ok) {
@@ -619,7 +619,7 @@ async function toggleBlacklist(user: ListedUser) {
   try {
     const response = await fetch(`${MALL_API_BASE}/users/${encodeURIComponent(user.id)}`, {
       method: 'PATCH',
-      headers: withAdminAuthHeaders({ 'Content-Type': 'application/json' }),
+      headers: withMallTenantHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ orderBlacklisted: next }),
     })
     if (!response.ok) {
