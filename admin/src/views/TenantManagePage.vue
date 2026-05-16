@@ -175,7 +175,7 @@ async function fetchTenants() {
   try {
     const response = await fetch(`${MALL_API_BASE}/platform/tenants`, {
       method: 'GET',
-      headers: withAdminAuthHeaders(),
+      headers: withAdminAuthHeaders({ 'x-workspace-type': 'core' }),
     })
     const payload = await response.json() as {
       success?: boolean
@@ -236,7 +236,7 @@ async function fetchTenantAccounts() {
   try {
     const response = await fetch(`${MALL_API_BASE}/platform/admin-accounts?scopeType=tenant`, {
       method: 'GET',
-      headers: withAdminAuthHeaders(),
+      headers: withAdminAuthHeaders({ 'x-workspace-type': 'core' }),
     })
     const payload = await response.json() as {
       success?: boolean
@@ -382,7 +382,7 @@ function closePasswordDialog() {
 async function onboardTenantWithBoss(tenantId: string) {
   const response = await fetch(`${MALL_API_BASE}/platform/tenants/onboard`, {
     method: 'POST',
-    headers: withAdminAuthHeaders({ 'Content-Type': 'application/json' }),
+    headers: withAdminAuthHeaders({ 'Content-Type': 'application/json', 'x-workspace-type': 'core' }),
     body: JSON.stringify({
       tenantId,
       username: createAccountForm.value.username.trim(),

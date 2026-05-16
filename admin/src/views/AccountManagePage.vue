@@ -177,7 +177,7 @@ async function fetchAccounts() {
   try {
     const response = await fetch(`${MALL_API_BASE}/platform/accounts`, {
       method: 'GET',
-      headers: withAdminAuthHeaders(),
+      headers: withAdminAuthHeaders({ 'x-workspace-type': 'core' }),
     })
     const payload = await response.json() as {
       success?: boolean
@@ -258,7 +258,7 @@ async function createAccount() {
   try {
     const response = await fetch(`${MALL_API_BASE}/platform/accounts`, {
       method: 'POST',
-      headers: withAdminAuthHeaders({ 'Content-Type': 'application/json' }),
+      headers: withAdminAuthHeaders({ 'Content-Type': 'application/json', 'x-workspace-type': 'core' }),
       body: JSON.stringify({
         username: createForm.username.trim(),
         name: createForm.name.trim(),
@@ -287,7 +287,7 @@ async function createAccount() {
 async function updateAccount(id: string, body: Record<string, unknown>) {
   const response = await fetch(`${MALL_API_BASE}/platform/accounts/${encodeURIComponent(id)}`, {
     method: 'PATCH',
-    headers: withAdminAuthHeaders({ 'Content-Type': 'application/json' }),
+    headers: withAdminAuthHeaders({ 'Content-Type': 'application/json', 'x-workspace-type': 'core' }),
     body: JSON.stringify(body),
   })
   const payload = await response.json() as { msg?: string }
@@ -373,7 +373,7 @@ async function removeAccount(item: AdminAccountItem) {
   try {
     const response = await fetch(`${MALL_API_BASE}/platform/accounts/${encodeURIComponent(item.id)}`, {
       method: 'DELETE',
-      headers: withAdminAuthHeaders(),
+      headers: withAdminAuthHeaders({ 'x-workspace-type': 'core' }),
     })
     const payload = await response.json() as { msg?: string }
     if (!response.ok) {

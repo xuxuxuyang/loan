@@ -248,7 +248,8 @@ function normalizeUserQuota(value) {
   }
   return Math.round(n)
 }
-const ENFORCE_ADMIN_RBAC = normalizeBoolean(process.env.ENFORCE_ADMIN_RBAC, false)
+/** 默认开启：禁止「未解析到角色时默认 super_admin」。本地调试可设 ENFORCE_ADMIN_RBAC=false */
+const ENFORCE_ADMIN_RBAC = normalizeBoolean(process.env.ENFORCE_ADMIN_RBAC, true)
 const ADMIN_ACCOUNT_STATUS_SET = new Set(['active', 'disabled'])
 const ADMIN_SCOPE_TYPES = new Set(['tenant', 'platform'])
 
@@ -409,6 +410,18 @@ function ensureAdminAccounts(db) {
     db.adminAccounts = accounts
     return
   }
+  // 兼容历史数据：旧版本里主系统账号可能写成 tenant+default，这里统一升级为 platform+default。
+  accounts = accounts.map((item) => {
+    const tenantId = normalizeTenantId(item.tenantId || DEFAULT_TENANT_ID)
+    if (tenantId === DEFAULT_TENANT_ID && String(item.scopeType || 'tenant') !== 'platform') {
+      return {
+        ...item,
+        scopeType: 'platform',
+        tenantId: DEFAULT_TENANT_ID,
+      }
+    }
+    return item
+  })
   // 主系统仅保留唯一超级管理员账号（DEFAULT_SUPER_ADMIN_USERNAME）
   const superAdmins = accounts.filter(item => item.role === ADMIN_ROLES.SUPER)
   if (superAdmins.length > 1) {
@@ -444,6 +457,64 @@ function getAdminAccountByUsername(db, username) {
 
 function getAdminAccountByPhone(db, phone) {
   return db.adminAccounts.find(item => item.phone === phone && item.status === 'active') || null
+}
+
+function readRawAdminAccountsByWorkspace(workspaceType, tenantId) {
+  return runWithWorkspace(workspaceType, tenantId, () => {
+    const db = readDb()
+    const rows = Array.isArray(db.adminAccounts) ? db.adminAccounts : []
+    return rows
+      .map(normalizeAdminAccount)
+      .filter(item => item && item.username)
+  })
+}
+
+function migrateLegacyMainAccountsToCore() {
+  return runWithWorkspace('core', DEFAULT_TENANT_ID, () => {
+    const coreDb = readDb()
+    ensureAdminAccounts(coreDb)
+    const existingByUsername = new Set(coreDb.adminAccounts.map(item => String(item.username || '').trim()))
+    const existingByPhone = new Set(coreDb.adminAccounts.map(item => normalizePhone(item.phone)).filter(Boolean))
+
+    const legacyTenantDefaultAccounts = readRawAdminAccountsByWorkspace('tenant', DEFAULT_TENANT_ID)
+    const legacySelfAccounts = readRawAdminAccountsByWorkspace('self', DEFAULT_TENANT_ID)
+    const legacyAll = [...legacyTenantDefaultAccounts, ...legacySelfAccounts]
+
+    let appended = 0
+    legacyAll.forEach((item) => {
+      const username = String(item.username || '').trim()
+      if (!username || username === DEFAULT_SUPER_ADMIN_USERNAME) {
+        return
+      }
+      const phone = normalizePhone(item.phone)
+      if (existingByUsername.has(username)) {
+        return
+      }
+      if (phone && existingByPhone.has(phone)) {
+        return
+      }
+      const now = new Date().toISOString()
+      const next = normalizeAdminAccount({
+        ...item,
+        id: item.id || `A${Date.now()}${appended}`,
+        scopeType: 'platform',
+        tenantId: DEFAULT_TENANT_ID,
+        scopeTenantIds: ['*'],
+        updatedAt: now,
+      })
+      coreDb.adminAccounts.push(next)
+      existingByUsername.add(username)
+      if (phone) {
+        existingByPhone.add(phone)
+      }
+      appended += 1
+    })
+
+    if (appended > 0) {
+      writeDb(coreDb)
+    }
+    return appended
+  })
 }
 
 function readDbByTenantId(tenantId) {
@@ -541,6 +612,30 @@ function getAdminAccountByUsernameAcrossTenants(username, preferredTenantId) {
     }
   }
   return null
+}
+
+/**
+ * core/self 映射到独立 MongoDB，仅信任 Authorization 中 Bearer 对应「平台 scope」且状态为 active 的后台账号；
+ * 租户后台、商城会话或伪造 x-workspace-type 时一律回落到 tenant 库，避免未授权读平台库。
+ */
+function isPlatformAdminBearerForWorkspace(ctx, preferredTenantId) {
+  const phone = normalizePhone(parsePhoneFromToken(ctx.headers && ctx.headers.authorization))
+  if (!phone) {
+    return false
+  }
+  const account = getAdminAccountByPhoneAcrossTenants(
+    phone,
+    normalizeTenantId(preferredTenantId || DEFAULT_TENANT_ID),
+  )
+  return Boolean(account && account.scopeType === 'platform' && account.status === 'active')
+}
+
+function clampIncomingWorkspaceType(ctx, tenantId, workspaceType) {
+  const ws = normalizeWorkspaceType(workspaceType)
+  if (ws !== 'core' && ws !== 'self') {
+    return ws
+  }
+  return isPlatformAdminBearerForWorkspace(ctx, tenantId) ? ws : 'tenant'
 }
 
 function effectiveScopeTenantIds(account) {
@@ -3833,8 +3928,16 @@ router.get('/platform/accounts', (ctx) => {
   if (!account) {
     return
   }
+  migrateLegacyMainAccountsToCore()
   const db = readCoreDb()
   ensureAdminAccounts(db)
+  const hasLegacyPromoted = db.adminAccounts.some(
+    item => normalizeTenantId(item.tenantId || DEFAULT_TENANT_ID) === DEFAULT_TENANT_ID
+      && String(item.scopeType || 'tenant') === 'platform',
+  )
+  if (hasLegacyPromoted) {
+    writeCoreDb(db)
+  }
   const list = db.adminAccounts
     .filter(item => String(item.scopeType || 'tenant') === 'platform')
     .map(item => ({
@@ -6794,7 +6897,8 @@ app.use(bodyParser({
 }))
 app.use(async (ctx, next) => {
   const tenantId = resolveTenantIdFromRequest(ctx)
-  const workspaceType = resolveWorkspaceTypeFromRequest(ctx)
+  const rawWorkspace = resolveWorkspaceTypeFromRequest(ctx)
+  const workspaceType = clampIncomingWorkspaceType(ctx, tenantId, rawWorkspace)
   ctx.state.tenantId = tenantId
   ctx.state.workspaceType = workspaceType
   ctx.set('x-tenant-id', tenantId)

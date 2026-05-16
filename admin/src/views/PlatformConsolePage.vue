@@ -52,7 +52,7 @@ async function fetchSummary() {
   try {
     const response = await fetch(`${MALL_API_BASE}/platform/dashboard/summary`, {
       method: 'GET',
-      headers: withAdminAuthHeaders(),
+      headers: withAdminAuthHeaders({ 'x-workspace-type': 'core' }),
     })
     const payload = await response.json() as {
       success?: boolean
@@ -89,7 +89,7 @@ async function createTenant() {
   try {
     const response = await fetch(`${MALL_API_BASE}/platform/tenants`, {
       method: 'POST',
-      headers: withAdminAuthHeaders({ 'Content-Type': 'application/json' }),
+      headers: withAdminAuthHeaders({ 'Content-Type': 'application/json', 'x-workspace-type': 'core' }),
       body: JSON.stringify({ tenantId }),
     })
     const payload = await response.json() as { success?: boolean, msg?: string }

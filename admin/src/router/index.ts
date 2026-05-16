@@ -38,7 +38,10 @@ const router = createRouter({
     },
     {
       path: '/',
-      redirect: '/dashboard',
+      redirect: () => {
+        const session = getAdminSession()
+        return session ? adminHomeRoute(session) : { name: 'dashboard-overview' as const }
+      },
     },
     {
       path: '/platform',
@@ -158,9 +161,6 @@ router.beforeEach((to) => {
   const session = getAdminSession()
   if (authed && to.name === 'login') {
     return adminHomeRoute(session)
-  }
-  if (authed && session?.scopeType === 'platform' && session?.workspaceType !== 'self' && (to.path === '/' || to.name === 'dashboard-overview')) {
-    return { name: 'platform-console' as const }
   }
   const allowRoles = Array.isArray(to.meta.roles) ? to.meta.roles : []
   if (allowRoles.length > 0 && !adminSessionRoleAllowed(session?.role, allowRoles)) {
