@@ -19,6 +19,7 @@ const {
   isMongoPersistenceEnabled,
   flushMongoPersist,
   evictTenantMemoryCache,
+  refreshTenantCacheFromMongo,
   removeTenantJsonStoreFile,
 } = require('./store')
 const {
@@ -3764,7 +3765,7 @@ router.get('/platform/mall-users', async (ctx) => {
   /** @type {ReturnType<typeof attachUserOrderStats>[]} */
   const flattened = []
   for (const tenantId of targetTenants) {
-    await hydrateTenantIfNeeded(tenantId)
+    await refreshTenantCacheFromMongo(tenantId)
     const db = readDbByTenantId(tenantId)
     const usersRaw = Array.isArray(db.users) ? db.users : []
     const tenantLabel = tenantId === DEFAULT_TENANT_ID ? '主系统' : tenantId

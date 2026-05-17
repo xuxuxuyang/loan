@@ -680,6 +680,22 @@ function evictTenantMemoryCache(rawTenantId) {
   mongoMemoryDbByTenant.delete(`tenant:${t}`)
 }
 
+/**
+ * 丢弃内存中的租户快照并从 Mongo 重新加载。
+ * 用于总部只读聚合接口：其它实例/进程已写 Mongo 时，本进程仍可能持有旧快照。
+ */
+async function refreshTenantCacheFromMongo(rawTenantId) {
+  if (!mongoBacked) {
+    return
+  }
+  const t = normalizeTenantId(rawTenantId || DEFAULT_TENANT_ID)
+  if (!t || t === DEFAULT_TENANT_ID) {
+    return
+  }
+  evictTenantMemoryCache(t)
+  await hydrateTenantDbFromMongo('tenant', t)
+}
+
 /** 删除本地 JSON 形态的子系统快照文件 db.<tenant>.json（不影响 mall/default 主文件） */
 function removeTenantJsonStoreFile(rawTenantId) {
   const t = normalizeTenantId(rawTenantId || DEFAULT_TENANT_ID)
@@ -712,6 +728,7 @@ module.exports = {
   importLocalSnapshotToMongo,
   isMongoPersistenceEnabled,
   evictTenantMemoryCache,
+  refreshTenantCacheFromMongo,
   removeTenantJsonStoreFile,
   clonePayloadForMongo,
   /** 脚本：清空云库 mall 相关集合并写入 buildSeedDb() */
