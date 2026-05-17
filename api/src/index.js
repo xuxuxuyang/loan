@@ -6042,7 +6042,6 @@ router.post('/orders', async (ctx) => {
       nextOrder.riskOrderSubmitPack = false
     }
     else {
-    const skipUpstream = String(process.env.RISK_ORDER_SUBMIT_SKIP_UPSTREAM || '').trim() === '1'
     const idForRisk = String(payload.idNumber || '').trim()
     const idPlaceholder = String(process.env.RISK_PRELIMINARY_PLACEHOLDER_ID || '').trim()
     /** 先享后付风控身份以注册资料为准（收货人可为他人）；按身份证号在库中解析账号主档 */
@@ -6056,7 +6055,7 @@ router.post('/orders', async (ctx) => {
     const riskPhoneForWave = riskSubject
       ? normalizePhone(riskSubject.phone)
       : normalizePhone(nextOrder.receiverPhone)
-    if (isRiskUpstreamConfigured() && !skipUpstream && !idForRisk && !idPlaceholder) {
+    if (isRiskUpstreamConfigured() && !idForRisk && !idPlaceholder) {
       fail(ctx, '先享后付下单需提交身份证号以便系统风控核验，请先完成注册资料', 400)
       return
     }

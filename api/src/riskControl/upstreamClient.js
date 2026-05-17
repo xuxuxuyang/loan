@@ -605,19 +605,6 @@ async function runOrderSubmitSingleRiskStep(stepKey, params) {
   }
 
   if (!isRiskUpstreamConfigured()) {
-    const skip = String(process.env.RISK_ORDER_SUBMIT_SKIP_UPSTREAM || '').trim() === '1'
-    if (skip) {
-      return {
-        ok: true,
-        step: {
-          key: stepKey,
-          label,
-          ok: true,
-          skipped: true,
-          reason: 'RISK_ORDER_SUBMIT_SKIP_UPSTREAM=1 跳过上游（仅本地调试）',
-        },
-      }
-    }
     return {
       ok: false,
       step: {
@@ -719,7 +706,7 @@ async function runOrderSubmitSingleRiskStep(stepKey, params) {
  * 订单提交专用：顺序调用 7 项上游风控；**通过=返回体信誉结论无问题**（非仅 HTTP 成功）。
  * 1 运营商二要素 2 在网时长 3 运营商状态 4 法院信息个人高级版 5 法院被执行人高级版 6 个人三要素 7 探针C-MD5
  * @param {{ userName?: string, phoneNumber?: string, idNumber?: string }} params
- * @returns {Promise<{ allPassed: boolean, message: string, steps: Array<Record<string, unknown>>, skipped?: boolean }>}
+ * @returns {Promise<{ allPassed: boolean, message: string, steps: Array<Record<string, unknown>> }>}
  */
 async function runOrderSubmitUpstreamRiskPack(params) {
   const userName = String(params.userName || '').trim()
@@ -745,24 +732,6 @@ async function runOrderSubmitUpstreamRiskPack(params) {
   }
 
   if (!isRiskUpstreamConfigured()) {
-    const skip = String(process.env.RISK_ORDER_SUBMIT_SKIP_UPSTREAM || '').trim() === '1'
-    if (skip) {
-      for (const key of ORDER_INSTALLMENT_RISK_STEP_KEYS) {
-        steps.push({
-          key,
-          label: ORDER_INSTALLMENT_RISK_STEP_LABELS[key],
-          ok: true,
-          skipped: true,
-          reason: 'RISK_ORDER_SUBMIT_SKIP_UPSTREAM=1 跳过上游（仅本地调试）',
-        })
-      }
-      return {
-        allPassed: true,
-        message: '',
-        steps,
-        skipped: true,
-      }
-    }
     const msg = '未配置风控上游（RISK_UPSTREAM_* 或 HD_CLOUD_*），无法完成系统审核'
     steps.push({ key: 'upstream', label: '风控上游', ok: false, error: msg })
     return { allPassed: false, message: msg, steps }
