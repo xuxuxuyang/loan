@@ -1,5 +1,6 @@
 const fs = require('node:fs')
 const path = require('node:path')
+const { AsyncLocalStorage } = require('node:async_hooks')
 const mongo = require('./mongo')
 const mongoConfig = require('./mongoConfig')
 const {
@@ -30,13 +31,29 @@ const ENTITY_SPECS = mongo.SHARDED_ENTITY_KEYS.map((key) => ({
 }))
 
 let mongoBacked = false
-/** 使用 Mongo 时 readDb/writeDb 均针对该常驻对象 */
+/**
+ * Mongo 模式下为「当前请求」的工作副本：index 中间件在每个 /api 请求起已 refreshScopeCacheFromMongo，
+ * 同一请求内读写一致；非 HTTP 脚本见 hydrateTenantDbFromMongo / import 等独立入口。
+ */
 let mongoMemoryDb = null
 let mongoMemoryDbByTenant = new Map()
+
+/** 单次 HTTP 请求内已对某 scopeKey 执行过 refresh 时跳过，避免重复全库拉取 */
+const mongoScopeRefreshDedup = new AsyncLocalStorage()
+/** hydrateTenantDbFromMongo 正在执行时 >0，防止 refresh→hydrate→再次 refresh 递归 */
+let mongoHydrateDepth = 0
 
 /** 串行写入，避免并发持久化乱序 */
 let persistTail = Promise.resolve()
 let persistTailByTenant = new Map()
+
+function runWithMongoRequestDedup(fn) {
+  return mongoScopeRefreshDedup.run(new Set(), fn)
+}
+
+function getMongoHydrateDepth() {
+  return mongoHydrateDepth
+}
 
 function normalizeWorkspaceForKey(raw) {
   const value = String(raw || '').trim().toLowerCase()
@@ -468,35 +485,39 @@ async function hydrateTenantDbFromMongo(workspaceType, tenantId) {
   const runner = targetWorkspace === 'tenant'
     ? (fn) => runWithTenant(targetTenant, fn)
     : (fn) => runWithWorkspace(targetWorkspace, DEFAULT_TENANT_ID, fn)
-  return runner(async () => {
-    const dbm = mongo.getMongoDb()
-    if (!dbm) {
-      return false
-    }
-    const raw = await loadShardedRawFromDb(dbm)
-    let nextDb
-    if (isRawShardedPayloadEmpty(raw)) {
-      nextDb = buildSeedDb()
-      await persistShardedSnapshot(dbm, clonePayloadForMongo(nextDb))
-    }
-    else {
-      nextDb = shapeDbFromParsed(raw)
-    }
-    const scoped = getScopeState()
-    mongoMemoryDbByTenant.set(scoped.key, nextDb)
-    if (scoped.key === 'tenant:default') {
-      mongoMemoryDb = nextDb
-    }
-    return true
-  })
-    .finally(() => {
-      if (prevWorkspace === 'tenant') {
-        setCurrentTenant(prevTenant || DEFAULT_TENANT_ID)
+  mongoHydrateDepth++
+  try {
+    return await runner(async () => {
+      const dbm = mongo.getMongoDb()
+      if (!dbm) {
+        return false
+      }
+      const raw = await loadShardedRawFromDb(dbm)
+      let nextDb
+      if (isRawShardedPayloadEmpty(raw)) {
+        nextDb = buildSeedDb()
+        await persistShardedSnapshot(dbm, clonePayloadForMongo(nextDb))
       }
       else {
-        setCurrentWorkspace(prevWorkspace, DEFAULT_TENANT_ID)
+        nextDb = shapeDbFromParsed(raw)
       }
+      const scoped = getScopeState()
+      mongoMemoryDbByTenant.set(scoped.key, nextDb)
+      if (scoped.key === 'tenant:default') {
+        mongoMemoryDb = nextDb
+      }
+      return true
     })
+  }
+  finally {
+    mongoHydrateDepth--
+    if (prevWorkspace === 'tenant') {
+      setCurrentTenant(prevTenant || DEFAULT_TENANT_ID)
+    }
+    else {
+      setCurrentWorkspace(prevWorkspace, DEFAULT_TENANT_ID)
+    }
+  }
 }
 
 function readDb() {
@@ -510,8 +531,7 @@ function readDb() {
     const ws = normalizeWorkspaceForKey(scope.workspaceType)
     const tid = getCurrentTenantId()
     // 非 default 租户：禁止在未 hydrate 前把空种子塞进 mongoMemoryDbByTenant。
-    // 否则 hasScopeCache 为 true 会跳过中间件 hydrate，总部列表等只读路径会先占位空快照，
-    // 后续任意 writeDb 会用 persistShardedSnapshot 覆盖 Mongo，表现为「新建子系统后老租户商品全没了」。
+    // 否则后续占位曾会导致错误的全量 persist 覆盖 Mongo。
     const tenantColdMustNotCacheEmpty = ws === 'tenant' && tid !== DEFAULT_TENANT_ID
     if (!tenantColdMustNotCacheEmpty) {
       mongoMemoryDbByTenant.set(scope.key, seeded)
@@ -681,8 +701,39 @@ function evictTenantMemoryCache(rawTenantId) {
 }
 
 /**
- * 丢弃内存中的租户快照并从 Mongo 重新加载。
- * 用于总部只读聚合接口：其它实例/进程已写 Mongo 时，本进程仍可能持有旧快照。
+ * 丢弃当前 workspace 在内存中的快照并从 Mongo 重载（与 hasScopeCache / readDb 使用的 key 一致）。
+ * 解决多进程、多实例或总部跨库读取时「进程内快照与 Mongo 不一致」。
+ */
+async function refreshScopeCacheFromMongo(workspaceType, rawTenantIdFromRequest) {
+  if (!mongoBacked) {
+    return
+  }
+  const ws = normalizeWorkspaceForKey(workspaceType)
+  const hydrateTenantId = ws === 'tenant'
+    ? normalizeTenantId(rawTenantIdFromRequest || DEFAULT_TENANT_ID)
+    : DEFAULT_TENANT_ID
+  const cacheKey = buildScopeKey(workspaceType, hydrateTenantId)
+  const dedup = mongoScopeRefreshDedup.getStore()
+  if (dedup && dedup.has(cacheKey)) {
+    return
+  }
+  mongoMemoryDbByTenant.delete(cacheKey)
+  if (ws === 'core') {
+    await hydrateTenantDbFromMongo('core', DEFAULT_TENANT_ID)
+  }
+  else if (ws === 'self') {
+    await hydrateTenantDbFromMongo('self', DEFAULT_TENANT_ID)
+  }
+  else {
+    await hydrateTenantDbFromMongo('tenant', hydrateTenantId)
+  }
+  if (dedup) {
+    dedup.add(cacheKey)
+  }
+}
+
+/**
+ * 丢弃指定子系统租户库内存快照并从 Mongo 重新加载（非 default 租户）。
  */
 async function refreshTenantCacheFromMongo(rawTenantId) {
   if (!mongoBacked) {
@@ -692,8 +743,7 @@ async function refreshTenantCacheFromMongo(rawTenantId) {
   if (!t || t === DEFAULT_TENANT_ID) {
     return
   }
-  evictTenantMemoryCache(t)
-  await hydrateTenantDbFromMongo('tenant', t)
+  await refreshScopeCacheFromMongo('tenant', t)
 }
 
 /** 删除本地 JSON 形态的子系统快照文件 db.<tenant>.json（不影响 mall/default 主文件） */
@@ -728,7 +778,10 @@ module.exports = {
   importLocalSnapshotToMongo,
   isMongoPersistenceEnabled,
   evictTenantMemoryCache,
+  refreshScopeCacheFromMongo,
   refreshTenantCacheFromMongo,
+  runWithMongoRequestDedup,
+  getMongoHydrateDepth,
   removeTenantJsonStoreFile,
   clonePayloadForMongo,
   /** 脚本：清空云库 mall 相关集合并写入 buildSeedDb() */
