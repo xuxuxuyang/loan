@@ -4861,6 +4861,21 @@ router.get('/my/summary', async (ctx) => {
   ctx.body = success(calcMySummary(db, phone))
 })
 
+function mapEligibleOrderToCardPackageRow(order) {
+  ensureOrderInstallmentPlan(order)
+  ensureOrderCardPackage(order)
+  return {
+    orderId: order.id,
+    title: order.name,
+    spec: order.spec || '',
+    totalAmount: Number(order.totalAmount || 0),
+    packageAmount: Math.max(0, Math.round(Number(order.cardPackageAmount) || 0)),
+    cardPackageIssued: order.cardPackageIssued,
+    orderStatus: order.status,
+    createdAt: order.createdAt,
+  }
+}
+
 router.get('/card-packages', async (ctx) => {
   const db = readDb()
   reconcileInstallmentCompletionAcrossDb(db)
@@ -4876,20 +4891,7 @@ router.get('/card-packages', async (ctx) => {
   }
   const list = db.orders
     .filter(item => orderBelongsToRegisteredMallUser(db, item, mallUser) && isOrderCardPackageEligible(item))
-    .map((item) => {
-      ensureOrderInstallmentPlan(item)
-      ensureOrderCardPackage(item)
-      return {
-        orderId: item.id,
-        title: item.name,
-        spec: item.spec || '',
-        totalAmount: Number(item.totalAmount || 0),
-        packageAmount: Math.max(0, Math.round(Number(item.cardPackageAmount) || 0)),
-        cardPackageIssued: item.cardPackageIssued,
-        orderStatus: item.status,
-        createdAt: item.createdAt,
-      }
-    })
+    .map(order => mapEligibleOrderToCardPackageRow(order))
     .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
   ctx.body = success(list)
 })
@@ -5101,8 +5103,11 @@ router.post('/card-packages/:orderId/contract-ack', async (ctx) => {
       order.cardPackageContractSignaturePng = sig
       order.cardPackageContractSignedAt = new Date().toISOString()
       writeDb(db)
+      await flushMongoPersist()
     }
-    ctx.body = success({ signed: true })
+    const ackDb = readDb()
+    const orderNow = findMallCardPackageClaimOrder(ackDb, phone, orderId) || order
+    ctx.body = success({ signed: true, cardPackageRow: mapEligibleOrderToCardPackageRow(orderNow) })
     return
   }
 
@@ -5129,8 +5134,11 @@ router.post('/card-packages/:orderId/contract-ack', async (ctx) => {
     if (!order.cardPackageContractSignedAt) {
       order.cardPackageContractSignedAt = new Date().toISOString()
       writeDb(db)
+      await flushMongoPersist()
     }
-    ctx.body = success({ signed: true })
+    const upstreamAckDb = readDb()
+    const orderUpstream = findMallCardPackageClaimOrder(upstreamAckDb, phone, orderId) || order
+    ctx.body = success({ signed: true, cardPackageRow: mapEligibleOrderToCardPackageRow(orderUpstream) })
   }
   catch (err) {
     console.error('[card-packages-contract-ack]', err)
@@ -5441,27 +5449,19 @@ function buildMallBillingListAndSummaries(db, phone) {
   return { list, shouldRepay, totalPending, loanOrders }
 }
 
-router.get('/bills', async (ctx) => {
-  const db = readDb()
+function buildMallBillsSuccessData(db, phone) {
   reconcileInstallmentCompletionAcrossDb(db)
-  const phone = getUserPhone(ctx)
-  if (!phone) {
-    fail(ctx, '手机号格式不正确')
-    return
-  }
   const { list, shouldRepay, totalPending, loanOrders } = buildMallBillingListAndSummaries(db, phone)
-
   const baseQuota = 10000
   const availableQuota = Number(
     Math.max(0, baseQuota - totalPending).toFixed(2),
   )
-
   const latestLoanOrder = loanOrders[0]
   const latestLoanDate = latestLoanOrder ? new Date(latestLoanOrder.createdAt) : null
   const billDateDay = latestLoanDate && !Number.isNaN(latestLoanDate.getTime())
     ? `${latestLoanDate.getDate()}`.padStart(2, '0')
     : '08'
-  ctx.body = success({
+  return {
     summary: {
       shouldRepay,
       totalPending,
@@ -5470,7 +5470,17 @@ router.get('/bills', async (ctx) => {
       minRepayment: Number((shouldRepay * 0.1).toFixed(2)),
     },
     list,
-  })
+  }
+}
+
+router.get('/bills', async (ctx) => {
+  const db = readDb()
+  const phone = getUserPhone(ctx)
+  if (!phone) {
+    fail(ctx, '手机号格式不正确')
+    return
+  }
+  ctx.body = success(buildMallBillsSuccessData(db, phone))
 })
 
 /**
@@ -5533,7 +5543,8 @@ router.post('/bills/repay', async (ctx) => {
     }
     writeDb(db)
     await flushMongoPersist()
-    ctx.body = success({ all: true, repaidPeriods })
+    const dbAfter = readDb()
+    ctx.body = success({ all: true, repaidPeriods, billing: buildMallBillsSuccessData(dbAfter, phone) })
     return
   }
 
@@ -5580,7 +5591,13 @@ router.post('/bills/repay', async (ctx) => {
   applyInstallmentCompletionOrderStatus(target, { ignoreAdminSkip: true })
   writeDb(db)
   await flushMongoPersist()
-  ctx.body = success({ orderId: target.id, period: periodNumber, paid: true })
+  const dbAfterSingle = readDb()
+  ctx.body = success({
+    orderId: target.id,
+    period: periodNumber,
+    paid: true,
+    billing: buildMallBillsSuccessData(dbAfterSingle, phone),
+  })
 })
 
 /**
@@ -5654,7 +5671,13 @@ router.post('/bills/repay-negotiated', async (ctx) => {
   applyInstallmentCompletionOrderStatus(target, { ignoreAdminSkip: true })
   writeDb(db)
   await flushMongoPersist()
-  ctx.body = success({ orderId: target.id, period: periodNumber, negotiatedPaid: true })
+  const dbNegotiateAfter = readDb()
+  ctx.body = success({
+    orderId: target.id,
+    period: periodNumber,
+    negotiatedPaid: true,
+    billing: buildMallBillsSuccessData(dbNegotiateAfter, phone),
+  })
 })
 
 router.patch('/users/:id', async (ctx) => {
@@ -6170,7 +6193,17 @@ router.post('/orders', async (ctx) => {
   )
   db.orders.unshift(nextOrder)
   writeDb(db)
-  ctx.body = success(nextOrder)
+  await flushMongoPersist()
+  const phoneSync = normalizePhone(placingUser.phone)
+  let mallRefresh
+  if (/^1\d{10}$/.test(phoneSync)) {
+    const syncedDb = readDb()
+    mallRefresh = {
+      billing: buildMallBillsSuccessData(syncedDb, phoneSync),
+      mySummary: calcMySummary(syncedDb, phoneSync),
+    }
+  }
+  ctx.body = success(Object.assign({}, nextOrder, mallRefresh ? { mallRefresh } : {}))
 })
 
 router.patch('/orders/:id/pay', async (ctx) => {
@@ -7250,22 +7283,35 @@ app.use(async (ctx, next) => {
   await next()
 })
 /**
- * 开发/测试：响应返回前等待本次请求触发的 Mongo 写入完成（readDb 仍为内存快照，但落库与 HTTP 响应同步）。
- * 生产关闭（默认 false），避免额外延迟。
+ * Mongo 一致性：
+ * - 默认：POST/PUT/PATCH/DELETE 在响应结束前 await 当前 workspace 的异步落库，避免下一请求的
+ *   refreshScopeCacheFromMongo 读到陈旧快照（线上「要刷新才对齐」）。
+ * - MONGO_SKIP_MUTATION_FLUSH=true：关闭上述「仅写请求」等待（追求极限吞吐）。
+ * - MONGO_AWAIT_PERSIST=true：所有 /api（含 GET）结束后都等待落库。
  */
 app.use(async (ctx, next) => {
   await next()
-  if (!mongoConfig.isMongoAwaitPersistEnabled() || !isMongoPersistenceEnabled()) {
+  if (!isMongoPersistenceEnabled()) {
     return
   }
-  if (!String(ctx.path || '').startsWith('/api/')) {
+  const pathRaw = String(ctx.path || '')
+  if (!pathRaw.startsWith('/api/')) {
+    return
+  }
+  const awaitAll = mongoConfig.isMongoAwaitPersistEnabled()
+  let shouldFlush = awaitAll
+  if (!awaitAll && !mongoConfig.isMongoMutationPersistFlushSkipped()) {
+    const method = String(ctx.method || 'GET').toUpperCase()
+    shouldFlush = method === 'POST' || method === 'PUT' || method === 'PATCH' || method === 'DELETE'
+  }
+  if (!shouldFlush) {
     return
   }
   try {
     await flushMongoPersist()
   }
   catch (err) {
-    console.error('[store] MONGO_AWAIT_PERSIST 落库等待失败:', err?.message || err)
+    console.error('[store] Mongo 落库等待失败:', err?.message || err)
   }
 })
 app.use(router.routes())
@@ -7280,6 +7326,17 @@ app.use(riskControlRouter.allowedMethods())
     mongoPersistenceActive = await hydrateFromMongoAfterConnect()
     if (mongoPersistenceActive) {
       console.log(`[mongo] 已启用 MongoDB 持久化（分集合: ${mongo.SHARDED_ENTITY_KEYS.join(', ')}；元数据: ${mongo.APP_META}）`)
+      if (!mongoConfig.isMongoMutationPersistFlushSkipped()) {
+        if (mongoConfig.isMongoAwaitPersistEnabled()) {
+          console.log('[mongo] MONGO_AWAIT_PERSIST=true：任意 /api 请求结束后等待落库（含 GET）')
+        }
+        else {
+          console.log('[mongo] 写接口（POST/PUT/PATCH/DELETE）结束前等待 Mongo 落库，避免快照读旧；设 MONGO_SKIP_MUTATION_FLUSH=true 仅关闭该项')
+        }
+      }
+      else if (!mongoConfig.isMongoAwaitPersistEnabled()) {
+        console.log('[mongo] MONGO_SKIP_MUTATION_FLUSH=true：已跳过写接口结束前的落库等待（可能再现「紧随其后 GET 读旧」）')
+      }
     }
   }
   catch (err) {

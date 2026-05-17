@@ -51,7 +51,7 @@ function isReviewPageOrder(item: OrderItem) {
 
 const reviewOrdersBase = computed(() => orders.value.filter(isReviewPageOrder))
 
-/** 侧栏轮询写入全量 orders 时，按审核队列签名补跑风控档案闸门（避免新单无闸门状态） */
+/** 列表随 fetchOrders/PATCH/DELTE 变更时，按审核队列签名补跑风控档案闸门（避免新单无闸门状态） */
 const reviewQueueSig = computed(() =>
   reviewOrdersBase.value
     .map(o => `${o.id}:${o.riskStatus}`)
@@ -282,13 +282,14 @@ async function approveOrder(order: OrderItem) {
   reviewingId.value = order.id
   try {
     await updateOrderStatus(order.id, 'shipping')
+    ElMessage.success('审核通过')
+    void refreshOrdersMenuPendingReview()
   }
   catch {
     ElMessage.error('审核通过失败，请稍后重试')
   }
   finally {
     reviewingId.value = ''
-    await loadReviewOrders()
   }
 }
 
@@ -317,7 +318,7 @@ async function rejectOrder(order: OrderItem) {
   try {
     await rejectOrderReview(order.id)
     ElMessage.success('已标记审核不通过')
-    await loadReviewOrders()
+    void refreshOrdersMenuPendingReview()
   }
   catch (error) {
     ElMessage.error(error instanceof Error ? error.message : '审核不通过失败，请稍后重试')
@@ -352,7 +353,7 @@ async function handleDeleteOrder(order: OrderItem) {
     if (userRiskDialogVisible.value) {
       userRiskDialogVisible.value = false
     }
-    await loadReviewOrders()
+    void refreshOrdersMenuPendingReview()
   }
   catch (error) {
     ElMessage.error(error instanceof Error ? error.message : '删除订单失败，请稍后重试')
@@ -363,12 +364,8 @@ async function handleDeleteOrder(order: OrderItem) {
 }
 
 function onRiskDialogUserUpdated(_user: UserItem) {
-  void fetchOrders({ status: '待审核' })
-    .then(async () => {
-      await refreshOrdersMenuPendingReview()
-      await runRiskApproveGateChecks(orders.value.filter(isReviewPageOrder))
-    })
-    .catch(() => {})
+  void refreshOrdersMenuPendingReview()
+  void runRiskApproveGateChecks(orders.value.filter(isReviewPageOrder))
 }
 
 async function openRiskDetail(order: OrderItem, entry: 'user' | 'risk') {

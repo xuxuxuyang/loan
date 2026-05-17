@@ -104,6 +104,46 @@ const createForm = reactive({
   initialPassword: '',
 })
 
+const createFormErrors = reactive({
+  name: '',
+  phone: '',
+  idNumber: '',
+  initialPassword: '',
+})
+
+function clearCreateFormErrors() {
+  createFormErrors.name = ''
+  createFormErrors.phone = ''
+  createFormErrors.idNumber = ''
+  createFormErrors.initialPassword = ''
+}
+
+function validateCreateUserForm(): boolean {
+  clearCreateFormErrors()
+  let ok = true
+  const name = createForm.name.trim()
+  const phone = createForm.phone.trim()
+  if (!name) {
+    createFormErrors.name = '请填写姓名'
+    ok = false
+  }
+  if (!/^1\d{10}$/.test(phone)) {
+    createFormErrors.phone = phone ? '请输入正确的 11 位手机号' : '请填写手机号'
+    ok = false
+  }
+  const initPwd = createForm.initialPassword.trim()
+  if (initPwd.length > 0 && initPwd.length < 6) {
+    createFormErrors.initialPassword = '至少 6 位，或留空后在编辑中设置'
+    ok = false
+  }
+  const idRaw = createForm.idNumber.trim().toUpperCase()
+  if (idRaw.length > 0 && !CN_ID_CARD_RE.test(idRaw)) {
+    createFormErrors.idNumber = '请填写 18 位合法大陆身份证号，或留空'
+    ok = false
+  }
+  return ok
+}
+
 const route = useRoute()
 
 const canManageUsers = computed(() => {
@@ -257,6 +297,20 @@ function displayCreditStatusFromRisk(user: ListedUser | null | undefined): Displ
 
 const previewDisplayCreditStatus = computed(() => displayCreditStatusFromRisk(previewUser.value))
 
+/** 用 POST/PATCH 返回的用户数据更新列表，避免 Mongo 异步落库后立刻 GET 覆盖为旧快照 */
+function upsertUserFromApiRow(raw: ApiUserItem) {
+  const next = mapApiUser(raw)
+  const idx = users.value.findIndex(u => u.id === next.id)
+  if (idx >= 0)
+    users.value[idx] = next
+  else
+    users.value = [next, ...users.value]
+}
+
+function removeUserFromList(id: string) {
+  users.value = users.value.filter(u => u.id !== id)
+}
+
 function mapApiUser(user: ApiUserItem): ListedUser {
   const quotaRaw = user.quota
   const quota = Number.isFinite(Number(quotaRaw)) && Number(quotaRaw) >= 0
@@ -353,6 +407,7 @@ function startEdit(user: ListedUser) {
 
 function openCreateDialog() {
   if (!canManageUsers.value) return
+  clearCreateFormErrors()
   createDialogVisible.value = true
   createForm.name = ''
   createForm.phone = ''
@@ -364,6 +419,7 @@ function closeCreateDialog() {
   if (creating.value) {
     return
   }
+  clearCreateFormErrors()
   createDialogVisible.value = false
 }
 
@@ -372,19 +428,11 @@ async function createUser() {
   if (creating.value) {
     return
   }
-  if (!createForm.name.trim() || !/^1\d{10}$/.test(createForm.phone.trim())) {
+  if (!validateCreateUserForm()) {
     return
   }
   const initPwd = createForm.initialPassword.trim()
-  if (initPwd.length > 0 && initPwd.length < 6) {
-    ElMessage.warning('初始登录密码至少 6 位，或留空稍后在编辑中设置')
-    return
-  }
   const idRawCreate = createForm.idNumber.trim().toUpperCase()
-  if (idRawCreate.length > 0 && !CN_ID_CARD_RE.test(idRawCreate)) {
-    ElMessage.warning('身份证号码需为 18 位合法格式，或留空')
-    return
-  }
   creating.value = true
   try {
     const response = await fetch(`${MALL_API_BASE}/users`, {
@@ -397,13 +445,14 @@ async function createUser() {
         ...(initPwd.length >= 6 ? { initialPassword: initPwd } : {}),
       }),
     })
-    if (!response.ok) {
-      const payload = await response.json() as { msg?: string }
+    const payload = await response.json() as { success?: boolean, msg?: string, data?: ApiUserItem }
+    if (!response.ok || payload.success === false) {
       throw new Error(payload.msg || `新增用户失败: ${response.status}`)
     }
+    if (payload.data)
+      upsertUserFromApiRow(payload.data)
     createDialogVisible.value = false
     ElMessage.success('用户已添加')
-    await fetchUsers()
   }
   catch (error) {
     console.error('新增用户失败', error)
@@ -449,11 +498,12 @@ async function saveEdit() {
         ...(pwd.length >= 6 && pwd !== editPasswordBaseline.value ? { newPassword: pwd } : {}),
       }),
     })
-    if (!response.ok) {
-      const payload = await response.json() as { msg?: string }
+    const payload = await response.json() as { success?: boolean, msg?: string, data?: ApiUserItem }
+    if (!response.ok || payload.success === false) {
       throw new Error(payload.msg || `更新用户失败: ${response.status}`)
     }
-    await fetchUsers()
+    if (payload.data)
+      upsertUserFromApiRow(payload.data)
     ElMessage.success('已保存')
     closePreview()
   }
@@ -486,15 +536,15 @@ async function confirmDelete(user: ListedUser) {
       method: 'DELETE',
       headers: withMallTenantHeaders(),
     })
-    if (!response.ok) {
-      const payload = await response.json() as { msg?: string }
-      throw new Error(payload.msg || `删除用户失败: ${response.status}`)
+    const delPayload = await response.json() as { success?: boolean, msg?: string }
+    if (!response.ok || delPayload.success === false) {
+      throw new Error(delPayload.msg || `删除用户失败: ${response.status}`)
     }
     if (previewUser.value?.id === user.id) {
       closePreview()
     }
     pendingDeleteId.value = ''
-    await fetchUsers()
+    removeUserFromList(user.id)
   }
   catch (error) {
     console.error('删除用户失败', error)
@@ -549,10 +599,18 @@ function closeQuotaDialog() {
   quotaInput.value = ''
 }
 
+/** 保存成功后关闭（不受 quotaSaving 拦截） */
+function resetQuotaDialogState() {
+  quotaDialogVisible.value = false
+  quotaTarget.value = null
+  quotaInput.value = ''
+}
+
 async function saveQuota() {
   if (!canManageUsers.value || !quotaTarget.value || quotaSaving.value) return
   const n = Number(String(quotaInput.value).trim())
   if (!Number.isFinite(n) || n < 0) {
+    ElMessage.warning('请输入大于等于 0 的有效数字额度')
     return
   }
   const id = quotaTarget.value.id
@@ -563,15 +621,18 @@ async function saveQuota() {
       headers: withMallTenantHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ quota: Math.round(n) }),
     })
-    if (!response.ok) {
-      const payload = await response.json() as { msg?: string }
+    const payload = await response.json() as { success?: boolean, msg?: string, data?: ApiUserItem }
+    if (!response.ok || payload.success === false) {
       throw new Error(payload.msg || `更新额度失败: ${response.status}`)
     }
-    await fetchUsers()
-    closeQuotaDialog()
+    if (payload.data)
+      upsertUserFromApiRow(payload.data)
+    ElMessage.success('额度已更新')
+    resetQuotaDialogState()
   }
   catch (error) {
     console.error('更新额度失败', error)
+    ElMessage.error(error instanceof Error ? error.message : '更新额度失败')
   }
   finally {
     quotaSaving.value = false
@@ -602,13 +663,14 @@ async function saveRemark() {
       headers: withMallTenantHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ adminRemark: remarkDraft.value.trim() }),
     })
-    if (!response.ok) {
-      const payload = await response.json() as { msg?: string }
+    const payload = await response.json() as { success?: boolean, msg?: string, data?: ApiUserItem }
+    if (!response.ok || payload.success === false) {
       throw new Error(payload.msg || `保存备注失败: ${response.status}`)
     }
+    if (payload.data)
+      upsertUserFromApiRow(payload.data)
     ElMessage.success('备注已保存')
     closeRemarkDialog()
-    await fetchUsers()
   }
   catch (error) {
     console.error('保存备注失败', error)
@@ -629,12 +691,13 @@ async function toggleBlacklist(user: ListedUser) {
       headers: withMallTenantHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ orderBlacklisted: next }),
     })
-    if (!response.ok) {
-      const payload = await response.json() as { msg?: string }
+    const payload = await response.json() as { success?: boolean, msg?: string, data?: ApiUserItem }
+    if (!response.ok || payload.success === false) {
       throw new Error(payload.msg || `操作失败: ${response.status}`)
     }
+    if (payload.data)
+      upsertUserFromApiRow(payload.data)
     ElMessage.success(next ? '已限制该用户下单' : '已解除下单限制')
-    await fetchUsers()
   }
   catch (error) {
     console.error('拉黑状态更新失败', error)
@@ -889,81 +952,116 @@ async function toggleBlacklist(user: ListedUser) {
     </table>
   </div>
 
-  <div
-    v-if="createDialogVisible && canManageUsers"
-    class="modal-mask"
-    @click.self="closeCreateDialog"
-  >
-    <div class="modal-panel create-modal">
-      <div class="modal-header">
-        <h3>添加用户</h3>
-        <button
-          type="button"
-          class="btn btn-ghost"
-          :disabled="creating"
-          @click="closeCreateDialog"
+  <Teleport to="body">
+    <div
+      v-if="createDialogVisible && canManageUsers"
+      class="modal-mask"
+      @click.self="closeCreateDialog"
+    >
+      <div class="modal-panel create-modal">
+        <div class="modal-header">
+          <h3>添加用户</h3>
+          <button
+            type="button"
+            class="btn btn-ghost"
+            :disabled="creating"
+            @click="closeCreateDialog"
+          >
+            关闭
+          </button>
+        </div>
+        <div class="modal-grid">
+          <label>
+            姓名
+            <el-input
+              v-model="createForm.name"
+              class="form-input"
+              :class="{ 'is-error': !!createFormErrors.name }"
+              clearable
+              @update:model-value="createFormErrors.name = ''"
+            />
+            <span
+              v-if="createFormErrors.name"
+              class="create-form-field-error"
+            >{{ createFormErrors.name }}</span>
+          </label>
+          <label>
+            手机号
+            <el-input
+              v-model="createForm.phone"
+              class="form-input"
+              :class="{ 'is-error': !!createFormErrors.phone }"
+              clearable
+              @update:model-value="createFormErrors.phone = ''"
+            />
+            <span
+              v-if="createFormErrors.phone"
+              class="create-form-field-error"
+            >{{ createFormErrors.phone }}</span>
+          </label>
+          <label class="full">
+            身份证号码（可选）
+            <el-input
+              v-model="createForm.idNumber"
+              class="form-input"
+              :class="{ 'is-error': !!createFormErrors.idNumber }"
+              maxlength="18"
+              clearable
+              placeholder="18 位大陆身份证号，风控 B 类接口必填；可留空"
+              @update:model-value="createFormErrors.idNumber = ''"
+            />
+            <span
+              v-if="createFormErrors.idNumber"
+              class="create-form-field-error"
+            >{{ createFormErrors.idNumber }}</span>
+          </label>
+          <label class="full">
+            初始登录密码（可选）
+            <el-input
+              v-model="createForm.initialPassword"
+              class="form-input"
+              :class="{ 'is-error': !!createFormErrors.initialPassword }"
+              type="password"
+              show-password
+              clearable
+              placeholder="至少 6 位，留空则用户需验证码登录或由后台再次设置"
+              autocomplete="new-password"
+              @update:model-value="createFormErrors.initialPassword = ''"
+            />
+            <span
+              v-if="createFormErrors.initialPassword"
+              class="create-form-field-error"
+            >{{ createFormErrors.initialPassword }}</span>
+          </label>
+        </div>
+        <p
+          v-if="creating"
+          class="create-modal-status"
+          role="status"
+          aria-live="polite"
         >
-          关闭
-        </button>
-      </div>
-      <div class="modal-grid">
-        <label>
-          姓名
-          <el-input
-            v-model="createForm.name"
-            class="form-input"
-            clearable
-          />
-        </label>
-        <label>
-          手机号
-          <el-input
-            v-model="createForm.phone"
-            class="form-input"
-            clearable
-          />
-        </label>
-        <label class="full">
-          身份证号码（可选）
-          <el-input
-            v-model="createForm.idNumber"
-            class="form-input"
-            maxlength="18"
-            clearable
-            placeholder="18 位大陆身份证号，风控 B 类接口必填；可留空"
-          />
-        </label>
-        <label class="full">
-          初始登录密码（可选）
-          <el-input
-            v-model="createForm.initialPassword"
-            class="form-input"
-            type="password"
-            show-password
-            clearable
-            placeholder="至少 6 位，留空则用户需验证码登录或由后台再次设置"
-            autocomplete="new-password"
-          />
-        </label>
-      </div>
-      <div class="actions actions-right">
-        <button
-          class="btn btn-primary"
-          type="button"
-          :disabled="creating"
-          @click="createUser"
-        >
-          {{ creating ? '创建中...' : '确认添加' }}
-        </button>
+          正在提交，请稍候…
+        </p>
+        <div class="actions actions-right">
+          <button
+            class="btn btn-primary"
+            type="button"
+            :disabled="creating"
+            @click="createUser"
+          >
+            {{ creating ? '创建中...' : '确认添加' }}
+          </button>
+        </div>
       </div>
     </div>
-  </div>
+  </Teleport>
 
-  <div
-    v-if="quotaDialogVisible && quotaTarget && canManageUsers"
-    class="modal-mask"
-    @click.self="closeQuotaDialog"
-  >
+  <Teleport to="body">
+    <div
+      v-if="quotaDialogVisible && quotaTarget && canManageUsers"
+      class="modal-mask"
+      @click.self="closeQuotaDialog"
+    >
     <div class="modal-panel create-modal">
       <div class="modal-header">
         <h3>修改额度</h3>
@@ -1000,13 +1098,15 @@ async function toggleBlacklist(user: ListedUser) {
         </button>
       </div>
     </div>
-  </div>
+    </div>
+  </Teleport>
 
-  <div
-    v-if="remarkDialogVisible && remarkTarget && canManageUsers"
-    class="modal-mask"
-    @click.self="closeRemarkDialog"
-  >
+  <Teleport to="body">
+    <div
+      v-if="remarkDialogVisible && remarkTarget && canManageUsers"
+      class="modal-mask"
+      @click.self="closeRemarkDialog"
+    >
     <div class="modal-panel create-modal">
       <div class="modal-header">
         <h3>用户备注</h3>
@@ -1045,7 +1145,8 @@ async function toggleBlacklist(user: ListedUser) {
         </button>
       </div>
     </div>
-  </div>
+    </div>
+  </Teleport>
 
   <UserRiskDetailDialog
     v-model="userRiskDialogVisible"
@@ -1053,11 +1154,12 @@ async function toggleBlacklist(user: ListedUser) {
     @user-updated="onRiskDialogUserUpdated"
   />
 
-  <div
-    v-if="previewUser"
-    class="modal-mask"
-    @click.self="closePreview"
-  >
+  <Teleport to="body">
+    <div
+      v-if="previewUser"
+      class="modal-mask"
+      @click.self="closePreview"
+    >
     <div class="modal-panel user-preview-panel">
       <header class="user-preview-head">
         <div class="user-preview-head__titles">
@@ -1188,7 +1290,8 @@ async function toggleBlacklist(user: ListedUser) {
         </button>
       </div>
     </div>
-  </div>
+    </div>
+  </Teleport>
 </template>
 
 <style scoped>
@@ -1421,6 +1524,8 @@ async function toggleBlacklist(user: ListedUser) {
 .modal-mask {
   position: fixed;
   inset: 0;
+  /* 低于 Element Plus Message / Popper 默认层级（约 2000+），避免校验 Toast 被挡在蒙层后 */
+  z-index: 1900;
   background: rgba(15, 23, 42, 0.35);
   display: grid;
   place-items: center;
@@ -1428,6 +1533,8 @@ async function toggleBlacklist(user: ListedUser) {
 }
 
 .modal-panel {
+  position: relative;
+  z-index: 1;
   width: 760px;
   max-width: 100%;
   border-radius: 12px;
@@ -2011,6 +2118,23 @@ async function toggleBlacklist(user: ListedUser) {
 
 .create-modal {
   width: 520px;
+}
+
+.create-form-field-error {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: #dc2626;
+  line-height: 1.35;
+}
+
+.create-modal-status {
+  margin: 10px 0 0;
+  font-size: 13px;
+  color: #64748b;
+}
+
+.modal-grid :deep(.el-input.form-input.is-error .el-input__wrapper) {
+  box-shadow: 0 0 0 1px var(--el-color-danger) inset;
 }
 
 .quota-hint {

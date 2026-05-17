@@ -27,6 +27,7 @@ const {
   fetchCardPackages,
   fetchCardPackageContractFlow,
   saveMallEmergencyContacts,
+  mergeCardPackageRowFromPayload,
 } = useMallMy()
 
 const account = computed(() => loginPhone.value || profile.value?.phone || '')
@@ -157,6 +158,8 @@ function onContractEmbedPostMessage(ev: MessageEvent) {
     orderId?: string
     message?: string
     variant?: string
+    /** 服务端合同 ACK 后立即返回的卡包行，避免再去 GET /card-packages 撞到旧快照 */
+    cardPackageRow?: unknown
   } | null
   if (!data || typeof data !== 'object') {
     return
@@ -166,7 +169,7 @@ function onContractEmbedPostMessage(ev: MessageEvent) {
     return
   }
   if (data.type === CARD_PACKAGE_CONTRACT_SIGNED_MSG) {
-    void handleContractSignedFromEmbed()
+    void handleContractSignedFromEmbed(data.cardPackageRow)
     return
   }
   if (data.type === CARD_PACKAGE_CONTRACT_SIGNATURE_HINT_MSG) {
@@ -204,12 +207,13 @@ function unbindContractMessageListener() {
   contractMessageListening.value = false
 }
 
-async function handleContractSignedFromEmbed() {
+async function handleContractSignedFromEmbed(cardPackageRow?: unknown) {
   notifySuccess('签署已成功')
   contractSignFrameVisible.value = false
   contractDialogVisible.value = false
   await loadContractFlow()
-  await refreshList()
+  if (!mergeCardPackageRowFromPayload(cardPackageRow ?? null))
+    await refreshList()
   await syncFromStorage()
   if (needsEmergencyBeforeKefu.value) {
     emergencyForm.c1Name = ''

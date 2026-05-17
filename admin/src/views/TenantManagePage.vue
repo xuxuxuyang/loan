@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { withAdminAuthHeaders, withMallTenantHeaders } from '../composables/useAdminApi'
@@ -60,6 +60,149 @@ const route = useRoute()
 const router = useRouter()
 const { isPlatform, switchTenant } = useTenantScope()
 const deletingTenantId = ref('')
+
+/** 子系统账号删除：气泡确认（Teleport + fixed，避免表格裁切） */
+const pendingDeleteAccountId = ref<string | null>(null)
+const tenantAccountsTableWrapRef = ref<HTMLElement | null>(null)
+const deleteAccountAnchorEl = ref<HTMLElement | null>(null)
+const deleteAccountPopEl = ref<HTMLElement | null>(null)
+const deleteAccountPopStyle = ref<Record<string, string>>({})
+
+const ACCOUNT_DELETE_POP_GAP = 8
+const ACCOUNT_DELETE_POP_VIEW_MARGIN = 8
+
+const pendingDeleteAccount = computed(() => {
+  const id = pendingDeleteAccountId.value
+  if (id == null)
+    return null
+  return tenantAccounts.value.find(a => a.id === id) ?? null
+})
+
+function updateTenantAccountDeletePopPosition() {
+  const anchor = deleteAccountAnchorEl.value
+  const pop = deleteAccountPopEl.value
+  if (!anchor || !pop || pendingDeleteAccountId.value == null)
+    return
+
+  const anchorRect = anchor.getBoundingClientRect()
+  const vw = window.innerWidth
+  const vh = window.innerHeight
+  const margin = ACCOUNT_DELETE_POP_VIEW_MARGIN
+
+  const popRect = pop.getBoundingClientRect()
+  let popH = popRect.height
+  let popW = popRect.width
+  if (popH < 4 || popW < 4) {
+    popH = 96
+    popW = 220
+  }
+
+  const spaceAbove = anchorRect.top - margin
+  const spaceBelow = vh - anchorRect.bottom - margin
+
+  const fitsAbove = spaceAbove >= popH + ACCOUNT_DELETE_POP_GAP
+  const fitsBelow = spaceBelow >= popH + ACCOUNT_DELETE_POP_GAP
+
+  let placeAbove: boolean
+  if (fitsAbove && fitsBelow) {
+    placeAbove = spaceAbove >= spaceBelow
+  }
+  else if (fitsBelow) {
+    placeAbove = false
+  }
+  else if (fitsAbove) {
+    placeAbove = true
+  }
+  else {
+    placeAbove = spaceAbove >= spaceBelow
+  }
+
+  let top = placeAbove
+    ? anchorRect.top - ACCOUNT_DELETE_POP_GAP - popH
+    : anchorRect.bottom + ACCOUNT_DELETE_POP_GAP
+
+  let left = anchorRect.right - popW
+
+  left = Math.min(Math.max(left, margin), vw - popW - margin)
+  top = Math.min(Math.max(top, margin), vh - popH - margin)
+
+  deleteAccountPopStyle.value = {
+    position: 'fixed',
+    top: `${Math.round(top)}px`,
+    left: `${Math.round(left)}px`,
+    zIndex: '3000',
+  }
+}
+
+async function scheduleTenantAccountDeletePopPosition() {
+  await nextTick()
+  requestAnimationFrame(() => {
+    updateTenantAccountDeletePopPosition()
+    requestAnimationFrame(() => updateTenantAccountDeletePopPosition())
+  })
+}
+
+function onTenantAccountDeletePopScrollOrResize() {
+  void scheduleTenantAccountDeletePopPosition()
+}
+
+function onOutsideTenantAccountDeletePop(ev: PointerEvent) {
+  const target = ev.target
+  if (!(target instanceof Node))
+    return
+  if (deleteAccountPopEl.value?.contains(target))
+    return
+  if (deleteAccountAnchorEl.value?.contains(target))
+    return
+  cancelPendingTenantAccountDelete()
+}
+
+let tenantAccountDeletePopOutsideTimer: ReturnType<typeof setTimeout> | null = null
+
+function attachTenantAccountDeletePopListeners() {
+  window.addEventListener('resize', onTenantAccountDeletePopScrollOrResize)
+  window.addEventListener('scroll', onTenantAccountDeletePopScrollOrResize, true)
+  tenantAccountsTableWrapRef.value?.addEventListener('scroll', onTenantAccountDeletePopScrollOrResize)
+  tenantAccountDeletePopOutsideTimer = window.setTimeout(() => {
+    tenantAccountDeletePopOutsideTimer = null
+    document.addEventListener('pointerdown', onOutsideTenantAccountDeletePop, true)
+  }, 0)
+}
+
+function detachTenantAccountDeletePopListeners() {
+  window.removeEventListener('resize', onTenantAccountDeletePopScrollOrResize)
+  window.removeEventListener('scroll', onTenantAccountDeletePopScrollOrResize, true)
+  tenantAccountsTableWrapRef.value?.removeEventListener('scroll', onTenantAccountDeletePopScrollOrResize)
+  if (tenantAccountDeletePopOutsideTimer != null) {
+    clearTimeout(tenantAccountDeletePopOutsideTimer)
+    tenantAccountDeletePopOutsideTimer = null
+  }
+  document.removeEventListener('pointerdown', onOutsideTenantAccountDeletePop, true)
+}
+
+function toggleDeleteTenantAccountConfirm(item: TenantAdminAccount, ev: MouseEvent) {
+  const el = ev.currentTarget as HTMLElement | null
+  if (pendingDeleteAccountId.value === item.id) {
+    pendingDeleteAccountId.value = null
+    deleteAccountAnchorEl.value = null
+    return
+  }
+  pendingDeleteAccountId.value = item.id
+  deleteAccountAnchorEl.value = el
+}
+
+function cancelPendingTenantAccountDelete() {
+  pendingDeleteAccountId.value = null
+  deleteAccountAnchorEl.value = null
+}
+
+async function confirmRemoveTenantAccount() {
+  const item = pendingDeleteAccount.value
+  if (!item)
+    return
+  await removeTenantAccount(item)
+}
+
 const createAccountForm = ref({
   tenantId: '',
   username: '',
@@ -345,8 +488,11 @@ async function deleteTenantSystem(rawTenantId: string) {
         selectedTenantId.value = ''
       }
       ElMessage.success('已删除该子系统')
-      await fetchTenants()
-      await fetchTenantAccounts()
+      tenants.value = tenants.value.filter(t => normalizeTenantInput(String(t.tenantId)) !== tenantId)
+      tenantAccounts.value = tenantAccounts.value.filter((acc) => {
+        const tid = normalizeTenantInput(String(acc.tenantId || acc.sourceTenantId || ''))
+        return tid !== tenantId
+      })
       newTenantId.value = computeNextSuggestedBossTenantId()
       return
     }
@@ -379,8 +525,11 @@ async function deleteTenantSystem(rawTenantId: string) {
         selectedTenantId.value = ''
       }
       ElMessage.success('已强制清空并删除该子系统')
-      await fetchTenants()
-      await fetchTenantAccounts()
+      tenants.value = tenants.value.filter(t => normalizeTenantInput(String(t.tenantId)) !== tenantId)
+      tenantAccounts.value = tenantAccounts.value.filter((acc) => {
+        const tid = normalizeTenantInput(String(acc.tenantId || acc.sourceTenantId || ''))
+        return tid !== tenantId
+      })
       newTenantId.value = computeNextSuggestedBossTenantId()
       return
     }
@@ -399,40 +548,32 @@ async function deleteTenantSystem(rawTenantId: string) {
   }
 }
 
-function sleep(ms: number) {
-  return new Promise(resolve => setTimeout(resolve, ms))
-}
-
-async function refreshTenantsAfterCreate(createdTenantId: string) {
+function refreshTenantsAfterCreate(createdTenantId: string) {
   const normalizedCreatedId = normalizeTenantInput(createdTenantId)
-  for (let i = 0; i < 3; i += 1) {
-    await fetchTenants()
-    const exists = tenants.value.some(item => normalizeTenantInput(item.tenantId) === normalizedCreatedId)
-    if (exists) {
-      return
-    }
-    await sleep(250 * (i + 1))
+  if (!normalizedCreatedId)
+    return
+  if (tenants.value.some(item => normalizeTenantInput(item.tenantId) === normalizedCreatedId)) {
+    return
   }
-  if (!tenants.value.some(item => normalizeTenantInput(item.tenantId) === normalizedCreatedId)) {
-    tenants.value = [
-      ...tenants.value,
-      {
-        tenantId: normalizedCreatedId,
-        tenantName: normalizedCreatedId,
-        userCount: 0,
-        orderCount: 0,
-        productCount: 0,
-        createdAt: new Date().toISOString(),
-      },
-    ].sort((a, b) => {
-      const ta = new Date(String(a.createdAt || '')).getTime()
-      const tb = new Date(String(b.createdAt || '')).getTime()
-      const va = Number.isFinite(ta) ? ta : 0
-      const vb = Number.isFinite(tb) ? tb : 0
-      if (vb !== va) return vb - va
-      return String(a.tenantId || '').localeCompare(String(b.tenantId || ''))
-    })
-  }
+  tenants.value = [
+    ...tenants.value,
+    {
+      tenantId: normalizedCreatedId,
+      tenantName: normalizedCreatedId,
+      userCount: 0,
+      orderCount: 0,
+      productCount: 0,
+      createdAt: new Date().toISOString(),
+    },
+  ].sort((a, b) => {
+    const ta = new Date(String(a.createdAt || '')).getTime()
+    const tb = new Date(String(b.createdAt || '')).getTime()
+    const va = Number.isFinite(ta) ? ta : 0
+    const vb = Number.isFinite(tb) ? tb : 0
+    if (vb !== va)
+      return vb - va
+    return String(a.tenantId || '').localeCompare(String(b.tenantId || ''))
+  })
 }
 
 async function fetchTenantAccounts() {
@@ -677,19 +818,6 @@ function upsertTenantAccountLocal(account: TenantAdminAccount) {
   tenantAccounts.value = [account, ...tenantAccounts.value]
 }
 
-async function refreshTenantAccountsAfterCreate(tenantId: string, fallbackBoss: TenantAdminAccount) {
-  const normalizedTenantId = normalizeTenantInput(tenantId)
-  for (let i = 0; i < 3; i += 1) {
-    await fetchTenantAccounts()
-    const found = resolveTenantBossAccount(normalizedTenantId)
-    if (found) {
-      return
-    }
-    await sleep(250 * (i + 1))
-  }
-  upsertTenantAccountLocal(fallbackBoss)
-}
-
 async function createTenantAccount() {
   if (creatingTenantAccount.value) return
   const tenantId = normalizeTenantInput(createAccountForm.value.tenantId)
@@ -716,23 +844,14 @@ async function createTenantAccount() {
       ElMessage.success('老板账号信息已更新')
     }
     else {
-      await createBossAccount(tenantId)
+      createdBossAccount = await createBossAccount(tenantId)
       ElMessage.success('子系统老板账号创建成功')
     }
     showCreateAccountModal.value = false
-    if (createdTenantId) {
-      await refreshTenantsAfterCreate(createdTenantId)
-    }
-    else {
-      await fetchTenants()
-    }
-    if (createdBossAccount) {
+    if (createdTenantId)
+      refreshTenantsAfterCreate(createdTenantId)
+    if (createdBossAccount)
       upsertTenantAccountLocal(createdBossAccount)
-      await refreshTenantAccountsAfterCreate(createdTenantId, createdBossAccount)
-    }
-    else {
-      await fetchTenantAccounts()
-    }
     if (createAccountMode.value === 'onboard' && createdTenantId) {
       newTenantId.value = computeNextSuggestedBossTenantId(createdTenantId)
       newTenantIdError.value = ''
@@ -753,7 +872,18 @@ async function createTenantAccount() {
   }
 }
 
-async function updateTenantAccount(item: TenantAdminAccount, body: Record<string, unknown>) {
+function mergeTenantAdminFromApi(prev: TenantAdminAccount, patch: TenantAdminAccount): TenantAdminAccount {
+  return {
+    ...prev,
+    ...patch,
+    tenantId: patch.tenantId || prev.tenantId,
+    tenantName: patch.tenantName || prev.tenantName,
+    sourceTenantId: patch.sourceTenantId || prev.sourceTenantId,
+    sourceTenantName: patch.sourceTenantName || prev.sourceTenantName,
+  }
+}
+
+async function updateTenantAccount(item: TenantAdminAccount, body: Record<string, unknown>): Promise<void> {
   const tenantId = resolveAccountTenantId(item)
   if (!tenantId) {
     throw new Error('无法识别该账号所属子系统')
@@ -763,9 +893,13 @@ async function updateTenantAccount(item: TenantAdminAccount, body: Record<string
     headers: buildTenantScopedHeaders(tenantId, { 'Content-Type': 'application/json' }),
     body: JSON.stringify(body),
   })
-  const payload = await response.json() as { success?: boolean, msg?: string }
+  const payload = await response.json() as { success?: boolean, msg?: string, data?: TenantAdminAccount }
   if (!response.ok || payload.success === false) {
     throw new Error(payload.msg || `更新子系统账号失败 (${response.status})`)
+  }
+  const patch = payload.data
+  if (patch && patch.id) {
+    upsertTenantAccountLocal(mergeTenantAdminFromApi(item, patch))
   }
 }
 
@@ -778,7 +912,6 @@ async function submitRoleChange() {
     ElMessage.success('子系统账号角色已更新')
     showRoleModal.value = false
     roleTarget.value = null
-    await fetchTenantAccounts()
   }
   catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '更新子系统账号角色失败'
@@ -823,10 +956,10 @@ async function submitPasswordChange() {
 async function toggleAccountStatus(item: TenantAdminAccount) {
   if (updatingStatusId.value) return
   updatingStatusId.value = item.id
+  const nextStatus = item.status === 'active' ? 'disabled' : 'active'
   try {
-    const nextStatus = item.status === 'active' ? 'disabled' : 'active'
     await updateTenantAccount(item, { status: nextStatus })
-    await fetchTenantAccounts()
+    ElMessage.success(nextStatus === 'active' ? '账号已启用' : '账号已禁用')
   }
   catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '更新子系统账号状态失败'
@@ -839,8 +972,6 @@ async function toggleAccountStatus(item: TenantAdminAccount) {
 
 async function removeTenantAccount(item: TenantAdminAccount) {
   if (deletingAccountId.value) return
-  const confirmed = window.confirm(`确认删除子系统账号 ${item.username} 吗？`)
-  if (!confirmed) return
   const tenantId = resolveAccountTenantId(item)
   if (!tenantId) {
     errorMessage.value = '无法识别该账号所属子系统'
@@ -858,7 +989,8 @@ async function removeTenantAccount(item: TenantAdminAccount) {
       throw new Error(payload.msg || `删除子系统账号失败 (${response.status})`)
     }
     ElMessage.success('子系统账号已删除')
-    await fetchTenantAccounts()
+    pendingDeleteAccountId.value = null
+    tenantAccounts.value = tenantAccounts.value.filter(a => a.id !== item.id)
   }
   catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '删除子系统账号失败'
@@ -928,6 +1060,21 @@ watch(
   },
   { immediate: true },
 )
+
+watch(pendingDeleteAccountId, (id) => {
+  detachTenantAccountDeletePopListeners()
+  deleteAccountPopStyle.value = {}
+  if (id == null) {
+    deleteAccountAnchorEl.value = null
+    return
+  }
+  queueMicrotask(() => attachTenantAccountDeletePopListeners())
+  void scheduleTenantAccountDeletePopPosition()
+})
+
+onUnmounted(() => {
+  detachTenantAccountDeletePopListeners()
+})
 </script>
 
 <template>
@@ -1088,6 +1235,10 @@ watch(
         </button>
       </div>
 
+      <div
+        ref="tenantAccountsTableWrapRef"
+        class="tenant-accounts-table-wrap"
+      >
       <table class="table">
         <thead>
           <tr>
@@ -1120,10 +1271,14 @@ watch(
                 <button
                   class="btn btn-warning"
                   type="button"
-                  :disabled="updatingStatusId === item.id"
+                  :disabled="Boolean(updatingStatusId) || deletingAccountId === item.id"
                   @click="toggleAccountStatus(item)"
                 >
-                  {{ item.status === 'active' ? '禁用' : '启用' }}
+                  {{
+                    updatingStatusId === item.id
+                      ? '处理中…'
+                      : item.status === 'active' ? '禁用' : '启用'
+                  }}
                 </button>
                 <button
                   class="btn btn-role-edit"
@@ -1143,9 +1298,9 @@ watch(
                   class="btn btn-danger"
                   type="button"
                   :disabled="deletingAccountId === item.id"
-                  @click="removeTenantAccount(item)"
+                  @click="toggleDeleteTenantAccountConfirm(item, $event)"
                 >
-                  删除
+                  {{ deletingAccountId === item.id ? '删除中…' : '删除' }}
                 </button>
               </div>
             </td>
@@ -1160,6 +1315,7 @@ watch(
           </tr>
         </tbody>
       </table>
+      </div>
     </div>
 
     <div
@@ -1377,6 +1533,37 @@ watch(
         </div>
       </div>
     </div>
+
+    <Teleport to="body">
+      <div
+        v-if="pendingDeleteAccountId !== null && pendingDeleteAccount"
+        ref="deleteAccountPopEl"
+        class="tenant-account-delete-pop"
+        role="dialog"
+        aria-modal="true"
+        :style="deleteAccountPopStyle"
+      >
+        <p>确认删除子系统账号「{{ pendingDeleteAccount.username }}」吗？</p>
+        <div class="tenant-account-delete-pop__actions">
+          <button
+            class="btn btn-danger"
+            type="button"
+            :disabled="deletingAccountId === pendingDeleteAccount.id"
+            @click="confirmRemoveTenantAccount"
+          >
+            删除
+          </button>
+          <button
+            class="btn btn-ghost"
+            type="button"
+            :disabled="deletingAccountId === pendingDeleteAccount.id"
+            @click="cancelPendingTenantAccountDelete"
+          >
+            取消
+          </button>
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -1519,6 +1706,47 @@ watch(
   border-color: #dc2626;
   background: #dc2626;
   color: #fff;
+}
+
+.btn-ghost {
+  border-color: #d1d5db;
+  background: #fff;
+  color: #374151;
+}
+
+.tenant-accounts-table-wrap {
+  max-width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.tenant-account-delete-pop {
+  min-width: 220px;
+  max-width: min(320px, calc(100vw - 16px));
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.12);
+  padding: 10px;
+  box-sizing: border-box;
+}
+
+.tenant-account-delete-pop p {
+  margin: 0;
+  color: #374151;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.tenant-account-delete-pop__actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.tenant-account-delete-pop__actions .btn {
+  width: 100%;
 }
 
 .btn:disabled {

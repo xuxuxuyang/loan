@@ -69,9 +69,18 @@ function isJsonFallbackAllowed() {
   return /^true$/i.test(String(process.env.ALLOW_JSON_FALLBACK || '').trim())
 }
 
-/** 为 true 时，每个 /api 请求结束会先 await 当前作用域的 Mongo 持久化队列（测试/联调用；生产勿开） */
+/** 为 true 时，每个 /api 请求结束会先 await 当前作用域的 Mongo 持久化队列（含 GET）。高流量生产可仅用默认的「仅写接口」等待。 */
 function isMongoAwaitPersistEnabled() {
   const raw = String(process.env.MONGO_AWAIT_PERSIST || process.env.STORE_AWAIT_MONGO_PERSIST || '').trim().toLowerCase()
+  return raw === 'true' || raw === '1' || raw === 'yes'
+}
+
+/**
+ * Mongo 模式下：设为 true 时关闭「POST/PUT/PATCH/DELETE 结束后等待本 tenant/workspace 队列落库」；
+ * 未设置时为 false → 启用该等待，保证下一请求的 refreshScopeCacheFromMongo 与本请求写入对齐（体感接近本地 db.json 同步写）。
+ */
+function isMongoMutationPersistFlushSkipped() {
+  const raw = String(process.env.MONGO_SKIP_MUTATION_FLUSH || '').trim().toLowerCase()
   return raw === 'true' || raw === '1' || raw === 'yes'
 }
 
@@ -82,4 +91,5 @@ module.exports = {
   isMongoRequired,
   isJsonFallbackAllowed,
   isMongoAwaitPersistEnabled,
+  isMongoMutationPersistFlushSkipped,
 }

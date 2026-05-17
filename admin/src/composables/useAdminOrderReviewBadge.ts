@@ -1,7 +1,6 @@
 import { onUnmounted, ref, watch, type ComputedRef } from 'vue'
 import { useRoute } from 'vue-router'
-import router from '../router'
-import { computeAdminOrderSidebarCounts, replaceOrdersFromMallPayloads } from '../stores/useOrdersStore'
+import { computeAdminOrderSidebarCounts } from '../stores/useOrdersStore'
 import { getAdminSession } from './useAdminAuth'
 import { withMallTenantHeaders } from './useAdminApi'
 
@@ -18,6 +17,8 @@ export const ordersMenuPendingReviewTotal = ref(0)
 export const ordersMenuReviewedListTotal = ref(0)
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
+
+/** 轮询仅更新侧栏角标数字，不替换 useOrdersStore.orders，避免 GET 订单全量快照覆盖 PATCH 刚合并的数据。 */
 
 async function fetchOrderSidebarBadgeCounts() {
   const s = getAdminSession()
@@ -48,9 +49,6 @@ async function fetchOrderSidebarBadgeCounts() {
     const { pendingReview, reviewedOrdersList } = computeAdminOrderSidebarCounts(list)
     ordersMenuPendingReviewTotal.value = pendingReview
     ordersMenuReviewedListTotal.value = reviewedOrdersList
-    if (router.currentRoute.value.path === '/orders/review') {
-      replaceOrdersFromMallPayloads(list)
-    }
   }
   catch {
     /* 静默失败，保留上次数字 */

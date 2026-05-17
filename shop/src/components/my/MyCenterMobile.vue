@@ -97,22 +97,42 @@ async function openProductDetail(item: TeaProduct) {
 }
 
 async function handleBankCard() {
+  if (!isLoggedIn.value) {
+    await smartNavigate('/login')
+    return
+  }
   await smartNavigate('/bank-card')
 }
 
 async function handleCardPackage() {
+  if (!isLoggedIn.value) {
+    await smartNavigate('/login')
+    return
+  }
   await smartNavigate('/card-package')
 }
 
 async function handleBill() {
+  if (!isLoggedIn.value) {
+    await smartNavigate('/login')
+    return
+  }
   await smartNavigate('/bill')
 }
 
 async function handleOrderAll() {
+  if (!isLoggedIn.value) {
+    await smartNavigate('/login')
+    return
+  }
   await smartNavigate('/orders')
 }
 
 async function handleOrderStatus(status: string) {
+  if (!isLoggedIn.value) {
+    await smartNavigate('/login')
+    return
+  }
   await smartNavigate({
     path: '/orders',
     query: { status },
@@ -125,6 +145,11 @@ function handleLogout() {
 }
 
 async function handleService(key: string) {
+  /** 收货地址需登录；在线客服允许访客会话，不校验 */
+  if (key === 'address' && !isLoggedIn.value) {
+    await smartNavigate('/login')
+    return
+  }
   if (key === 'address') {
     await smartNavigate('/address')
     return

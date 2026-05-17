@@ -76,6 +76,26 @@ function formatListTime(iso: string) {
   return d.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
 }
 
+/** 发送消息后立即更新侧边栏预览，避免立刻 GET 会话列表读到旧快照 */
+function patchSessionSidebarPreview(sessionId: string, messages: ChatMessage[]) {
+  if (!sessionId || !messages.length)
+    return
+  const idx = sessions.value.findIndex(s => s.id === sessionId)
+  if (idx < 0)
+    return
+  const last = messages[messages.length - 1]
+  const img = Boolean(last && (last.type === 'image' || String(last.imageUrl || '').trim()))
+  const lastMessage = img
+    ? '[图片]'
+    : String(last?.text || '').trim() || '[消息]'
+  const rawTime = typeof last?.createdAt === 'string' ? last.createdAt.trim() : ''
+  sessions.value[idx] = {
+    ...sessions.value[idx],
+    lastMessage,
+    ...(rawTime ? { lastAt: formatListTime(rawTime) } : {}),
+  }
+}
+
 function formatMsgTime(iso: string) {
   const d = new Date(iso)
   if (Number.isNaN(d.getTime())) {
@@ -178,8 +198,8 @@ async function onAgentImageSelected(ev: Event) {
     }
     if (payload.data?.messages) {
       detailMessages.value = payload.data.messages
+      patchSessionSidebarPreview(activeId.value, payload.data.messages)
     }
-    await fetchSessions()
   }
   catch (e) {
     notifyError(e instanceof Error ? e.message : '图片发送失败')
@@ -263,7 +283,8 @@ function selectSession(id: string) {
   if (s && s.unread > 0) {
     s.unread = 0
   }
-  void fetchDetail(id).then(() => fetchSessions())
+  /** 用详情里的最新消息刷新侧栏预览，避免紧接 GET 会话列表撞到旧快照；完整列表交给轮询统一拉取 */
+  void fetchDetail(id).then(() => patchSessionSidebarPreview(id, detailMessages.value))
 }
 
 async function sendReply() {
@@ -292,8 +313,8 @@ async function sendReply() {
     draft.value = ''
     if (payload.data?.messages) {
       detailMessages.value = payload.data.messages
+      patchSessionSidebarPreview(activeId.value, payload.data.messages)
     }
-    await fetchSessions()
   }
   catch (e) {
     notifyError(e instanceof Error ? e.message : '发送失败')

@@ -19,7 +19,7 @@ const { smartNavigate } = useCustomRouting(route)
 const installmentProducts = useTeaProducts()
 const mallShowcaseProducts = useMallShowcaseProducts()
 const { ensureRegistered, profile, loginPhone, syncFromStorage } = useMallAuth()
-const { addresses, fetchAddresses, fetchBills, fetchSummary } = useMallMy()
+const { addresses, fetchAddresses, fetchBills, fetchSummary, applyPostOrderCreationBundles } = useMallMy()
 const { orders, createOrder, syncFromRemote } = useMallOrders()
 const runtimeConfig = useRuntimeConfig()
 
@@ -289,7 +289,7 @@ async function submitOrder() {
   submitting.value = true
   orderSubmitLoadingVisible.value = true
   await nextTick()
-  let newOrder: Awaited<ReturnType<typeof createOrder>> | undefined
+  let creationResult: Awaited<ReturnType<typeof createOrder>> | undefined
   try {
     const apiBase = String(runtimeConfig.public.mallApiBase || '/api').replace(/\/$/, '')
     const idNumber = String(profile.value?.idNumber || '').trim()
@@ -308,7 +308,7 @@ async function submitOrder() {
       }
     }
     if (isReturningCustomer.value) {
-      newOrder = await createOrder({
+      creationResult = await createOrder({
         productId: selectedProduct.value.id,
         name: selectedProduct.value.name,
         spec: selectedProduct.value.subtitle,
@@ -360,7 +360,7 @@ async function submitOrder() {
           return
         }
       }
-      newOrder = await createOrder({
+      creationResult = await createOrder({
         productId: selectedProduct.value.id,
         name: selectedProduct.value.name,
         spec: selectedProduct.value.subtitle,
@@ -380,7 +380,6 @@ async function submitOrder() {
         installmentRiskWaveId: waveId,
       }, { mallLoginPhone: currentUserPhone.value })
     }
-    currentOrderNo.value = newOrder.id
   }
   catch (error: unknown) {
     let msg = ''
@@ -395,9 +394,11 @@ async function submitOrder() {
     orderSubmitLoadingVisible.value = false
     submitting.value = false
   }
-  if (!newOrder) {
+  if (!creationResult) {
     return
   }
+  currentOrderNo.value = creationResult.order.id
+  const newOrder = creationResult.order
   if (newOrder.riskStatus === 'failed') {
     notifyWarning(
       newOrder.riskReason
@@ -414,7 +415,12 @@ async function submitOrder() {
       login = login.slice(2)
     }
     if (/^1\d{10}$/.test(login)) {
-      void Promise.all([fetchBills(login), fetchSummary(login)])
+      applyPostOrderCreationBundles(login, creationResult.mallRefresh)
+      /** 服务端未带快照时仍为旧契约，兜底拉「我的」汇总；若 mallRefresh 已含 mySummary 仍拉一次以保持订单计数等与库一致（单请求成本低） */
+      if (!creationResult.mallRefresh)
+        void Promise.all([fetchBills(login), fetchSummary(login)])
+      else
+        void fetchSummary(login)
     }
   }
   await smartNavigate({

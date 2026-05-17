@@ -346,19 +346,6 @@ export function computeAdminOrderSidebarCounts(payloads: unknown[]): {
   return { pendingReview, reviewedOrdersList }
 }
 
-/**
- * 将 GET /orders 返回的原始列表写入共享 orders（与无查询参数请求一致）。
- * 供侧栏轮询与「审核订单」页对齐：角标与列表同源，不另发请求、整页刷新。
- */
-export function replaceOrdersFromMallPayloads(payloads: unknown[]) {
-  if (!Array.isArray(payloads)) {
-    orders.value = []
-    return
-  }
-  orders.value = payloads.map(raw => mapMallOrderToAdminOrder(raw as MallOrderPayload))
-}
-
-/** PATCH 返回的订单不含 buyerAdminRemark 时保留列表中已有的备注展示 */
 function mergeOrderAfterPatch(prev: OrderItem, mapped: OrderItem): OrderItem {
   const ur = mapped.userRemark.trim() ? mapped.userRemark : prev.userRemark
   const ec = mapped.emergencyContactsComplete !== undefined

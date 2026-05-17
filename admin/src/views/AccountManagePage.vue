@@ -33,6 +33,7 @@ const loading = ref(false)
 const submitting = ref(false)
 const deletingId = ref('')
 const pendingDeleteId = ref('')
+const statusTogglingId = ref('')
 const keyword = ref('')
 const showCreate = ref(false)
 const showPasswordModal = ref(false)
@@ -299,6 +300,18 @@ async function fetchAccounts() {
   }
 }
 
+function applyAdminAccountUpsert(next: AdminAccountItem) {
+  const idx = accounts.value.findIndex(a => a.id === next.id)
+  if (idx >= 0)
+    accounts.value[idx] = { ...accounts.value[idx], ...next }
+  else
+    accounts.value = [next, ...accounts.value]
+}
+
+function removeAdminAccountLocal(id: string) {
+  accounts.value = accounts.value.filter(a => a.id !== id)
+}
+
 function openCreateModal() {
   showCreate.value = true
   createForm.username = ''
@@ -371,10 +384,12 @@ async function createAccount() {
           scopeTenantIds: [],
         }),
       })
-      const payload = await response.json() as { msg?: string }
-      if (!response.ok) {
+      const payload = await response.json() as { msg?: string, success?: boolean, data?: AdminAccountItem }
+      if (!response.ok || payload.success === false) {
         throw new Error(payload.msg || `创建账号失败: ${response.status}`)
       }
+      if (payload.data)
+        applyAdminAccountUpsert(payload.data)
     }
     else {
       const tenantId = String(session.value?.tenantId || '').trim()
@@ -391,14 +406,15 @@ async function createAccount() {
           ...(tenantId ? { tenantId } : {}),
         }),
       })
-      const payload = await response.json() as { msg?: string }
-      if (!response.ok) {
+      const payload = await response.json() as { msg?: string, success?: boolean, data?: AdminAccountItem }
+      if (!response.ok || payload.success === false) {
         throw new Error(payload.msg || `创建账号失败: ${response.status}`)
       }
+      if (payload.data)
+        applyAdminAccountUpsert(payload.data)
     }
     showCreate.value = false
     clearCreateFormErrors()
-    await fetchAccounts()
   }
   catch (error) {
     const msg = error instanceof Error ? error.message : '创建账号失败'
@@ -409,17 +425,18 @@ async function createAccount() {
   }
 }
 
-async function updateAccount(id: string, body: Record<string, unknown>) {
+async function updateAccount(id: string, body: Record<string, unknown>): Promise<AdminAccountItem | null> {
   if (usePlatformAccountsApi.value) {
     const response = await fetch(`${MALL_API_BASE}/platform/accounts/${encodeURIComponent(id)}`, {
       method: 'PATCH',
       headers: withAdminAuthHeaders({ 'Content-Type': 'application/json', 'x-workspace-type': 'core' }),
       body: JSON.stringify(body),
     })
-    const payload = await response.json() as { msg?: string }
-    if (!response.ok) {
+    const payload = await response.json() as { msg?: string, success?: boolean, data?: AdminAccountItem }
+    if (!response.ok || payload.success === false) {
       throw new Error(payload.msg || `更新账号失败: ${response.status}`)
     }
+    return payload.data ?? null
   }
   else {
     const response = await fetch(`${MALL_API_BASE}/admin/accounts/${encodeURIComponent(id)}`, {
@@ -427,22 +444,32 @@ async function updateAccount(id: string, body: Record<string, unknown>) {
       headers: withMallTenantHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(body),
     })
-    const payload = await response.json() as { msg?: string }
-    if (!response.ok) {
+    const payload = await response.json() as { msg?: string, success?: boolean, data?: AdminAccountItem }
+    if (!response.ok || payload.success === false) {
       throw new Error(payload.msg || `更新账号失败: ${response.status}`)
     }
+    return payload.data ?? null
   }
 }
 
 async function switchStatus(item: AdminAccountItem) {
+  if (statusTogglingId.value || deletingId.value || isStatusToggleLocked(item)) return
+  statusTogglingId.value = item.id
   try {
-    await updateAccount(item.id, {
+    const next = await updateAccount(item.id, {
       status: item.status === 'active' ? 'disabled' : 'active',
     })
-    await fetchAccounts()
+    if (next)
+      applyAdminAccountUpsert(next)
+    ElMessage.success(next?.status === 'active' ? '账号已启用' : '账号已禁用')
   }
   catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : '更新账号状态失败'
+    const msg = error instanceof Error ? error.message : '更新账号状态失败'
+    errorMessage.value = msg
+    ElMessage.error(msg)
+  }
+  finally {
+    statusTogglingId.value = ''
   }
 }
 
@@ -459,11 +486,12 @@ async function submitRoleChange() {
   roleSubmitting.value = true
   errorMessage.value = ''
   try {
-    await updateAccount(roleTarget.value.id, { role: roleForm.role })
+    const next = await updateAccount(roleTarget.value.id, { role: roleForm.role })
     ElMessage.success(`账号 ${roleTarget.value.username} 角色已更新`)
     showRoleModal.value = false
     roleTarget.value = null
-    await fetchAccounts()
+    if (next)
+      applyAdminAccountUpsert(next)
   }
   catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '更新角色失败'
@@ -491,12 +519,14 @@ async function submitPasswordChange() {
   passwordSubmitting.value = true
   errorMessage.value = ''
   try {
-    await updateAccount(passwordTarget.value.id, { password })
+    const next = await updateAccount(passwordTarget.value.id, { password })
     ElMessage.success(`账号 ${passwordTarget.value.username} 密码已更新`)
     showPasswordModal.value = false
     passwordTarget.value = null
     passwordForm.password = ''
     passwordForm.confirmPassword = ''
+    if (next)
+      applyAdminAccountUpsert(next)
   }
   catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '修改密码失败'
@@ -522,13 +552,13 @@ async function removeAccount(item: AdminAccountItem) {
         ? withAdminAuthHeaders({ 'x-workspace-type': 'core' })
         : withMallTenantHeaders(),
     })
-    const payload = await response.json() as { msg?: string }
-    if (!response.ok) {
+    const payload = await response.json() as { msg?: string, success?: boolean }
+    if (!response.ok || payload.success === false) {
       throw new Error(payload.msg || `删除账号失败: ${response.status}`)
     }
     pendingDeleteId.value = ''
     ElMessage.success('账号删除成功')
-    await fetchAccounts()
+    removeAdminAccountLocal(item.id)
   }
   catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '删除账号失败'
@@ -687,10 +717,14 @@ watch(
                 <button
                   class="btn btn-warning"
                   type="button"
-                  :disabled="isStatusToggleLocked(row.item)"
+                  :disabled="isStatusToggleLocked(row.item) || Boolean(statusTogglingId) || Boolean(deletingId)"
                   @click="switchStatus(row.item)"
                 >
-                  {{ row.item.status === 'active' ? '禁用' : '启用' }}
+                  {{
+                    statusTogglingId === row.item.id
+                      ? '处理中…'
+                      : row.item.status === 'active' ? '禁用' : '启用'
+                  }}
                 </button>
                 <button
                   class="btn btn-role-edit"

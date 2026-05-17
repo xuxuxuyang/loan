@@ -1,3 +1,5 @@
+import type { MallPostOrderRefreshPayload } from '~/composables/useMallMy'
+
 export type MallOrderStatus = 'reviewing' | 'shipping' | 'receiving' | 'enjoying'
 export type MallPayType = 'installment' | 'full'
 export type MallPayChannel = 'wechat' | 'alipay' | 'card'
@@ -25,6 +27,11 @@ export interface MallOrder {
   cardPackageIssued?: boolean
   /** 快递运单号（后台登记后有值；shipping 填单后接口通常会改为 receiving） */
   trackingNumber?: string
+}
+
+export interface MallCreateOrderResult {
+  order: MallOrder
+  mallRefresh?: MallPostOrderRefreshPayload
 }
 
 interface CreateOrderPayload {
@@ -302,28 +309,41 @@ export function useMallOrders() {
     // 历史兼容：保留方法，但订单写入走 createOrder / markOrderPaid。
   }
 
-  const createOrder = async (payload: CreateOrderPayload, auth?: { mallLoginPhone?: string }) => {
+  const createOrder = async (payload: CreateOrderPayload, auth?: { mallLoginPhone?: string }): Promise<MallCreateOrderResult> => {
     const authHeaders = buildMockMallAuthHeader(auth?.mallLoginPhone)
-    const response = await $fetch<{ success: boolean, data: MallOrder }>(`${resolveMallApiBase()}${ORDER_REMOTE_PATH}`, {
+    const response = await $fetch<{ success: boolean, data: Record<string, unknown> }>(`${resolveMallApiBase()}${ORDER_REMOTE_PATH}`, {
       method: 'POST',
       body: payload,
       ...(authHeaders ? { headers: authHeaders } : {}),
     })
-    const order = normalizeMallOrder(response.data)
+    const rawAll = response.data || {}
+    const mallRefreshRaw = rawAll.mallRefresh
+    const mallRefresh = mallRefreshRaw && typeof mallRefreshRaw === 'object' && mallRefreshRaw !== null
+      ? (mallRefreshRaw as MallPostOrderRefreshPayload)
+      : undefined
+    const orderClone: Record<string, unknown> = { ...rawAll }
+    delete orderClone.mallRefresh
+    const order = normalizeMallOrder(orderClone)
     if (!order) {
       throw new Error('订单创建返回数据异常')
     }
     orders.value = [order, ...orders.value.filter(item => item.id !== order.id)]
     saveOrdersToStorage(orders.value)
-    return order
+    return { order, mallRefresh }
   }
 
   const markOrderPaid = async (orderId: string, payChannel: MallPayChannel) => {
-    await $fetch<{ success: boolean, data: MallOrder }>(`${resolveMallApiBase()}${ORDER_REMOTE_PATH}/${orderId}/pay`, {
+    const response = await $fetch<{ success: boolean, data: MallOrder }>(`${resolveMallApiBase()}${ORDER_REMOTE_PATH}/${orderId}/pay`, {
       method: 'PATCH',
       body: { payChannel },
     })
-    await syncFromRemote()
+    const order = normalizeMallOrder(response.data)
+    if (order) {
+      orders.value = [order, ...orders.value.filter(item => item.id !== order.id)]
+    }
+    else {
+      await syncFromRemote()
+    }
     saveOrdersToStorage(orders.value)
   }
 

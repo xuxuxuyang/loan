@@ -719,7 +719,6 @@ async function handleOrderStatusCommand(order: OrderItem, label: string) {
   try {
     await updateOrderStatus(order.id, orderStatusToApi[key])
     ElMessage.success('订单状态已更新')
-    await loadOrders()
   }
   catch {
     ElMessage.error('更新订单状态失败，请稍后重试')
@@ -745,7 +744,6 @@ async function rollbackToReview(order: OrderItem) {
   changingStatusOrderId.value = order.id
   try {
     await updateOrderStatus(order.id, 'reviewing')
-    await loadOrders()
   }
   catch (error) {
     ElMessage.error('打回审核失败，请稍后重试')
@@ -783,7 +781,6 @@ async function handleDeleteOrder(order: OrderItem) {
     if (selectedOrder.value?.id === order.id) {
       closePlan()
     }
-    await loadOrders()
   }
   catch (error) {
     ElMessage.error(error instanceof Error ? error.message : '删除订单失败，请稍后重试')

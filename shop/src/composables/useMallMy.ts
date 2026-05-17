@@ -93,6 +93,17 @@ export interface MallBillSummary {
   minRepayment: number
 }
 
+export interface MallBillingRefreshPayload {
+  summary: MallBillSummary
+  list: MallBillItem[]
+}
+
+/** POST /orders 成功后携带，与紧随其后的 GET /bills、GET /my/summary 一致 */
+export interface MallPostOrderRefreshPayload {
+  billing: MallBillingRefreshPayload
+  mySummary: MallMySummary
+}
+
 function resolveMallApiBase() {
   const runtimeConfig = useRuntimeConfig()
   return runtimeConfig.public.mallApiBase || '/api'
@@ -185,6 +196,13 @@ function normalizeMallBankCard(item: unknown): MallBankCardItem | null {
   }
 }
 
+/** 与 GET /addresses 排序一致 */
+function sortMallAddressList(list: MallAddressItem[]) {
+  return [...list].sort(
+    (a, b) => Number(b.isDefault) - Number(a.isDefault) || b.id - a.id,
+  )
+}
+
 export function formatBillAmount(amount: number) {
   const value = Number(amount || 0)
   const abs = Math.abs(value).toFixed(2)
@@ -225,6 +243,15 @@ export function useMallMy() {
   const summary = useState<MallMySummary>('mall-my-summary', emptySummary)
   const addresses = useState<MallAddressItem[]>('mall-my-addresses', () => [])
   const bankCards = useState<MallBankCardItem[]>('mall-my-bank-cards', () => [])
+
+  function applyAddressUpsert(row: MallAddressItem) {
+    const phone = row.userPhone
+    const withoutId = addresses.value.filter(a => a.id !== row.id)
+    const mapped = row.isDefault
+      ? withoutId.map(a => (a.userPhone === phone ? { ...a, isDefault: false } : a))
+      : withoutId
+    addresses.value = sortMallAddressList([row, ...mapped])
+  }
   const cardPackages = useState<MallCardPackageDTO[]>('mall-my-card-packages', () => [])
   const billSummary = useState<MallBillSummary>('mall-my-bill-summary', () => ({
     shouldRepay: 0,
@@ -234,6 +261,46 @@ export function useMallMy() {
     minRepayment: 0,
   }))
   const bills = useState<MallBillItem[]>('mall-my-bills', () => [])
+
+  function applyBillingPayloadToState(data: { summary?: unknown, list?: unknown }): boolean {
+    const s = data.summary
+    if (!s || typeof s !== 'object' || !Array.isArray(data.list))
+      return false
+    const r = s as Record<string, unknown>
+    billSummary.value = {
+      shouldRepay: Number(r.shouldRepay ?? 0),
+      totalPending: Number(r.totalPending ?? 0),
+      availableQuota: Number(r.availableQuota ?? 0),
+      billDate: String(r.billDate ?? '每月 08 日'),
+      minRepayment: Number(r.minRepayment ?? 0),
+    }
+    bills.value = data.list as MallBillItem[]
+    const tp = Number(Number(billSummary.value.totalPending ?? billSummary.value.shouldRepay ?? 0).toFixed(2))
+    summary.value = { ...summary.value, billPendingAmount: tp }
+    return true
+  }
+
+  function mergeCardPackageRowFromPayload(row: unknown): boolean {
+    const dto = normalizeMallCardPackage(row)
+    if (!dto)
+      return false
+    cardPackages.value = [dto, ...cardPackages.value.filter(p => String(p.orderId) !== String(dto.orderId))]
+    return true
+  }
+
+  function applyPostOrderCreationBundles(account: string, bundle: MallPostOrderRefreshPayload | null | undefined) {
+    const phone = normalizeMallAccount(account)
+    if (!/^1\d{10}$/.test(phone) || !bundle)
+      return
+    if (bundle.billing?.summary != null && Array.isArray(bundle.billing.list))
+      applyBillingPayloadToState(bundle.billing)
+    if (bundle.mySummary) {
+      summary.value = {
+        ...bundle.mySummary,
+        billPendingAmount: Number(Number(bundle.mySummary.billPendingAmount ?? 0).toFixed(2)),
+      }
+    }
+  }
 
   const fetchSummary = async (account: string) => {
     const phone = normalizeMallAccount(account)
@@ -290,10 +357,12 @@ export function useMallMy() {
     if (!/^1\d{10}$/.test(phone)) {
       throw new Error('请先登录')
     }
-    return await $fetch<{ success: boolean, data: { signed?: boolean } }>(
+    const res = await $fetch<{ success: boolean, data: { signed?: boolean, cardPackageRow?: unknown } }>(
       `${resolveMallApiBase()}/card-packages/${encodeURIComponent(orderId)}/contract-ack`,
       { method: 'POST', query: { phone } },
     )
+    mergeCardPackageRowFromPayload(res.data?.cardPackageRow)
+    return res
   }
 
   const resetCardPackageContractSign = async (account: string, orderId: string) => {
@@ -332,35 +401,59 @@ export function useMallMy() {
       query: { phone },
     })
     const list = Array.isArray(response?.data) ? response.data : []
-    addresses.value = list
-      .map(normalizeMallAddress)
-      .filter((item): item is MallAddressItem => Boolean(item))
+    addresses.value = sortMallAddressList(
+      list
+        .map(normalizeMallAddress)
+        .filter((item): item is MallAddressItem => Boolean(item)),
+    )
     return addresses.value
   }
 
   const createAddress = async (account: string, payload: MallAddressPayload) => {
     const phone = normalizeMallAccount(account)
-    await $fetch(`${resolveMallApiBase()}/addresses`, {
+    const res = await $fetch<{ success?: boolean, data?: unknown }>(`${resolveMallApiBase()}/addresses`, {
       method: 'POST',
       body: {
         userPhone: phone,
         ...payload,
       },
     })
-    await fetchAddresses(phone)
+    const item = normalizeMallAddress(res.data)
+    if (item)
+      applyAddressUpsert(item)
+    else
+      await fetchAddresses(phone)
   }
 
   const updateAddress = async (addressId: number, payload: Partial<MallAddressPayload>) => {
-    await $fetch(`${resolveMallApiBase()}/addresses/${addressId}`, {
+    const res = await $fetch<{ success?: boolean, data?: unknown }>(`${resolveMallApiBase()}/addresses/${addressId}`, {
       method: 'PATCH',
       body: payload,
     })
+    const item = normalizeMallAddress(res.data)
+    if (item) {
+      applyAddressUpsert(item)
+    }
+    else {
+      const row = addresses.value.find(a => a.id === addressId)
+      if (row?.userPhone)
+        await fetchAddresses(row.userPhone)
+    }
   }
 
   const setDefaultAddress = async (addressId: number) => {
-    await $fetch(`${resolveMallApiBase()}/addresses/${addressId}/default`, {
+    const res = await $fetch<{ success?: boolean, data?: unknown }>(`${resolveMallApiBase()}/addresses/${addressId}/default`, {
       method: 'PATCH',
     })
+    const item = normalizeMallAddress(res.data)
+    if (item) {
+      applyAddressUpsert(item)
+    }
+    else {
+      const row = addresses.value.find(a => a.id === addressId)
+      if (row?.userPhone)
+        await fetchAddresses(row.userPhone)
+    }
   }
 
   const fetchBankCards = async (account: string) => {
@@ -382,14 +475,20 @@ export function useMallMy() {
 
   const createBankCard = async (account: string, payload: { bankName: string, cardType: string, cardNo: string, owner: string }) => {
     const phone = normalizeMallAccount(account)
-    await $fetch(`${resolveMallApiBase()}/bank-cards`, {
+    const res = await $fetch<{ success?: boolean, data?: unknown }>(`${resolveMallApiBase()}/bank-cards`, {
       method: 'POST',
       body: {
         userPhone: phone,
         ...payload,
       },
     })
-    await fetchBankCards(phone)
+    const item = normalizeMallBankCard(res.data)
+    if (item) {
+      bankCards.value = [item, ...bankCards.value.filter(c => c.id !== item.id)]
+    }
+    else {
+      await fetchBankCards(phone)
+    }
   }
 
   const deleteBankCard = async (account: string, cardId: number) => {
@@ -401,7 +500,7 @@ export function useMallMy() {
       method: 'DELETE',
       query: { phone },
     })
-    await fetchBankCards(phone)
+    bankCards.value = bankCards.value.filter(c => c.id !== cardId)
     await fetchSummary(phone)
   }
 
@@ -426,46 +525,51 @@ export function useMallMy() {
       method: 'GET',
       query: { phone },
     })
-    billSummary.value = response?.data?.summary || {
-      shouldRepay: 0,
-      totalPending: 0,
-      availableQuota: 0,
-      billDate: '每月 08 日',
-      minRepayment: 0,
+    const d = response?.data
+    if (!applyBillingPayloadToState({ summary: d?.summary, list: d?.list })) {
+      billSummary.value = {
+        shouldRepay: 0,
+        totalPending: 0,
+        availableQuota: 0,
+        billDate: '每月 08 日',
+        minRepayment: 0,
+      }
+      bills.value = []
+      summary.value = { ...summary.value, billPendingAmount: 0 }
     }
-    bills.value = Array.isArray(response?.data?.list) ? response.data.list : []
-    const tp = Number(Number(billSummary.value.totalPending ?? billSummary.value.shouldRepay ?? 0).toFixed(2))
-    summary.value = { ...summary.value, billPendingAmount: tp }
-    return response.data
+    return {
+      summary: billSummary.value,
+      list: bills.value,
+    }
   }
 
-  /** 用户端协商支付：支付后台登记的协商还款金额后，再落库剩余应还本金（成功后 fetchBills 更新界面） */
+  /** 用户端协商支付（优先合并响应内 billing；与 POST /bills/repay 返回结构一致） */
   const repayNegotiatedBills = async (account: string, payload: MallRepayNegotiatedPayload) => {
     const phone = normalizeMallAccount(account)
     if (!/^1\d{10}$/.test(phone)) {
       throw new Error('请先登录')
     }
-    await $fetch<{ success: boolean }>(`${resolveMallApiBase()}/bills/repay-negotiated`, {
-      method: 'POST',
-      query: { phone },
-      body: payload,
-    })
-    await fetchBills(phone)
+    const res = await $fetch<{ success: boolean, data?: { billing?: MallBillingRefreshPayload } }>(
+      `${resolveMallApiBase()}/bills/repay-negotiated`,
+      { method: 'POST', query: { phone }, body: payload },
+    )
+    if (!applyBillingPayloadToState({ summary: res.data?.billing?.summary, list: res.data?.billing?.list }))
+      await fetchBills(phone)
     await fetchSummary(phone)
   }
 
-  /** 用户端还款：与后台订单分期 `paid` 同步（需卡包已发放等规则与 POST /bills/repay 一致） */
+  /** 用户端还款（同上） */
   const repayBills = async (account: string, payload: MallRepayPayload) => {
     const phone = normalizeMallAccount(account)
     if (!/^1\d{10}$/.test(phone)) {
       throw new Error('请先登录')
     }
-    await $fetch<{ success: boolean }>(`${resolveMallApiBase()}/bills/repay`, {
-      method: 'POST',
-      query: { phone },
-      body: payload,
-    })
-    await fetchBills(phone)
+    const res = await $fetch<{ success: boolean, data?: { billing?: MallBillingRefreshPayload } }>(
+      `${resolveMallApiBase()}/bills/repay`,
+      { method: 'POST', query: { phone }, body: payload },
+    )
+    if (!applyBillingPayloadToState({ summary: res.data?.billing?.summary, list: res.data?.billing?.list }))
+      await fetchBills(phone)
     await fetchSummary(phone)
   }
 
@@ -492,5 +596,7 @@ export function useMallMy() {
     fetchBills,
     repayBills,
     repayNegotiatedBills,
+    applyPostOrderCreationBundles,
+    mergeCardPackageRowFromPayload,
   }
 }

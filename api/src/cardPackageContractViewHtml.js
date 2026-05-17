@@ -530,7 +530,8 @@ function buildCardPackageContractViewHtml(p) {
           hint.textContent = '';
           try {
             if (window.parent && window.parent !== window) {
-              window.parent.postMessage({ type: 'mall-card-package-contract-signed', orderId: ${JSON.stringify(String(p.orderId || ''))} }, '*');
+              var pkg = (x.j && x.j.data && typeof x.j.data.cardPackageRow === 'object') ? x.j.data.cardPackageRow : null;
+              window.parent.postMessage({ type: 'mall-card-package-contract-signed', orderId: ${JSON.stringify(String(p.orderId || ''))}, cardPackageRow: pkg }, '*');
             }
           } catch (e) {}
           document.body.innerHTML = '<div class="wrap"><div class="signed-banner ok">签署已成功记录，请关闭本页返回商城继续操作。</div></div>';

@@ -150,7 +150,6 @@ function saveAddress(payload: AddressForm) {
       await createAddress(currentUserAccount.value, normalizedPayload)
       notifySuccess('收货地址添加成功')
     }
-    await fetchAddresses(currentUserAccount.value)
     const back = consumeAddressPageReturnNavigation(route)
     closeDialog()
     if (back) {
@@ -171,8 +170,7 @@ function setAsDefault(id: number) {
     notifyWarning('请先登录后再管理地址')
     return
   }
-  setDefaultAddress(id).then(async () => {
-    await fetchAddresses(currentUserAccount.value)
+  setDefaultAddress(id).then(() => {
     notifySuccess('已设为默认地址')
   }).catch((error) => {
     console.error('设置默认地址失败', error)

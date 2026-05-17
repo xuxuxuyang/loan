@@ -109,6 +109,15 @@ function formatDateTime(value: string) {
   return `${yyyy}-${mm}-${dd} ${hh}:${min}`
 }
 
+/** POST/PATCH 成功后用接口返回的 data 写入列表（新建则插入首行） */
+function applyTrafficChannelPatchRow(data: TrafficChannelRow) {
+  const idx = rows.value.findIndex(r => r.id === data.id)
+  if (idx >= 0)
+    rows.value[idx] = { ...rows.value[idx], ...data }
+  else
+    rows.value = [data, ...rows.value]
+}
+
 async function fetchChannels() {
   loading.value = true
   startPageProgress()
@@ -188,13 +197,14 @@ async function submitCreate() {
         disabled: createForm.disabled,
       }),
     })
-    const payload = await response.json() as { msg?: string }
-    if (!response.ok) {
+    const payload = await response.json() as { msg?: string; success?: boolean; data?: TrafficChannelRow }
+    if (!response.ok || payload.success === false) {
       throw new Error(payload.msg || `创建失败: ${response.status}`)
     }
     ElMessage.success('流量商已创建')
     showCreate.value = false
-    await fetchChannels()
+    if (payload.data)
+      applyTrafficChannelPatchRow(payload.data)
   }
   catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '创建失败'
@@ -219,13 +229,14 @@ async function submitEdit() {
         remark: editForm.remark.trim(),
       }),
     })
-    const payload = await response.json() as { msg?: string }
-    if (!response.ok) {
+    const payload = await response.json() as { msg?: string; success?: boolean; data?: TrafficChannelRow }
+    if (!response.ok || payload.success === false) {
       throw new Error(payload.msg || `保存失败: ${response.status}`)
     }
     ElMessage.success('已保存')
     showEdit.value = false
-    await fetchChannels()
+    if (payload.data)
+      applyTrafficChannelPatchRow(payload.data)
   }
   catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '保存失败'
@@ -251,12 +262,8 @@ async function toggleChannelDisabled(row: TrafficChannelRow) {
     if (!response.ok) {
       throw new Error(payload.msg || `操作失败: ${response.status}`)
     }
-    const data = payload.data
-    if (data) {
-      const idx = rows.value.findIndex(r => r.id === row.id)
-      if (idx >= 0)
-        rows.value[idx] = { ...rows.value[idx], ...data }
-    }
+    if (payload.data)
+      applyTrafficChannelPatchRow(payload.data)
     ElMessage.success(nextDisabled ? '已停用' : '已启用')
   }
   catch (error) {
@@ -316,13 +323,14 @@ async function saveChannelRemark() {
       headers: withMallTenantHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ remark: remarkDraft.value.trim() }),
     })
-    const payload = await response.json() as { msg?: string }
-    if (!response.ok) {
+    const payload = await response.json() as { msg?: string; success?: boolean; data?: TrafficChannelRow }
+    if (!response.ok || payload.success === false) {
       throw new Error(payload.msg || `保存备注失败: ${response.status}`)
     }
     ElMessage.success('备注已保存')
     resetRemarkDialog()
-    await fetchChannels()
+    if (payload.data)
+      applyTrafficChannelPatchRow(payload.data)
   }
   catch (error) {
     ElMessage.error(error instanceof Error ? error.message : '保存备注失败')
@@ -342,13 +350,14 @@ async function doDelete() {
       method: 'DELETE',
       headers: withMallTenantHeaders(),
     })
-    const payload = await response.json() as { msg?: string }
-    if (!response.ok) {
+    const payload = await response.json() as { msg?: string; success?: boolean }
+    if (!response.ok || payload.success === false) {
       throw new Error(payload.msg || `删除失败: ${response.status}`)
     }
     ElMessage.success('已删除')
     closeDelete()
-    await fetchChannels()
+    const delId = row.id
+    rows.value = rows.value.filter(r => r.id !== delId)
   }
   catch (error) {
     ElMessage.error(error instanceof Error ? error.message : '删除失败')

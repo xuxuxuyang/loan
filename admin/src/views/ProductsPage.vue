@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { UploadProps } from 'element-plus'
-import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { withMallTenantHeaders } from '../composables/useAdminApi'
 import { donePageProgress, startPageProgress } from '../utils/progress'
@@ -275,7 +275,125 @@ function clearProductCover() {
   clearProductField('image')
 }
 const deletingId = ref<number | null>(null)
+/** 上架/下架 PATCH 进行中（单行按钮 loading） */
+const onSalePatchingId = ref<number | null>(null)
 const pendingDeleteId = ref<number | null>(null)
+const productsTableWrapRef = ref<HTMLElement | null>(null)
+const deleteAnchorEl = ref<HTMLElement | null>(null)
+const deletePopEl = ref<HTMLElement | null>(null)
+const deletePopStyle = ref<Record<string, string>>({})
+
+const DELETE_POP_GAP = 8
+const DELETE_POP_VIEW_MARGIN = 8
+
+const pendingDeleteProduct = computed(() => {
+  const id = pendingDeleteId.value
+  if (id == null)
+    return null
+  return products.value.find(p => p.id === id) ?? null
+})
+
+function updateDeletePopPosition() {
+  const anchor = deleteAnchorEl.value
+  const pop = deletePopEl.value
+  if (!anchor || !pop || pendingDeleteId.value == null)
+    return
+
+  const anchorRect = anchor.getBoundingClientRect()
+  const vw = window.innerWidth
+  const vh = window.innerHeight
+  const margin = DELETE_POP_VIEW_MARGIN
+
+  const popRect = pop.getBoundingClientRect()
+  let popH = popRect.height
+  let popW = popRect.width
+  if (popH < 4 || popW < 4) {
+    popH = 96
+    popW = 180
+  }
+
+  const spaceAbove = anchorRect.top - margin
+  const spaceBelow = vh - anchorRect.bottom - margin
+
+  const fitsAbove = spaceAbove >= popH + DELETE_POP_GAP
+  const fitsBelow = spaceBelow >= popH + DELETE_POP_GAP
+
+  let placeAbove: boolean
+  if (fitsAbove && fitsBelow) {
+    placeAbove = spaceAbove >= spaceBelow
+  }
+  else if (fitsBelow) {
+    placeAbove = false
+  }
+  else if (fitsAbove) {
+    placeAbove = true
+  }
+  else {
+    placeAbove = spaceAbove >= spaceBelow
+  }
+
+  let top = placeAbove
+    ? anchorRect.top - DELETE_POP_GAP - popH
+    : anchorRect.bottom + DELETE_POP_GAP
+
+  let left = anchorRect.right - popW
+
+  left = Math.min(Math.max(left, margin), vw - popW - margin)
+  top = Math.min(Math.max(top, margin), vh - popH - margin)
+
+  deletePopStyle.value = {
+    position: 'fixed',
+    top: `${Math.round(top)}px`,
+    left: `${Math.round(left)}px`,
+    zIndex: '3000',
+  }
+}
+
+async function scheduleDeletePopPosition() {
+  await nextTick()
+  requestAnimationFrame(() => {
+    updateDeletePopPosition()
+    requestAnimationFrame(() => updateDeletePopPosition())
+  })
+}
+
+function onDeletePopScrollOrResize() {
+  void scheduleDeletePopPosition()
+}
+
+function onOutsideDeletePop(ev: PointerEvent) {
+  const target = ev.target
+  if (!(target instanceof Node))
+    return
+  if (deletePopEl.value?.contains(target))
+    return
+  if (deleteAnchorEl.value?.contains(target))
+    return
+  cancelDelete()
+}
+
+let deletePopOutsideTimer: ReturnType<typeof setTimeout> | null = null
+
+function attachDeletePopUiListeners() {
+  window.addEventListener('resize', onDeletePopScrollOrResize)
+  window.addEventListener('scroll', onDeletePopScrollOrResize, true)
+  productsTableWrapRef.value?.addEventListener('scroll', onDeletePopScrollOrResize)
+  deletePopOutsideTimer = window.setTimeout(() => {
+    deletePopOutsideTimer = null
+    document.addEventListener('pointerdown', onOutsideDeletePop, true)
+  }, 0)
+}
+
+function detachDeletePopUiListeners() {
+  window.removeEventListener('resize', onDeletePopScrollOrResize)
+  window.removeEventListener('scroll', onDeletePopScrollOrResize, true)
+  productsTableWrapRef.value?.removeEventListener('scroll', onDeletePopScrollOrResize)
+  if (deletePopOutsideTimer != null) {
+    clearTimeout(deletePopOutsideTimer)
+    deletePopOutsideTimer = null
+  }
+  document.removeEventListener('pointerdown', onOutsideDeletePop, true)
+}
 const keyword = ref('')
 const categoryFilter = ref<'all' | ProductCategory>('all')
 const saleFilter = ref<'all' | 'on' | 'off'>('all')
@@ -398,6 +516,16 @@ function normalizeProduct(item: Partial<ProductItem>): ProductItem {
     createdAt: item.createdAt || '',
     updatedAt: item.updatedAt || '',
   }
+}
+
+/** POST/PATCH /products 后立即用返回数据更新列表 */
+function upsertProductFromApiRow(raw: Partial<ProductItem>) {
+  const row = normalizeProduct(raw)
+  const idx = products.value.findIndex(p => p.id === row.id)
+  if (idx >= 0)
+    products.value[idx] = row
+  else
+    products.value = [row, ...products.value]
 }
 
 function resetForm() {
@@ -579,14 +707,15 @@ async function submitForm() {
       headers: withMallTenantHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(buildPayload()),
     })
-    const payload = await response.json().catch(() => ({})) as { success?: boolean, msg?: string }
+    const payload = await response.json().catch(() => ({})) as { success?: boolean, msg?: string, data?: Partial<ProductItem> }
     if (!response.ok || payload.success === false) {
       const msg = typeof payload.msg === 'string' && payload.msg.trim()
         ? payload.msg
         : `保存商品失败: ${response.status}`
       throw new Error(msg)
     }
-    await fetchProducts()
+    if (payload.data)
+      upsertProductFromApiRow(payload.data)
     closeEditor()
     ElMessage.success(wasEdit ? '商品已更新' : '商品已创建')
   }
@@ -600,33 +729,53 @@ async function submitForm() {
 }
 
 async function toggleOnSale(item: ProductItem) {
+  if (onSalePatchingId.value !== null || deletingId.value === item.id) return
+  onSalePatchingId.value = item.id
+  const nextOnSale = !item.onSale
   try {
     const response = await fetch(`${PRODUCTS_ENDPOINT}/${item.id}`, {
       method: 'PATCH',
       headers: withMallTenantHeaders({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify({ onSale: !item.onSale }),
+      body: JSON.stringify({ onSale: nextOnSale }),
     })
-    if (!response.ok) {
-      throw new Error(`更新上架状态失败: ${response.status}`)
+    const payload = await response.json().catch(() => ({})) as { success?: boolean, msg?: string, data?: Partial<ProductItem> }
+    if (!response.ok || payload.success === false) {
+      throw new Error(payload.msg || `更新上架状态失败: ${response.status}`)
     }
-    await fetchProducts()
+    if (payload.data)
+      upsertProductFromApiRow(payload.data)
+    ElMessage.success(nextOnSale ? '商品已上架' : '商品已下架')
   }
   catch (error) {
     console.error('更新上架状态失败', error)
-    ElMessage.error('更新上架状态失败，请稍后重试')
+    ElMessage.error(error instanceof Error ? error.message : '更新上架状态失败，请稍后重试')
+  }
+  finally {
+    onSalePatchingId.value = null
   }
 }
 
-function toggleDeleteConfirm(productId: number) {
+function toggleDeleteConfirm(productId: number, ev: MouseEvent) {
+  const el = ev.currentTarget as HTMLElement | null
   if (pendingDeleteId.value === productId) {
     pendingDeleteId.value = null
+    deleteAnchorEl.value = null
     return
   }
   pendingDeleteId.value = productId
+  deleteAnchorEl.value = el
 }
 
 function cancelDelete() {
   pendingDeleteId.value = null
+  deleteAnchorEl.value = null
+}
+
+async function confirmRemovePendingProduct() {
+  const item = pendingDeleteProduct.value
+  if (!item)
+    return
+  await removeProduct(item)
 }
 
 async function removeProduct(item: ProductItem) {
@@ -639,11 +788,12 @@ async function removeProduct(item: ProductItem) {
       method: 'DELETE',
       headers: withMallTenantHeaders(),
     })
-    if (!response.ok) {
-      throw new Error(`删除商品失败: ${response.status}`)
+    const delPayload = await response.json().catch(() => ({})) as { success?: boolean, msg?: string }
+    if (!response.ok || delPayload.success === false) {
+      throw new Error(delPayload.msg || `删除商品失败: ${response.status}`)
     }
     pendingDeleteId.value = null
-    await fetchProducts()
+    products.value = products.value.filter(p => p.id !== item.id)
   }
   catch (error) {
     console.error('删除商品失败', error)
@@ -656,6 +806,21 @@ async function removeProduct(item: ProductItem) {
 
 onMounted(() => {
   void fetchProducts()
+})
+
+onUnmounted(() => {
+  detachDeletePopUiListeners()
+})
+
+watch(pendingDeleteId, (id) => {
+  detachDeletePopUiListeners()
+  deletePopStyle.value = {}
+  if (id == null) {
+    deleteAnchorEl.value = null
+    return
+  }
+  queueMicrotask(() => attachDeletePopUiListeners())
+  void scheduleDeletePopPosition()
 })
 
 watch(salesMode, () => {
@@ -725,7 +890,10 @@ watch(salesMode, () => {
       </button>
     </div>
 
-    <div class="products-table-wrap">
+    <div
+      ref="productsTableWrapRef"
+      class="products-table-wrap"
+    >
       <table class="table products-table">
       <thead>
         <tr>
@@ -795,43 +963,24 @@ watch(salesMode, () => {
               <button
                 class="btn btn-warning"
                 type="button"
+                :disabled="onSalePatchingId !== null || deletingId === item.id"
                 @click="toggleOnSale(item)"
               >
-                {{ item.onSale ? '下架' : '上架' }}
+                {{
+                  onSalePatchingId === item.id
+                    ? '处理中…'
+                    : item.onSale ? '下架' : '上架'
+                }}
               </button>
               <div class="delete-wrap">
                 <button
                   class="btn btn-danger"
                   type="button"
                   :disabled="Boolean(deletingId) && deletingId !== item.id"
-                  @click="toggleDeleteConfirm(item.id)"
+                  @click="toggleDeleteConfirm(item.id, $event)"
                 >
                   {{ deletingId === item.id ? '删除中...' : '删除' }}
                 </button>
-                <div
-                  v-if="pendingDeleteId === item.id"
-                  class="delete-pop"
-                >
-                  <p>确定删除该商品？</p>
-                  <div class="delete-pop-actions">
-                    <button
-                      class="btn btn-danger"
-                      type="button"
-                      :disabled="deletingId === item.id"
-                      @click="removeProduct(item)"
-                    >
-                      删除
-                    </button>
-                    <button
-                      class="btn btn-ghost"
-                      type="button"
-                      :disabled="deletingId === item.id"
-                      @click="cancelDelete"
-                    >
-                      取消
-                    </button>
-                  </div>
-                </div>
               </div>
             </div>
           </td>
@@ -1196,6 +1345,37 @@ watch(salesMode, () => {
       </div>
     </div>
   </div>
+
+  <Teleport to="body">
+    <div
+      v-if="pendingDeleteId !== null && pendingDeleteProduct"
+      ref="deletePopEl"
+      class="delete-pop"
+      role="dialog"
+      aria-modal="true"
+      :style="deletePopStyle"
+    >
+      <p>确定删除该商品？</p>
+      <div class="delete-pop-actions">
+        <button
+          class="btn btn-danger"
+          type="button"
+          :disabled="deletingId === pendingDeleteProduct.id"
+          @click="confirmRemovePendingProduct"
+        >
+          删除
+        </button>
+        <button
+          class="btn btn-ghost"
+          type="button"
+          :disabled="deletingId === pendingDeleteProduct.id"
+          @click="cancelDelete"
+        >
+          取消
+        </button>
+      </div>
+    </div>
+  </Teleport>
 </template>
 
 <style scoped>
@@ -1347,20 +1527,17 @@ watch(salesMode, () => {
 }
 
 .delete-wrap {
-  position: relative;
+  display: inline-flex;
 }
 
 .delete-pop {
-  position: absolute;
-  top: calc(100% + 8px);
-  right: 0;
   min-width: 180px;
   border: 1px solid #e5e7eb;
   border-radius: 8px;
   background: #fff;
   box-shadow: 0 8px 20px rgba(15, 23, 42, 0.12);
   padding: 10px;
-  z-index: 30;
+  box-sizing: border-box;
 }
 
 .delete-pop p {

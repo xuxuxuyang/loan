@@ -126,10 +126,10 @@ declare global {
   export type { CsChatMessage, CsOpenPayload } from './composables/useMallCsChat'
   import('./composables/useMallCsChat')
   // @ts-ignore
-  export type { MallMySummary, MallAddressItem, MallAddressPayload, MallBankCardItem, MallBillNegotiationEntry, MallNegotiationPayPending, MallBillItem, MallRepayPayload, MallRepayNegotiatedPayload, MallBillSummary } from './composables/useMallMy'
+  export type { MallMySummary, MallAddressItem, MallAddressPayload, MallBankCardItem, MallBillNegotiationEntry, MallNegotiationPayPending, MallBillItem, MallRepayPayload, MallRepayNegotiatedPayload, MallBillSummary, MallBillingRefreshPayload, MallPostOrderRefreshPayload } from './composables/useMallMy'
   import('./composables/useMallMy')
   // @ts-ignore
-  export type { MallOrderStatus, MallPayType, MallPayChannel, MallOrder, SimulatedLogisticsNode } from './composables/useMallOrders'
+  export type { MallOrderStatus, MallPayType, MallPayChannel, MallOrder, MallCreateOrderResult, SimulatedLogisticsNode } from './composables/useMallOrders'
   import('./composables/useMallOrders')
   // @ts-ignore
   export type { ProductSalesMode, MallShelfCategoryKey, MallCategoryKey, TeaProduct, MallCategoryItem } from './composables/useTeaProducts'
@@ -143,6 +143,7 @@ declare module 'vue' {
   interface ComponentCustomProperties {
     readonly $fetch: UnwrapRef<typeof import('@/spa-shim')['$fetch']>
     readonly EffectScope: UnwrapRef<typeof import('vue')['EffectScope']>
+    readonly ElMessage: UnwrapRef<typeof import('element-plus/es')['ElMessage']>
     readonly MALL_DEFAULT_CREDIT_QUOTA: UnwrapRef<typeof import('./composables/mallCreditQuota')['MALL_DEFAULT_CREDIT_QUOTA']>
     readonly captureRegisterChannelFromRoute: UnwrapRef<typeof import('./composables/useRegisterChannel')['captureRegisterChannelFromRoute']>
     readonly clearPendingRegisterChannel: UnwrapRef<typeof import('./composables/useRegisterChannel')['clearPendingRegisterChannel']>
