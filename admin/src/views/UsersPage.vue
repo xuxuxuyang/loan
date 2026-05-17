@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { CirclePlus, EditPen } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { withMallTenantHeaders } from '../composables/useAdminApi'
-import { getAdminSession, isSuperAdminRole } from '../composables/useAdminAuth'
+import { adminSessionRevision, getAdminSession, isSuperAdminRole } from '../composables/useAdminAuth'
 import TrafficChannelNameTag from '../components/TrafficChannelNameTag.vue'
 import UserRegistrationInfoScroll from '../components/UserRegistrationInfoScroll.vue'
 import UserRiskDetailDialog, {
@@ -104,9 +104,12 @@ const createForm = reactive({
   initialPassword: '',
 })
 
-const canManageUsers = computed(() => isSuperAdminRole(getAdminSession()?.role))
-
 const route = useRoute()
+
+const canManageUsers = computed(() => {
+  void adminSessionRevision.value
+  return isSuperAdminRole(getAdminSession()?.role)
+})
 
 /** 下单用户页：仅展示订单数大于 0 的用户 */
 const isOrderingUsersView = computed(() => route.path === '/users/ordering')
@@ -501,10 +504,14 @@ async function confirmDelete(user: ListedUser) {
   }
 }
 
-onMounted(() => {
-  void fetchUsers()
-  pendingDeleteId.value = ''
-})
+watch(
+  () => [route.fullPath, adminSessionRevision.value] as const,
+  () => {
+    pendingDeleteId.value = ''
+    void fetchUsers()
+  },
+  { immediate: true },
+)
 
 watch(keyword, () => {
   void fetchUsers()

@@ -1,3 +1,5 @@
+import { ref } from 'vue'
+
 export type AdminRole = 'super_admin' | 'boss' | 'reviewer' | 'collector'
 
 /** 与超级管理员同权（路由与敏感操作判断用） */
@@ -87,6 +89,9 @@ export function shouldUseHeadquartersPlatformApi(session: AdminSession | null | 
 
 const STORAGE_KEY = 'mall-admin-session'
 
+/** localStorage 会话变更时递增，供依赖 getAdminSession() 的 computed 失效重读（避免切换子系统视图后仍用缓存） */
+export const adminSessionRevision = ref(0)
+
 function safeParseSession(value: string | null): AdminSession | null {
   if (!value) return null
   try {
@@ -132,11 +137,13 @@ export function getAdminSession(): AdminSession | null {
 export function setAdminSession(session: AdminSession) {
   if (typeof window === 'undefined') return
   window.localStorage.setItem(STORAGE_KEY, JSON.stringify(session))
+  adminSessionRevision.value += 1
 }
 
 export function clearAdminSession() {
   if (typeof window === 'undefined') return
   window.localStorage.removeItem(STORAGE_KEY)
+  adminSessionRevision.value += 1
 }
 
 export function isAdminAuthenticated() {

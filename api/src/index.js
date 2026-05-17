@@ -229,9 +229,60 @@ function isEmergencyContactsComplete(list) {
   return Array.isArray(list) && list.length === 2 && list.every(c => c && c.name && /^1\d{10}$/.test(String(c.phone || '')))
 }
 
+/** 按 users 中已登记的手机号解析商城注册账号 */
+function resolveRegisteredMallUserByNormalizedPhone(db, phoneDigits) {
+  const p = normalizePhone(phoneDigits || '')
+  if (!/^1\d{10}$/.test(p)) {
+    return null
+  }
+  return db.users.find(item => normalizePhone(item.phone || '') === p) || null
+}
+
+/** 订单归属：① mallUserId 与当前用户 id 一致；② 历史无 mallUserId 且收货手机=注册用户手机；
+ *  ③ mallUserId 无效或指向同注册手机号下的另一用户快照、且收货手机为该注册手机（兼容重复用户行/脏数据）。
+ */
+function orderBelongsToRegisteredMallUser(db, order, mallUser) {
+  if (!order || !mallUser || !db) {
+    return false
+  }
+  const uid = String(mallUser.id || '').trim()
+  const mid = String(order.mallUserId || '').trim()
+  const userPhone = normalizePhone(mallUser.phone || '')
+  const receiverNorm = normalizePhone(order.receiverPhone || '')
+  const recvIsThisRegisteredMobile = /^1\d{10}$/.test(userPhone) && receiverNorm === userPhone
+
+  if (uid && mid && mid === uid) {
+    return true
+  }
+  if (!mid && recvIsThisRegisteredMobile) {
+    return true
+  }
+  if (!recvIsThisRegisteredMobile) {
+    return false
+  }
+  /** mallUserId 已填但与当前行 id 不同；收货为该注册手机（见上） */
+  const ownerByMid = db.users.find(u => String(u.id || '').trim() === mid)
+  if (!ownerByMid) {
+    /** 订单上的 mallUserId 在库里不存在（脏数据）；收货仍为该注册用户手机 → 记入本用户汇总 */
+    return true
+  }
+  /** 多套 users 快照共享同一注册手机号时，任一 id 名下的单在合并行上均能合并数量 */
+  return normalizePhone(ownerByMid.phone || '') === userPhone
+}
+
+function ordersForRegisteredMallUser(db, mallUser) {
+  if (!mallUser) {
+    return []
+  }
+  return db.orders.filter(item => orderBelongsToRegisteredMallUser(db, item, mallUser))
+}
+
 function countApprovedOrdersForUserPhone(db, phone) {
-  const userOrders = db.orders.filter(item => orderReceiverPhoneMatches(phone, item.receiverPhone))
-  return userOrders.filter(item => item.status !== 'reviewing').length
+  const user = resolveRegisteredMallUserByNormalizedPhone(db, phone)
+  if (!user) {
+    return 0
+  }
+  return ordersForRegisteredMallUser(db, user).filter(item => item.status !== 'reviewing').length
 }
 
 function sanitizeMallUser(user, opts = {}) {
@@ -362,6 +413,15 @@ function parsePhoneFromToken(authorization) {
     return ''
   }
   return token.slice('mock-token-'.length)
+}
+
+/** Bearer mock-token-{手机} → 下单/归属统计均绑定该注册商城账号（与客服会话一致） */
+function resolvePlacingMallUserFromBearer(ctx, db) {
+  const tokenPhone = normalizePhone(parsePhoneFromToken(ctx.headers && ctx.headers.authorization))
+  if (!/^1\d{10}$/.test(tokenPhone)) {
+    return null
+  }
+  return resolveRegisteredMallUserByNormalizedPhone(db, tokenPhone)
 }
 
 function normalizeAdminAccount(account) {
@@ -1721,8 +1781,9 @@ function findMallCardPackageClaimOrder(db, phone, orderId) {
   if (!id) {
     return null
   }
-  const order = db.orders.find(item => item.id === id)
-  if (!order || !orderReceiverPhoneMatches(phone, order.receiverPhone)) {
+  const mallUser = resolveRegisteredMallUserByNormalizedPhone(db, phone)
+  const order = db.orders.find(item => String(item.id) === id)
+  if (!order || !mallUser || !orderBelongsToRegisteredMallUser(db, order, mallUser)) {
     return null
   }
   if (!isOrderCardPackageEligible(order)) {
@@ -1924,14 +1985,6 @@ function validatePublicImageBuffer(file) {
     return { ok: false, msg: '无法解析图片尺寸，请更换图片重试' }
   }
   return { ok: true }
-}
-
-/** 订单收货手机号与登录 query.phone（已 normalize）一致比较，避免空格/格式导致还款找不到订单 */
-function orderReceiverPhoneMatches(phoneNorm, receiverPhone) {
-  if (!/^1\d{10}$/.test(String(phoneNorm || ''))) {
-    return false
-  }
-  return normalizePhone(receiverPhone || '') === phoneNorm
 }
 
 /** 分期 period 在 JSON/Mongo 中可能为字符串，与严格相等比较会找不到期次导致还款未落库 */
@@ -2346,7 +2399,8 @@ function createMallUserFromRegisterPayload(db, payload) {
 }
 
 function attachUserOrderStats(db, user, opts = {}) {
-  const userOrders = db.orders.filter(item => orderReceiverPhoneMatches(user.phone, item.receiverPhone))
+  /** 与用户注册商城账号 mallUser.id 一致的订单计入统计（忽略收货手机号） */
+  const userOrders = ordersForRegisteredMallUser(db, user)
   /** 管理端展示：仅计审核通过后的订单；待审核 reviewing 不计入订单数与成交累计 */
   const approvedOrders = userOrders.filter(item => item.status !== 'reviewing')
   let lastOrderAt = ''
@@ -2419,7 +2473,8 @@ function maskCardNo(cardNo) {
 }
 
 function calcMySummary(db, phone) {
-  const userOrders = db.orders.filter(item => orderReceiverPhoneMatches(phone, item.receiverPhone))
+  const mallUser = resolveRegisteredMallUserByNormalizedPhone(db, phone)
+  const userOrders = ordersForRegisteredMallUser(db, mallUser || null)
   const userCards = db.bankCards.filter(item => normalizePhone(item.userPhone || '') === phone)
 
   const mallSummaryStatus = (item) => {
@@ -4790,8 +4845,13 @@ router.get('/card-packages', (ctx) => {
     fail(ctx, '手机号格式不正确')
     return
   }
+  const mallUser = resolveRegisteredMallUserByNormalizedPhone(db, phone)
+  if (!mallUser) {
+    ctx.body = success([])
+    return
+  }
   const list = db.orders
-    .filter(item => orderReceiverPhoneMatches(phone, item.receiverPhone) && isOrderCardPackageEligible(item))
+    .filter(item => orderBelongsToRegisteredMallUser(db, item, mallUser) && isOrderCardPackageEligible(item))
     .map((item) => {
       ensureOrderInstallmentPlan(item)
       ensureOrderCardPackage(item)
@@ -5281,9 +5341,10 @@ router.delete('/bank-cards/:id', (ctx) => {
  */
 function buildMallBillingListAndSummaries(db, phone) {
   const list = []
+  const mallUser = resolveRegisteredMallUserByNormalizedPhone(db, phone)
   /** 含审核中的先享后付单，便于账单与「我的—订单」同步展示；待还汇总仅计 status 为「待还款」的行 */
   const loanOrders = db.orders
-    .filter(item => orderReceiverPhoneMatches(phone, item.receiverPhone))
+    .filter(item => mallUser && orderBelongsToRegisteredMallUser(db, item, mallUser))
     .filter(item => item.payType === 'installment')
     .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
   loanOrders.forEach((order) => {
@@ -5390,7 +5451,7 @@ router.get('/bills', (ctx) => {
 
 /**
  * 商城用户还款：与后台 PATCH /orders/:id/installments/:period/pay 写入同一套 installmentPlan，
- * 需校验收货手机号与订单归属；与 OrdersPage 一致，卡包未发放前不允许记为已还。
+ * 需校验下单注册账号与订单 mallUserId；与 OrdersPage 一致，卡包未发放前不允许记为已还。
  * body: { orderId: string, period: number } 或 { all: true } 一键归还当前用户全部待还期次
  */
 router.post('/bills/repay', async (ctx) => {
@@ -5404,8 +5465,14 @@ router.post('/bills/repay', async (ctx) => {
   const payload = ctx.request.body || {}
   const repayAll = payload.all === true || payload.all === 'true' || payload.all === 1
 
+  const mallUser = resolveRegisteredMallUserByNormalizedPhone(db, phone)
+  if (!mallUser) {
+    fail(ctx, '用户不存在或未注册商城账号', 404)
+    return
+  }
+
   const loanOrders = db.orders
-    .filter(item => orderReceiverPhoneMatches(phone, item.receiverPhone))
+    .filter(item => orderBelongsToRegisteredMallUser(db, item, mallUser))
     .filter(item => item.payType === 'installment')
     .filter(item => item.status !== 'reviewing')
 
@@ -5453,7 +5520,7 @@ router.post('/bills/repay', async (ctx) => {
     return
   }
 
-  const target = db.orders.find(item => String(item.id) === orderId && orderReceiverPhoneMatches(phone, item.receiverPhone))
+  const target = db.orders.find(item => String(item.id) === orderId && orderBelongsToRegisteredMallUser(db, item, mallUser))
   if (!target) {
     fail(ctx, '订单不存在', 404)
     return
@@ -5511,7 +5578,12 @@ router.post('/bills/repay-negotiated', async (ctx) => {
     fail(ctx, '请提供正确的 orderId 与 period')
     return
   }
-  const target = db.orders.find(item => String(item.id) === orderId && orderReceiverPhoneMatches(phone, item.receiverPhone))
+  const mallUserNegotiate = resolveRegisteredMallUserByNormalizedPhone(db, phone)
+  if (!mallUserNegotiate) {
+    fail(ctx, '用户不存在或未注册商城账号', 404)
+    return
+  }
+  const target = db.orders.find(item => String(item.id) === orderId && orderBelongsToRegisteredMallUser(db, item, mallUserNegotiate))
   if (!target) {
     fail(ctx, '订单不存在', 404)
     return
@@ -5875,6 +5947,11 @@ router.get('/orders/:id/risk-detail', async (ctx) => {
 router.post('/orders', async (ctx) => {
   const db = readDb()
   const payload = ctx.request.body || {}
+  const placingUser = resolvePlacingMallUserFromBearer(ctx, db)
+  if (!placingUser) {
+    fail(ctx, '请先登录商城账号后再下单（缺少有效 Bearer 登录态）', 401)
+    return
+  }
   const pid = payload.productId
   const productRow = db.products.map(normalizeProductRecord).find(p => String(p.id) === String(pid))
   if (!productRow) {
@@ -5885,23 +5962,16 @@ router.post('/orders', async (ctx) => {
     fail(ctx, '商品已下架', 400)
     return
   }
-  const receiverPhoneForDedupe = String(payload.receiverPhone || '').trim()
-  const receiverNormForBlacklist = normalizePhone(receiverPhoneForDedupe)
-  if (/^1\d{10}$/.test(receiverNormForBlacklist)) {
-    const blockedBuyer = db.users.find(item => item.phone === receiverNormForBlacklist)
-    if (blockedBuyer && blockedBuyer.orderBlacklisted) {
-      fail(ctx, '该账号已被限制下单，如有疑问请联系客服', 403)
-      return
-    }
+  if (placingUser.orderBlacklisted) {
+    fail(ctx, '该账号已被限制下单，如有疑问请联系客服', 403)
+    return
   }
-  if (receiverPhoneForDedupe) {
-    const hasOpenSamePhone = db.orders.some(
-      (item) => String(item.receiverPhone || '').trim() === receiverPhoneForDedupe && item.status !== 'enjoying',
-    )
-    if (hasOpenSamePhone) {
-      fail(ctx, '您尚有未完成的订单，请待订单完成后再下单', 400)
-      return
-    }
+  const hasOpenOrderForAccount = db.orders.some(
+    item => orderBelongsToRegisteredMallUser(db, item, placingUser) && item.status !== 'enjoying',
+  )
+  if (hasOpenOrderForAccount) {
+    fail(ctx, '您尚有未完成的订单，请待订单完成后再下单', 400)
+    return
   }
   const rawQty = Number(payload.quantity)
   const quantity = Number.isFinite(rawQty) && rawQty >= 1 ? Math.min(99, Math.floor(rawQty)) : 1
@@ -5913,16 +5983,7 @@ router.post('/orders', async (ctx) => {
     totalAmount = itemSubtotal
   }
   if (payType === 'installment') {
-    const buyerPhone = normalizePhone(receiverPhoneForDedupe)
-    if (!/^1\d{10}$/.test(buyerPhone)) {
-      fail(ctx, '请填写正确的收货手机号以便校验授信额度', 400)
-      return
-    }
-    const buyer = db.users.find(item => item.phone === buyerPhone)
-    if (!buyer) {
-      fail(ctx, '该手机号尚未注册，请先完成注册后再先享后付下单', 400)
-      return
-    }
+    const buyer = placingUser
     const creditLimit = normalizeUserQuota(buyer.quota)
     if (itemSubtotal > creditLimit) {
       fail(ctx, `商品总额（￥${itemSubtotal}）已超过您的授信额度（￥${creditLimit}）`, 400)
@@ -5954,14 +6015,14 @@ router.post('/orders', async (ctx) => {
     riskCheckedAt: '',
     cardPackageIssued: false,
     trackingNumber: '',
+    mallUserId: placingUser.id,
   }
   if (nextOrder.payType === 'installment') {
     const riskBypassReason = String(payload.riskBypassReason || '').trim()
     const isReturningCustomerBypass = riskBypassReason === 'returning_customer'
     if (isReturningCustomerBypass) {
-      const receiverNorm = normalizePhone(nextOrder.receiverPhone)
       const hasCompletedIssuedOrder = db.orders.some((item) => {
-        if (normalizePhone(String(item.receiverPhone || '')) !== receiverNorm) {
+        if (!orderBelongsToRegisteredMallUser(db, item, placingUser)) {
           return false
         }
         ensureOrderCardPackage(item)
@@ -5984,6 +6045,17 @@ router.post('/orders', async (ctx) => {
     const skipUpstream = String(process.env.RISK_ORDER_SUBMIT_SKIP_UPSTREAM || '').trim() === '1'
     const idForRisk = String(payload.idNumber || '').trim()
     const idPlaceholder = String(process.env.RISK_PRELIMINARY_PLACEHOLDER_ID || '').trim()
+    /** 先享后付风控身份以注册资料为准（收货人可为他人）；按身份证号在库中解析账号主档 */
+    const idUpperForRisk = String(idForRisk || '').trim().toUpperCase()
+    const riskSubject = idUpperForRisk
+      ? db.users.find(u => String(u.idNumber || '').trim().toUpperCase() === idUpperForRisk)
+      : null
+    const riskUserNameForWave = riskSubject
+      ? String(riskSubject.name || '').trim()
+      : String(nextOrder.receiverName || '').trim()
+    const riskPhoneForWave = riskSubject
+      ? normalizePhone(riskSubject.phone)
+      : normalizePhone(nextOrder.receiverPhone)
     if (isRiskUpstreamConfigured() && !skipUpstream && !idForRisk && !idPlaceholder) {
       fail(ctx, '先享后付下单需提交身份证号以便系统风控核验，请先完成注册资料', 400)
       return
@@ -5991,10 +6063,14 @@ router.post('/orders', async (ctx) => {
     const installmentRiskWaveId = String(payload.installmentRiskWaveId || '').trim()
     let riskResult
     let orderSubmitRiskStepsFull = []
+    if (installmentRiskWaveId && idUpperForRisk && !riskSubject) {
+      fail(ctx, '未找到与身份证号对应的注册账号，无法完成先享后付风控核验', 400)
+      return
+    }
     if (installmentRiskWaveId) {
       const consumed = consumeInstallmentRiskWaveForOrder(installmentRiskWaveId, {
-        userName: nextOrder.receiverName,
-        phoneNumber: normalizePhone(nextOrder.receiverPhone),
+        userName: riskUserNameForWave,
+        phoneNumber: riskPhoneForWave,
         idNumber: idForRisk,
       })
       if (!consumed.ok) {
@@ -6017,8 +6093,8 @@ router.post('/orders', async (ctx) => {
     else {
       try {
         const pack = await runOrderSubmitUpstreamRiskPack({
-          userName: nextOrder.receiverName,
-          phoneNumber: nextOrder.receiverPhone,
+          userName: riskUserNameForWave,
+          phoneNumber: riskSubject ? riskPhoneForWave : nextOrder.receiverPhone,
           idNumber: idForRisk,
         })
         orderSubmitRiskStepsFull = Array.isArray(pack.steps) ? pack.steps : []
@@ -6052,7 +6128,7 @@ router.post('/orders', async (ctx) => {
       nextOrder.riskPreliminaryStepsSummary = riskResult.preliminaryStepsSummary
     }
     nextOrder.riskOrderSubmitPack = true
-    const buyerForRiskSnap = db.users.find(item => item.phone === normalizePhone(nextOrder.receiverPhone))
+    const buyerForRiskSnap = riskSubject || placingUser
     if (buyerForRiskSnap && orderSubmitRiskStepsFull.length > 0) {
       mergeInstallmentOrderRiskStepsIntoUserSnapshot(
         buyerForRiskSnap,

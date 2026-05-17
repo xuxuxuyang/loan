@@ -59,7 +59,7 @@ const userOrders = computed(() => {
   if (!account) {
     return []
   }
-  return orders.value.filter(item => mallOrderBelongsToLoggedIn(item.receiverPhone, account))
+  return orders.value.filter(item => mallOrderBelongsToLoggedIn(item, account, profile.value?.id))
 })
 
 const filteredOrders = computed(() => {

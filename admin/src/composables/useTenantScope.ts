@@ -1,5 +1,5 @@
 import { computed } from 'vue'
-import { getAdminSession, setAdminSession } from './useAdminAuth'
+import { adminSessionRevision, getAdminSession, setAdminSession } from './useAdminAuth'
 import { withAdminAuthHeaders } from './useAdminApi'
 
 export interface TenantSummary {
@@ -22,7 +22,10 @@ function tenantLabel(tenantId: string) {
 }
 
 export function useTenantScope() {
-  const session = computed(() => getAdminSession())
+  const session = computed(() => {
+    void adminSessionRevision.value
+    return getAdminSession()
+  })
   const isPlatform = computed(() => session.value?.scopeType === 'platform')
   const workspaceType = computed<'core' | 'self' | 'tenant'>(() => {
     const raw = String(session.value?.workspaceType || '').trim().toLowerCase()

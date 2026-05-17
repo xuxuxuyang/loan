@@ -110,7 +110,10 @@ const receiverAddressLine = computed(() =>
   shippingAddress.value ? formatMallAddressLine(shippingAddress.value) : '',
 )
 
-/** 与「我的 — 订单」一致：按收货手机号归属当前账号的商城订单 */
+/** 注册资料姓名：风控 wave 必须与下单账号一致（收货人可为他人）；手机号与 currentUserPhone 同源 */
+const registeredUserName = computed(() => String(profile.value?.name || '').trim())
+
+/** 与「我的 — 订单」一致：新版按订单 mallUserId 与注册用户 id；仅旧数据无 mallUserId 时再按收货手机号归属 */
 const currentUserPhone = computed(() =>
   normalizeMallAccount(loginPhone.value || profile.value?.phone || ''),
 )
@@ -120,7 +123,7 @@ const myMallOrders = computed(() => {
   if (!account) {
     return []
   }
-  return orders.value.filter(o => mallOrderBelongsToLoggedIn(o.receiverPhone, account))
+  return orders.value.filter(o => mallOrderBelongsToLoggedIn(o, account, profile.value?.id))
 })
 
 /** 老客户：曾有先享后付订单且卡包已发放（与订单列表「有效状态」一致） */
@@ -294,6 +297,16 @@ async function submitOrder() {
       notifyWarning('先享后付下单需填写身份证号，请先在「我的」完善注册资料后再试')
       return
     }
+    if (!isReturningCustomer.value) {
+      if (!registeredUserName.value) {
+        notifyWarning('先享后付审核需使用注册姓名，请先在「我的」完善资料后再试')
+        return
+      }
+      if (!/^1\d{10}$/.test(currentUserPhone.value)) {
+        notifyWarning('账号手机号无效，请重新登录后再试')
+        return
+      }
+    }
     if (isReturningCustomer.value) {
       newOrder = await createOrder({
         productId: selectedProduct.value.id,
@@ -314,7 +327,7 @@ async function submitOrder() {
         idCardFront: profile.value?.idCardFront,
         idCardBack: profile.value?.idCardBack,
         riskBypassReason: 'returning_customer',
-      })
+      }, { mallLoginPhone: currentUserPhone.value })
     }
     else {
       type WaveCreateData = { waveId: string, stepKeys: string[] }
@@ -324,8 +337,8 @@ async function submitOrder() {
         {
           method: 'POST',
           body: {
-            userName: receiverName.value,
-            phoneNumber: receiverPhone.value,
+            userName: registeredUserName.value,
+            phoneNumber: currentUserPhone.value,
             idNumber,
           },
         },
@@ -365,7 +378,7 @@ async function submitOrder() {
         idCardFront: profile.value?.idCardFront,
         idCardBack: profile.value?.idCardBack,
         installmentRiskWaveId: waveId,
-      })
+      }, { mallLoginPhone: currentUserPhone.value })
     }
     currentOrderNo.value = newOrder.id
   }

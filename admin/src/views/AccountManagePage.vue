@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, reactive, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { adminRoleDisplayLabel, getAdminSession, isPlatformBootstrapUser, shouldUseHeadquartersPlatformApi } from '../composables/useAdminAuth'
+import { adminRoleDisplayLabel, adminSessionRevision, getAdminSession, isPlatformBootstrapUser, shouldUseHeadquartersPlatformApi } from '../composables/useAdminAuth'
 import { withAdminAuthHeaders, withMallTenantHeaders } from '../composables/useAdminApi'
 import { donePageProgress, startPageProgress } from '../utils/progress'
 
@@ -27,6 +28,7 @@ interface AdminAccountItem {
 }
 
 const MALL_API_BASE = `${(import.meta.env.VITE_MALL_API_BASE || 'http://localhost:3110/api').replace(/\/$/, '')}`
+const route = useRoute()
 const loading = ref(false)
 const submitting = ref(false)
 const deletingId = ref('')
@@ -41,7 +43,11 @@ const passwordSubmitting = ref(false)
 const passwordTarget = ref<AdminAccountItem | null>(null)
 const roleSubmitting = ref(false)
 const roleTarget = ref<AdminAccountItem | null>(null)
-const session = computed(() => getAdminSession())
+const session = computed(() => {
+  void route.fullPath
+  void adminSessionRevision.value
+  return getAdminSession()
+})
 const isPlatformSession = computed(() => session.value?.scopeType === 'platform')
 /** 使用 /platform/accounts（core）；子系统工作区下同纯子系统，走 /admin/accounts */
 const usePlatformAccountsApi = computed(() => shouldUseHeadquartersPlatformApi(session.value))
@@ -559,14 +565,18 @@ function cancelDelete() {
   pendingDeleteId.value = ''
 }
 
-onMounted(() => {
-  const s = getAdminSession()
-  if (!s)
-    return
-  if (s.scopeType === 'platform' || s.role === 'boss') {
-    void fetchAccounts()
-  }
-})
+watch(
+  () => [route.fullPath, adminSessionRevision.value] as const,
+  () => {
+    const s = getAdminSession()
+    if (!s)
+      return
+    if (s.scopeType === 'platform' || s.role === 'boss') {
+      void fetchAccounts()
+    }
+  },
+  { immediate: true },
+)
 </script>
 
 <template>

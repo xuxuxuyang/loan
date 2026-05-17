@@ -4,6 +4,8 @@ export type MallPayChannel = 'wechat' | 'alipay' | 'card'
 
 export interface MallOrder {
   id: string
+  /** 下单时记录在订单上的注册商城用户 id（与 users.id 对应）；新版订单必填，统计与归属均以该字段为准 */
+  mallUserId?: string
   productId: number
   name: string
   spec: string
@@ -50,6 +52,15 @@ interface CreateOrderPayload {
   riskBypassReason?: 'returning_customer'
 }
 
+function buildMockMallAuthHeader(phoneRaw: unknown): Record<string, string> | undefined {
+  let u = normalizeReceiverPhoneDigits(String(phoneRaw || ''))
+  if (u.startsWith('86') && u.length === 13)
+    u = u.slice(2)
+  if (!/^1\d{10}$/.test(u))
+    return undefined
+  return { Authorization: `Bearer mock-token-${u}` }
+}
+
 const ORDER_STORAGE_KEY = 'mall-orders'
 const ORDER_REMOTE_PATH = '/orders'
 
@@ -90,6 +101,7 @@ function normalizeMallOrder(item: unknown): MallOrder | null {
   }
   return {
     id,
+    mallUserId: String(raw.mallUserId || '').trim() || undefined,
     productId: toNumber(raw.productId),
     name: String(raw.name || '').trim(),
     spec: String(raw.spec || '').trim(),
@@ -110,12 +122,12 @@ function normalizeMallOrder(item: unknown): MallOrder | null {
   }
 }
 
-/** 与账单 API `normalizePhone` 一致：比较收货人与登录账号是否为同一手机号 */
+/** 与账单 API `normalizePhone` 一致：比较收货人与登录账号是否为同一手机号（仅兼容无 mallUserId 的旧订单） */
 export function normalizeReceiverPhoneDigits(phone: string) {
   return String(phone || '').replace(/\D/g, '')
 }
 
-export function mallOrderBelongsToLoggedIn(orderReceiverPhone: string, loginAccount: string) {
+function mallOrderLegacyMatchByReceiver(receiverPhone: string, loginAccount: string) {
   let u = normalizeReceiverPhoneDigits(loginAccount)
   if (u.startsWith('86') && u.length === 13) {
     u = u.slice(2)
@@ -123,11 +135,21 @@ export function mallOrderBelongsToLoggedIn(orderReceiverPhone: string, loginAcco
   if (!/^1\d{10}$/.test(u)) {
     return false
   }
-  let r = normalizeReceiverPhoneDigits(orderReceiverPhone)
+  let r = normalizeReceiverPhoneDigits(receiverPhone)
   if (r.startsWith('86') && r.length === 13) {
     r = r.slice(2)
   }
   return r === u
+}
+
+/** 订单是否属于当前登录的注册账号：优先 order.mallUserId === profileUserId；历史订单无 mallUserId 时再按收货手机号与登录手机号比对 */
+export function mallOrderBelongsToLoggedIn(order: MallOrder, loginAccount: string, profileUserId?: string) {
+  const mid = String(order.mallUserId || '').trim()
+  const pid = String(profileUserId || '').trim()
+  if (mid && pid) {
+    return mid === pid
+  }
+  return mallOrderLegacyMatchByReceiver(order.receiverPhone, loginAccount)
 }
 
 function resolveMallApiBase() {
@@ -280,10 +302,12 @@ export function useMallOrders() {
     // 历史兼容：保留方法，但订单写入走 createOrder / markOrderPaid。
   }
 
-  const createOrder = async (payload: CreateOrderPayload) => {
+  const createOrder = async (payload: CreateOrderPayload, auth?: { mallLoginPhone?: string }) => {
+    const authHeaders = buildMockMallAuthHeader(auth?.mallLoginPhone)
     const response = await $fetch<{ success: boolean, data: MallOrder }>(`${resolveMallApiBase()}${ORDER_REMOTE_PATH}`, {
       method: 'POST',
       body: payload,
+      ...(authHeaders ? { headers: authHeaders } : {}),
     })
     const order = normalizeMallOrder(response.data)
     if (!order) {
