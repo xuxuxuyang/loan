@@ -1058,12 +1058,6 @@ watch(
         <h3>子系统账号数据</h3>
       </div>
       <div class="toolbar toolbar-left">
-        <el-input
-          v-model="accountKeyword"
-          class="toolbar-input"
-          clearable
-          placeholder="搜索账号 / 姓名 / 手机号"
-        />
         <el-select
           v-model="selectedTenantId"
           class="toolbar-input"
@@ -1077,6 +1071,13 @@ watch(
             :value="item.tenantId"
           />
         </el-select>
+        <el-input
+          v-model="accountKeyword"
+          class="toolbar-input"
+          clearable
+          placeholder="搜索账号 / 姓名 / 手机号"
+        />
+        
         <button
           class="btn btn-refresh"
           type="button"

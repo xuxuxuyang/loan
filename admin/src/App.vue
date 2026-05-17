@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { Component } from 'vue'
 import { computed, ref, watch } from 'vue'
+import zhCn from 'element-plus/es/locale/lang/zh-cn'
 import {
   Avatar,
   Calendar,
@@ -41,6 +42,8 @@ interface MenuEntry {
   label: string
   path: string
   roles?: Role[]
+  /** true：仅超级管理员可见；主系统老板账号不再继承 super_admin 侧栏项 */
+  strictSuperAdminOnly?: boolean
   platformOnly?: boolean
   icon: Component
   children?: MenuChild[]
@@ -117,7 +120,18 @@ const allMenus: MenuEntry[] = [
   { label: '账号管理', path: '/accounts', icon: Avatar, roles: ['super_admin', 'boss'] },
   { label: '流量管理', path: '/traffic', icon: Promotion, roles: ['super_admin'] },
   { label: '财务报表', path: '/dashboard', icon: DataAnalysis, roles: ['super_admin'], platformOnly: true },
-  { label: '子系统管理', path: '/tenants', icon: Setting, roles: ['super_admin'], platformOnly: true },
+  {
+    label: '子系统管理',
+    path: '/tenants',
+    icon: Setting,
+    roles: ['super_admin'],
+    strictSuperAdminOnly: true,
+    platformOnly: true,
+    children: [
+      { label: '系统与账号', path: '/tenants', icon: Setting },
+      { label: '子系统数据', path: '/tenants/mall-users-data', icon: DataBoard },
+    ],
+  },
 ]
 
 const menus = computed(() => {
@@ -129,13 +143,20 @@ const menus = computed(() => {
       if (item.platformOnly && hideHeadquartersEntries) {
         return false
       }
-      return !item.roles || adminSessionRoleAllowed(role, item.roles)
+      return !item.roles || adminSessionRoleAllowed(role, item.roles, {
+        inheritBossAsSuperAdmin: !item.strictSuperAdminOnly,
+      })
     })
     .map((item) => {
       if (!item.children) return item
       return {
         ...item,
-        children: item.children.filter(child => !child.roles || adminSessionRoleAllowed(role, child.roles)),
+        children: item.children.filter((child) => {
+          if (!child.roles) return true
+          return adminSessionRoleAllowed(role, child.roles, {
+            inheritBossAsSuperAdmin: !item.strictSuperAdminOnly,
+          })
+        }),
       }
     })
 })
@@ -148,7 +169,9 @@ const sideMenuKey = computed(() =>
       ? 'admin-nav-products'
       : route.path.startsWith('/users')
         ? 'admin-nav-users'
-        : 'admin-nav-default',
+        : route.path.startsWith('/tenants')
+          ? 'admin-nav-tenants'
+          : 'admin-nav-default',
 )
 
 const defaultOpenedSubmenus = computed(() => {
@@ -160,6 +183,9 @@ const defaultOpenedSubmenus = computed(() => {
   }
   if (route.path.startsWith('/users')) {
     return ['sub-/users']
+  }
+  if (route.path.startsWith('/tenants')) {
+    return ['sub-/tenants']
   }
   return []
 })
@@ -185,6 +211,11 @@ function logout() {
 function backToPlatformHeadquarters() {
   switchWorkspace('core')
   session.value = getAdminSession()
+  const r = session.value?.role
+  if (r === 'boss') {
+    void router.push({ name: 'orders' })
+    return
+  }
   void router.push({ name: 'tenants' })
 }
 
@@ -222,158 +253,160 @@ useAdminOrderReviewBadge(ordersSidebarBadgeEnabled)
 </script>
 
 <template>
-  <RouterView v-if="isLoginPage" />
+  <el-config-provider :locale="zhCn">
+    <RouterView v-if="isLoginPage" />
 
-  <div
-    v-else
-    class="admin-layout"
-  >
-    <aside class="admin-sidebar admin-sidebar--dynamic">
-      <div
-        class="admin-sidebar-bg"
-        aria-hidden="true"
-      />
-      <div class="admin-sidebar-content">
-        <div class="admin-logo">
-          <MallBrandLogo class="admin-logo-mark" />
-          <div class="admin-logo-titles">
-            <span class="admin-logo-text">文硕商城</span>
-            <span class="admin-logo-sub">
-              <template v-if="isPlatformManagingTenant">子系统后台 · {{ managedTenantHeadline }}</template>
-              <template v-else>后台管理</template>
-            </span>
+    <div
+      v-else
+      class="admin-layout"
+    >
+      <aside class="admin-sidebar admin-sidebar--dynamic">
+        <div
+          class="admin-sidebar-bg"
+          aria-hidden="true"
+        />
+        <div class="admin-sidebar-content">
+          <div class="admin-logo">
+            <MallBrandLogo class="admin-logo-mark" />
+            <div class="admin-logo-titles">
+              <span class="admin-logo-text">文硕商城</span>
+              <span class="admin-logo-sub">
+                <template v-if="isPlatformManagingTenant">子系统后台 · {{ managedTenantHeadline }}</template>
+                <template v-else>后台管理</template>
+              </span>
+            </div>
           </div>
-        </div>
-        <el-menu
-          :key="sideMenuKey"
-          class="admin-side-menu"
-          :default-active="route.path"
-          :default-openeds="defaultOpenedSubmenus"
-          router
-          background-color="transparent"
-          text-color="#e8eef7"
-          active-text-color="#fffaf5"
-        >
-          <template
-            v-for="item in menus"
-            :key="item.children?.length ? submenuIndex(item) : item.path"
+          <el-menu
+            :key="sideMenuKey"
+            class="admin-side-menu"
+            :default-active="route.path"
+            :default-openeds="defaultOpenedSubmenus"
+            router
+            background-color="transparent"
+            text-color="#e8eef7"
+            active-text-color="#fffaf5"
           >
-            <el-sub-menu
-              v-if="item.children?.length"
-              :index="submenuIndex(item)"
+            <template
+              v-for="item in menus"
+              :key="item.children?.length ? submenuIndex(item) : item.path"
             >
-              <template #title>
-                <span class="admin-sub-menu-title-row">
-                  <el-icon class="admin-menu-icon">
-                    <component :is="item.icon" />
-                  </el-icon>
-                  <span class="admin-menu-title">{{ item.label }}</span>
-                  <span
-                    v-if="item.path === '/orders' && ordersMenuParentBadgeTotal > 0"
-                    class="admin-cs-menu-badge"
-                  >{{ ordersMenuParentBadgeTotal > 99 ? '99+' : ordersMenuParentBadgeTotal }}</span>
-                </span>
-              </template>
-              <el-menu-item
-                v-for="child in item.children"
-                :key="child.path"
-                :index="child.path"
+              <el-sub-menu
+                v-if="item.children?.length"
+                :index="submenuIndex(item)"
               >
-                <el-icon class="admin-menu-icon admin-menu-icon--child">
-                  <component :is="child.icon" />
+                <template #title>
+                  <span class="admin-sub-menu-title-row">
+                    <el-icon class="admin-menu-icon">
+                      <component :is="item.icon" />
+                    </el-icon>
+                    <span class="admin-menu-title">{{ item.label }}</span>
+                    <span
+                      v-if="item.path === '/orders' && ordersMenuParentBadgeTotal > 0"
+                      class="admin-cs-menu-badge"
+                    >{{ ordersMenuParentBadgeTotal > 99 ? '99+' : ordersMenuParentBadgeTotal }}</span>
+                  </span>
+                </template>
+                <el-menu-item
+                  v-for="child in item.children"
+                  :key="child.path"
+                  :index="child.path"
+                >
+                  <el-icon class="admin-menu-icon admin-menu-icon--child">
+                    <component :is="child.icon" />
+                  </el-icon>
+                  <span class="admin-menu-child-label-row">
+                    <span class="admin-menu-child-label-text">{{ child.label }}</span>
+                    <span
+                      v-if="child.path === '/orders/review' && ordersMenuPendingReviewTotal > 0"
+                      class="admin-cs-menu-badge"
+                    >{{ ordersMenuPendingReviewTotal > 99 ? '99+' : ordersMenuPendingReviewTotal }}</span>
+                    <span
+                      v-if="child.path === '/orders' && ordersMenuReviewedListTotal > 0"
+                      class="admin-cs-menu-badge"
+                    >{{ ordersMenuReviewedListTotal > 99 ? '99+' : ordersMenuReviewedListTotal }}</span>
+                  </span>
+                </el-menu-item>
+              </el-sub-menu>
+              <el-menu-item
+                v-else
+                :index="item.path"
+              >
+                <el-icon class="admin-menu-icon">
+                  <component :is="item.icon" />
                 </el-icon>
-                <span class="admin-menu-child-label-row">
-                  <span class="admin-menu-child-label-text">{{ child.label }}</span>
+                <span
+                  class="admin-menu-top-label"
+                  :class="{ 'admin-menu-top-label--cs': item.path === '/cs-messages' }"
+                >
+                  <span class="admin-menu-top-label-text">{{ item.label }}</span>
                   <span
-                    v-if="child.path === '/orders/review' && ordersMenuPendingReviewTotal > 0"
+                    v-if="item.path === '/cs-messages' && csMenuUnreadTotal > 0"
                     class="admin-cs-menu-badge"
-                  >{{ ordersMenuPendingReviewTotal > 99 ? '99+' : ordersMenuPendingReviewTotal }}</span>
-                  <span
-                    v-if="child.path === '/orders' && ordersMenuReviewedListTotal > 0"
-                    class="admin-cs-menu-badge"
-                  >{{ ordersMenuReviewedListTotal > 99 ? '99+' : ordersMenuReviewedListTotal }}</span>
+                  >{{ csMenuUnreadTotal > 99 ? '99+' : csMenuUnreadTotal }}</span>
                 </span>
               </el-menu-item>
-            </el-sub-menu>
-            <el-menu-item
-              v-else
-              :index="item.path"
-            >
-              <el-icon class="admin-menu-icon">
-                <component :is="item.icon" />
-              </el-icon>
-              <span
-                class="admin-menu-top-label"
-                :class="{ 'admin-menu-top-label--cs': item.path === '/cs-messages' }"
-              >
-                <span class="admin-menu-top-label-text">{{ item.label }}</span>
-                <span
-                  v-if="item.path === '/cs-messages' && csMenuUnreadTotal > 0"
-                  class="admin-cs-menu-badge"
-                >{{ csMenuUnreadTotal > 99 ? '99+' : csMenuUnreadTotal }}</span>
-              </span>
-            </el-menu-item>
-          </template>
-        </el-menu>
-      </div>
-    </aside>
-
-    <main class="admin-main">
-      <header class="admin-header">
-        <h1>{{ pageTitle }}</h1>
-        <div
-          v-if="session"
-          class="admin-header-right"
-        >
-          <button
-            v-if="isPlatformManagingTenant"
-            class="admin-back-hq-btn"
-            type="button"
-            @click="backToPlatformHeadquarters"
-          >
-            返回总部
-          </button>
-          <span
-            v-if="isPlatformManagingTenant"
-            class="admin-tenant-scope-pill"
-            :title="`数据与操作均指向子系统「${managedTenantHeadline}」`"
-          >
-            当前子系统 · {{ managedTenantHeadline }}
-          </span>
-          <AdminRoleAvatar
-            :role="session.role"
-            :size="36"
-          />
-          <span class="admin-role">
-            <template v-if="isPlatformManagingTenant">平台代管（{{ roleText(session.role) }}）</template>
-            <template v-else>{{ roleText(session.role) }}</template>
-          </span>
-          <span class="admin-user">{{ session.username }}</span>
-          <el-popconfirm
-            width="240"
-            title="确定退出登录吗？"
-            confirm-button-text="确定"
-            cancel-button-text="取消"
-            @confirm="logout"
-          >
-            <template #reference>
-              <button
-                class="admin-logout-btn"
-                type="button"
-              >
-                退出登录
-              </button>
             </template>
-          </el-popconfirm>
+          </el-menu>
         </div>
-      </header>
-      <section class="admin-content">
-        <div class="admin-page-root">
-          <RouterView />
-        </div>
-      </section>
-    </main>
-  </div>
+      </aside>
+
+      <main class="admin-main">
+        <header class="admin-header">
+          <h1>{{ pageTitle }}</h1>
+          <div
+            v-if="session"
+            class="admin-header-right"
+          >
+            <button
+              v-if="isPlatformManagingTenant"
+              class="admin-back-hq-btn"
+              type="button"
+              @click="backToPlatformHeadquarters"
+            >
+              返回总部
+            </button>
+            <span
+              v-if="isPlatformManagingTenant"
+              class="admin-tenant-scope-pill"
+              :title="`数据与操作均指向子系统「${managedTenantHeadline}」`"
+            >
+              当前子系统 · {{ managedTenantHeadline }}
+            </span>
+            <AdminRoleAvatar
+              :role="session.role"
+              :size="36"
+            />
+            <span class="admin-role">
+              <template v-if="isPlatformManagingTenant">平台代管（{{ roleText(session.role) }}）</template>
+              <template v-else>{{ roleText(session.role) }}</template>
+            </span>
+            <span class="admin-user">{{ session.username }}</span>
+            <el-popconfirm
+              width="240"
+              title="确定退出登录吗？"
+              confirm-button-text="确定"
+              cancel-button-text="取消"
+              @confirm="logout"
+            >
+              <template #reference>
+                <button
+                  class="admin-logout-btn"
+                  type="button"
+                >
+                  退出登录
+                </button>
+              </template>
+            </el-popconfirm>
+          </div>
+        </header>
+        <section class="admin-content">
+          <div class="admin-page-root">
+            <RouterView />
+          </div>
+        </section>
+      </main>
+    </div>
+  </el-config-provider>
 </template>
 
 <style scoped>

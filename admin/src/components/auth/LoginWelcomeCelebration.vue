@@ -88,7 +88,7 @@ const coinCount = 14
             aria-hidden="true"
           >
             <span v-if="role === 'boss'">财</span>
-            <span v-else-if="role === 'super_admin'">权</span>
+            <span v-else-if="role === 'super_admin'">管</span>
             <span v-else-if="role === 'reviewer'">审</span>
             <span v-else>收</span>
           </div>

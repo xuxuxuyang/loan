@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { CirclePlus, CopyDocument, Delete, EditPen, Loading, Plus, Refresh } from '@element-plus/icons-vue'
+import { CirclePlus, CopyDocument, Delete, EditPen, Loading } from '@element-plus/icons-vue'
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import TrafficChannelNameTag from '../components/TrafficChannelNameTag.vue'
@@ -60,7 +60,7 @@ const remarkSaving = ref(false)
 const remarkTarget = ref<TrafficChannelRow | null>(null)
 const remarkDraft = ref('')
 
-/** 正在 PATCH 状态的渠道 id，用于行内状态标签 loading */
+/** 正在 PATCH 状态的流量商 id，用于行内状态标签 loading */
 const statusBusyId = ref<string | null>(null)
 
 const createForm = reactive({
@@ -192,7 +192,7 @@ async function submitCreate() {
     if (!response.ok) {
       throw new Error(payload.msg || `创建失败: ${response.status}`)
     }
-    ElMessage.success('渠道已创建')
+    ElMessage.success('流量商已创建')
     showCreate.value = false
     await fetchChannels()
   }
@@ -388,21 +388,22 @@ onMounted(() => {
     </el-alert>
 
     <div class="toolbar">
-      <el-button
-        type="primary"
-        :icon="Plus"
-        :loading="loading"
+      <button
+        class="btn btn-primary"
+        type="button"
+        :disabled="loading"
         @click="openCreate"
       >
-        新建渠道
-      </el-button>
-      <el-button
-        :icon="Refresh"
-        :loading="loading"
+        + 新建流量商
+      </button>
+      <button
+        class="btn btn-refresh"
+        type="button"
+        :disabled="loading"
         @click="fetchChannels"
       >
         刷新
-      </el-button>
+      </button>
     </div>
 
     <el-alert
@@ -421,7 +422,7 @@ onMounted(() => {
     >
       <template #header>
         <div class="traffic-table-card-header">
-          <span class="traffic-table-card-title">渠道列表</span>
+          <span class="traffic-table-card-title">流量商列表</span>
           <el-tag
             v-if="rows.length"
             type="info"
@@ -447,7 +448,7 @@ onMounted(() => {
         >
           <template #empty>
             <el-empty
-              description="暂无渠道，点击「新建渠道」添加"
+              description="暂无流量商，点击「新建流量商」添加"
               :image-size="88"
             />
           </template>
@@ -462,7 +463,7 @@ onMounted(() => {
         </el-table-column>
 
         <el-table-column
-          label="渠道标识"
+          label="流量商标识"
           min-width="108"
         >
           <template #default="{ row }">
@@ -627,7 +628,7 @@ onMounted(() => {
                 size="small"
                 :icon="Delete"
                 :disabled="row.registerCount > 0"
-                :title="row.registerCount > 0 ? `已有 ${row.registerCount} 人通过该渠道注册，为保留统计归因不可删除；可先停用渠道` : '删除渠道'"
+                :title="row.registerCount > 0 ? `已有 ${row.registerCount} 人通过该流量商注册，为保留统计归因不可删除；可先停用流量商` : '删除流量商'"
                 @click="openDelete(row)"
               >
                 删除
@@ -641,7 +642,7 @@ onMounted(() => {
 
     <el-dialog
       v-model="showCreate"
-      title="新建渠道"
+      title="新建流量商"
       width="520px"
       destroy-on-close
       align-center
@@ -654,7 +655,7 @@ onMounted(() => {
         @submit.prevent
       >
         <el-form-item
-          label="渠道标识"
+          label="流量商标识"
           required
         >
           <el-input
@@ -710,7 +711,7 @@ onMounted(() => {
 
     <el-dialog
       v-model="showEdit"
-      title="编辑渠道"
+      title="编辑流量商"
       width="520px"
       destroy-on-close
       align-center
@@ -723,7 +724,7 @@ onMounted(() => {
         show-icon
         class="dialog-tip"
       >
-        渠道标识不可修改；统计以标识为准。
+        流量商标识不可修改；统计以标识为准。
       </el-alert>
       <el-form
         label-position="top"
@@ -774,7 +775,7 @@ onMounted(() => {
 
     <el-dialog
       v-model="remarkDialogVisible"
-      title="渠道备注"
+      title="流量商备注"
       width="480px"
       destroy-on-close
       align-center
@@ -825,7 +826,7 @@ onMounted(() => {
 
     <el-dialog
       v-model="showDeleteDialog"
-      title="删除渠道"
+      title="删除流量商"
       width="420px"
       align-center
       @close="closeDelete"
@@ -839,7 +840,7 @@ onMounted(() => {
         :closable="false"
         show-icon
       >
-        该渠道已有注册记录，无法删除。
+        该流量商已有注册记录，无法删除。
       </el-alert>
       <template #footer>
         <el-button @click="closeDelete">
@@ -904,6 +905,33 @@ onMounted(() => {
   flex-wrap: wrap;
   gap: 10px;
   margin-bottom: 16px;
+}
+
+.btn {
+  height: 30px;
+  border-radius: 6px;
+  border: 1px solid #d1d5db;
+  background: #fff;
+  cursor: pointer;
+  padding: 0 10px;
+  font-size: 14px;
+}
+
+.btn-primary {
+  border-color: #2563eb;
+  background: #2563eb;
+  color: #fff;
+}
+
+.btn-refresh {
+  border-color: #d1d5db;
+  background: #fff;
+  color: #374151;
+}
+
+.btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 .traffic-error {

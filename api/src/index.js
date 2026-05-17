@@ -725,9 +725,10 @@ function resolveAdminAccount(ctx) {
   return ctx.state.adminAccount || null
 }
 
-function roleMatchesAllowedRoles(role, allowedRoles) {
+function roleMatchesAllowedRoles(role, allowedRoles, strict = false) {
   if (!role || !Array.isArray(allowedRoles)) return false
   if (allowedRoles.includes(role)) return true
+  if (strict) return false
   if (isSuperEquivalentRole(role) && allowedRoles.some(a => isSuperEquivalentRole(a))) return true
   return false
 }
@@ -742,7 +743,8 @@ function enforcePlatformReadonlyForTenantWrite(ctx, actionLabel) {
   return true
 }
 
-function requireAdminPermission(ctx, allowedRoles, actionLabel) {
+function requireAdminPermission(ctx, allowedRoles, actionLabel, options = {}) {
+  const strictRoles = Boolean(options.strictRoles)
   const role = resolveAdminRole(ctx)
   if (!role) {
     fail(
@@ -752,7 +754,7 @@ function requireAdminPermission(ctx, allowedRoles, actionLabel) {
     )
     return ''
   }
-  if (!ADMIN_ROLE_SET.has(role) || !roleMatchesAllowedRoles(role, allowedRoles)) {
+  if (!ADMIN_ROLE_SET.has(role) || !roleMatchesAllowedRoles(role, allowedRoles, strictRoles)) {
     fail(ctx, `当前角色【${getRoleLabel(role)}】无权限执行${actionLabel}`, 403)
     return ''
   }
@@ -1796,6 +1798,20 @@ function platformAuditRecord(ctx, action, detail = {}) {
 
 function requirePlatformScope(ctx, actionLabel = '访问平台接口') {
   const role = requireAdminPermission(ctx, [ADMIN_ROLES.SUPER, ADMIN_ROLES.BOSS], actionLabel)
+  if (!role) {
+    return null
+  }
+  const account = resolveAdminAccount(ctx)
+  if (!account || account.scopeType !== 'platform') {
+    fail(ctx, '仅平台账号可访问该接口', 403)
+    return null
+  }
+  return account
+}
+
+/** 子系统管理等：仅超级管理员（平台老板不可用） */
+function requirePlatformSuperAdminScope(ctx, actionLabel = '访问子系统管理') {
+  const role = requireAdminPermission(ctx, [ADMIN_ROLES.SUPER], actionLabel, { strictRoles: true })
   if (!role) {
     return null
   }
@@ -3208,17 +3224,23 @@ async function collectKnownTenantIdsForPlatform() {
       // ignore mongo list failure, fallback to meta-known tenants
     }
   }
-  const out = [...set].filter(id => id !== DEFAULT_TENANT_ID)
+  const fromScan = [...set].filter(id => id !== DEFAULT_TENANT_ID)
+  /** 与 core._meta 合并后的视图；必须返回该列表，若仅返回 fromScan，会在并发下漏掉他刚写入的 knownTenantIds（列表空却「ID 已存在」）。 */
+  let mergedForReturn = fromScan
   runWithWorkspace('core', DEFAULT_TENANT_ID, () => {
     const db = readDb()
     const known = parseKnownTenantIdsFromMeta(db._meta).filter(id => id !== DEFAULT_TENANT_ID)
-    const merged = [...new Set([...known, ...out])]
-    if (merged.length !== known.length || merged.some((item, idx) => known[idx] !== item)) {
+    const merged = [...new Set([...known, ...fromScan])].sort((a, b) => a.localeCompare(b))
+    mergedForReturn = merged
+    const knownSet = new Set(known)
+    const needsMetaWrite = merged.length !== known.length
+      || merged.some(id => !knownSet.has(id))
+    if (needsMetaWrite) {
       writeKnownTenantIdsMeta(db, merged)
       writeDb(db)
     }
   })
-  return out
+  return mergedForReturn
 }
 
 async function readTenantAdminAccountsFromMongo(tenantId) {
@@ -3618,7 +3640,7 @@ router.delete('/admin/accounts/:id', (ctx) => {
 })
 
 router.get('/platform/tenants', async (ctx) => {
-  const account = requirePlatformScope(ctx, '查看子系统列表')
+  const account = requirePlatformSuperAdminScope(ctx, '查看子系统列表')
   if (!account) {
     return
   }
@@ -3655,8 +3677,164 @@ router.get('/platform/tenants', async (ctx) => {
   ctx.body = success(list)
 })
 
+/**
+ * 平台：汇总各子系统商城注册用户（tenant 商城 users 集合）。
+ * - 不传 tenantId：遍历当前账号可见的全部子系统，并按手机号合并去重；
+ * - 传 tenantId：仅该子系统，不做跨系统合并。
+ */
+router.get('/platform/mall-users', async (ctx) => {
+  const account = requirePlatformSuperAdminScope(ctx, '查看子系统商城用户数据')
+  if (!account) {
+    return
+  }
+  const rawTenantFilter = String(ctx.query?.tenantId || '').trim()
+  const tenantFilter = rawTenantFilter ? normalizeTenantId(rawTenantFilter) : ''
+  const keywordRaw = String(ctx.query?.keyword || '').trim()
+  const keywordLower = keywordRaw.toLowerCase()
+  const known = await collectKnownTenantIdsForPlatform()
+  const allow = effectiveScopeTenantIds(account)
+  const visibleAll = allow.includes('*')
+    ? known
+    : known.filter(item => allow.includes(item))
+  let targetTenants = visibleAll.filter(item => item !== DEFAULT_TENANT_ID)
+  if (tenantFilter) {
+    if (!targetTenants.includes(tenantFilter)) {
+      fail(ctx, '无权查看该子系统或未找到该子系统', 403)
+      return
+    }
+    targetTenants = [tenantFilter]
+  }
+  const dedupeAcrossTenants = Boolean(!tenantFilter)
+
+  /** @type {ReturnType<typeof attachUserOrderStats>[]} */
+  const flattened = []
+  for (const tenantId of targetTenants) {
+    await hydrateTenantIfNeeded(tenantId)
+    const db = readDbByTenantId(tenantId)
+    const usersRaw = Array.isArray(db.users) ? db.users : []
+    const tenantLabel = tenantId === DEFAULT_TENANT_ID ? '主系统' : tenantId
+    for (const user of usersRaw) {
+      if (!user || typeof user !== 'object') {
+        continue
+      }
+      const row = attachUserOrderStats(db, user)
+      if (row.adminPasswordPlain) {
+        delete row.adminPasswordPlain
+      }
+      const enriched = {
+        ...row,
+        sourceTenantId: tenantId,
+        sourceTenantName: tenantLabel,
+      }
+      if (keywordLower) {
+        const haystack = `${enriched.id || ''}|${enriched.name || ''}|${enriched.phone || ''}`
+        if (!haystack.toLowerCase().includes(keywordLower)) {
+          continue
+        }
+      }
+      flattened.push(enriched)
+    }
+  }
+
+  const sortedFlat = flattened.sort((a, b) => {
+    const pa = normalizePhone(String(a.phone || ''))
+    const pb = normalizePhone(String(b.phone || ''))
+    if (pa !== pb) {
+      return String(pa || a.id).localeCompare(String(pb || b.id))
+    }
+    return String(a.sourceTenantId || '').localeCompare(String(b.sourceTenantId || ''))
+      || String(a.id).localeCompare(String(b.id))
+  })
+
+  /** @typedef {typeof sortedFlat[number]} FlatRow */
+
+  /** @param {FlatRow[]} group */
+  const mergeDedupGroup = (group) => {
+    const pickCanonical = [...group].sort((a, b) => {
+      const ra = Date.parse(String(a.registerAt || ''))
+      const rb = Date.parse(String(b.registerAt || ''))
+      const va = Number.isFinite(ra) ? ra : 0
+      const vb = Number.isFinite(rb) ? rb : 0
+      if (vb !== va) {
+        return vb - va
+      }
+      const oa = Number(a.orderCount || 0)
+      const ob = Number(b.orderCount || 0)
+      if (ob !== oa) {
+        return ob - oa
+      }
+      return String(a.sourceTenantId || '').localeCompare(String(b.sourceTenantId || ''))
+    })
+    const primary = pickCanonical[0]
+    let orderSum = 0
+    let amountSum = 0
+    let lastMs = 0
+    for (const g of group) {
+      orderSum += Number(g.orderCount || 0)
+      amountSum += Number(g.totalAmount || 0)
+      if (g.lastOrderAt) {
+        const ms = Date.parse(String(g.lastOrderAt))
+        if (Number.isFinite(ms) && ms >= lastMs) {
+          lastMs = ms
+        }
+      }
+    }
+    const tenantIdsSorted = [...new Set(group.map(r => String(r.sourceTenantId || '')))].filter(Boolean).sort()
+    const merged = {
+      ...primary,
+      orderCount: orderSum,
+      totalAmount: Number(amountSum.toFixed(2)),
+      duplicateSystemCount: group.length,
+      mergedTenantIds: tenantIdsSorted,
+      mergedTenantLabel: tenantIdsSorted.join('、'),
+    }
+    if (lastMs > 0) {
+      merged.lastOrderAt = new Date(lastMs).toISOString()
+    }
+    if (merged.adminPasswordPlain) {
+      delete merged.adminPasswordPlain
+    }
+    return merged
+  }
+
+  let listOut
+  if (dedupeAcrossTenants) {
+    const byPhone = new Map()
+    for (const row of sortedFlat) {
+      const digits = normalizePhone(String(row.phone || ''))
+      const key = digits.length >= 11 ? digits : `__nophone__:${row.sourceTenantId}:${row.id}`
+      if (!byPhone.has(key)) {
+        byPhone.set(key, [])
+      }
+      /** @type {FlatRow[]} */ (byPhone.get(key)).push(row)
+    }
+    listOut = []
+    for (const group of byPhone.values()) {
+      listOut.push(mergeDedupGroup(group))
+    }
+    listOut.sort((a, b) => Number(b.orderCount || 0) - Number(a.orderCount || 0)
+      || String(a.phone || '').localeCompare(String(b.phone || '')))
+  }
+  else {
+    listOut = sortedFlat.map((row) => ({
+      ...row,
+      duplicateSystemCount: 1,
+      mergedTenantIds: [String(row.sourceTenantId || '').trim()].filter(Boolean),
+      mergedTenantLabel: String(row.sourceTenantName || row.sourceTenantId || ''),
+    }))
+  }
+
+  platformAuditRecord(ctx, 'platform.mall-users.list', {
+    tenantScope: tenantFilter || 'all',
+    dedupe: dedupeAcrossTenants,
+    rowCount: listOut.length,
+    rawFlatCount: sortedFlat.length,
+  })
+  ctx.body = success(listOut)
+})
+
 router.post('/platform/tenants', async (ctx) => {
-  const account = requirePlatformScope(ctx, '新增子系统')
+  const account = requirePlatformSuperAdminScope(ctx, '新增子系统')
   if (!account) {
     return
   }
@@ -3698,7 +3876,7 @@ router.post('/platform/tenants', async (ctx) => {
 })
 
 router.post('/platform/tenants/onboard', async (ctx) => {
-  const account = requirePlatformScope(ctx, '一体化开通子系统')
+  const account = requirePlatformSuperAdminScope(ctx, '一体化开通子系统')
   if (!account) {
     return
   }
@@ -3784,7 +3962,7 @@ router.post('/platform/tenants/onboard', async (ctx) => {
 })
 
 router.delete('/platform/tenants/:tenantId', async (ctx) => {
-  const account = requirePlatformScope(ctx, '回滚子系统')
+  const account = requirePlatformSuperAdminScope(ctx, '回滚子系统')
   if (!account) {
     return
   }

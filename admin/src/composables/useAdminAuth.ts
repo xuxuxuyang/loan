@@ -5,15 +5,25 @@ export function isSuperAdminRole(role?: AdminRole | string | null): boolean {
   return role === 'super_admin' || role === 'boss'
 }
 
-/** 路由 meta.roles / 侧栏菜单：列表含 super_admin 时，老板也可访问 */
+export type AdminRoleAllowOptions = {
+  /**
+   * false：仅「超级管理员」可匹配 allowed 中的 super_admin，老板账号不能再蹭 super_admin 菜单（如子系统管理）。
+   * 默认 true：老板仍以 super_admin 口径放行（历史兼容：与大屏/账号等能力对齐）。
+   */
+  inheritBossAsSuperAdmin?: boolean
+}
+
+/** 路由 meta.roles / 侧栏菜单：列表含 super_admin 时，默认老板也可访问（可通过选项关闭）。 */
 export function adminSessionRoleAllowed(
   role: AdminRole | undefined,
   allowed: readonly AdminRole[] | undefined,
+  options?: AdminRoleAllowOptions,
 ): boolean {
   if (!allowed?.length) return true
   if (!role) return false
   if (allowed.includes(role)) return true
-  if (isSuperAdminRole(role) && allowed.includes('super_admin')) return true
+  const inherit = options?.inheritBossAsSuperAdmin !== false
+  if (inherit && role === 'boss' && allowed.includes('super_admin')) return true
   return false
 }
 

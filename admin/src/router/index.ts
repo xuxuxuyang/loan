@@ -1,6 +1,18 @@
 import { createRouter, createWebHistory } from 'vue-router'
-import type { AdminSession } from '../composables/useAdminAuth'
+import type { AdminRole, AdminSession } from '../composables/useAdminAuth'
 import { adminSessionRoleAllowed, getAdminSession, isAdminAuthenticated, isPlatformManagingTenantWorkspace } from '../composables/useAdminAuth'
+
+declare module 'vue-router' {
+  interface RouteMeta {
+    title?: string
+    public?: boolean
+    roles?: AdminRole[]
+    platformOnly?: boolean
+    /** true：仅超级管理员（不含主系统老板蹭 super_admin） */
+    strictSuperAdminOnly?: boolean
+    receivableOffsetDays?: number
+  }
+}
 
 const LoginPage = () => import('../views/LoginPage.vue')
 const DashboardPage = () => import('../views/DashboardPage.vue')
@@ -10,6 +22,7 @@ const ReceivableByDatePage = () => import('../views/ReceivableByDatePage.vue')
 const UsersPage = () => import('../views/UsersPage.vue')
 const AccountManagePage = () => import('../views/AccountManagePage.vue')
 const TenantManagePage = () => import('../views/TenantManagePage.vue')
+const TenantMallUsersDataPage = () => import('../views/TenantMallUsersDataPage.vue')
 const TrafficManagementPage = () => import('../views/TrafficManagementPage.vue')
 const ProductsPage = () => import('../views/ProductsPage.vue')
 const CsMessagesPage = () => import('../views/CsMessagesPage.vue')
@@ -30,6 +43,9 @@ function adminHomeRoute(session: AdminSession | null) {
     return { name: 'orders' as const }
   }
   if (session.scopeType === 'platform') {
+    if (session.role === 'boss') {
+      return { name: 'orders' as const }
+    }
     return { name: 'tenants' as const }
   }
   /** 子系统侧（老板/子系统域账号）：不可进 platformOnly 的总部路由，默认与大屏订单端一致 */
@@ -122,7 +138,13 @@ const router = createRouter({
       path: '/tenants',
       name: 'tenants',
       component: TenantManagePage,
-      meta: { title: '子系统管理', roles: ['super_admin'], platformOnly: true },
+      meta: { title: '子系统管理', roles: ['super_admin'], platformOnly: true, strictSuperAdminOnly: true },
+    },
+    {
+      path: '/tenants/mall-users-data',
+      name: 'tenants-mall-users-data',
+      component: TenantMallUsersDataPage,
+      meta: { title: '子系统数据', roles: ['super_admin'], platformOnly: true, strictSuperAdminOnly: true },
     },
     {
       path: '/traffic',
@@ -170,7 +192,13 @@ router.beforeEach((to) => {
     return adminHomeRoute(session)
   }
   const allowRoles = Array.isArray(to.meta.roles) ? to.meta.roles : []
-  if (allowRoles.length > 0 && !adminSessionRoleAllowed(session?.role, allowRoles)) {
+  const strictSuperAdminOnly = Boolean(to.meta.strictSuperAdminOnly)
+  if (
+    allowRoles.length > 0
+    && !adminSessionRoleAllowed(session?.role, allowRoles, {
+      inheritBossAsSuperAdmin: !strictSuperAdminOnly,
+    })
+  ) {
     return adminHomeRoute(session)
   }
   if (to.meta.platformOnly && session?.scopeType !== 'platform') {

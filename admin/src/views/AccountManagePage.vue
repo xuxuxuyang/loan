@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { getAdminSession, shouldUseHeadquartersPlatformApi } from '../composables/useAdminAuth'
+import { adminRoleDisplayLabel, getAdminSession, isPlatformBootstrapUser, shouldUseHeadquartersPlatformApi } from '../composables/useAdminAuth'
 import { withAdminAuthHeaders, withMallTenantHeaders } from '../composables/useAdminApi'
 import { donePageProgress, startPageProgress } from '../utils/progress'
 
@@ -46,6 +46,10 @@ const isPlatformSession = computed(() => session.value?.scopeType === 'platform'
 /** 使用 /platform/accounts（core）；子系统工作区下同纯子系统，走 /admin/accounts */
 const usePlatformAccountsApi = computed(() => shouldUseHeadquartersPlatformApi(session.value))
 const sessionUsername = computed(() => String(session.value?.username || '').trim())
+/** 仅超级管理员可看「超级管理员」折叠分组；老板/员工等均不展示 */
+const viewerMaySeeSuperAdminAccountsSection = computed(
+  () => session.value?.role === 'super_admin',
+)
 const tableColumnCount = computed(() => 7)
 
 const createForm = reactive({
@@ -117,7 +121,7 @@ type AccountTableRow =
   | { kind: 'account'; item: AdminAccountItem }
   | { kind: 'super_admin_toggle'; count: number }
 
-/** 默认折叠；展开后显示系统管理员账号行 */
+/** 默认折叠；展开后显示超级管理员账号行 */
 const superAdminSectionExpanded = ref(false)
 
 const superAdminAccounts = computed(() => {
@@ -127,7 +131,7 @@ const superAdminAccounts = computed(() => {
   return [...list].sort(byUsername)
 })
 
-/** 老板分区 → 员工（不含系统管理员） */
+/** 老板分区 → 员工（不含超级管理员） */
 const accountTableRowsRest = computed((): AccountTableRow[] => {
   const list = filteredAccounts.value.filter(i => i.role !== 'super_admin')
   if (!list.length)
@@ -160,13 +164,23 @@ const accountTableRowsRest = computed((): AccountTableRow[] => {
 const accountTableBodyRows = computed((): AccountTableRow[] => {
   const rows: AccountTableRow[] = []
   const supers = superAdminAccounts.value
-  if (supers.length) {
+  if (viewerMaySeeSuperAdminAccountsSection.value && supers.length) {
     rows.push({ kind: 'super_admin_toggle', count: supers.length })
     if (superAdminSectionExpanded.value)
       supers.forEach(item => rows.push({ kind: 'account', item }))
   }
   rows.push(...accountTableRowsRest.value)
   return rows
+})
+
+/** 表中是否至少有一行账号数据（分段标题不算）；与「对谁可见」一致，用于空状态 */
+const hasVisibleAccountRowInTable = computed(() =>
+  accountTableBodyRows.value.some(row => row.kind === 'account'),
+)
+
+watch(viewerMaySeeSuperAdminAccountsSection, (ok) => {
+  if (!ok)
+    superAdminSectionExpanded.value = false
 })
 
 function toggleSuperAdminSection() {
@@ -193,14 +207,9 @@ function getRoleClass(role: AccountRole) {
 }
 
 function formatRoleCell(item: AdminAccountItem): string {
-  if (item.role === 'super_admin')
-    return '系统管理员'
   if (item.roleLabel?.trim())
     return item.roleLabel
-  if (item.role === 'boss') return '老板'
-  if (item.role === 'reviewer') return '审核员'
-  if (item.role === 'collector') return '催收员'
-  return '审核员'
+  return adminRoleDisplayLabel(item.role)
 }
 
 function sectionHeaderClass(sectionKey: string) {
@@ -212,10 +221,10 @@ function sectionHeaderClass(sectionKey: string) {
 }
 
 function isProtectedPlatformSuperRow(item: AdminAccountItem): boolean {
-  return usePlatformAccountsApi.value && item.username === 'xuyang'
+  return usePlatformAccountsApi.value && isPlatformBootstrapUser(item.username)
 }
 
-/** 子系统侧不可删除/禁用的老板行；平台侧 xuyang 不可动 */
+/** 子系统侧不可删除/禁用的老板行；平台侧内置超级管理员不可删除/禁用/改角色，但可修改密码 */
 function isAccountRowImmutable(item: AdminAccountItem): boolean {
   if (isProtectedPlatformSuperRow(item))
     return true
@@ -251,7 +260,7 @@ async function fetchAccounts() {
       if (!response.ok || payload.success === false) {
         const msg = payload.msg || `加载账号失败 (${response.status})`
         if (response.status === 401 || response.status === 403) {
-          throw new Error(`${msg} — 请退出后使用系统管理员（xuyang）重新登录`)
+          throw new Error(`${msg} — 请退出后使用超级管理员（xuyang）重新登录`)
         }
         throw new Error(msg)
       }
@@ -540,10 +549,6 @@ function isRoleEditLocked(item: AdminAccountItem): boolean {
   return isProtectedPlatformSuperRow(item) || isCurrentSessionRow(item) || (!isPlatformSession.value && item.role === 'boss')
 }
 
-function isPasswordLocked(item: AdminAccountItem): boolean {
-  return isProtectedPlatformSuperRow(item)
-}
-
 function isDeleteButtonDisabled(item: AdminAccountItem): boolean {
   if (isAccountRowImmutable(item) || isCurrentSessionRow(item))
     return true
@@ -633,7 +638,7 @@ onMounted(() => {
                   :class="{ 'super-admin-chevron--open': superAdminSectionExpanded }"
                   aria-hidden="true"
                 />
-                <span class="super-admin-collapse-label">系统管理员</span>
+                <span class="super-admin-collapse-label">超级管理员</span>
                 <span class="super-admin-collapse-meta">{{ row.count }} 个账号 · {{ superAdminSectionExpanded ? '点击收起' : '点击展开' }}</span>
               </button>
             </td>
@@ -688,7 +693,6 @@ onMounted(() => {
                 <button
                   class="btn btn-primary"
                   type="button"
-                  :disabled="isPasswordLocked(row.item)"
                   @click="openPasswordModal(row.item)"
                 >
                   修改密码
@@ -731,7 +735,7 @@ onMounted(() => {
             </td>
           </tr>
         </template>
-        <tr v-if="!loading && !filteredAccounts.length">
+        <tr v-if="!loading && !hasVisibleAccountRowInTable">
           <td
             :colspan="tableColumnCount"
             style="text-align: center; color: #9ca3af;"
@@ -874,7 +878,7 @@ onMounted(() => {
           >
             <el-option
               v-if="usePlatformAccountsApi"
-              label="系统管理员"
+              label="超级管理员"
               value="super_admin"
             />
             <el-option
