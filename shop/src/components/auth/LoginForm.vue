@@ -193,7 +193,7 @@ async function submitLogin() {
             AMBER MALL
           </p>
           <h1 class="text-[1.85rem] font-semibold leading-tight text-[#1f2430]">
-            欢迎来到琥珀商城
+            欢迎来到文硕商城
           </h1>
         </div>
       </div>

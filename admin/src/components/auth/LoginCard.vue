@@ -75,7 +75,7 @@ function handleSubmit() {
         <div class="login-card__header">
           <div class="login-card__brand">
             <MallBrandLogo class="login-card__logo" />
-            <h1>琥珀商城后台管理系统</h1>
+            <h1>文硕商城后台管理系统</h1>
           </div>
         </div>
 

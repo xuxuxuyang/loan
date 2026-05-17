@@ -641,7 +641,7 @@ function buildCardPackageContractViewHtml(p) {
       </table>
 
       <table class="party-table" aria-label="乙方商家">
-        <tr><th colspan="2">乙方（琥珀商城）</th></tr>
+        <tr><th colspan="2">乙方（文硕商城）</th></tr>
         <tr><td>名称</td><td>${merName}</td></tr>
         <tr><td>统一社会信用代码</td><td>${merUscc}</td></tr>
         <tr><td>住所</td><td>${merAddr}</td></tr>

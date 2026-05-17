@@ -1,6 +1,7 @@
 /**
  * 删除 api/data/db.json 与按子系统命名的 db.{tenant}.json（ALLOW_JSON_FALLBACK 本地存储）。
- * npm run json:fresh
+ * npm run json:fresh  （仅删除 db.json / db.*.json；清空整个 data 请用 npm run reset:project）
+ * 与 Mongo 一并全量重置：npm run reset:project 或 npm run fresh
  */
 const fs = require('node:fs')
 const path = require('node:path')

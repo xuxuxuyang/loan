@@ -9,7 +9,9 @@
     "start": "cross-env NODE_ENV=production node src/index.js",
     "import:mongo-local": "node scripts/import-local-to-mongo.js",
     "mongo:fresh": "node scripts/mongo-bootstrap-only.js",
-    "json:fresh": "node scripts/local-json-reset.js"
+    "json:fresh": "node scripts/local-json-reset.js",
+    "fresh": "npm run reset:project",
+    "reset:project": "node scripts/project-full-reset.js"
   },
   "keywords": [],
   "author": "",

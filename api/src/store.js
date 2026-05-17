@@ -13,16 +13,12 @@ const {
   setCurrentWorkspace,
 } = require('./tenantContext')
 const {
-  BOOTSTRAP_ADMIN_USER,
   BOOTSTRAP_ADMIN_ACCOUNTS,
   DEFAULT_SUPER_ADMIN_USERNAME,
-  DEFAULT_SUPER_ADMIN_PHONE,
 } = require('./defaultBootstrap')
 
 const DB_DIR = path.join(__dirname, '..', 'data')
 const DB_FILE = path.join(DB_DIR, 'db.json')
-const ADMIN_USER_ID = `U${DEFAULT_SUPER_ADMIN_PHONE}`
-const ADMIN_PHONE = DEFAULT_SUPER_ADMIN_PHONE
 
 /** 旧版 appState 单文档 _id */
 const MAIN_STATE_ID = 'main'
@@ -114,17 +110,7 @@ function buildSeedDb() {
 }
 
 function ensureAdminUser(list) {
-  const tenantId = getCurrentTenantId()
-  if (tenantId !== DEFAULT_TENANT_ID) {
-    return Array.isArray(list) ? list : []
-  }
-  const hasAdmin = list.some(item => item && (item.phone === ADMIN_PHONE || item.id === ADMIN_USER_ID))
-  if (hasAdmin) {
-    return list
-  }
-  const now = new Date().toISOString()
-  const adminSeed = { ...BOOTSTRAP_ADMIN_USER, registerAt: now }
-  return [adminSeed, ...list]
+  return Array.isArray(list) ? list : []
 }
 
 function dedupeUsersById(list) {
@@ -521,9 +507,17 @@ function readDb() {
       return scoped
     }
     const seeded = buildSeedDb()
-    mongoMemoryDbByTenant.set(scope.key, seeded)
-    if (scope.key === 'tenant:default') {
-      mongoMemoryDb = seeded
+    const ws = normalizeWorkspaceForKey(scope.workspaceType)
+    const tid = getCurrentTenantId()
+    // 非 default 租户：禁止在未 hydrate 前把空种子塞进 mongoMemoryDbByTenant。
+    // 否则 hasScopeCache 为 true 会跳过中间件 hydrate，总部列表等只读路径会先占位空快照，
+    // 后续任意 writeDb 会用 persistShardedSnapshot 覆盖 Mongo，表现为「新建子系统后老租户商品全没了」。
+    const tenantColdMustNotCacheEmpty = ws === 'tenant' && tid !== DEFAULT_TENANT_ID
+    if (!tenantColdMustNotCacheEmpty) {
+      mongoMemoryDbByTenant.set(scope.key, seeded)
+      if (scope.key === 'tenant:default') {
+        mongoMemoryDb = seeded
+      }
     }
     return seeded
   }
@@ -686,6 +680,26 @@ function evictTenantMemoryCache(rawTenantId) {
   mongoMemoryDbByTenant.delete(`tenant:${t}`)
 }
 
+/** 删除本地 JSON 形态的子系统快照文件 db.<tenant>.json（不影响 mall/default 主文件） */
+function removeTenantJsonStoreFile(rawTenantId) {
+  const t = normalizeTenantId(rawTenantId || DEFAULT_TENANT_ID)
+  if (!t || t === DEFAULT_TENANT_ID) {
+    return false
+  }
+  const safe = String(t).replace(/[^a-z0-9_-]/gi, '').toLowerCase()
+  const file = path.join(DB_DIR, `db.${safe}.json`)
+  try {
+    if (fs.existsSync(file)) {
+      fs.unlinkSync(file)
+      return true
+    }
+  }
+  catch (err) {
+    console.warn('[store] removeTenantJsonStoreFile', err?.message || err)
+  }
+  return false
+}
+
 module.exports = {
   buildSeedDb,
   readDb,
@@ -698,6 +712,7 @@ module.exports = {
   importLocalSnapshotToMongo,
   isMongoPersistenceEnabled,
   evictTenantMemoryCache,
+  removeTenantJsonStoreFile,
   clonePayloadForMongo,
   /** 脚本：清空云库 mall 相关集合并写入 buildSeedDb() */
   wipeAllMongoPersistence,

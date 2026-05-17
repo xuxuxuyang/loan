@@ -237,7 +237,7 @@ useAdminOrderReviewBadge(ordersSidebarBadgeEnabled)
         <div class="admin-logo">
           <MallBrandLogo class="admin-logo-mark" />
           <div class="admin-logo-titles">
-            <span class="admin-logo-text">琥珀商城</span>
+            <span class="admin-logo-text">文硕商城</span>
             <span class="admin-logo-sub">
               <template v-if="isPlatformManagingTenant">子系统后台 · {{ managedTenantHeadline }}</template>
               <template v-else>后台管理</template>

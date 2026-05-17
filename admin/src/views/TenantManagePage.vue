@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { withAdminAuthHeaders, withMallTenantHeaders } from '../composables/useAdminApi'
 import { getAdminSession } from '../composables/useAdminAuth'
@@ -42,6 +42,8 @@ const deletingAccountId = ref('')
 const keyword = ref('')
 const accountKeyword = ref('')
 const errorMessage = ref('')
+/** 顶栏错误提示标题：加载失败 / 删除失败 等，避免删除报错仍显示「加载失败」 */
+const errorBannerTitle = ref('加载失败')
 const newTenantId = ref('boss1')
 const newTenantIdError = ref('')
 const tenants = ref<TenantSummary[]>([])
@@ -54,6 +56,7 @@ const createAccountMode = ref<'existing' | 'onboard' | 'edit'>('existing')
 const editingBossAccount = ref<TenantAdminAccount | null>(null)
 const roleTarget = ref<TenantAdminAccount | null>(null)
 const passwordTarget = ref<TenantAdminAccount | null>(null)
+const route = useRoute()
 const router = useRouter()
 const { isPlatform, switchTenant } = useTenantScope()
 const deletingTenantId = ref('')
@@ -181,11 +184,14 @@ const tenantBossInfoMap = computed(() => {
     if (!tenantId) return
     const isBoss = item.role === 'boss' || item.roleLabel === '老板'
     const ownerName = String(item.name || '').trim()
-    if (!isBoss || !ownerName || map.has(tenantId)) return
+    const username = String(item.username || '').trim()
+    const phone = String(item.phone || '').trim()
+    if (!isBoss || map.has(tenantId)) return
+    if (!ownerName && !username && !phone) return
     map.set(tenantId, {
       name: ownerName,
-      username: String(item.username || '').trim(),
-      phone: String(item.phone || '').trim(),
+      username,
+      phone,
     })
   })
   return map
@@ -269,6 +275,7 @@ function computeNextSuggestedBossTenantId(alsoReserveNormalizedId?: string): str
 async function fetchTenants() {
   loading.value = true
   errorMessage.value = ''
+  errorBannerTitle.value = '加载失败'
   try {
     const response = await fetch(`${MALL_API_BASE}/platform/tenants`, {
       method: 'GET',
@@ -286,10 +293,26 @@ async function fetchTenants() {
   }
   catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '加载子系统列表失败'
+    ElMessage.error(errorMessage.value)
   }
   finally {
     loading.value = false
   }
+}
+
+async function deleteTenantApi(tenantId: string, wipeAll: boolean): Promise<{ ok: boolean, status: number, msg: string }> {
+  const qs = wipeAll ? '?wipeAll=1' : ''
+  const response = await fetch(
+    `${MALL_API_BASE}/platform/tenants/${encodeURIComponent(tenantId)}${qs}`,
+    {
+      method: 'DELETE',
+      headers: withAdminAuthHeaders({ 'x-workspace-type': 'core' }),
+    },
+  )
+  const payload = await response.json() as { success?: boolean, msg?: string }
+  const ok = Boolean(response.ok && payload.success !== false)
+  const msg = String(payload.msg || (ok ? '' : `删除失败 (${response.status})`))
+  return { ok, status: response.status, msg }
 }
 
 async function deleteTenantSystem(rawTenantId: string) {
@@ -300,7 +323,7 @@ async function deleteTenantSystem(rawTenantId: string) {
   }
   try {
     await ElMessageBox.confirm(
-      `确定删除子系统「${tenantId}」吗？仅当该子系统尚未产生任何用户、订单、商品且无后台账号时才能删除；若已新建老板账号或存在业务数据，接口将拒绝操作。`,
+      `确定删除子系统「${tenantId}」吗？仅当该子系统尚未产生任何用户、订单、商品且无后台账号时才能直接删除。\n\n若已有商品等数据，系统将提示你是否「强制清空」该子系统在库内的全部业务数据后再注销登记（不可恢复）。`,
       '删除子系统',
       {
         type: 'warning',
@@ -314,28 +337,60 @@ async function deleteTenantSystem(rawTenantId: string) {
   }
   deletingTenantId.value = tenantId
   errorMessage.value = ''
+  errorBannerTitle.value = '加载失败'
   try {
-    const response = await fetch(
-      `${MALL_API_BASE}/platform/tenants/${encodeURIComponent(tenantId)}`,
-      {
-        method: 'DELETE',
-        headers: withAdminAuthHeaders({ 'x-workspace-type': 'core' }),
-      },
-    )
-    const payload = await response.json() as { success?: boolean, msg?: string }
-    if (!response.ok || payload.success === false) {
-      throw new Error(payload.msg || `删除失败 (${response.status})`)
+    const first = await deleteTenantApi(tenantId, false)
+    if (first.ok) {
+      if (normalizeTenantInput(selectedTenantId.value) === tenantId) {
+        selectedTenantId.value = ''
+      }
+      ElMessage.success('已删除该子系统')
+      await fetchTenants()
+      await fetchTenantAccounts()
+      newTenantId.value = computeNextSuggestedBossTenantId()
+      return
     }
-    if (normalizeTenantInput(selectedTenantId.value) === tenantId) {
-      selectedTenantId.value = ''
+    if (first.status === 409 && first.msg.includes('已存在数据')) {
+      try {
+        await ElMessageBox.confirm(
+          `子系统「${tenantId}」仍有商品、订单、用户或后台账号，无法按「空库」规则删除。\n\n下一步将永久删除该子系统在 Mongo / 本地 JSON 中的全部业务数据，并从总部登记中移除，操作不可恢复。确认继续？`,
+          '强制清空并删除子系统',
+          {
+            type: 'error',
+            confirmButtonText: '清空并删除',
+            cancelButtonText: '取消',
+          },
+        )
+      }
+      catch {
+        errorBannerTitle.value = '删除被拒绝'
+        errorMessage.value = first.msg
+        ElMessage.warning(first.msg)
+        return
+      }
+      const second = await deleteTenantApi(tenantId, true)
+      if (!second.ok) {
+        errorBannerTitle.value = '删除失败'
+        errorMessage.value = second.msg
+        ElMessage.error(second.msg)
+        return
+      }
+      if (normalizeTenantInput(selectedTenantId.value) === tenantId) {
+        selectedTenantId.value = ''
+      }
+      ElMessage.success('已强制清空并删除该子系统')
+      await fetchTenants()
+      await fetchTenantAccounts()
+      newTenantId.value = computeNextSuggestedBossTenantId()
+      return
     }
-    ElMessage.success('已删除该子系统')
-    await fetchTenants()
-    void fetchTenantAccounts()
-    newTenantId.value = computeNextSuggestedBossTenantId()
+    errorBannerTitle.value = '删除失败'
+    errorMessage.value = first.msg
+    ElMessage.error(first.msg)
   }
   catch (error) {
     const msg = error instanceof Error ? error.message : '删除子系统失败'
+    errorBannerTitle.value = '删除失败'
     errorMessage.value = msg
     ElMessage.error(msg)
   }
@@ -382,6 +437,7 @@ async function refreshTenantsAfterCreate(createdTenantId: string) {
 
 async function fetchTenantAccounts() {
   accountLoading.value = true
+  errorBannerTitle.value = '加载失败'
   try {
     const response = await fetch(`${MALL_API_BASE}/platform/admin-accounts?scopeType=tenant`, {
       method: 'GET',
@@ -396,9 +452,12 @@ async function fetchTenantAccounts() {
       throw new Error(payload.msg || `加载子系统账号失败 (${response.status})`)
     }
     tenantAccounts.value = Array.isArray(payload.data) ? payload.data : []
+    errorMessage.value = ''
   }
   catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '加载子系统账号失败'
+    tenantAccounts.value = []
+    ElMessage.error(errorMessage.value)
   }
   finally {
     accountLoading.value = false
@@ -412,7 +471,8 @@ function normalizeTenantInput(raw: string) {
   if (normalized === '主系统' || lowered === 'default' || lowered === 'main' || lowered === 'platform') {
     return ''
   }
-  return normalized
+  /** 与后端 normalizeTenantId 一致，避免筛选下拉框值与子系统 ID 大小写不一致导致账号表被滤空 */
+  return lowered
 }
 
 function isValidOnboardTenantId(raw: string) {
@@ -826,7 +886,7 @@ function jumpToTenant(rawTenantId: string) {
   switchTenant(tenantId)
   const sess = getAdminSession()
   const targetLc = tenantId.toLowerCase()
-  const currentLc = normalizeTenantInput(String(sess?.tenantId || '')).toLowerCase()
+  const currentLc = normalizeTenantInput(String(sess?.tenantId || ''))
   const ok = Boolean(
     sess
     && sess.workspaceType === 'tenant'
@@ -840,13 +900,34 @@ function jumpToTenant(rawTenantId: string) {
   void router.replace({ name: 'orders' })
 }
 
-onMounted(() => {
-  void (async () => {
-    await fetchTenants()
-    newTenantId.value = computeNextSuggestedBossTenantId()
-    void fetchTenantAccounts()
-  })()
-})
+async function loadTenantManagePageData() {
+  errorMessage.value = ''
+  errorBannerTitle.value = '加载失败'
+  selectedTenantId.value = ''
+  accountKeyword.value = ''
+  await fetchTenants()
+  newTenantId.value = computeNextSuggestedBossTenantId()
+  if (errorMessage.value) {
+    tenantAccounts.value = []
+    return
+  }
+  await fetchTenantAccounts()
+}
+
+function clearGlobalPageError() {
+  errorMessage.value = ''
+  errorBannerTitle.value = '加载失败'
+}
+
+watch(
+  () => route.name,
+  (name) => {
+    if (name === 'tenants') {
+      void loadTenantManagePageData()
+    }
+  },
+  { immediate: true },
+)
 </script>
 
 <template>
@@ -854,6 +935,16 @@ onMounted(() => {
     v-loading="loading"
     class="tenant-manage-page"
   >
+    <el-alert
+      v-if="errorMessage"
+      type="error"
+      show-icon
+      closable
+      class="tenant-page__global-error"
+      :title="errorBannerTitle"
+      :description="errorMessage"
+      @close="clearGlobalPageError"
+    />
     <div class="tenant-page__quick-open">
       <div class="tenant-page__quick-open-row">
         <span class="tenant-page__quick-label">新建子系统</span>

@@ -155,7 +155,7 @@ async function handleLogin(payload: { username: string, password: string }) {
     :class="{ 'login-page--success': loginSuccess }"
   >
     <header class="login-page__brand" aria-hidden="true">
-      <span class="login-page__brand-mark">琥珀商城</span>
+      <span class="login-page__brand-mark">文硕商城</span>
       <span class="login-page__brand-divider" />
       <span class="login-page__brand-sub">先享后付 · 管理中台</span>
     </header>

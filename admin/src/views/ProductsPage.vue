@@ -63,7 +63,8 @@ interface ProductListPayload {
   data?: ProductItem[]
 }
 
-interface ProductPayload {
+/** 编辑表单中的分类（与列表/选项一致） */
+interface ProductFormState {
   name: string
   subtitle: string
   description: string
@@ -72,6 +73,21 @@ interface ProductPayload {
   image: string
   detailImages: string[]
   category: ProductCategory
+  onSale: boolean
+  salesMode: SalesMode
+  cardPackageAmount: number
+}
+
+/** 提交 mall API 的 JSON 体，category 须为服务端键 */
+interface ProductPayload {
+  name: string
+  subtitle: string
+  description: string
+  origin: string
+  price: number
+  image: string
+  detailImages: string[]
+  category: ApiProductCategory
   onSale: boolean
   salesMode: SalesMode
   cardPackageAmount: number
@@ -273,7 +289,7 @@ const categoryOptions: Array<{ value: ProductCategory, label: string }> = [
   { value: 'cosmetics', label: '化妆品' },
 ]
 
-const form = reactive<ProductPayload>({
+const form = reactive<ProductFormState>({
   name: '',
   subtitle: '',
   description: '',

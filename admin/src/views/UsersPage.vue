@@ -698,7 +698,6 @@ async function toggleBlacklist(user: ListedUser) {
         添加用户
       </button>
     </div>
-
     <table class="table">
       <thead>
         <tr>

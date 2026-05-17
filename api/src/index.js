@@ -19,6 +19,7 @@ const {
   isMongoPersistenceEnabled,
   flushMongoPersist,
   evictTenantMemoryCache,
+  removeTenantJsonStoreFile,
 } = require('./store')
 const {
   runWithTenant,
@@ -79,6 +80,15 @@ const router = new Router({ prefix: '/api' })
 const PORT = Number(process.env.PORT || 3110)
 /** GET /static/* → api/public/*（卡包合同模板 PDF 等，供电子签上游按 URL 拉取；本地 mock 下载 PDF 由程序按订单动态生成，不读该目录） */
 const API_PUBLIC_DIR = path.join(__dirname, '..', 'public')
+
+/** Mongo 子系统库：先 hydrate 再依赖内存快照；与 store.readDb 中「非 default 租户冷缓存不占位」配套使用 */
+async function hydrateTenantIfNeeded(tenantId) {
+  if (!isMongoPersistenceEnabled()) return
+  const t = normalizeTenantId(tenantId || DEFAULT_TENANT_ID)
+  if (!t || t === DEFAULT_TENANT_ID) return
+  if (hasScopeCache('tenant', t)) return
+  await hydrateTenantDbFromMongo('tenant', t)
+}
 
 const mallIdCardUpload = multer({
   storage: multer.memoryStorage(),
@@ -2893,28 +2903,6 @@ function handleAdminLogin(ctx) {
     return
   }
 
-  const db = readDbByTenantId(effectiveTenant)
-
-  const allowAutoSeedUser = effectiveTenant === DEFAULT_TENANT_ID
-  const existed = db.users.find(item => item.phone === account.phone)
-  if (allowAutoSeedUser && !existed) {
-    db.users.unshift({
-      id: `U${account.phone}`,
-      name: account.name,
-      phone: account.phone,
-      idCardFront: `mock://${username}/id-card-front`,
-      idCardBack: `mock://${username}/id-card-back`,
-      idCardHandheld: `mock://${username}/id-card-handheld`,
-      locationText: '系统管理员账号',
-      latitude: 0,
-      longitude: 0,
-      creditStatus: '待风控',
-      registerAt: new Date().toISOString(),
-      quota: DEFAULT_USER_QUOTA,
-    })
-    writeDb(db)
-  }
-
   ctx.body = success({
     username,
     token: `mock-token-${account.phone}`,
@@ -3001,7 +2989,8 @@ function findDuplicatedBossPhone(phone, extraTenantIds = [], excludeAccountId = 
   }) || null
 }
 
-function createTenantScopedAdminAccount(targetTenantId, payload) {
+async function createTenantScopedAdminAccount(targetTenantId, payload) {
+  await hydrateTenantIfNeeded(targetTenantId)
   return runWithTenant(targetTenantId, () => {
     const db = readDb()
     ensureAdminAccounts(db)
@@ -3259,6 +3248,21 @@ async function readTenantAdminAccountsFromMongo(tenantId) {
   }
 }
 
+/**
+ * 合并 Mongo 与本地 JSON 子库账号：Mongo 集合存在但为空时（常见于仅有业务数据写入、账号仍在 JSON），须回退 readDbByTenantId，
+ * 否则平台「子系统列表」会误判该子系统无老板账号。
+ */
+async function resolveTenantAdminAccountsList(tenantId) {
+  const mongoAccounts = await readTenantAdminAccountsFromMongo(tenantId)
+  if (Array.isArray(mongoAccounts) && mongoAccounts.length > 0) {
+    return mongoAccounts
+  }
+  await hydrateTenantIfNeeded(tenantId)
+  const db = readDbByTenantId(tenantId)
+  ensureAdminAccounts(db)
+  return db.adminAccounts
+}
+
 async function findGlobalBossConflict({ username, phone, excludeAccountId = '' }) {
   const usernameKey = String(username || '').trim()
   const phoneKey = normalizePhone(phone)
@@ -3266,14 +3270,7 @@ async function findGlobalBossConflict({ username, phone, excludeAccountId = '' }
   const tenantIds = [...new Set(known.filter(id => id && id !== DEFAULT_TENANT_ID))]
 
   for (const tenantId of tenantIds) {
-    const mongoAccounts = await readTenantAdminAccountsFromMongo(tenantId)
-    const sourceAccounts = Array.isArray(mongoAccounts)
-      ? mongoAccounts
-      : (() => {
-          const db = readDbByTenantId(tenantId)
-          ensureAdminAccounts(db)
-          return db.adminAccounts
-        })()
+    const sourceAccounts = await resolveTenantAdminAccountsList(tenantId)
     for (const raw of sourceAccounts) {
       const account = normalizeAdminAccount(raw)
       if (!account || account.id === excludeAccountId) continue
@@ -3383,7 +3380,7 @@ router.post('/admin/accounts', async (ctx) => {
         return
       }
     }
-    const created = createTenantScopedAdminAccount(finalTenantId, {
+    const created = await createTenantScopedAdminAccount(finalTenantId, {
       username,
       password,
       role,
@@ -3632,27 +3629,28 @@ router.get('/platform/tenants', async (ctx) => {
     ? known
     : known.filter(item => allow.includes(item))
   const visible = visibleAll.filter(item => item !== DEFAULT_TENANT_ID)
-  const list = visible
-    .map((tenantId) => {
-      const db = readDbByTenantId(tenantId)
-      const createdAt = createdAtById[tenantId] || null
-      return {
-        tenantId,
-        tenantName: tenantId === DEFAULT_TENANT_ID ? '主系统' : tenantId,
-        userCount: Array.isArray(db.users) ? db.users.length : 0,
-        orderCount: Array.isArray(db.orders) ? db.orders.length : 0,
-        productCount: Array.isArray(db.products) ? db.products.length : 0,
-        createdAt,
-      }
+  const rows = []
+  for (const tenantId of visible) {
+    await hydrateTenantIfNeeded(tenantId)
+    const db = readDbByTenantId(tenantId)
+    const createdAt = createdAtById[tenantId] || null
+    rows.push({
+      tenantId,
+      tenantName: tenantId === DEFAULT_TENANT_ID ? '主系统' : tenantId,
+      userCount: Array.isArray(db.users) ? db.users.length : 0,
+      orderCount: Array.isArray(db.orders) ? db.orders.length : 0,
+      productCount: Array.isArray(db.products) ? db.products.length : 0,
+      createdAt,
     })
-    .sort((a, b) => {
-      const ta = new Date(String(a.createdAt || '')).getTime()
-      const tb = new Date(String(b.createdAt || '')).getTime()
-      const va = Number.isFinite(ta) ? ta : 0
-      const vb = Number.isFinite(tb) ? tb : 0
-      if (vb !== va) return vb - va
-      return a.tenantId.localeCompare(b.tenantId)
-    })
+  }
+  const list = rows.sort((a, b) => {
+    const ta = new Date(String(a.createdAt || '')).getTime()
+    const tb = new Date(String(b.createdAt || '')).getTime()
+    const va = Number.isFinite(ta) ? ta : 0
+    const vb = Number.isFinite(tb) ? tb : 0
+    if (vb !== va) return vb - va
+    return a.tenantId.localeCompare(b.tenantId)
+  })
   platformAuditRecord(ctx, 'platform.tenants.list', { visibleTenantCount: list.length })
   ctx.body = success(list)
 })
@@ -3756,7 +3754,7 @@ router.post('/platform/tenants/onboard', async (ctx) => {
 
   registerKnownTenantId(tenantId)
   try {
-    const created = createTenantScopedAdminAccount(tenantId, {
+    const created = await createTenantScopedAdminAccount(tenantId, {
       username,
       password,
       role,
@@ -3795,16 +3793,21 @@ router.delete('/platform/tenants/:tenantId', async (ctx) => {
     fail(ctx, 'tenantId 不合法')
     return
   }
-  const tenantDb = readDbByTenantId(tenantId)
-  const hasTenantData = Boolean(
-    (Array.isArray(tenantDb.users) && tenantDb.users.length)
-    || (Array.isArray(tenantDb.orders) && tenantDb.orders.length)
-    || (Array.isArray(tenantDb.products) && tenantDb.products.length)
-    || (Array.isArray(tenantDb.adminAccounts) && tenantDb.adminAccounts.length),
-  )
-  if (hasTenantData) {
-    fail(ctx, '子系统已存在数据，不允许回滚删除', 409)
-    return
+  const wipeAll = ['1', 'true', 'yes'].includes(String(ctx.query?.wipeAll || '').trim().toLowerCase())
+
+  if (!wipeAll) {
+    await hydrateTenantIfNeeded(tenantId)
+    const tenantDb = readDbByTenantId(tenantId)
+    const hasTenantData = Boolean(
+      (Array.isArray(tenantDb.users) && tenantDb.users.length)
+      || (Array.isArray(tenantDb.orders) && tenantDb.orders.length)
+      || (Array.isArray(tenantDb.products) && tenantDb.products.length)
+      || (Array.isArray(tenantDb.adminAccounts) && tenantDb.adminAccounts.length),
+    )
+    if (hasTenantData) {
+      fail(ctx, '子系统已存在数据，不允许回滚删除', 409)
+      return
+    }
   }
   let droppedMongoDb = false
   const client = mongo.getMongoClient && mongo.getMongoClient()
@@ -3823,14 +3826,15 @@ router.delete('/platform/tenants/:tenantId', async (ctx) => {
       }
     }
   }
+  const removedJsonFile = removeTenantJsonStoreFile(tenantId)
   const removed = unregisterKnownTenantId(tenantId)
-  if (!removed && !droppedMongoDb) {
-    fail(ctx, '子系统系统不存在或已被回滚', 404)
+  if (!removed && !droppedMongoDb && !removedJsonFile) {
+    fail(ctx, '子系统不存在或已被回滚', 404)
     return
   }
   evictTenantMemoryCache(tenantId)
-  platformAuditRecord(ctx, 'platform.tenants.rollback', { tenantId })
-  ctx.body = success({ tenantId })
+  platformAuditRecord(ctx, wipeAll ? 'platform.tenants.purge' : 'platform.tenants.rollback', { tenantId })
+  ctx.body = success({ tenantId, wiped: Boolean(wipeAll) })
 })
 
 router.get('/platform/dashboard/summary', async (ctx) => {
@@ -3849,6 +3853,7 @@ router.get('/platform/dashboard/summary', async (ctx) => {
   let totalProducts = 0
   const tenants = []
   for (const tenantId of visible) {
+    await hydrateTenantIfNeeded(tenantId)
     const db = readDbByTenantId(tenantId)
     const userCount = Array.isArray(db.users) ? db.users.length : 0
     const orderCount = Array.isArray(db.orders) ? db.orders.length : 0
@@ -3915,14 +3920,7 @@ router.get('/platform/admin-accounts', async (ctx) => {
     : visible
   const list = []
   for (const tenantId of targetTenants) {
-    const mongoAccounts = await readTenantAdminAccountsFromMongo(tenantId)
-    const sourceAccounts = Array.isArray(mongoAccounts)
-      ? mongoAccounts
-      : (() => {
-          const db = readDbByTenantId(tenantId)
-          ensureAdminAccounts(db)
-          return db.adminAccounts
-        })()
+    const sourceAccounts = await resolveTenantAdminAccountsList(tenantId)
     sourceAccounts.forEach((item) => {
       if (scopeTypeQuery && String(item.scopeType || 'tenant') !== scopeTypeQuery) {
         return
@@ -6943,9 +6941,19 @@ app.use(async (ctx, next) => {
 app.use(async (ctx, next) => {
   if (String(ctx.path || '').startsWith('/api/')) {
     try {
-      const tenantId = normalizeTenantId(ctx.state && ctx.state.tenantId ? ctx.state.tenantId : DEFAULT_TENANT_ID)
+      const workspaceType = normalizeWorkspaceType(ctx.state && ctx.state.workspaceType ? ctx.state.workspaceType : 'tenant')
+      const headerTenantId = normalizeTenantId(ctx.state && ctx.state.tenantId ? ctx.state.tenantId : DEFAULT_TENANT_ID)
+      /**
+       * readDb() 随 workspace 指向 mall / mall__core / mall__tenant_x；
+       * 若此处始终用请求头 x-tenant-id，则在 core 总部上下文中会把 boss1 等写进 mall__core._meta.knownTenantIds，
+       * 全量重置后仍出现「幽灵子系统」行（无任何老板账号、计数为 0）。
+       * 仅在实际命中租户业务库（workspace=tenant）时，才把该租户记入当前库的登记元数据。
+       */
+      const tenantForRegistry = workspaceType === 'tenant' && headerTenantId !== DEFAULT_TENANT_ID
+        ? headerTenantId
+        : DEFAULT_TENANT_ID
       const db = readDb()
-      ensureTenantRegistered(db, tenantId)
+      ensureTenantRegistered(db, tenantForRegistry)
     }
     catch {
       // ignore tenant meta register errors
