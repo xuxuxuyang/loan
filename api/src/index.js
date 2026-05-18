@@ -622,15 +622,25 @@ async function writeCoreDb(db) {
 }
 
 async function getAdminAccountByPhoneAcrossTenants(phone, preferredTenantId) {
+  const normalizedPhone = normalizePhone(phone)
+  if (!normalizedPhone) {
+    return null
+  }
+  // 主系统平台账号保存在 core workspace；legacy 可能在 default tenant 库残留同手机副本，
+  // 若先命中 tenant 会使用旧快照（密码等），因此对 platform 一律以 core 为准。
+  const dbCoreForPhone = await readCoreDb()
+  const canonicalPlatformPhone = getAdminAccountByPhone(dbCoreForPhone, normalizedPhone)
+  if (canonicalPlatformPhone && String(canonicalPlatformPhone.scopeType || 'tenant') === 'platform') {
+    return canonicalPlatformPhone
+  }
   const preferred = normalizeTenantId(preferredTenantId || DEFAULT_TENANT_ID)
   const dbPreferred = await readDbByTenantId(preferred)
-  const foundPreferred = getAdminAccountByPhone(dbPreferred, phone)
+  const foundPreferred = getAdminAccountByPhone(dbPreferred, normalizedPhone)
   if (foundPreferred) {
     return foundPreferred
   }
   const searched = new Set([preferred])
-  const dbCore = await readCoreDb()
-  const foundCore = getAdminAccountByPhone(dbCore, phone)
+  const foundCore = getAdminAccountByPhone(dbCoreForPhone, normalizedPhone)
   if (foundCore) {
     return foundCore
   }
@@ -640,7 +650,7 @@ async function getAdminAccountByPhoneAcrossTenants(phone, preferredTenantId) {
       continue
     }
     const db = await readDbByTenantId(tenantId)
-    const found = getAdminAccountByPhone(db, phone)
+    const found = getAdminAccountByPhone(db, normalizedPhone)
     if (found) {
       return found
     }
@@ -649,15 +659,24 @@ async function getAdminAccountByPhoneAcrossTenants(phone, preferredTenantId) {
 }
 
 async function getAdminAccountByUsernameAcrossTenants(username, preferredTenantId) {
+  const key = String(username || '').trim()
+  if (!key) {
+    return null
+  }
+  const dbCore = await readCoreDb()
+  const foundCoreUsername = getAdminAccountByUsername(dbCore, key)
+  if (foundCoreUsername && String(foundCoreUsername.scopeType || 'tenant') === 'platform') {
+    return foundCoreUsername
+  }
+
   const preferred = normalizeTenantId(preferredTenantId || DEFAULT_TENANT_ID)
   const dbPreferred = await readDbByTenantId(preferred)
-  const foundPreferred = getAdminAccountByUsername(dbPreferred, username)
+  const foundPreferred = getAdminAccountByUsername(dbPreferred, key)
   if (foundPreferred) {
     return foundPreferred
   }
   const searched = new Set([preferred])
-  const dbCore = await readCoreDb()
-  const foundCore = getAdminAccountByUsername(dbCore, username)
+  const foundCore = foundCoreUsername
   if (foundCore) {
     return foundCore
   }
@@ -667,7 +686,7 @@ async function getAdminAccountByUsernameAcrossTenants(username, preferredTenantI
       continue
     }
     const db = await readDbByTenantId(tenantId)
-    const found = getAdminAccountByUsername(db, username)
+    const found = getAdminAccountByUsername(db, key)
     if (found) {
       return found
     }

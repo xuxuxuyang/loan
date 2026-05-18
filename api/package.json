@@ -8,6 +8,7 @@
     "dev": "cross-env NODE_ENV=development nodemon --watch src --ext js,json src/index.js",
     "start": "cross-env NODE_ENV=production node src/index.js",
     "import:mongo-local": "node scripts/import-local-to-mongo.js",
+    "import:mall-seed": "node scripts/import-mall-zone-seed.js",
     "mongo:fresh": "node scripts/mongo-bootstrap-only.js",
     "json:fresh": "node scripts/local-json-reset.js",
     "fresh": "npm run reset:project",

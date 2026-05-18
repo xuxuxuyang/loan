@@ -104,22 +104,17 @@ interface KpiCard {
   tone: Tone
 }
 
-/** 财务报表：1+3 两行一组，关键指标独占首列（与下方三卡同宽同高） */
-const kpiLeadTotal = computed<KpiCard>(() => {
-  const k = kpis.value
-  const scope = '【卡包已发放】'
-  return {
-    label: '成交总额',
-    value: fmtYuan(k.totalSales),
-    hint: `${scope}订单的成交金额合计`,
-    tone: 'greenSpring',
-  }
-})
-
-const kpiPrincipalRow = computed<KpiCard[]>(() => {
+/** 财务报表 KPI 卡片：每行 3 张，按业务顺序排列 */
+const kpiCards = computed<KpiCard[]>(() => {
   const k = kpis.value
   const scope = '【卡包已发放】'
   return [
+    {
+      label: '成交总额',
+      value: fmtYuan(k.totalSales),
+      hint: `${scope}订单的成交金额合计`,
+      tone: 'greenSpring',
+    },
     {
       label: '成交本金',
       value: fmtYuan(k.totalPrincipal),
@@ -138,24 +133,12 @@ const kpiPrincipalRow = computed<KpiCard[]>(() => {
       hint: `${scope}尚有未还款项的卡包金额合计`,
       tone: 'orangeBurnt',
     },
-  ]
-})
-
-const kpiLeadOrderCount = computed<KpiCard>(() => {
-  const k = kpis.value
-  const scope = '【卡包已发放】'
-  return {
-    label: '订单数',
-    value: String(k.orderCount),
-    hint: `${scope}订单数`,
-    tone: 'greenForest',
-  }
-})
-
-const kpiOverdueRow = computed<KpiCard[]>(() => {
-  const k = kpis.value
-  const scope = '【卡包已发放】'
-  return [
+    {
+      label: '订单数',
+      value: String(k.orderCount),
+      hint: `${scope}订单数`,
+      tone: 'greenForest',
+    },
     {
       label: '逾期订单数',
       value: String(k.overdueOrderCount),
@@ -214,89 +197,25 @@ onMounted(() => {
     </div>
 
     <div class="kpi-board">
-      <div class="kpi-board-row kpi-board-row--lead">
-        <div
-          class="kpi-card kpi-card--lead-slot"
-          :class="`kpi-card--${kpiLeadTotal.tone}`"
+      <div
+        v-for="(card, idx) in kpiCards"
+        :key="idx"
+        class="kpi-card"
+        :class="`kpi-card--${card.tone}`"
+      >
+        <p class="kpi-label">
+          {{ card.label }}
+        </p>
+        <div class="kpi-rule" />
+        <p class="kpi-value">
+          {{ card.value }}
+        </p>
+        <p
+          v-if="card.hint"
+          class="kpi-hint"
         >
-          <p class="kpi-label">
-            {{ kpiLeadTotal.label }}
-          </p>
-          <div class="kpi-rule" />
-          <p class="kpi-value">
-            {{ kpiLeadTotal.value }}
-          </p>
-          <p
-            v-if="kpiLeadTotal.hint"
-            class="kpi-hint"
-          >
-            {{ kpiLeadTotal.hint }}
-          </p>
-        </div>
-      </div>
-      <div class="kpi-board-row kpi-board-row--three">
-        <div
-          v-for="(card, idx) in kpiPrincipalRow"
-          :key="`principal-${idx}`"
-          class="kpi-card"
-          :class="`kpi-card--${card.tone}`"
-        >
-          <p class="kpi-label">
-            {{ card.label }}
-          </p>
-          <div class="kpi-rule" />
-          <p class="kpi-value">
-            {{ card.value }}
-          </p>
-          <p
-            v-if="card.hint"
-            class="kpi-hint"
-          >
-            {{ card.hint }}
-          </p>
-        </div>
-      </div>
-      <div class="kpi-board-row kpi-board-row--lead">
-        <div
-          class="kpi-card kpi-card--lead-slot"
-          :class="`kpi-card--${kpiLeadOrderCount.tone}`"
-        >
-          <p class="kpi-label">
-            {{ kpiLeadOrderCount.label }}
-          </p>
-          <div class="kpi-rule" />
-          <p class="kpi-value">
-            {{ kpiLeadOrderCount.value }}
-          </p>
-          <p
-            v-if="kpiLeadOrderCount.hint"
-            class="kpi-hint"
-          >
-            {{ kpiLeadOrderCount.hint }}
-          </p>
-        </div>
-      </div>
-      <div class="kpi-board-row kpi-board-row--three">
-        <div
-          v-for="(card, idx) in kpiOverdueRow"
-          :key="`overdue-${idx}`"
-          class="kpi-card"
-          :class="`kpi-card--${card.tone}`"
-        >
-          <p class="kpi-label">
-            {{ card.label }}
-          </p>
-          <div class="kpi-rule" />
-          <p class="kpi-value">
-            {{ card.value }}
-          </p>
-          <p
-            v-if="card.hint"
-            class="kpi-hint"
-          >
-            {{ card.hint }}
-          </p>
-        </div>
+          {{ card.hint }}
+        </p>
       </div>
     </div>
   </div>
@@ -331,21 +250,11 @@ onMounted(() => {
 
 .kpi-board {
   flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 18px;
-}
-
-.kpi-board-row {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 18px;
   align-items: stretch;
   grid-auto-rows: minmax(228px, auto);
-}
-
-.kpi-board-row--lead .kpi-card--lead-slot {
-  grid-column: 1;
 }
 
 .kpi-card {
@@ -433,12 +342,8 @@ onMounted(() => {
 }
 
 @media (max-width: 900px) {
-  .kpi-board-row {
+  .kpi-board {
     grid-template-columns: 1fr;
-  }
-
-  .kpi-board-row--lead .kpi-card--lead-slot {
-    grid-column: auto;
   }
 
   .kpi-value {

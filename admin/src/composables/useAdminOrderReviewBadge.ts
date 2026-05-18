@@ -1,7 +1,7 @@
 import { onUnmounted, ref, watch, type ComputedRef } from 'vue'
 import { useRoute } from 'vue-router'
 import { computeAdminOrderSidebarCounts } from '../stores/useOrdersStore'
-import { getAdminSession, isSuperAdminRole } from './useAdminAuth'
+import { getAdminSession } from './useAdminAuth'
 import { withMallTenantHeaders } from './useAdminApi'
 
 const MALL_API_BASE = `${(import.meta.env.VITE_MALL_API_BASE || 'http://localhost:3110/api').replace(/\/$/, '')}`
@@ -23,13 +23,6 @@ let pollTimer: ReturnType<typeof setInterval> | null = null
 async function fetchOrderSidebarBadgeCounts() {
   const s = getAdminSession()
   if (!s?.token) {
-    ordersMenuPendingReviewTotal.value = 0
-    ordersMenuReviewedListTotal.value = 0
-    return
-  }
-  const role = s.role
-  /** 与侧栏 ordersSidebarBadgeEnabled 一致：老板与 super_admin 同权拉角标 */
-  if (!isSuperAdminRole(role) && role !== 'reviewer' && role !== 'collector') {
     ordersMenuPendingReviewTotal.value = 0
     ordersMenuReviewedListTotal.value = 0
     return
@@ -75,7 +68,7 @@ function startPolling() {
 }
 
 /**
- * 登录且角色可访问订单模块时轮询未审核队列数量；无权或登出时清零并停止。
+ * 登录后轮询侧栏订单角标；登出时清零并停止（不按角色限制拉取）。
  */
 export function useAdminOrderReviewBadge(enabled: ComputedRef<boolean>) {
   const route = useRoute()

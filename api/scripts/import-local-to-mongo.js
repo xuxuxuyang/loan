@@ -7,6 +7,7 @@ const { loadDotenvExports } = require('../src/loadEnv')
 
 loadDotenvExports(path.join(__dirname, '..', 'src'))
 
+const mongo = require('../src/mongo')
 const mongoConfig = require('../src/mongoConfig')
 const store = require('../src/store')
 

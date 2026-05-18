@@ -236,12 +236,12 @@ const csSidebarBadgeEnabled = computed(() => {
   return isSuperAdminRole(r) || r === 'reviewer'
 })
 
+/** 订单侧栏角标：登录即可轮询，不按角色开关（与菜单权限分离） */
 const ordersSidebarBadgeEnabled = computed(() => {
   if (isLoginPage.value) {
     return false
   }
-  const r = session.value?.role
-  return isSuperAdminRole(r) || r === 'reviewer' || r === 'collector'
+  return Boolean(session.value?.token)
 })
 
 /** 订单管理主菜单角标 = 未审核订单 + 已审核订单（与子项角标口径一致） */

@@ -19,8 +19,8 @@ const emit = defineEmits<{
 }>()
 
 const form = reactive({
-  username: 'xuyang',
-  password: '123456',
+  username: '',
+  password: '',
 })
 
 const shakeCard = ref(false)
