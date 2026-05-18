@@ -1,6 +1,6 @@
 /**
  * 删除 salesMode=mall 的旧商城商品，写入 4 个分类各 6 条（共 24 条）新数据。
- * 每条商品使用与品类匹配的真实商品图（DummyJSON CDN，与库内示例商品图一致，国内一般可直连）。
+ * 手机分类为 iPhone 12–17；其它分类主图仍以 DummyJSON CDN 等可直连 URL 为主。
  * 用法（在仓库根目录）：
  *   node api/scripts/seed-mall-showcase-catalog.js
  * 需已配置 MONGODB_URI（会 hydrate 后写回），或 ALLOW_JSON_FALLBACK=true 使用 api/data/db.json。
@@ -16,17 +16,29 @@ const store = require('../src/store')
 const DJ = 'https://cdn.dummyjson.com/product-images'
 
 /**
- * 与下方 defs 每类 6 条顺序一一对应的真实商品主图（800px 级 webp）。
- * 手机/数码尽量贴近品牌与形态；家电/美妆在开放图库内取最接近的小家电与瓶罐类实拍。
+ * 手机分类：iPhone 12–17 各一条。
+ * 商品主图：Apple 在线商店 CDN（store.storeimages.cdn-apple.com / as-images.apple.com），与官网选购页同款「颜色精选」或全系展示素材，非第三方图库。
+ * 展示价 = round(Apple 中国大陆官网参考起售价人民币 × 1.2)。官网会调价，部署前可按 apple.com.cn 核对后改 PHONE_OFFICIAL_CNY。
  */
+const APPLE_STORE = 'https://store.storeimages.cdn-apple.com/1/as-images.apple.com/is'
+
+const PHONE_OFFICIAL_CNY = [
+  4699, // iPhone 12 128GB 档常见公示/历史入门参考
+  5399, // iPhone 13 128GB
+  5999, // iPhone 14 128GB
+  5299, // iPhone 15 128GB（新品上市后常见入门调价口径）
+  5999, // iPhone 16 128GB
+  5999, // iPhone 17 256GB 入门档（以官网当前 SKU 为准）
+]
+
 const COVER_BY_CATEGORY = {
   phone: [
-    `${DJ}/smartphones/iphone-13-pro/1.webp`,
-    `${DJ}/smartphones/samsung-galaxy-s10/1.webp`,
-    `${DJ}/smartphones/oppo-f19-pro-plus/1.webp`,
-    `${DJ}/smartphones/vivo-x21/1.webp`,
-    `${DJ}/smartphones/samsung-galaxy-s8/1.webp`,
-    `${DJ}/smartphones/realme-xt/1.webp`,
+    `${APPLE_STORE}/iphone-12-select-2020?wid=800&hei=800&fmt=jpeg&qlt=92`,
+    `${APPLE_STORE}/iphone-13-starlight-select-2021?wid=800&hei=800&fmt=jpeg&qlt=92`,
+    `${APPLE_STORE}/iphone-14-blue-select-202209?wid=800&hei=800&fmt=jpeg&qlt=92`,
+    `${APPLE_STORE}/iphone-15-pink-select-202309?wid=800&hei=800&fmt=jpeg&qlt=92`,
+    `${APPLE_STORE}/iphone-16-ultramarine-select-202409_AV2?wid=800&hei=800&fmt=jpeg&qlt=92`,
+    `${APPLE_STORE}/iphone-17-lavender-select-202509?wid=800&hei=800&fmt=jpeg&qlt=92`,
   ],
   digital: [
     `${DJ}/laptops/apple-macbook-pro-14-inch-space-grey/1.webp`,
@@ -61,12 +73,12 @@ function catalogRows() {
     {
       category: 'phone',
       items: [
-        ['iPhone 15 128GB', 'A16 芯片 · 灵动岛', '全网通 5G 智能手机，官方质保。'],
-        ['小米 14 256GB', '徕卡光学 · 骁龙 8 Gen3', '小屏旗舰，影像与性能均衡。'],
-        ['OPPO Reno11', '人像长焦 · 闪充', '轻薄机身，日常拍照与续航兼顾。'],
-        ['vivo X100', '天玑旗舰 · 蔡司影像', '旗舰影像系统，适合旅行与记录。'],
-        ['荣耀 Magic6', '护眼屏 · 大电池', '商务与娱乐双场景流畅体验。'],
-        ['一加 Ace 3', '1.5K 东方屏 · 游戏向', '高刷与散热优化，手游友好。'],
+        ['Apple iPhone 12 128GB', '5G · 超视网膜 XDR 显示屏', '全面屏设计，A14 仿生，支持 5G。国行全网通，以 Apple 中国官网规格为准。'],
+        ['Apple iPhone 13 128GB', 'A15 仿生 · 电影效果模式', '更持久续航，电影级浅景深视频，超视网膜 XDR 屏。'],
+        ['Apple iPhone 14 128GB', 'A16 仿生 · 运动模式', '新增运动模式防抖，光像引擎优化低光拍摄，安全可靠功能。'],
+        ['Apple iPhone 15 128GB', 'A16 仿生 · 灵动岛', '灵动岛交互，USB-C 接口，超瓷晶面板与融色玻璃。'],
+        ['Apple iPhone 16 128GB', 'A18 仿生 · 相机控制', '相机控制快捷操作，性能与影像升级（具体以 Apple 中国官网为准）。'],
+        ['Apple iPhone 17 256GB', '新一代仿生芯片 · 耐用设计', '最新标准版 iPhone，更大起步容量与续航体验（以官网在售型号为准）。'],
       ],
     },
     {
@@ -104,7 +116,7 @@ function catalogRows() {
     },
   ]
   const prices = {
-    phone: [5999, 3999, 2699, 4299, 3899, 2599],
+    phone: PHONE_OFFICIAL_CNY.map((cny) => Math.round(Number(cny) * 1.2)),
     digital: [8999, 1899, 799, 1299, 459, 2199],
     appliance: [3299, 4599, 2799, 1999, 299, 1599],
     cosmetics: [159, 89, 199, 268, 79, 99],
