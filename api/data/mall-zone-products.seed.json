@@ -1,0 +1,225 @@
+{
+  "meta": {
+    "用途": "商城专区（salesMode=mall）示例数据，本地核对后入库。",
+    "categoryKeys": {
+      "phone": "手机",
+      "digital": "数码产品",
+      "appliance": "家用电器",
+      "cosmetics": "化妆品"
+    },
+    "图片说明": "图片来自 Wikimedia Commons，请遵守 CC 许可与署名。",
+    "入库提示": "POST /products 需要超管权限；无需手填 id，由接口自增。"
+  },
+  "products": [
+    {
+      "name": "Apple iPhone 13 Pro / 13 Pro Max（与主图同款双色陈列）",
+      "subtitle": "Pro 级三摄 · A15 仿生 · 超视网膜 XDR · 演示价",
+      "description": "【与主图严格对应】照片为两部手机并排：分别为 6.1 英寸的 iPhone 13 Pro 与 6.7 英寸的 iPhone 13 Pro Max，外观特征（不锈钢直角边框、三摄模组布局、远峰蓝/金色等配色）与维基共享资源源文件说明一致。\n\n【核心体验（宣传口径示例，非合同承诺）】A15 仿生芯片可支撑日常多任务、大型游戏与 ProRes 类工作流（视存储与软件版本）；Pro 级摄像头系统在弱光下可提升成片亮度与细节；电影效果模式可在后期调整景深焦点（部分导出格式有限制）。\n\n【显示与耐用】超视网膜 XDR 显示屏支持高亮度户外阅读体验；正面陶瓷护盾可提高抗跌落性能，但不等于「不碎屏」，仍建议使用保护壳与贴膜。\n\n【网络与配件】5G 与毫米波支持因国家/地区与运营商频段而异；包装内随附数据线类型以出厂批次为准，可能需自备或另购 USB‑C 电源适配器。\n\n【上架前清单】请替换为当前在售颜色/容量/版本号、保修与发票政策、是否激活、是否国行/其他区域版本，并在后台检索词（副标题）中写入可检索的容量与颜色关键词。",
+      "origin": "美国设计 · 中国组装（示例）",
+      "price": 6999,
+      "category": "phone",
+      "salesMode": "mall",
+      "cardPackageAmount": 0,
+      "onSale": true,
+      "image": "https://upload.wikimedia.org/wikipedia/commons/b/b5/Apple_iPhone_13_Pro_and_13_Pro_Max.jpg",
+      "detailImages": [
+        "https://upload.wikimedia.org/wikipedia/commons/b/b5/Apple_iPhone_13_Pro_and_13_Pro_Max.jpg"
+      ]
+    },
+    {
+      "name": "Samsung Galaxy A51（棱镜蓝，与主图一致）",
+      "subtitle": "AMOLED · 四摄 · 演示价",
+      "description": "【与主图严格对应】该机为 Galaxy A51「Prism Crush Blue」配色，背面 L 型四摄排布与浅色渐变背壳与 Commons 文件名及画面一致。\n\n【屏幕与指纹】6.5 英寸 Super AMOLED 适合追剧与漫画；屏下光学指纹在贴膜质量、手指干燥程度等情况下识别率会有差异，这是此类机型常见现象。\n\n【影像（示例口径）】后置多摄组合覆盖超广角与微距等场景，具体像素与功能以三星当年官方 PDF 为准；前置挖孔镜头适合日常自拍与视频通话。\n\n【续航与充电】电池额定容量请认证书与机身贴纸；快充需搭配兼容充电器与线材。\n\n【合规】若作国行演示，请核对网络频段、预装应用与系统更新策略；价格与库存为示例数字。",
+      "origin": "韩国三星",
+      "price": 1499,
+      "category": "phone",
+      "salesMode": "mall",
+      "cardPackageAmount": 0,
+      "onSale": true,
+      "image": "https://upload.wikimedia.org/wikipedia/commons/6/6c/Samsung-Galaxy-A51.jpg",
+      "detailImages": [
+        "https://upload.wikimedia.org/wikipedia/commons/6/6c/Samsung-Galaxy-A51.jpg"
+      ]
+    },
+    {
+      "name": "小米 Redmi 6A（开箱实拍，与主图一致）",
+      "subtitle": "入门备机 · Micro USB · 演示价",
+      "description": "【与主图严格对应】图片为 Redmi 6A 拆箱场景，可见零售包装、主机背面与入门定位的机身厚度。该机属于多年代前入门机型，适合演示「长辈机/学生备用机」场景。\n\n【接口与系统】Micro‑USB 与 3.5mm 耳机孔（若批次保留）便于沿用旧配件；MIUI 大版本因推出年代较早，部分新特性不可用，上架时请写明可升级到的安全补丁级别。\n\n【购买提示】存储版本和是否预装充电器需单独列明；二手市场电池健康度与按键老化请在验机报告中披露。\n\n【与贵司商城一致】分类键 phone；销售渠道 salesMode=mall；卡包金额建议 0。",
+      "origin": "中国小米",
+      "price": 599,
+      "category": "phone",
+      "salesMode": "mall",
+      "cardPackageAmount": 0,
+      "onSale": true,
+      "image": "https://upload.wikimedia.org/wikipedia/commons/7/70/Xiaomi_Redmi_6A_Smartphone_unboxing_1.jpg",
+      "detailImages": [
+        "https://upload.wikimedia.org/wikipedia/commons/7/70/Xiaomi_Redmi_6A_Smartphone_unboxing_1.jpg"
+      ]
+    },
+    {
+      "name": "Apple MacBook Pro 16\"（2021 M1 Pro，与主图一致）",
+      "subtitle": "XDR 屏 · 创作本 · 演示价",
+      "description": "【与主图严格对应】画面为 16 英寸 MacBook Pro（2021）打开状态，屏幕内容含 Wikipedia 主页，与「MacBook Pro 16 (M1 Pro, 2021) - Wikipedia.jpg」文件描述一致；机身接口含 HDMI、SD 卡槽、MagSafe 3 与雷雳 4（以实物为准）。\n\n【性能定位】M1 Pro 适合视频剪辑、音乐制作、开发编译与虚拟机轻度负载；高负载下风扇策略与表面温度因环境与软件而异。\n\n【显示与扬声器】Liquid 视网膜 XDR 屏具备高对比度与_reference 监视用途；六扬声器系统适合不另接音箱的影音体验。\n\n【版权与素材】图片来自 Wikimedia Commons CC 许可，合规使用请保留署名要求；商品图若商用建议换苹果官方渠道授权物料或自有棚拍。",
+      "origin": "美国设计",
+      "price": 18999,
+      "category": "digital",
+      "salesMode": "mall",
+      "cardPackageAmount": 0,
+      "onSale": true,
+      "image": "https://upload.wikimedia.org/wikipedia/commons/9/91/MacBook_Pro_16_%28M1_Pro%2C_2021%29_-_Wikipedia.jpg",
+      "detailImages": [
+        "https://upload.wikimedia.org/wikipedia/commons/9/91/MacBook_Pro_16_%28M1_Pro%2C_2021%29_-_Wikipedia.jpg"
+      ]
+    },
+    {
+      "name": "Apple iPad Pro 11\"（银色，与主图一致）",
+      "subtitle": "全面屏 · 面容 ID · 演示价",
+      "description": "【与主图严格对应】为 11 英寸 iPad Pro 银色机身实拍图（见文件名 Apple iPad Pro 11.jpg），适合归类数码平板而非手机。\n\n【场景】可分屏记笔记、阅读和轻办公；搭配第二代 Apple Pencil（若代际兼容）可做手绘与标注。\n\n【代际差异】iPad Pro 11 自 2018 起多代并存，处理器从 A 系列到 M 系列不等；本条仅为演示，请在 ERP 中写入精确「代际 + 存储 + 蜂窝/Wi‑Fi」以免发错货。\n\n【配件】妙控键盘与保护壳为另购件，须在商品套装中单独列价。",
+      "origin": "美国设计",
+      "price": 6199,
+      "category": "digital",
+      "salesMode": "mall",
+      "cardPackageAmount": 0,
+      "onSale": true,
+      "image": "https://upload.wikimedia.org/wikipedia/commons/7/70/Apple_iPad_Pro_11.jpg",
+      "detailImages": [
+        "https://upload.wikimedia.org/wikipedia/commons/7/70/Apple_iPad_Pro_11.jpg"
+      ]
+    },
+    {
+      "name": "Canon EOS R（与主图 RF 盖一致）",
+      "subtitle": "全画幅无反 · RF 卡口 · 演示价",
+      "description": "【与主图严格对应】图为 EOS R 机身正面与 RF 卡口机身盖，型号与 Commons 文件 Canon EOS R.jpg 描述一致。\n\n【系统特点】全画幅传感器与 RF 镜头群（需另购）配套；电子取景器与翻折屏利于低角度构图。\n\n【视频与对焦】具体 4K 裁切、码率与 C‑Log 支持以佳能当年固件与说明书为准；上架视频类承诺需附测试素材链接。\n\n【套装策略】若为「单机身」链接，必须在首屏用加粗文案写明「不含镜头」；套机则需绑定镜头 EAN。",
+      "origin": "日本佳能",
+      "price": 9999,
+      "category": "digital",
+      "salesMode": "mall",
+      "cardPackageAmount": 0,
+      "onSale": true,
+      "image": "https://upload.wikimedia.org/wikipedia/commons/e/e4/Canon_EOS_R.jpg",
+      "detailImages": [
+        "https://upload.wikimedia.org/wikipedia/commons/e/e4/Canon_EOS_R.jpg"
+      ]
+    },
+    {
+      "name": "Sony WH-1000XM3（与主图一致）",
+      "subtitle": "降噪头戴 · 演示价",
+      "description": "【与主图严格对应】为 WH‑1000XM3 无线头戴降噪耳机实物图，耳罩外形与头梁结构可与其他代区分。\n\n【降噪】多级 ANC 适合通勤与开放办公；风噪场景表现因固件与佩戴姿势而异。\n\n【续航与连接】蓝牙编解码（AAC/LDAC 等）与播放时长取决于手机与音量；触控面板手势需学习成本。\n\n【迭代说明】XM4/XM5 在外观与收纳盒上均有升级；若贵司实际在售非 XM3，请整套替换图片与参数以免构成误导。",
+      "origin": "日本索尼",
+      "price": 1899,
+      "category": "digital",
+      "salesMode": "mall",
+      "cardPackageAmount": 0,
+      "onSale": true,
+      "image": "https://upload.wikimedia.org/wikipedia/commons/4/4b/Sony-WH-1000XM3-kabellose-Bluetooth-Noise-Cancelling-Kopfhoerer.jpg",
+      "detailImages": [
+        "https://upload.wikimedia.org/wikipedia/commons/4/4b/Sony-WH-1000XM3-kabellose-Bluetooth-Noise-Cancelling-Kopfhoerer.jpg"
+      ]
+    },
+    {
+      "name": "Frigidaire 家用冰箱（美式厨房实拍，与主图一致）",
+      "subtitle": "大容量冷藏 · 演示价",
+      "description": "【与主图严格对应】图为美国家庭厨房内的白色 Frigidaire 冰箱（源文件标注为 domestic refrigerator），用于演示「大容量家用冰箱」场景。\n\n【卖点口径】双温区便于生熟分开储藏；门体收纳适合饮料与调味品。\n\n【物流】大家电涉及搬运通道测量、以旧换新与延保；请在演示价旁注明是否含上楼费。\n\n【合规能效】美国能源指南与国内能效标识不同；若在国内销售请换符合国标的实拍与铭牌照片。",
+      "origin": "美国品牌",
+      "price": 4599,
+      "category": "appliance",
+      "salesMode": "mall",
+      "cardPackageAmount": 0,
+      "onSale": true,
+      "image": "https://upload.wikimedia.org/wikipedia/commons/2/2e/US_Domestic_Refrigerator_-_Frigidaire.jpg",
+      "detailImages": [
+        "https://upload.wikimedia.org/wikipedia/commons/2/2e/US_Domestic_Refrigerator_-_Frigidaire.jpg"
+      ]
+    },
+    {
+      "name": "Panasonic 微波炉 NN-GM333W（与主图铭牌一致）",
+      "subtitle": "转盘式 · 演示价",
+      "description": "【与主图严格对应】机型前面板与文件名均指向 Panasonic NN‑GM333W，请勿写成其他型号。\n\n【加热方式】转盘式微波炉有利于受热相对均匀；盛具须耐热且标注「适用于微波炉」，禁止金属与镀金装饰餐具。\n\n【操作与安全】具体定时/火力旋钮或按键布局以机身实物为准；空载长时间运行可能导致磁控管过热；儿童使用需在成人监护下进行。\n\n【维护】定期清洁转盘与内胆油渍，可减少异味与电弧风险；门封条老化需联系官方售后更换。\n\n【上架】演示价为示例；正式销售请附 3C、能效（若适用）与保修条款。",
+      "origin": "日本松下",
+      "price": 499,
+      "category": "appliance",
+      "salesMode": "mall",
+      "cardPackageAmount": 0,
+      "onSale": true,
+      "image": "https://upload.wikimedia.org/wikipedia/commons/9/95/Panasonic_MICROWAVE_OVEN_NN-GM333W.jpg",
+      "detailImages": [
+        "https://upload.wikimedia.org/wikipedia/commons/9/95/Panasonic_MICROWAVE_OVEN_NN-GM333W.jpg"
+      ]
+    },
+    {
+      "name": "Haier 滚筒洗衣机（酒店自助洗衣房，与主图 Haier 标一致）",
+      "subtitle": "滚筒洗护 · 演示价",
+      "description": "【与主图严格对应】图片来源为东莞某酒店自助洗衣房场景，机身带有海尔 Haier 标识，体现滚筒式前开门洗衣机与公共洗衣环境陈设。\n\n【适用场景】滚筒洗烘程序相对柔和，适合日常棉麻混纺；具体转速、温控曲线因程序与型号而异。\n\n【重要】该照片拍摄于公共场所，若作为电商平台主图，建议更换为白底棚拍或品牌授权渲染图，并在详情页写明额定洗涤容量、脱水转速、能效等级与安装要求（上下水、插座、地漏）。\n\n【合规】演示数据未绑定海尔具体型号编码；正式标价前请与品牌或授权经销商书面确认可售 SKU。",
+      "origin": "中国海尔",
+      "price": 2699,
+      "category": "appliance",
+      "salesMode": "mall",
+      "cardPackageAmount": 0,
+      "onSale": true,
+      "image": "https://upload.wikimedia.org/wikipedia/commons/a/a1/GD_%E5%BB%A3%E6%9D%B1%E7%9C%81_Guangdong_DG_%E6%9D%B1%E8%8E%9E%E5%B8%82_DongGuan_%E7%B2%B5%E9%BE%8D%E9%85%92%E5%BA%97_Yue_Long_Hotel_%E8%87%AA%E5%8A%A9%E6%B4%97%E8%A1%A3%E6%88%BF_Washing_machine_Haier_brand_December_2025_N13P_01.jpg",
+      "detailImages": [
+        "https://upload.wikimedia.org/wikipedia/commons/a/a1/GD_%E5%BB%A3%E6%9D%B1%E7%9C%81_Guangdong_DG_%E6%9D%B1%E8%8E%9E%E5%B8%82_DongGuan_%E7%B2%B5%E9%BE%8D%E9%85%92%E5%BA%97_Yue_Long_Hotel_%E8%87%AA%E5%8A%A9%E6%B4%97%E8%A1%A3%E6%88%BF_Washing_machine_Haier_brand_December_2025_N13P_01.jpg"
+      ]
+    },
+    {
+      "name": "Dyson DC19 吸尘器（与主图一致）",
+      "subtitle": "气旋有线款 · 演示价",
+      "description": "【与主图严格对应】图为戴森 DC19 卧式（圆筒）吸尘器，透明尘杯与黄灰配色为 DC 系列典型识别特征。\n\n【有线优势】持续大功率不必顾虑电池衰减；局限在于作业半径受电源线长度与室内插座位置影响。\n\n【维护】气旋结构需按说明书定期拆洗晾干，避免异味与吸力下降；滤网更换周期视使用强度而定。\n\n【附件】演示种子未承诺随箱附赠全套刷头；请在正式 SKU 中列出地刷、软管、缝隙吸头等装箱清单。\n\n【产品线】若贵店主推无线手持款，请同步更换标题与主图以免消费者误以为购买无线型号。",
+      "origin": "英国戴森",
+      "price": 1599,
+      "category": "appliance",
+      "salesMode": "mall",
+      "cardPackageAmount": 0,
+      "onSale": true,
+      "image": "https://upload.wikimedia.org/wikipedia/commons/0/0b/Dyson_DC19_vacuum_cleaner.jpg",
+      "detailImages": [
+        "https://upload.wikimedia.org/wikipedia/commons/0/0b/Dyson_DC19_vacuum_cleaner.jpg"
+      ]
+    },
+    {
+      "name": "NIVEA 香皂 2022 包装（与主图一致）",
+      "subtitle": "清洁 · 演示价",
+      "description": "【与主图严格对应】图为 Nivea 香皂 2022 年款包装，可见东欧系文字排版区域，与 Commons 源文件说明一致。\n\n【用途边界】用于清洁皮肤表面污垢与多余油脂；不代替药物治疗痤疮、湿疹或真菌感染。\n\n【成分与合规】详细 INCI、限用日期、生产批号与进口备案号以中文标签为准；不同国家版本质地与香型可能略有差异。\n\n【储存】置于阴凉干燥处，避免阳光直射导致皂体开裂与香精挥发；开封后尽快使用完毕。",
+      "origin": "德国拜尔斯道夫",
+      "price": 12.9,
+      "category": "cosmetics",
+      "salesMode": "mall",
+      "cardPackageAmount": 0,
+      "onSale": true,
+      "image": "https://upload.wikimedia.org/wikipedia/commons/d/d3/Nivea_soap_2022.jpg",
+      "detailImages": [
+        "https://upload.wikimedia.org/wikipedia/commons/d/d3/Nivea_soap_2022.jpg"
+      ]
+    },
+    {
+      "name": "MAC 口红 Verve（与主图一致）",
+      "subtitle": "子弹头 · 演示价",
+      "description": "【与主图严格对应】MAC 子弹头唇膏，源文件注明色号 Verve，管身印刷、膏体切面与金属盖外观与画面一致。\n\n【妆效差异】同一色号在不同唇部底色、光线与相机白平衡下呈现可能不同；电商详情建议附多肤色试色或引导线下试妆。\n\n【皮肤安全】唇部有伤口、重度角化或已知对香料/色素过敏者慎用；首次使用可做局部测试。\n\n【合规】进口彩妆需符合当地标签与广告法规；演示价未含礼盒妆袋等增值服务时请说明。",
+      "origin": "美国 MAC",
+      "price": 190,
+      "category": "cosmetics",
+      "salesMode": "mall",
+      "cardPackageAmount": 0,
+      "onSale": true,
+      "image": "https://upload.wikimedia.org/wikipedia/commons/5/50/MAC_lipstift_verve_2014-02-22_00-44.jpg",
+      "detailImages": [
+        "https://upload.wikimedia.org/wikipedia/commons/5/50/MAC_lipstift_verve_2014-02-22_00-44.jpg"
+      ]
+    },
+    {
+      "name": "CHANEL 5 号香水 EdP（与主图瓶型一致）",
+      "subtitle": "经典香型 · 演示价",
+      "description": "【与主图严格对应】图为香奈儿 5 号 Eau de Parfum 方形玻璃瓶（裁剪版），与 Commons 文件 CHANEL No5 parfum (cropped).jpg 描述一致。\n\n【香调结构（常识描述，非权威香评）】经典醛香花香路线，适合作为礼品场景演示；留香与扩散因体质、季节与用量差异极大。\n\n【合规】香水易燃，需远离明火；乘机携带容量须遵守民航规定。\n\n【售后】演示数据不涉及保税/一般贸易路径；正式销售请展示中文标签、生产批号与限用日期。",
+      "origin": "法国香奈儿",
+      "price": 1350,
+      "category": "cosmetics",
+      "salesMode": "mall",
+      "cardPackageAmount": 0,
+      "onSale": true,
+      "image": "https://upload.wikimedia.org/wikipedia/commons/c/c0/CHANEL_No5_parfum_%28cropped%29.jpg",
+      "detailImages": [
+        "https://upload.wikimedia.org/wikipedia/commons/c/c0/CHANEL_No5_parfum_%28cropped%29.jpg"
+      ]
+    }
+  ]
+}
