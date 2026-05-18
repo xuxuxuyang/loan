@@ -374,9 +374,9 @@ async function openPrivacyPolicy() {
       <h1 class="mb-2 text-[26px] font-semibold leading-tight">
         用户注册
       </h1>
-      <p class="text-sm text-white/85">
+      <!-- <p class="text-sm text-white/85">
         先完成实名注册，再开启商城购买与先享后付服务。
-      </p>
+      </p> -->
     </div>
 
     <div class="-mt-4 px-4 pb-8">
@@ -462,7 +462,7 @@ async function openPrivacyPolicy() {
             />
           </div>
 
-          <div>
+          <!-- <div>
             <p class="mb-2 text-sm font-medium text-black/75">
               身份证号码
             </p>
@@ -473,12 +473,12 @@ async function openPrivacyPolicy() {
               clearable
               size="large"
             />
-          </div>
+          </div> -->
         </div>
 
-        <div class="my-4 h-px bg-black/8" />
+        <!-- <div class="my-4 h-px bg-black/8" /> -->
 
-        <div>
+        <!-- <div>
           <div class="mb-1 flex items-center justify-center gap-2">
             <p class="text-sm font-medium text-black/75">
               身份证上传
@@ -568,7 +568,7 @@ async function openPrivacyPolicy() {
               </button>
             </el-upload>
           </div>
-        </div>
+        </div> -->
       </div>
 
       <div class="mt-5 flex items-start gap-2 text-sm text-black/55">

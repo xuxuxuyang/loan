@@ -38,11 +38,11 @@ async function goBack() {
       </div>
     </header>
 
-    <main class="flex-1 overflow-y-auto px-4 py-4 pb-[max(1rem,env(safe-area-inset-bottom))] md:px-6 md:py-6">
+    <!-- <main class="flex-1 overflow-y-auto px-4 py-4 pb-[max(1rem,env(safe-area-inset-bottom))] md:px-6 md:py-6">
       <div class="mx-auto max-w-[720px] rounded-2xl bg-white p-5 shadow-sm md:p-8">
         <UserAgreementContent />
       </div>
-    </main>
+    </main> -->
   </div>
 </template>
 

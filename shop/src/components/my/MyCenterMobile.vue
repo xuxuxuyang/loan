@@ -235,7 +235,7 @@ async function handleService(key: string) {
       </div>
     </div>
 
-    <div class="mb-3 grid grid-cols-3 gap-2 rounded-2xl bg-white p-2.5 sm:gap-3 sm:p-3">
+    <!-- <div class="mb-3 grid grid-cols-3 gap-2 rounded-2xl bg-white p-2.5 sm:gap-3 sm:p-3">
       <button
         type="button"
         class="flex min-h-[5rem] flex-col items-center justify-center gap-1.5 rounded-xl bg-[#fff6f6] px-1.5 py-3 text-center active:opacity-90 sm:min-h-[5.25rem] sm:py-3.5"
@@ -296,7 +296,7 @@ async function handleService(key: string) {
           {{ isLoggedIn ? (cardPackages.length ? `${cardPackages.length} 个` : '暂无卡包') : '登录后查看' }}
         </p>
       </button>
-    </div>
+    </div> -->
 
     <div class="mb-3 rounded-2xl bg-white p-4">
       <h3 class="mb-3 flex items-center text-[1.75rem] font-semibold text-black/85">
@@ -333,7 +333,7 @@ async function handleService(key: string) {
       </p>
     </div> -->
 
-    <div class="normal-font">
+    <!-- <div class="normal-font">
       <div class="mb-4 text-center">
         <h3 class="text-2xl font-semibold text-black/85">
           先享后付
@@ -376,7 +376,7 @@ async function handleService(key: string) {
           </div>
         </article>
       </div>
-    </div>
+    </div> -->
   </section>
 </template>
 

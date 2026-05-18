@@ -7,17 +7,13 @@ import {
   useMallCategories,
   isMallCategoryKey,
   useMallShowcaseProducts,
-  useTeaProducts,
   ensureShopHomeProductsLoaded,
 } from '~/composables/useTeaProducts'
 
 const route = useRoute()
-const installmentProducts = useTeaProducts()
 const mallProducts = useMallShowcaseProducts()
 const categories = useMallCategories().filter(item => item.key !== 'all')
 const selectedCategory = ref<MallCategoryKey>('phones')
-/** 首页默认展示先享后付；点「商城专区」再切商城数据 */
-const activeHomeZone = ref<'installment' | 'mall'>('installment')
 
 if (typeof route.query.category === 'string' && isMallCategoryKey(route.query.category) && route.query.category !== 'all') {
   selectedCategory.value = route.query.category
@@ -27,25 +23,13 @@ if (!import.meta.env.SSR) {
   void ensureShopHomeProductsLoaded()
 }
 
-const homeProductList = computed(() =>
-  activeHomeZone.value === 'mall' ? mallProducts.value : installmentProducts.value,
+const filteredHomeProducts = computed(() =>
+  mallProducts.value.filter(item => item.category === selectedCategory.value),
 )
 
-/** 先享后付展示全部先享后付商品；商城专区按分类筛选 */
-const filteredHomeProducts = computed(() => {
-  const list = homeProductList.value
-  if (activeHomeZone.value === 'installment') {
-    return list
-  }
-  return list.filter(item => item.category === selectedCategory.value)
-})
-
 watch(
-  [mallProducts, activeHomeZone],
+  [mallProducts],
   () => {
-    if (activeHomeZone.value !== 'mall') {
-      return
-    }
     const list = mallProducts.value
     if (list.length === 0) {
       return
@@ -69,9 +53,6 @@ function handleSelectCategory(category: MallCategoryKey) {
   selectedCategory.value = category
 }
 
-function handleSelectZone(zone: 'installment' | 'mall') {
-  activeHomeZone.value = zone
-}
 </script>
 
 <template>
@@ -83,15 +64,12 @@ function handleSelectZone(zone: 'installment' | 'mall') {
       :preview-products="filteredHomeProducts"
       :categories="categories"
       :active-category="selectedCategory"
-      :home-product-zone="activeHomeZone"
       @select-category="handleSelectCategory"
-      @select-zone="handleSelectZone"
     />
 
     <section id="mall-showcase">
       <HomeListMobile
         :products="filteredHomeProducts"
-        :list-zone="activeHomeZone"
       />
     </section>
     <AppTabbar />

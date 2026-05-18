@@ -25,7 +25,6 @@ declare module 'vue' {
     ElOption: typeof import('element-plus/es')['ElOption']
     ElSelect: typeof import('element-plus/es')['ElSelect']
     ElSwitch: typeof import('element-plus/es')['ElSwitch']
-    ElUpload: typeof import('element-plus/es')['ElUpload']
     HomeBannerMobile: typeof import('./components/index/HomeBannerMobile.vue')['default']
     HomeListMobile: typeof import('./components/index/HomeListMobile.vue')['default']
     Icon: typeof import('./components/Icon.vue')['default']
