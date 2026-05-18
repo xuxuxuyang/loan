@@ -5,6 +5,11 @@ import { ElementPlusResolver } from 'unplugin-vue-components/resolvers'
 
 // https://vite.dev/config/
 export default defineConfig({
+  /** 与 shop 错开端口，便于后台「流量管理」在未设 VITE_MALL_H5_ORIGIN 时默认指向商城 dev 地址 */
+  server: {
+    port: 5174,
+    strictPort: false,
+  },
   plugins: [
     vue(),
     Components({

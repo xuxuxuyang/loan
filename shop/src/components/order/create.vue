@@ -560,25 +560,6 @@ watch(
         </button>
       </div>
 
-      <div
-        v-if="selectedProduct"
-        class="mb-4 rounded-2xl bg-white p-4 shadow-[0_8px_18px_rgba(24,39,75,0.05)]"
-      >
-        <h2 class="mb-3 text-lg font-semibold text-black/82">
-          下单账号
-        </h2>
-        <p class="text-sm text-black/55">
-          以下为您的<strong class="font-semibold text-black/75">注册信息</strong>，风控与订单归属均以此为准；收货信息可与注册人不一致。
-        </p>
-        <div class="mt-3 rounded-xl border border-black/10 bg-[#fafafa] p-3 text-sm">
-          <p class="font-medium text-black/85">
-            {{ registeredUserName || '—' }}
-          </p>
-          <p class="mt-0.5 text-black/65 tabular-nums">
-            {{ currentUserPhone || '—' }}
-          </p>
-        </div>
-      </div>
 
       <div
         ref="addressSectionRef"

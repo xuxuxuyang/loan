@@ -18,25 +18,79 @@ interface TrafficChannelRow {
   registerCount: number
 }
 
+/** 与 GET /admin/traffic-channels/quality 对齐 */
+interface TrafficQualityRow {
+  id: string
+  code: string
+  name: string
+  disabled: boolean
+  registerCount: number
+  issuedOrderCount: number
+  issuedOrderAmount: number
+  usersWithIssuedOrder: number
+  registrationConversionRate: number | null
+  avgOrderAmount: number | null
+  avgAmountPerRegistrant: number | null
+  installmentIssuedOrderCount: number
+  fullPaymentIssuedOrderCount: number
+  installmentShareRate: number | null
+  overdueInstallmentOrderCount: number
+  overdueRate: number | null
+  repeatPurchaseUsers: number
+  repeatPurchaseRate: number | null
+}
+
 const MALL_API_BASE = `${(import.meta.env.VITE_MALL_API_BASE || 'http://localhost:3110/api').replace(/\/$/, '')}`
 
-/** 商城 H5 根地址（build 时注入）。未配置时退回 window.location.origin，本地后台与商城不同端口时请设 VITE_MALL_H5_ORIGIN */
+/** 商城 H5（shop）根地址，构建时注入。未配置时：开发环境见下方映射；生产常见「后台 :8080 + 商城 :80」会回退为同主机无端口地址 */
 const MALL_H5_ORIGIN = (import.meta.env.VITE_MALL_H5_ORIGIN || '').replace(/\/$/, '')
 
 const isViteDev = import.meta.env.DEV
 
-const showH5OriginDevHint = computed(
-  () => isViteDev && !MALL_H5_ORIGIN,
-)
+/** 当前后台页 origin，用于判断推广基址是否仍误指向后台 */
+const adminPageOrigin = computed(() => {
+  if (typeof window === 'undefined' || !window.location?.origin)
+    return ''
+  return window.location.origin.replace(/\/$/, '')
+})
 
 const h5BaseForLink = computed(() => {
   if (MALL_H5_ORIGIN)
     return MALL_H5_ORIGIN
   if (typeof window !== 'undefined' && window.location?.origin) {
-    return window.location.origin.replace(/\/$/, '')
+    const origin = window.location.origin.replace(/\/$/, '')
+    if (isViteDev) {
+      try {
+        const u = new URL(origin)
+        const port = u.port || (u.protocol === 'https:' ? '443' : '80')
+        const local = u.hostname === 'localhost' || u.hostname === '127.0.0.1'
+        // admin 默认同 vite server.port=5174（见 admin/vite.config）；商城为 shop 5173
+        if (local && port === '5174')
+          return `${u.protocol}//${u.hostname}:5173`
+      }
+      catch {
+        /* ignore */
+      }
+    }
+    else {
+      try {
+        const u = new URL(origin)
+        // 与子系统常见部署一致：后台 http://IP:8080，商城 http://IP/（默认 80，URL 不写端口）
+        if (u.protocol === 'http:' && u.port === '8080')
+          return `${u.protocol}//${u.hostname}`
+      }
+      catch {
+        /* ignore */
+      }
+    }
+    return origin
   }
   return ''
 })
+
+const showH5OriginDevHint = computed(
+  () => isViteDev && !MALL_H5_ORIGIN && h5BaseForLink.value === adminPageOrigin.value,
+)
 
 /** 与待收明细等页 `el-table` 表头风格一致 */
 const tableHeaderCellStyle = {
@@ -54,6 +108,33 @@ const deleteTarget = ref<TrafficChannelRow | null>(null)
 const showDeleteDialog = ref(false)
 const deleting = ref(false)
 const errorMessage = ref('')
+
+const qualityRows = ref<TrafficQualityRow[]>([])
+const qualityLoading = ref(false)
+const qualityErrorMessage = ref('')
+/** 仅展示至少有一笔「卡包已发放」订单的流量商 */
+const whitelistQualityPositive = ref(false)
+
+const displayQualityRows = computed(() => {
+  const list = qualityRows.value
+  if (!whitelistQualityPositive.value)
+    return list
+  return list.filter(r => r.issuedOrderCount > 0)
+})
+
+function formatPercent(value: number | null | undefined) {
+  if (value == null || Number.isNaN(Number(value)))
+    return '—'
+  return `${Number(value).toFixed(2)}%`
+}
+
+function formatMoney2(n: number) {
+  return n.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+
+function qualityRowClassName({ row }: { row: TrafficQualityRow }) {
+  return row.disabled ? 'traffic-quality-row--muted' : ''
+}
 
 const remarkDialogVisible = ref(false)
 const remarkSaving = ref(false)
@@ -85,13 +166,50 @@ function fullPromotionUrl(code: string) {
   return base ? `${base}${promotionPathAndQuery(code)}` : promotionPathAndQuery(code)
 }
 
-async function copyPromotionLink(code: string) {
-  const full = fullPromotionUrl(code)
+/** HTTP / 受限环境无 Clipboard API 时仍能复制（需在点击回调里尽早同步执行 fallback） */
+function copyTextViaExecCommand(text: string): boolean {
   try {
-    await navigator.clipboard.writeText(full)
-    ElMessage.success('推广链接已复制')
+    const ta = document.createElement('textarea')
+    ta.value = text
+    ta.setAttribute('readonly', '')
+    ta.style.cssText = 'position:fixed;left:-9999px;top:0;opacity:0;'
+    document.body.appendChild(ta)
+    ta.focus({ preventScroll: true })
+    ta.select()
+    ta.setSelectionRange(0, text.length)
+    const ok = document.execCommand('copy')
+    document.body.removeChild(ta)
+    return ok
   }
   catch {
+    return false
+  }
+}
+
+async function copyPromotionLink(code: string) {
+  const full = fullPromotionUrl(code)
+  let ok = false
+  if (typeof window !== 'undefined' && window.isSecureContext && navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(full)
+      ok = true
+    }
+    catch {
+      ok = copyTextViaExecCommand(full)
+    }
+  }
+  else {
+    ok = copyTextViaExecCommand(full)
+  }
+
+  if (ok) {
+    ElMessage.success({
+      message: '复制成功',
+      /** 顶栏 .admin-header 高 64px，略微下移使绿条出现在内容区顶部 */
+      offset: 72,
+    })
+  }
+  else {
     ElMessage.error('复制失败，请手动复制')
   }
 }
@@ -152,6 +270,42 @@ async function fetchChannels() {
   }
 }
 
+async function fetchQualityMetrics() {
+  qualityLoading.value = true
+  qualityErrorMessage.value = ''
+  try {
+    const response = await fetch(`${MALL_API_BASE}/admin/traffic-channels/quality`, {
+      method: 'GET',
+      headers: withMallTenantHeaders(),
+    })
+    const payload = await response.json() as {
+      success?: boolean
+      msg?: string
+      data?: TrafficQualityRow[]
+    }
+    if (!response.ok || payload.success === false) {
+      const msg = payload.msg || `加载客户质量失败 (${response.status})`
+      if (response.status === 401 || response.status === 403) {
+        throw new Error(`${msg} — 请使用超级管理员登录`)
+      }
+      throw new Error(msg)
+    }
+    qualityRows.value = Array.isArray(payload.data) ? payload.data : []
+  }
+  catch (error) {
+    qualityRows.value = []
+    qualityErrorMessage.value = error instanceof Error ? error.message : '加载客户质量失败'
+    ElMessage.error(qualityErrorMessage.value)
+  }
+  finally {
+    qualityLoading.value = false
+  }
+}
+
+async function refreshTrafficPage() {
+  await Promise.all([fetchChannels(), fetchQualityMetrics()])
+}
+
 function openCreate() {
   showCreate.value = true
   createForm.code = ''
@@ -205,6 +359,7 @@ async function submitCreate() {
     showCreate.value = false
     if (payload.data)
       applyTrafficChannelPatchRow(payload.data)
+    void fetchQualityMetrics()
   }
   catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '创建失败'
@@ -237,6 +392,7 @@ async function submitEdit() {
     showEdit.value = false
     if (payload.data)
       applyTrafficChannelPatchRow(payload.data)
+    void fetchQualityMetrics()
   }
   catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '保存失败'
@@ -359,6 +515,7 @@ async function doDelete() {
     closeDelete({ force: true })
     const delId = row.id
     rows.value = rows.value.filter(r => r.id !== delId)
+    void fetchQualityMetrics()
   }
   catch (error) {
     ElMessage.error(error instanceof Error ? error.message : '删除失败')
@@ -369,7 +526,7 @@ async function doDelete() {
 }
 
 onMounted(() => {
-  void fetchChannels()
+  void refreshTrafficPage()
 })
 </script>
 
@@ -382,16 +539,14 @@ onMounted(() => {
       show-icon
       class="traffic-h5-hint"
     >
-      未设置
-      <code class="traffic-code">VITE_MALL_H5_ORIGIN</code>
-      时，推广链接会使用<strong>当前浏览器这个标签页</strong>的地址。若商城跑在
-      <code class="traffic-code">http://localhost:5174</code>
-      而本后台在其它端口，请在
-      <code class="traffic-code">admin</code>
-      目录新增
-      <code class="traffic-code">.env.development</code>
-      写入一行（端口按你本机为准）：
-      <code class="traffic-code traffic-code--block">VITE_MALL_H5_ORIGIN=http://localhost:5174</code>
+      推广链接应指向<strong>商城 H5（shop）</strong>，不应等于本后台地址。本地默认已将后台
+      <code class="traffic-code">5174</code>
+      对应到商城
+      <code class="traffic-code">5173</code>
+      ；若你改了端口或仍有误，请在
+      <code class="traffic-code">admin/.env.development</code>
+      设置（示例，按实际商城地址修改）：
+      <code class="traffic-code traffic-code--block">VITE_MALL_H5_ORIGIN=http://localhost:5173</code>
       保存后<strong>重启</strong>
       <code class="traffic-code">npm run dev</code>
       。
@@ -409,8 +564,8 @@ onMounted(() => {
       <button
         class="btn btn-refresh"
         type="button"
-        :disabled="loading"
-        @click="fetchChannels"
+        :disabled="loading || qualityLoading"
+        @click="refreshTrafficPage"
       >
         刷新
       </button>
@@ -647,6 +802,251 @@ onMounted(() => {
           </template>
         </el-table-column>
       </el-table>
+      </div>
+    </el-card>
+
+    <el-card
+      class="traffic-quality-card"
+      shadow="hover"
+    >
+      <template #header>
+        <div class="traffic-quality-card-header">
+          <div class="traffic-quality-card-header__title">
+            <span class="traffic-table-card-title">流量客户质量</span>
+            <el-tag
+              type="info"
+              effect="plain"
+              size="small"
+            >
+              发卡包订单 KPI 口径
+            </el-tag>
+          </div>
+          <el-checkbox
+            v-model="whitelistQualityPositive"
+            border
+            size="small"
+          >
+            白名单（发卡包订单数大于 0）
+          </el-checkbox>
+        </div>
+      </template>
+
+      <el-alert
+        type="info"
+        :closable="false"
+        show-icon
+        class="traffic-quality-intro"
+      >
+        <template #title>
+          指标说明
+        </template>
+        <p class="traffic-quality-intro__p">
+          <strong>订单数 / 成交金额</strong>：仅含<strong>卡包已发放</strong>且<strong>非待审核</strong>的订单，与财务报表一致。
+        </p>
+        <p class="traffic-quality-intro__p">
+          <strong>逾期率</strong>：仅统计<strong>先享后付（先享后付）且卡包已发放</strong>订单。分母为先享后付订单数；分子为「至少有一期应还日早于今日且仍未付清」的订单数。
+        </p>
+        <p class="traffic-quality-intro__p traffic-quality-intro__p--last">
+          <strong>注册转化率</strong>：有发卡包订单的用户数 ÷ 注册人数。<strong>复购率</strong>：下过 2 笔及以上发卡包订单的用户占「有成交用户」的比例。<strong>先享后付</strong>：先享后付发卡包订单数 ÷ 全部发卡包订单数。
+        </p>
+      </el-alert>
+
+      <el-alert
+        v-if="qualityErrorMessage && !qualityLoading"
+        type="error"
+        :closable="false"
+        show-icon
+        class="traffic-quality-error"
+      >
+        {{ qualityErrorMessage }}
+      </el-alert>
+
+      <p class="traffic-quality-stats">
+        当前展示 <strong>{{ displayQualityRows.length }}</strong> 家
+        <template v-if="whitelistQualityPositive && qualityRows.length !== displayQualityRows.length">
+          （已过滤 {{ qualityRows.length - displayQualityRows.length }} 家无发卡包订单）
+        </template>
+      </p>
+
+      <div class="traffic-table-wrap traffic-quality-table-wrap">
+        <el-table
+          v-loading="qualityLoading"
+          :data="displayQualityRows"
+          stripe
+          border
+          size="default"
+          class="traffic-table traffic-quality-table"
+          :header-cell-style="tableHeaderCellStyle"
+          empty-text=""
+          :row-class-name="qualityRowClassName"
+        >
+          <template #empty>
+            <el-empty
+              :description="whitelistQualityPositive ? '无符合白名单条件的流量商' : '暂无流量商数据'"
+              :image-size="72"
+            />
+          </template>
+
+          <el-table-column
+            label="流量商"
+            min-width="168"
+            fixed
+          >
+            <template #default="{ row }">
+              <div class="traffic-quality-channel-cell">
+                <TrafficChannelNameTag
+                  :display-key="trafficChannelDisplayKey(undefined, row.name, row.code)"
+                  size="default"
+                />
+                <el-tag
+                  v-if="row.disabled"
+                  type="info"
+                  size="small"
+                  effect="plain"
+                >
+                  停用
+                </el-tag>
+              </div>
+            </template>
+          </el-table-column>
+
+          <el-table-column
+            prop="registerCount"
+            label="注册人数"
+            width="92"
+            align="center"
+          />
+
+          <el-table-column
+            label="订单数"
+            width="88"
+            align="center"
+          >
+            <template #header>
+              <el-tooltip
+                content="卡包已发放且非待审核的订单笔数"
+                placement="top"
+              >
+                <span class="traffic-quality-th-tip">订单数</span>
+              </el-tooltip>
+            </template>
+            <template #default="{ row }">
+              {{ row.issuedOrderCount }}
+            </template>
+          </el-table-column>
+
+          <el-table-column
+            label="成交金额"
+            min-width="112"
+            align="right"
+          >
+            <template #default="{ row }">
+              {{ formatMoney2(row.issuedOrderAmount) }}
+            </template>
+          </el-table-column>
+
+          <el-table-column
+            min-width="100"
+            align="right"
+          >
+            <template #header>
+              <el-tooltip
+                content="成交金额 ÷ 订单数"
+                placement="top"
+              >
+                <span class="traffic-quality-th-tip">客单价</span>
+              </el-tooltip>
+            </template>
+            <template #default="{ row }">
+              {{ row.avgOrderAmount != null ? formatMoney2(row.avgOrderAmount) : '—' }}
+            </template>
+          </el-table-column>
+
+          <el-table-column
+            min-width="104"
+            align="right"
+          >
+            <template #header>
+              <el-tooltip
+                content="成交金额 ÷ 注册人数，衡量导流 ROI"
+                placement="top"
+              >
+                <span class="traffic-quality-th-tip">人均产值</span>
+              </el-tooltip>
+            </template>
+            <template #default="{ row }">
+              {{ row.avgAmountPerRegistrant != null ? formatMoney2(row.avgAmountPerRegistrant) : '—' }}
+            </template>
+          </el-table-column>
+
+          <el-table-column
+            min-width="104"
+            align="right"
+          >
+            <template #header>
+              <el-tooltip
+                content="至少有 1 笔发卡包订单的用户数 ÷ 注册人数"
+                placement="top"
+              >
+                <span class="traffic-quality-th-tip">注册转化</span>
+              </el-tooltip>
+            </template>
+            <template #default="{ row }">
+              {{ formatPercent(row.registrationConversionRate) }}
+            </template>
+          </el-table-column>
+
+          <el-table-column
+            min-width="96"
+            align="right"
+          >
+            <template #header>
+              <el-tooltip
+                content="先享后付发卡包订单 ÷ 全部发卡包订单"
+                placement="top"
+              >
+                <span class="traffic-quality-th-tip">先享后付</span>
+              </el-tooltip>
+            </template>
+            <template #default="{ row }">
+              {{ formatPercent(row.installmentShareRate) }}
+            </template>
+          </el-table-column>
+
+          <el-table-column
+            min-width="108"
+            align="right"
+          >
+            <template #header>
+              <el-tooltip
+                content="仅先享后付订单。存在逾期未付清账期的订单数 ÷ 先享后付订单数"
+                placement="top"
+              >
+                <span class="traffic-quality-th-tip">逾期率</span>
+              </el-tooltip>
+            </template>
+            <template #default="{ row }">
+              {{ formatPercent(row.overdueRate) }}
+            </template>
+          </el-table-column>
+
+          <el-table-column
+            min-width="92"
+            align="right"
+          >
+            <template #header>
+              <el-tooltip
+                content="下过 2 笔及以上发卡包订单的用户数 ÷ 有下单用户数"
+                placement="top"
+              >
+                <span class="traffic-quality-th-tip">复购率</span>
+              </el-tooltip>
+            </template>
+            <template #default="{ row }">
+              {{ formatPercent(row.repeatPurchaseRate) }}
+            </template>
+          </el-table-column>
+        </el-table>
       </div>
     </el-card>
 
@@ -1161,5 +1561,80 @@ onMounted(() => {
 
 .remark-table-trigger:hover .remark-cell__icon--edit {
   color: #475569;
+}
+
+.traffic-quality-card {
+  margin-top: 18px;
+  border-radius: 8px;
+}
+
+.traffic-quality-card :deep(.el-card__body) {
+  padding: 0 18px 18px;
+}
+
+.traffic-quality-card-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.traffic-quality-card-header__title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.traffic-quality-intro {
+  margin-bottom: 12px;
+  border-radius: 8px;
+}
+
+.traffic-quality-intro__p {
+  margin: 0 0 6px;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--el-text-color-regular);
+}
+
+.traffic-quality-intro__p--last {
+  margin-bottom: 0;
+}
+
+.traffic-quality-error {
+  margin-bottom: 12px;
+  border-radius: 8px;
+}
+
+.traffic-quality-stats {
+  margin: 0 0 10px;
+  font-size: 13px;
+  color: var(--el-text-color-secondary);
+}
+
+.traffic-quality-stats strong {
+  color: var(--el-text-color-primary);
+}
+
+.traffic-quality-table-wrap {
+  margin-top: 0;
+}
+
+.traffic-quality-th-tip {
+  cursor: help;
+  border-bottom: 1px dashed var(--el-border-color);
+}
+
+.traffic-quality-channel-cell {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.traffic-quality-table :deep(.traffic-quality-row--muted) {
+  opacity: 0.78;
 }
 </style>

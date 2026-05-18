@@ -7,6 +7,7 @@ import {
   isValidEmergencyContactPhoneDigits,
   normalizeEmergencyContactPersonName,
 } from '~/utils/emergencyContactValidate'
+import { normalizeCardPackageContractEmbedUrl } from '~/utils/cardPackageContractEmbed'
 import { alertDialog, notifyError, notifySuccess, notifyWarning } from '~/utils/epFeedback'
 const CardPackagePreClaimDialog = defineAsyncComponent(() => import('~/components/my/card-package/dialogs/CardPackagePreClaimDialog.vue'))
 const CardPackageEmergencyDialog = defineAsyncComponent(() => import('~/components/my/card-package/dialogs/CardPackageEmergencyDialog.vue'))
@@ -48,11 +49,15 @@ const CARD_PACKAGE_CONTRACT_SIGNED_MSG = 'mall-card-package-contract-signed'
 /** 内嵌合同页签名校验失败时 postMessage，父页用 Element Plus 展示 */
 const CARD_PACKAGE_CONTRACT_SIGNATURE_HINT_MSG = 'mall-card-package-signature-hint'
 
-/** 业务：订单金额 = 卡包金额 × 135% + 50；列表「现金礼」展示反推的卡包金额：(订单金额 − 50) ÷ 1.35 */
+/** 订单金额 = 卡包金额 × 135% + 50（先享后付定价）；接口未给出有效 packageAmount 时列表展示可反推，与旧版兼容 */
 const CARD_PACKAGE_REVERSE_FIXED = 50
 const CARD_PACKAGE_REVERSE_RATE = 1.35
 
-function reverseCardPackageDisplayAmount(item: MallCardPackageDTO): number {
+function cardPackageDisplayAmount(item: MallCardPackageDTO): number {
+  const pkg = Number(item.packageAmount)
+  if (Number.isFinite(pkg) && pkg >= 0) {
+    return pkg
+  }
   const orderAmt = Number(item.totalAmount || 0)
   if (
     !Number.isFinite(orderAmt)
@@ -60,13 +65,13 @@ function reverseCardPackageDisplayAmount(item: MallCardPackageDTO): number {
     || !Number.isFinite(CARD_PACKAGE_REVERSE_RATE)
     || CARD_PACKAGE_REVERSE_RATE <= 0
   ) {
-    return Number(item.packageAmount || 0)
+    return 0
   }
   return (orderAmt - CARD_PACKAGE_REVERSE_FIXED) / CARD_PACKAGE_REVERSE_RATE
 }
 
-function formatReverseCardPackageDisplay(item: MallCardPackageDTO): string {
-  const n = reverseCardPackageDisplayAmount(item)
+function formatCardPackageDisplay(item: MallCardPackageDTO): string {
+  const n = cardPackageDisplayAmount(item)
   return Number.isFinite(n) ? n.toFixed(2) : '0.00'
 }
 
@@ -101,6 +106,12 @@ const {
   contractEmbedUrl,
   showContractUpstreamHint,
 } = useCardPackageContractMeta(contractRoot, contractError)
+
+/** iframe 必须使用 VITE_MALL_API_BASE 所在源站 + tenantId；避免后端拼成前端域名 */
+const runtimeCfg = useRuntimeConfig()
+const contractEmbedIframeSrc = computed(() =>
+  normalizeCardPackageContractEmbedUrl(contractEmbedUrl.value, String(runtimeCfg.public.mallApiBase || '/api')),
+)
 
 async function refreshList() {
   const phone = account.value
@@ -137,7 +148,7 @@ function formatTime(iso: string) {
 }
 
 function trustedContractPostMessageOrigin(ev: MessageEvent): boolean {
-  const url = contractEmbedUrl.value
+  const url = contractEmbedIframeSrc.value
   if (!url) {
     return false
   }
@@ -321,7 +332,7 @@ async function loadContractFlow() {
 }
 
 function openContractSignDialog() {
-  if (!contractEmbedUrl.value) {
+  if (!contractEmbedIframeSrc.value) {
     notifyWarning('暂无签署链接，请稍后再试')
     return
   }
@@ -331,7 +342,7 @@ function openContractSignDialog() {
 }
 
 function openContractViewDialog() {
-  if (!contractEmbedUrl.value) {
+  if (!contractEmbedIframeSrc.value) {
     notifyWarning('暂无合同链接')
     return
   }
@@ -425,7 +436,7 @@ function closeDialog() {
 }
 
 const claimDialogAmountText = computed(() => {
-  return activeItem.value ? formatReverseCardPackageDisplay(activeItem.value) : '0.00'
+  return activeItem.value ? formatCardPackageDisplay(activeItem.value) : '0.00'
 })
 </script>
 
@@ -491,7 +502,7 @@ const claimDialogAmountText = computed(() => {
             class="pt-0.5 font-semibold tabular-nums text-[#c0354a]"
             :class="compact ? 'text-base' : 'text-lg'"
           >
-            ¥{{ formatReverseCardPackageDisplay(item) }}
+            ¥{{ formatCardPackageDisplay(item) }}
             <span
               class="ml-1 text-black/35"
               :class="compact ? 'text-xs font-normal' : 'text-sm font-normal'"
@@ -545,7 +556,7 @@ const claimDialogAmountText = computed(() => {
       :show-contract-upstream-hint="showContractUpstreamHint"
       :contract-binary-status-label="contractBinaryStatusLabel"
       :contract-frame-mode="contractFrameMode"
-      :contract-embed-url="contractEmbedUrl"
+      :contract-embed-url="contractEmbedIframeSrc"
       :contract-iframe-key="contractIframeKey"
       @update:contract-dialog-visible="contractDialogVisible = $event"
       @update:contract-sign-frame-visible="contractSignFrameVisible = $event"

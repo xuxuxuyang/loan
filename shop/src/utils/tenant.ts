@@ -14,7 +14,11 @@ function parseTenantFromHostname(hostname: string) {
 
 export function resolveTenantId() {
   const envTenant = String(import.meta.env.VITE_TENANT_ID || '').trim().toLowerCase()
-  const tenant = envTenant || parseTenantFromHostname(window.location.hostname) || 'default'
+  const host = typeof window !== 'undefined' && window.location?.hostname
+    ? String(window.location.hostname)
+    : ''
+  const fromHost = host ? parseTenantFromHostname(host) : ''
+  const tenant = envTenant || fromHost || 'default'
   return tenant.replace(/[^a-z0-9_-]/g, '').slice(0, 64) || 'default'
 }
 

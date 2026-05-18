@@ -1,6 +1,14 @@
 import { normalizeMallAccount } from '~/composables/useMallAuth'
 import type { MallCardPackageDTO, MallCardPackageContractFlowData } from '~/api/modules/mall'
 import type { MallOrderStatus } from '~/composables/useMallOrders'
+import { resolveTenantId } from '~/utils/tenant'
+
+/** mall 租户：与 x-tenant-id 一致；iframe 打不开合同时依赖 URL query 也需此口径 */
+function mallTenantQueryProps() {
+  if (import.meta.env.SSR)
+    return {} as Record<string, string>
+  return { tenantId: resolveTenantId() }
+}
 
 export interface MallMySummary {
   orderCount: Record<MallOrderStatus, number>
@@ -328,7 +336,7 @@ export function useMallMy() {
     }
     const response = await $fetch<{ success: boolean, data: MallCardPackageDTO[] }>(`${resolveMallApiBase()}/card-packages`, {
       method: 'GET',
-      query: { phone },
+      query: { phone, ...mallTenantQueryProps() },
     })
     const list = Array.isArray(response?.data) ? response.data : []
     cardPackages.value = list
@@ -344,7 +352,7 @@ export function useMallMy() {
     }
     const response = await $fetch<{ success: boolean, data: MallCardPackageContractFlowData }>(
       `${resolveMallApiBase()}/card-packages/${encodeURIComponent(orderId)}/contract-flow`,
-      { method: 'GET', query: { phone } },
+      { method: 'GET', query: { phone, ...mallTenantQueryProps() } },
     )
     if (!response?.data) {
       throw new Error('合同数据为空')
@@ -359,7 +367,7 @@ export function useMallMy() {
     }
     const res = await $fetch<{ success: boolean, data: { signed?: boolean, cardPackageRow?: unknown } }>(
       `${resolveMallApiBase()}/card-packages/${encodeURIComponent(orderId)}/contract-ack`,
-      { method: 'POST', query: { phone } },
+      { method: 'POST', query: { phone, ...mallTenantQueryProps() } },
     )
     mergeCardPackageRowFromPayload(res.data?.cardPackageRow)
     return res
@@ -372,7 +380,7 @@ export function useMallMy() {
     }
     return await $fetch<{ success: boolean, data: { reset?: boolean } }>(
       `${resolveMallApiBase()}/card-packages/${encodeURIComponent(orderId)}/contract-sign-reset`,
-      { method: 'POST', query: { phone } },
+      { method: 'POST', query: { phone, ...mallTenantQueryProps() } },
     )
   }
 

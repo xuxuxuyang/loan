@@ -32,6 +32,10 @@ export function withAdminAuthHeaders(init: HeadersInit = {}) {
   if (session?.role) {
     headers.set('x-admin-role', session.role)
   }
+  if (session?.username) {
+    // Bearer 仅用 mock-token-手机号，无法用手机号在多库中可靠区分身份（易误命中平台或其它子系统同号账号）
+    headers.set('x-admin-username', session.username)
+  }
   if (session?.tenantId) {
     headers.set('x-tenant-id', session.tenantId)
   }

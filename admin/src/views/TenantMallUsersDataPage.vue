@@ -32,11 +32,21 @@ const tenantsLoading = ref(false)
 const errorMessage = ref('')
 const selectedTenantId = ref(TENANT_EMPTY)
 const keyword = ref('')
+/** 白名单：仅展示「订单数（汇总·卡包已发放）」大于 0 的用户 */
+const whitelistOrderPositive = ref(false)
 
 const isAllTenants = computed(() => !String(selectedTenantId.value || '').trim())
 
+const displayRows = computed(() => {
+  const list = rows.value
+  if (!whitelistOrderPositive.value) {
+    return list
+  }
+  return list.filter((r) => Number(r.orderCount || 0) > 0)
+})
+
 const summedRawSnapshots = computed(() =>
-  rows.value.reduce((n, item) => n + Number(item.duplicateSystemCount || 1), 0),
+  displayRows.value.reduce((n, item) => n + Number(item.duplicateSystemCount || 1), 0),
 )
 
 function tenantOptionLabel(item: TenantSummary) {
@@ -208,12 +218,18 @@ onMounted(() => {
         >
           {{ loading ? '刷新中…' : '刷新' }}
         </button>
+        <el-checkbox v-model="whitelistOrderPositive" border>
+          白名单（订单数大于 0）
+        </el-checkbox>
       </div>
       <div class="tenant-mall-users__stats">
-        当前表格 <strong>{{ rows.length }}</strong> 行
+        当前表格 <strong>{{ displayRows.length }}</strong> 行
         <template v-if="isAllTenants">
           ，对应跨库原始记录合计 <strong>{{ summedRawSnapshots }}</strong> 条
         </template>
+        <span v-if="whitelistOrderPositive" class="tenant-mall-users__filter-hint">
+          · 已启用白名单筛选
+        </span>
       </div>
     </div>
 
@@ -238,7 +254,7 @@ onMounted(() => {
           </thead>
           <tbody>
             <tr
-              v-for="(item, index) in rows"
+              v-for="(item, index) in displayRows"
               :key="rowKey(item, index)"
             >
               <td>{{ item.name || '-' }}</td>
@@ -263,7 +279,7 @@ onMounted(() => {
               </td>
               <td>{{ formatDateTime(item.registerAt) }}</td>
             </tr>
-            <tr v-if="!loading && rows.length === 0">
+            <tr v-if="!loading && displayRows.length === 0">
               <td colspan="9" class="empty">
                 暂无数据
               </td>
@@ -345,6 +361,10 @@ onMounted(() => {
 
 .tenant-mall-users__stats strong {
   color: #0f172a;
+}
+
+.tenant-mall-users__filter-hint {
+  color: #16a34a;
 }
 
 .table-wrap {

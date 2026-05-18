@@ -61,13 +61,15 @@ function handleSubmit() {
     <div
       class="login-shell"
       :class="{
-        'login-shell--shake': shakeCard,
         'login-shell--success': props.success,
         'login-shell--entering': props.enteringSystem,
       }"
     >
       <div class="login-shell__ring" aria-hidden="true" />
-      <div class="login-card">
+      <div
+        class="login-card"
+        :class="{ 'login-card--shake': shakeCard }"
+      >
         <div class="login-card__shine" aria-hidden="true" />
         <div class="login-card__glow login-card__glow--a" />
         <div class="login-card__glow login-card__glow--b" />
@@ -142,13 +144,15 @@ function handleSubmit() {
           </div>
         </label>
 
-        <p
-          v-if="props.error"
-          class="login-error"
-          role="alert"
-        >
-          {{ props.error }}
-        </p>
+        <div class="login-error-slot" aria-live="polite">
+          <p
+            v-show="props.error"
+            class="login-error"
+            role="alert"
+          >
+            {{ props.error }}
+          </p>
+        </div>
 
         <button
           class="login-btn"
@@ -293,10 +297,6 @@ function handleSubmit() {
     0 0 0 1px rgba(15, 23, 42, 0.6),
     0 28px 90px rgba(2, 6, 23, 0.75),
     0 0 120px rgba(56, 189, 248, 0.12);
-}
-
-.login-shell--shake {
-  animation: cardShake 0.45s ease;
 }
 
 .login-shell--success {
@@ -473,6 +473,10 @@ function handleSubmit() {
   backdrop-filter: blur(14px);
 }
 
+.login-card--shake {
+  animation: cardShake 0.45s ease;
+}
+
 .login-card__shine {
   position: absolute;
   inset: 0;
@@ -623,15 +627,20 @@ function handleSubmit() {
   background: rgba(15, 23, 42, 0.85);
 }
 
+.login-error-slot {
+  min-height: calc(1.45em + 22px);
+  margin-bottom: 14px;
+}
+
 .login-error {
-  margin: 0 0 14px;
+  margin: 0;
   padding: 10px 12px;
   border-radius: 10px;
   background: rgba(239, 68, 68, 0.14);
   border: 1px solid rgba(248, 113, 113, 0.38);
   color: #fecaca;
   font-size: 13px;
-  animation: errorIn 0.35s ease;
+  line-height: 1.45;
 }
 
 .login-btn {
@@ -784,11 +793,6 @@ function handleSubmit() {
   to { transform: rotate(360deg); }
 }
 
-@keyframes errorIn {
-  from { opacity: 0; transform: translateY(-6px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-
 @keyframes heroKen {
   0% { transform: scale(1.06) translate(0, 0); }
   100% { transform: scale(1.12) translate(-1.2%, 0.8%); }
@@ -827,6 +831,10 @@ function handleSubmit() {
   }
 
   .login-shell--entering {
+    animation: none !important;
+  }
+
+  .login-card--shake {
     animation: none !important;
   }
 

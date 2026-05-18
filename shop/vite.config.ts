@@ -28,6 +28,9 @@ const elementChinaAreaDataKeys = [
 // https://vite.dev/config/
 export default defineConfig({
   server: {
+    /** 与 admin 错开端口；流量推广链接本地默认同主机此端口 */
+    port: 5173,
+    strictPort: false,
     proxy: {
       '/api': {
         target: process.env.SHOP_API_PROXY_TARGET || 'http://127.0.0.1:3110',

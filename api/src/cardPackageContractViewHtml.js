@@ -1,7 +1,9 @@
 /**
  * 卡包本地模拟合同：专业版《商品购销及服务协议》式 HTML（UTF-8）
- * 结构与常见先享后付商城三方协议一致，关键字通过环境变量配置为与本商城主体一致。
+ * 结构与常见先享后付购销协议一致（甲乙双方），关键字通过环境变量与乙方主体对齐。
  */
+
+const { normalizeTenantId, DEFAULT_TENANT_ID } = require('./tenantContext')
 
 function escapeHtml(text) {
   return String(text ?? '')
@@ -49,25 +51,30 @@ function fmtDateYmd(iso) {
   return `${y}-${m}-${day}`
 }
 
-/** 协议中的乙方（商户）、丙方（平台）等展示信息：请在 api/.env 中配置为企业真实信息 */
+/** 模拟合同页甲方（用户）、乙方（商户）；销售渠道称谓由 MALL_CONTRACT_SITE_LABEL 配置 */
 function mallContractBrandFromEnv() {
+  const t = (key, fallback = '') => {
+    const v = process.env[key]
+    if (v === undefined || v === null)
+      return fallback
+    return String(v).trim()
+  }
+  const disputeDefault
+    = '因本协议引起的或与本协议有关的争议，甲乙双方应友好协商；协商不成的，任何一方均可向乙方住所地有管辖权的人民法院提起诉讼。'
+  const creditDefault
+    = '如您对本协议或征信授权条款有疑问，可于工作日通过乙方公示的客服渠道咨询。'
   return {
-    docTitle: String(process.env.MALL_CONTRACT_DOC_TITLE || '商品购销及服务协议（先享后付商城）').trim(),
-    platformName: String(process.env.MALL_PLATFORM_NAME || process.env.MALL_CONTRACT_PLATFORM_NAME || '商城先享后付服务平台').trim(),
-    platformUscc: String(process.env.MALL_CONTRACT_PLATFORM_USCC || '—').trim(),
-    platformAddress: String(process.env.MALL_CONTRACT_PLATFORM_ADDRESS || '—').trim(),
-    platformPhone: String(process.env.MALL_CONTRACT_PLATFORM_PHONE || '—').trim(),
-    platformLegal: String(process.env.MALL_CONTRACT_PLATFORM_LEGAL || '—').trim(),
-    merchantName: String(process.env.MALL_CONTRACT_MERCHANT_NAME || '宁波海曙文硕贸易商行').trim(),
-    merchantUscc: String(process.env.MALL_CONTRACT_MERCHANT_USCC || '92330203MACLPR42X1').trim(),
-    merchantAddress: String(process.env.MALL_CONTRACT_MERCHANT_ADDRESS || '浙江省宁波市海曙区高桥镇新丰路1107弄25号516室').trim(),
-    merchantPhone: String(process.env.MALL_CONTRACT_MERCHANT_PHONE || '18968327662').trim(),
-    merchantLegal: String(process.env.MALL_CONTRACT_MERCHANT_LEGAL || '竺文军').trim(),
-    serviceHotline: String(process.env.MALL_CONTRACT_SERVICE_HOTLINE || '').trim(),
-    disputeClause: String(process.env.MALL_CONTRACT_DISPUTE_TEXT || '').trim()
-      || '因本协议引起的或与本协议有关的争议，各方应友好协商；协商不成的，任何一方均可向丙方住所地有管辖权的人民法院提起诉讼。',
-    creditHotlineNote: String(process.env.MALL_CONTRACT_CREDIT_HOTLINE_NOTE || '').trim()
-      || '如您对本协议或征信授权条款有疑问，可于工作日通过丙方公示的客服渠道咨询。',
+    docTitle: t('MALL_CONTRACT_DOC_TITLE') || '商品购销及服务协议',
+    /** 协议行文中的线上渠道统称，如「本商城」「本平台」 */
+    siteLabel: t('MALL_CONTRACT_SITE_LABEL') || '本商城',
+    merchantName: t('MALL_CONTRACT_MERCHANT_NAME') || '—',
+    merchantUscc: t('MALL_CONTRACT_MERCHANT_USCC') || '—',
+    merchantAddress: t('MALL_CONTRACT_MERCHANT_ADDRESS') || '—',
+    merchantPhone: t('MALL_CONTRACT_MERCHANT_PHONE') || '—',
+    merchantLegal: t('MALL_CONTRACT_MERCHANT_LEGAL') || '—',
+    serviceHotline: t('MALL_CONTRACT_SERVICE_HOTLINE'),
+    disputeClause: t('MALL_CONTRACT_DISPUTE_TEXT') || disputeDefault,
+    creditHotlineNote: t('MALL_CONTRACT_CREDIT_HOTLINE_NOTE') || creditDefault,
   }
 }
 
@@ -82,7 +89,9 @@ function mallContractBrandFromEnv() {
  *   apiOrigin: string,
  *   orderId: string,
  *   forPdfSnapshot?: boolean,
+ *   scopeTenantId?: string,
  * }} p
+ * scopeTenantId：iframe / fetch 无自定义请求头时在 query 中携带租户，与子系统库对齐。
  */
 function buildCardPackageContractViewHtml(p) {
   const brand = mallContractBrandFromEnv()
@@ -105,11 +114,7 @@ function buildCardPackageContractViewHtml(p) {
   const recvAddr = escapeHtml(String(order.receiverAddress || '').trim() || '—')
   const orderDate = escapeHtml(fmtDateYmd(order.createdAt))
 
-  const platName = escapeHtml(brand.platformName)
-  const platUscc = escapeHtml(brand.platformUscc)
-  const platAddr = escapeHtml(brand.platformAddress)
-  const platPhone = escapeHtml(brand.platformPhone)
-  const platLegal = escapeHtml(brand.platformLegal)
+  const siteLabel = escapeHtml(brand.siteLabel)
   const merName = escapeHtml(brand.merchantName)
   const merUscc = escapeHtml(brand.merchantUscc)
   const merAddr = escapeHtml(brand.merchantAddress)
@@ -124,7 +129,11 @@ function buildCardPackageContractViewHtml(p) {
 
   const oidEnc = encodeURIComponent(String(p.orderId || ''))
   const phoneEnc = encodeURIComponent(String(p.phone || ''))
-  const ackUrl = `${p.apiOrigin}/api/card-packages/${oidEnc}/contract-ack?phone=${phoneEnc}`
+  const scopedTid = typeof p.scopeTenantId === 'string'
+    ? normalizeTenantId(p.scopeTenantId)
+    : DEFAULT_TENANT_ID
+  const ackQuery = `phone=${phoneEnc}&tenantId=${encodeURIComponent(scopedTid)}`
+  const ackUrl = `${p.apiOrigin}/api/card-packages/${oidEnc}/contract-ack?${ackQuery}`
 
   const signGuideNameRaw = String(user.name || '').trim()
   const signGuideBadDisplay = new Set(['—', '-', '―', '－', '暂无', '无', '未填写'])
@@ -153,7 +162,7 @@ function buildCardPackageContractViewHtml(p) {
           </div>
           <button type="button" class="btn-secondary" id="sig-clear">清除重写</button>
         </div>
-        <label class="chk chk-below-sig"><input type="checkbox" id="agree"> 本人（甲方）已完整阅读并理解本协议及附件全部条款（含加粗提示），自愿与乙方、丙方达成合意并承担相应履约责任。</label>
+        <label class="chk chk-below-sig"><input type="checkbox" id="agree"> 本人（甲方）已完整阅读并理解本协议及附件全部条款（含加粗提示），自愿与乙方达成合意并承担相应履约责任。</label>
         <button type="button" class="btn-primary" id="btn-sign" disabled>提交签署</button>
         <p class="hint" id="hint"></p>
       </div>`)
@@ -631,7 +640,7 @@ function buildCardPackageContractViewHtml(p) {
       </div>
 
       <h2>协议主体</h2>
-      <p class="muted">本协议由以下三方就甲方通过<strong class="hl">${platName}</strong>（丙方运营的先享后付商城）向乙方购买商品/服务并就价款支付等事宜订立。</p>
+      <p class="muted">本协议由以下<strong class="hl">甲乙双方</strong>就甲方通过<strong class="hl">${siteLabel}</strong>向乙方购买商品/服务并就价款支付等事宜订立。</p>
 
       <table class="party-table" aria-label="甲方用户">
         <tr><th colspan="2">甲方（用户）</th></tr>
@@ -642,7 +651,7 @@ function buildCardPackageContractViewHtml(p) {
       </table>
 
       <table class="party-table" aria-label="乙方商家">
-        <tr><th colspan="2">乙方（文硕商城）</th></tr>
+        <tr><th colspan="2">乙方（商户）</th></tr>
         <tr><td>名称</td><td>${merName}</td></tr>
         <tr><td>统一社会信用代码</td><td>${merUscc}</td></tr>
         <tr><td>住所</td><td>${merAddr}</td></tr>
@@ -652,8 +661,8 @@ function buildCardPackageContractViewHtml(p) {
 
       <h2>第一条　术语定义</h2>
       <ol class="decimal">
-        <li><strong class="hl">平台规则：</strong>指丙方在${platName}上公示的、与用户使用服务有关的规则（含购物流程、先享后付说明、售后政策等）。</li>
-        <li><strong class="hl">订单：</strong>指甲方就特定商品提交并经乙方/丙方系统确认的交易指令，订单所载商品、价款、收货信息以系统记录为准。</li>
+        <li><strong class="hl">商城规则：</strong>指甲方所使用的<strong class="hl">${siteLabel}</strong>上就本订单公示的、与买卖及支付有关的规则（含购物流程、先享后付说明、售后政策等）。</li>
+        <li><strong class="hl">订单：</strong>指甲方就特定商品提交并经<strong class="hl">乙方</strong>系统确认的交易指令，订单所载商品、价款、收货信息以系统记录为准。</li>
         <li><strong class="hl">先享后付支付 / 账期：</strong>指甲方将应付货款按约定<strong class="hl">期数与到期日</strong>先享后付偿付的支付方式（营销推广名称可能调整，以页面展示为准）。</li>
         <li><strong class="hl">应付款：</strong>指甲方基于本订单应向乙方支付的货款总额（含先享后付安排下的全部应付金额）。</li>
         <li><strong class="hl">到期付款日：</strong>指甲方各期款项的最晚支付日期，具体以本协议第二条账单或订单页为准。</li>
@@ -667,39 +676,38 @@ function buildCardPackageContractViewHtml(p) {
         <p><strong>货款支付安排：</strong>先享后付支付（具体期数、每期金额及到期日以订单及账单为准）</p>
         <p><strong>应付款总额：</strong>人民币 <strong class="hl">￥${totalAmt}</strong> 元</p>
       </div>
-      <p>甲乙双方确认：上述订单信息以丙方系统生成并经甲方确认的记录为准；商品交付、所有权转移及发票开具依照法律法规及平台规则执行。</p>
+      <p>甲乙双方确认：上述订单信息以乙方系统或通过<strong class="hl">${siteLabel}</strong>生成并经甲方确认的记录为准；商品交付、所有权转移及发票开具依照法律法规及商城规则执行。</p>
 
       <h2>第三条　交付与签收</h2>
       <ol class="decimal">
         <li><strong class="hl">收货信息：</strong>收件人 ${recvName}；联系电话 ${recvPhone}；收货地址 ${recvAddr}。</li>
         <li>乙方应在甲方下单成功后合理期限内发货；遇不可抗力或库存等原因需延期时，应及时通知甲方并可协商处理。</li>
-        <li>甲方签收商品时应当场查验；如发现与订单严重不符，应在<strong class="hl">合理期限内</strong>按平台规则提出异议并留存凭证。</li>
+        <li>甲方签收商品时应当场查验；如发现与订单严重不符，应在<strong class="hl">合理期限内</strong>按商城规则提出异议并留存凭证。</li>
       </ol>
 
       <h2>第四条　价款支付</h2>
-      <p>甲方应按订单及账单约定的<strong class="hl">到期付款日</strong>足额支付各期款项。甲方可通过丙方平台提供的支付渠道主动还款；在符合法律法规及甲方授权的前提下，丙方可协助发起扣款。</p>
-      <p><strong class="hl">逾期责任：</strong>甲方未按期足额支付的，乙方/丙方有权依据平台规则采取提醒、催收、限制下单、追究违约责任等措施；甲方应承担由此产生的合理费用（含催收、诉讼、律师费等，以法律规定及约定为准）。</p>
+      <p>甲方应按订单及账单约定的<strong class="hl">到期付款日</strong>足额支付各期款项；甲方可通过<strong class="hl">${siteLabel}</strong>向乙方展示的支付渠道按期还款。</p>
+      <p><strong class="hl">逾期责任：</strong>甲方未按期足额支付的，乙方有权依据商城规则采取提醒、催收、限制下单、追究违约责任等措施；甲方应承担由此产生的合理费用（含催收、诉讼、律师费等，以法律规定及约定为准）。</p>
 
       <h2>第五条　违约责任</h2>
       <ol class="decimal">
         <li>任何一方违反本协议约定给对方造成损失的，应依法承担赔偿责任。</li>
-        <li>甲方逾期支付任一期款项的，乙方有权要求甲方一次性支付<strong class="hl">剩余全部未付款项</strong>，并可主张自逾期之日起至清偿之日止的违约金（具体比例以平台公示为准，常见为应付未付部分的万分之五/日，若平台规则不同则以平台为准）。</li>
+        <li>甲方逾期支付任一期款项的，乙方有权要求甲方一次性支付<strong class="hl">剩余全部未付款项</strong>，并可主张自逾期之日起至清偿之日止的违约金（具体比例以乙方在<strong class="hl">${siteLabel}</strong>公示的规则为准；常见约定为应付未付部分的万分之五/日）。</li>
       </ol>
 
       <h2>第六条　争议解决</h2>
       <p>${disputeHtml}</p>
 
       <h2>第七条　征信与信息授权（摘要）</h2>
-      <p>为履行本协议、评估信用及风险控制需要，甲方理解并同意：丙方可在<strong class="hl">合法合规</strong>前提下，向依法设立的征信机构或合作机构查询、报送甲方与信用相关的必要信息；甲方应按丙方要求完成实名认证及授权流程。</p>
+      <p>为履行本协议、评估信用及风险控制需要，甲方理解并同意：乙方可在<strong class="hl">合法合规</strong>前提下，通过依法设立的征信机构或合作机构查询、报送（如适用）甲方与<strong class="hl">本订单偿付</strong>相关的必要信息；甲方应按乙方或<strong class="hl">${siteLabel}</strong>要求完成实名认证及授权流程。</p>
       <p class="muted">${creditNote}</p>
 
       <h2>第八条　电子签署与生效</h2>
-      <p>本协议以数据电文形式订立。甲方在丙方页面<strong class="hl">手写签名并提交</strong>即视为签署本协议；甲方与乙方、丙方之间权利义务以本协议及订单、平台规则为准。</p>
+      <p>本协议以数据电文形式订立。甲方在<strong class="hl">${siteLabel}</strong>提供的签约页面<strong class="hl">手写签名并提交</strong>即视为签署本协议；甲乙双方权利义务以本协议及订单、商城规则为准。</p>
 
       <div class="sig-row">
         <p><strong>甲方（用户）确认：</strong>本人已阅读并理解上述全部条款。</p>
-        <p><strong>乙方（商家）：</strong>${merName}</p>
-        <p><strong>丙方（平台）：</strong>${platName}</p>
+        <p><strong>乙方（商户）：</strong>${merName}</p>
       </div>
 
       ${signBlock}

@@ -626,13 +626,6 @@ async function getAdminAccountByPhoneAcrossTenants(phone, preferredTenantId) {
   if (!normalizedPhone) {
     return null
   }
-  // 主系统平台账号保存在 core workspace；legacy 可能在 default tenant 库残留同手机副本，
-  // 若先命中 tenant 会使用旧快照（密码等），因此对 platform 一律以 core 为准。
-  const dbCoreForPhone = await readCoreDb()
-  const canonicalPlatformPhone = getAdminAccountByPhone(dbCoreForPhone, normalizedPhone)
-  if (canonicalPlatformPhone && String(canonicalPlatformPhone.scopeType || 'tenant') === 'platform') {
-    return canonicalPlatformPhone
-  }
   const preferred = normalizeTenantId(preferredTenantId || DEFAULT_TENANT_ID)
   const dbPreferred = await readDbByTenantId(preferred)
   const foundPreferred = getAdminAccountByPhone(dbPreferred, normalizedPhone)
@@ -640,7 +633,8 @@ async function getAdminAccountByPhoneAcrossTenants(phone, preferredTenantId) {
     return foundPreferred
   }
   const searched = new Set([preferred])
-  const foundCore = getAdminAccountByPhone(dbCoreForPhone, normalizedPhone)
+  const dbCore = await readCoreDb()
+  const foundCore = getAdminAccountByPhone(dbCore, normalizedPhone)
   if (foundCore) {
     return foundCore
   }
@@ -746,6 +740,21 @@ async function resolveAdminRole(ctx) {
   }
   const requestTenantId = normalizeTenantId(ctx.state && ctx.state.tenantId ? ctx.state.tenantId : DEFAULT_TENANT_ID)
   const tokenPhone = normalizePhone(parsePhoneFromToken(ctx.headers.authorization))
+  const hintUsername = String(ctx.headers['x-admin-username'] || ctx.headers['x-user-username'] || '').trim()
+  // 仅用 token（手机）跨库查找时可能与平台或其它子系统的同手机号账号混淆；可与登录会话中的用户名交叉校验。
+  if (tokenPhone && hintUsername) {
+    const byUsername = await getAdminAccountByUsernameAcrossTenants(hintUsername, requestTenantId)
+    if (
+      byUsername
+      && byUsername.status === 'active'
+      && normalizePhone(byUsername.phone) === tokenPhone
+    ) {
+      ctx.state.adminRole = byUsername.role
+      ctx.state.adminAccount = byUsername
+      ctx.state._resolvedAdminRole = true
+      return ctx.state.adminRole
+    }
+  }
   const tokenAccount = tokenPhone ? await getAdminAccountByPhoneAcrossTenants(tokenPhone, requestTenantId) : null
   const tokenPhoneRole = tokenAccount ? tokenAccount.role : ''
   if (tokenPhoneRole) {
@@ -926,6 +935,10 @@ function normalizeProductRecord(product) {
   }
   if (!hasExplicitCardPackage && salesMode === 'installment') {
     cardPackageAmount = inferCardPackageAmountYuanFromSubtitle(product.subtitle)
+  }
+  /** 首页商城专区：卡包金额统一为 0，不从副标题推断也不沿用错误存量字段 */
+  if (salesMode === 'mall') {
+    cardPackageAmount = 0
   }
   const detailImages = normalizeProductDetailImages(product)
   return {
@@ -1449,10 +1462,12 @@ function reconcileInstallmentCompletionAcrossDb(db) {
 function ensureOrderCardPackageAmountFromProduct(db, order) {
   const qty = Math.max(1, Math.floor(Number(order.quantity)) || 1)
   let resolved = 0
+  let hasProduct = false
   const pid = String(order.productId || '').trim()
   if (pid) {
     const raw = (Array.isArray(db.products) ? db.products : []).find(p => p && String(p.id) === pid)
     if (raw) {
+      hasProduct = true
       const product = normalizeProductRecord(raw)
       resolved = Math.max(0, Math.round(Number(product.cardPackageAmount) || 0)) * qty
     }
@@ -1466,6 +1481,10 @@ function ensureOrderCardPackageAmountFromProduct(db, order) {
         return true
       }
       order.cardPackageAmount = rounded
+      if (hasProduct && rounded !== resolved) {
+        order.cardPackageAmount = resolved
+        return true
+      }
       return false
     }
   }
@@ -1498,14 +1517,31 @@ function isMallCardPackageContractMock() {
 }
 
 function mallCardPackagePublicOrigin(ctx) {
+  const explicit = String(process.env.MALL_PUBLIC_API_ORIGIN || '').trim().replace(/\/+$/, '')
+  if (explicit && (explicit.startsWith('http://') || explicit.startsWith('https://'))) {
+    return explicit
+  }
+
   const xfProto = String(ctx.get('x-forwarded-proto') || '').trim().split(',')[0]
+  const scheme = xfProto === 'https' ? 'https' : 'http'
+
+  const reqHost = String(ctx.get('host') || '').trim().split(/\s+/)[0]
+  const hostnameOnly = reqHost.replace(/^\[|\]$/g, '').split(':')[0]
+  /** 发往 Koa 的 Host 若为公网/内网网关（非本地回环），优先用它拼装 iframe URL，不要用 X-Forwarded-Host（常为前端域名，易指错机） */
+  const loopbackLike = !hostnameOnly
+    || hostnameOnly === 'localhost'
+    || hostnameOnly === '127.0.0.1'
+    || hostnameOnly === '::1'
+
+  if (reqHost && !loopbackLike)
+    return `${scheme}://${reqHost}`
+
   const xfHost = String(ctx.get('x-forwarded-host') || '').trim().split(',')[0]
-  if (xfHost) {
-    return `${xfProto || 'https'}://${xfHost}`
-  }
-  if (typeof ctx.origin === 'string' && ctx.origin) {
+  if (xfHost)
+    return `${scheme}://${xfHost}`
+
+  if (typeof ctx.origin === 'string' && ctx.origin)
     return ctx.origin
-  }
   return `${ctx.protocol}://${ctx.host}`
 }
 
@@ -1513,7 +1549,13 @@ function mallCardPackagePublicOrigin(ctx) {
 function mallCardPackageMockSignPageUrl(ctx, orderId, phone) {
   const oid = encodeURIComponent(String(orderId || '').trim())
   const ph = encodeURIComponent(String(phone || '').trim())
-  return `${mallCardPackagePublicOrigin(ctx)}/api/card-packages/${oid}/contract-view?phone=${ph}`
+  const tid = normalizeTenantId(ctx?.state?.tenantId || DEFAULT_TENANT_ID)
+  /**
+   * iframe 无法带 x-tenant-id。query 由 resolveTenantIdFromRequest 在无头时选用。
+   * 始终附带 tenantId（含 default），避免仅依赖 Host、并与 contract-flow 当期租户严格一致。
+   */
+  const qs = `phone=${ph}&tenantId=${encodeURIComponent(tid)}`
+  return `${mallCardPackagePublicOrigin(ctx)}/api/card-packages/${oid}/contract-view?${qs}`
 }
 
 function buildMockGetContractJson(ctx, order, contractNo, phone) {
@@ -1685,6 +1727,7 @@ async function getOrBuildMockCardPackagePdfBuffer(ctx, db, order, user, phone, c
         signedAt: order.cardPackageContractSignedAt || '',
         apiOrigin,
         orderId: order.id,
+        scopeTenantId: normalizeTenantId(ctx.state?.tenantId || DEFAULT_TENANT_ID),
       })
       await fsp.writeFile(path.join(MOCK_CARD_PACKAGE_PDF_CACHE_DIR, filename), buf).catch((e) => {
         console.warn('[card-package-pdf-cache-write]', e && e.message ? String(e.message) : e)
@@ -3457,7 +3500,7 @@ async function findGlobalBossConflict({ username, phone, excludeAccountId = '' }
 }
 
 router.get('/admin/accounts', async (ctx) => {
-  if (!await requireAdminPermission(ctx, [ADMIN_ROLES.SUPER], '查看后台账号')) {
+  if (!await requireAdminPermission(ctx, [ADMIN_ROLES.SUPER, ADMIN_ROLES.BOSS], '查看后台账号')) {
     return
   }
   const db = readDb()
@@ -3477,7 +3520,7 @@ router.get('/admin/accounts', async (ctx) => {
 })
 
 router.post('/admin/accounts', async (ctx) => {
-  if (!await requireAdminPermission(ctx, [ADMIN_ROLES.SUPER], '新增后台账号')) {
+  if (!await requireAdminPermission(ctx, [ADMIN_ROLES.SUPER, ADMIN_ROLES.BOSS], '新增后台账号')) {
     return
   }
   const db = readDb()
@@ -3570,7 +3613,7 @@ router.post('/admin/accounts', async (ctx) => {
 })
 
 router.patch('/admin/accounts/:id', async (ctx) => {
-  if (!await requireAdminPermission(ctx, [ADMIN_ROLES.SUPER], '修改后台账号')) {
+  if (!await requireAdminPermission(ctx, [ADMIN_ROLES.SUPER, ADMIN_ROLES.BOSS], '修改后台账号')) {
     return
   }
   const db = readDb()
@@ -3726,7 +3769,7 @@ router.patch('/admin/accounts/:id', async (ctx) => {
 })
 
 router.delete('/admin/accounts/:id', async (ctx) => {
-  if (!await requireAdminPermission(ctx, [ADMIN_ROLES.SUPER], '删除后台账号')) {
+  if (!await requireAdminPermission(ctx, [ADMIN_ROLES.SUPER, ADMIN_ROLES.BOSS], '删除后台账号')) {
     return
   }
   const db = readDb()
@@ -4442,6 +4485,126 @@ function toTrafficChannelView(ch, registerCount) {
   }
 }
 
+/** 流量客户质量：与财务报表一致，仅计卡包已发放且非待审核的订单 */
+function isTrafficQualityIssuedOrder(order) {
+  return Boolean(order && order.status !== 'reviewing' && order.cardPackageIssued)
+}
+
+function trafficInstallmentOrderHasUnpaidOverdue(order, todayKey) {
+  if (!order || order.payType !== 'installment') {
+    return false
+  }
+  ensureOrderInstallmentPlan(order)
+  const plan = Array.isArray(order.installmentPlan) ? order.installmentPlan : []
+  for (const item of plan) {
+    if (!item) {
+      continue
+    }
+    const key = normalizeInstallmentDueDateKey(item.dueDate)
+    if (!key || item.paid) {
+      continue
+    }
+    if (key < todayKey) {
+      return true
+    }
+  }
+  return false
+}
+
+function buildTrafficChannelQualityRows(db) {
+  reconcileInstallmentCompletionAcrossDb(db)
+  ensureTrafficChannels(db)
+  const todayKey = normalizeInstallmentDueDateKey(formatDate(new Date().toISOString()))
+  const sorted = [...db.trafficChannels].sort((a, b) =>
+    String(a.createdAt || '').localeCompare(String(b.createdAt || '')),
+  )
+  const out = []
+  for (const ch of sorted) {
+    if (!ch) {
+      continue
+    }
+    const code = String(ch.code || '')
+    const users = db.users.filter(
+      u => u && String(u.registerChannelCode || '').trim() === code,
+    )
+    const registerCount = users.length
+    let issuedOrderCount = 0
+    let issuedOrderAmount = 0
+    let installmentIssuedOrderCount = 0
+    let fullPaymentIssuedOrderCount = 0
+    let overdueInstallmentOrderCount = 0
+    const orderCountByUserId = new Map()
+    for (const u of users) {
+      const list = ordersForRegisteredMallUser(db, u).filter(isTrafficQualityIssuedOrder)
+      for (const order of list) {
+        issuedOrderCount += 1
+        issuedOrderAmount += Number(order.totalAmount || 0)
+        const uid = String(u.id || '')
+        orderCountByUserId.set(uid, (orderCountByUserId.get(uid) || 0) + 1)
+        if (order.payType === 'installment') {
+          installmentIssuedOrderCount += 1
+          if (trafficInstallmentOrderHasUnpaidOverdue(order, todayKey)) {
+            overdueInstallmentOrderCount += 1
+          }
+        }
+        else if (order.payType === 'full') {
+          fullPaymentIssuedOrderCount += 1
+        }
+      }
+    }
+    issuedOrderAmount = Number(issuedOrderAmount.toFixed(2))
+    let usersWithIssuedOrder = 0
+    let repeatPurchaseUsers = 0
+    for (const c of orderCountByUserId.values()) {
+      if (c >= 1) {
+        usersWithIssuedOrder += 1
+      }
+      if (c >= 2) {
+        repeatPurchaseUsers += 1
+      }
+    }
+    const registrationConversionRate = registerCount > 0
+      ? Number(((usersWithIssuedOrder / registerCount) * 100).toFixed(2))
+      : null
+    const avgOrderAmount = issuedOrderCount > 0
+      ? Number((issuedOrderAmount / issuedOrderCount).toFixed(2))
+      : null
+    const avgAmountPerRegistrant = registerCount > 0
+      ? Number((issuedOrderAmount / registerCount).toFixed(2))
+      : null
+    const overdueRate = installmentIssuedOrderCount > 0
+      ? Number(((overdueInstallmentOrderCount / installmentIssuedOrderCount) * 100).toFixed(2))
+      : null
+    const repeatPurchaseRate = usersWithIssuedOrder > 0
+      ? Number(((repeatPurchaseUsers / usersWithIssuedOrder) * 100).toFixed(2))
+      : null
+    const installmentShareRate = issuedOrderCount > 0
+      ? Number(((installmentIssuedOrderCount / issuedOrderCount) * 100).toFixed(2))
+      : null
+    out.push({
+      id: ch.id,
+      code,
+      name: ch.name,
+      disabled: Boolean(ch.disabled),
+      registerCount,
+      issuedOrderCount,
+      issuedOrderAmount,
+      usersWithIssuedOrder,
+      registrationConversionRate,
+      avgOrderAmount,
+      avgAmountPerRegistrant,
+      installmentIssuedOrderCount,
+      fullPaymentIssuedOrderCount,
+      installmentShareRate,
+      overdueInstallmentOrderCount,
+      overdueRate,
+      repeatPurchaseUsers,
+      repeatPurchaseRate,
+    })
+  }
+  return out
+}
+
 router.get('/admin/traffic-channels', async (ctx) => {
   if (!await requireAdminPermission(ctx, [ADMIN_ROLES.SUPER], '查看流量渠道')) {
     return
@@ -4459,6 +4622,14 @@ router.get('/admin/traffic-channels', async (ctx) => {
     .map(ch => toTrafficChannelView(ch, counts.get(String(ch.code)) || 0))
     .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)))
   ctx.body = success(list)
+})
+
+router.get('/admin/traffic-channels/quality', async (ctx) => {
+  if (!await requireAdminPermission(ctx, [ADMIN_ROLES.SUPER], '查看流量渠道')) {
+    return
+  }
+  const db = readDb()
+  ctx.body = success(buildTrafficChannelQualityRows(db))
 })
 
 router.post('/admin/traffic-channels', async (ctx) => {
@@ -4986,6 +5157,7 @@ router.get('/card-packages/:orderId/contract-view', async (ctx) => {
     signedAt: order.cardPackageContractSignedAt || '',
     apiOrigin: mallCardPackagePublicOrigin(ctx),
     orderId: order.id,
+    scopeTenantId: normalizeTenantId(ctx.state?.tenantId || DEFAULT_TENANT_ID),
   })
 })
 
