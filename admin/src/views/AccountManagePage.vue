@@ -245,9 +245,7 @@ function isCurrentSessionRow(item: AdminAccountItem): boolean {
   return Boolean(sessionUsername.value && item.username === sessionUsername.value)
 }
 
-function roleModalHint(): string {
-  return usePlatformAccountsApi.value ? '当前账号范围：主系统账号' : '当前账号范围：本子系统（员工仅审核员、催收员）'
-}
+
 
 async function fetchAccounts() {
   loading.value = true
@@ -480,7 +478,7 @@ async function submitRoleChange() {
     return
   }
   if (!isPlatformSession.value && (roleForm.role === 'super_admin' || roleForm.role === 'boss')) {
-    ElMessage.error('子系统内员工角色仅可为审核员或催收员')
+    ElMessage.error('员工角色仅可为审核员或催收员')
     return
   }
   roleSubmitting.value = true
@@ -934,11 +932,7 @@ watch(
             <el-option label="催收员" value="collector" />
           </el-select>
         </label>
-        <label
-          class="full"
-        >
-          {{ roleModalHint() }}
-        </label>
+      
       </div>
       <div class="actions actions-right">
         <button

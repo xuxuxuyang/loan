@@ -119,7 +119,8 @@ const allMenus: MenuEntry[] = [
   },
   { label: '账号管理', path: '/accounts', icon: Avatar, roles: ['super_admin', 'boss'] },
   { label: '流量管理', path: '/traffic', icon: Promotion, roles: ['super_admin'] },
-  { label: '财务报表', path: '/dashboard', icon: DataAnalysis, roles: ['super_admin'], platformOnly: true },
+  /** 与各租户 mall 请求头一致，展示当前工作区订单汇总；非「仅总部」项以便子系统老板可见 */
+  { label: '财务报表', path: '/dashboard', icon: DataAnalysis, roles: ['super_admin'] },
   {
     label: '子系统管理',
     path: '/tenants',
@@ -377,7 +378,7 @@ useAdminOrderReviewBadge(ordersSidebarBadgeEnabled)
               :size="36"
             />
             <span class="admin-role">
-              <template v-if="isPlatformManagingTenant">平台代管（{{ roleText(session.role) }}）</template>
+              <template v-if="isPlatformManagingTenant">数据总览（{{ roleText(session.role) }}）</template>
               <template v-else>{{ roleText(session.role) }}</template>
             </span>
             <span class="admin-user">{{ session.username }}</span>

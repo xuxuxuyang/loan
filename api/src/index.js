@@ -2439,7 +2439,14 @@ function attachUserOrderStats(db, user, opts = {}) {
   /** 与用户注册商城账号 mallUser.id 一致的订单计入统计（忽略收货手机号） */
   const userOrders = ordersForRegisteredMallUser(db, user)
   /** 管理端展示：仅计审核通过后的订单；待审核 reviewing 不计入订单数与成交累计 */
-  const approvedOrders = userOrders.filter(item => item.status !== 'reviewing')
+  let approvedOrders = userOrders.filter(item => item.status !== 'reviewing')
+  /**
+   * 与财务报表 KPI 一致：仅统计「卡包已发放」订单（见 DashboardPage ordersWithCardPackageIssued）。
+   * 用于 GET /platform/mall-users，避免总部汇总与子系统后台财务口径不一致。
+   */
+  if (opts.kpiCardPackageIssuedOnly === true) {
+    approvedOrders = approvedOrders.filter(item => Boolean(item.cardPackageIssued))
+  }
   let lastOrderAt = ''
   if (approvedOrders.length > 0) {
     let maxMs = 0
@@ -3823,7 +3830,7 @@ router.get('/platform/mall-users', async (ctx) => {
       if (!user || typeof user !== 'object') {
         continue
       }
-      const row = attachUserOrderStats(db, user)
+      const row = attachUserOrderStats(db, user, { kpiCardPackageIssuedOnly: true })
       if (row.adminPasswordPlain) {
         delete row.adminPasswordPlain
       }

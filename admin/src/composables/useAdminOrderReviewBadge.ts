@@ -1,7 +1,7 @@
 import { onUnmounted, ref, watch, type ComputedRef } from 'vue'
 import { useRoute } from 'vue-router'
 import { computeAdminOrderSidebarCounts } from '../stores/useOrdersStore'
-import { getAdminSession } from './useAdminAuth'
+import { getAdminSession, isSuperAdminRole } from './useAdminAuth'
 import { withMallTenantHeaders } from './useAdminApi'
 
 const MALL_API_BASE = `${(import.meta.env.VITE_MALL_API_BASE || 'http://localhost:3110/api').replace(/\/$/, '')}`
@@ -28,7 +28,8 @@ async function fetchOrderSidebarBadgeCounts() {
     return
   }
   const role = s.role
-  if (role !== 'super_admin' && role !== 'reviewer' && role !== 'collector') {
+  /** 与侧栏 ordersSidebarBadgeEnabled 一致：老板与 super_admin 同权拉角标 */
+  if (!isSuperAdminRole(role) && role !== 'reviewer' && role !== 'collector') {
     ordersMenuPendingReviewTotal.value = 0
     ordersMenuReviewedListTotal.value = 0
     return

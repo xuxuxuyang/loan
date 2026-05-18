@@ -161,15 +161,7 @@ onMounted(() => {
       <p class="tenant-mall-users__title">
         商城注册用户（跨子系统）
       </p>
-      <el-alert
-        v-if="isAllTenants"
-        type="info"
-        show-icon
-        class="tenant-mall-users__alert"
-        title="已全部子系统为范围并按手机号合并去重。"
-        description="同一手机号在多个子系统存在商城账号时合并为一行展示；订单数与成交金额为各子系统中该手机号账户的汇总。选择具体子系统后仅查看该库数据，不进行跨库合并。"
-        :closable="false"
-      />
+      
     </div>
 
     <el-alert
@@ -236,8 +228,8 @@ onMounted(() => {
               <th>姓名</th>
               <th>手机号</th>
               <th>商城 ID</th>
-              <th>订单数（汇总）</th>
-              <th>成交金额（汇总）</th>
+              <th>订单数（汇总·卡包已发放）</th>
+              <th>成交金额（汇总·卡包已发放）</th>
               <th>最近下单</th>
               <th>注册渠道</th>
               <th>所属子系统</th>
