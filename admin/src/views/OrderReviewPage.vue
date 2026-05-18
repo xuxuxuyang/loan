@@ -70,7 +70,14 @@ const reviewOrders = computed(() => {
   }
   const kw = userFilter.value.trim().toLowerCase()
   if (kw) {
-    list = list.filter(item => item.user.toLowerCase().includes(kw))
+    list = list.filter((item) => {
+      const hay = [
+        item.user,
+        item.buyerPhone,
+        item.id,
+      ].join(' ').toLowerCase()
+      return hay.includes(kw)
+    })
   }
   return list
 })
@@ -83,31 +90,40 @@ function riskApproveGateForOrder(order: OrderItem): RiskApproveGateState {
 }
 
 async function fetchAdminUserRiskViewForOrder(order: OrderItem): Promise<AdminUserRiskViewPayload | null> {
-  const digits = normalizePhone(order.receiverPhone || '')
-  if (digits.length !== 11) {
+  const headers = withMallTenantHeaders()
+  try {
+    let id = String(order.mallUserId || '').trim()
+    if (!id) {
+      const digits = normalizePhone(order.buyerPhone || '')
+      if (digits.length !== 11) {
+        return null
+      }
+      const r1 = await fetch(`${MALL_API_BASE}/users/by-phone?phone=${encodeURIComponent(digits)}`, {
+        method: 'GET',
+        headers,
+      })
+      if (!r1.ok) {
+        return null
+      }
+      const p1 = await r1.json() as { data?: { id?: string } | null }
+      id = p1.data && typeof p1.data.id === 'string' ? p1.data.id.trim() : ''
+    }
+    if (!id) {
+      return null
+    }
+    const r2 = await fetch(`${MALL_API_BASE}/users/${encodeURIComponent(id)}`, {
+      method: 'GET',
+      headers,
+    })
+    if (!r2.ok) {
+      return null
+    }
+    const p2 = await r2.json() as { data?: { riskView?: AdminUserRiskViewPayload } }
+    return p2.data?.riskView ?? null
+  }
+  catch {
     return null
   }
-  const r1 = await fetch(`${MALL_API_BASE}/users/by-phone?phone=${encodeURIComponent(digits)}`, {
-    method: 'GET',
-    headers: withMallTenantHeaders(),
-  })
-  if (!r1.ok) {
-    return null
-  }
-  const p1 = await r1.json() as { data?: { id?: string } | null }
-  const id = p1.data && typeof p1.data.id === 'string' ? p1.data.id.trim() : ''
-  if (!id) {
-    return null
-  }
-  const r2 = await fetch(`${MALL_API_BASE}/users/${encodeURIComponent(id)}`, {
-    method: 'GET',
-    headers: withMallTenantHeaders(),
-  })
-  if (!r2.ok) {
-    return null
-  }
-  const p2 = await r2.json() as { data?: { riskView?: AdminUserRiskViewPayload } }
-  return p2.data?.riskView ?? null
 }
 
 async function computeRiskGateForOrder(order: OrderItem): Promise<'ok' | 'blocked'> {
@@ -369,17 +385,36 @@ function onRiskDialogUserUpdated(_user: UserItem) {
 }
 
 async function openRiskDetail(order: OrderItem, entry: 'user' | 'risk') {
-  const digits = normalizePhone(order.receiverPhone || '')
-  if (digits.length !== 11) {
-    ElMessage.error('订单无有效收货手机号，无法打开用户风控档案')
-    return
-  }
   if (resolvingRiskOrderId.value) {
     return
   }
   riskDetailHideBasicInfoTab.value = entry === 'risk'
   resolvingRiskOrderId.value = order.id
   try {
+    const mid = String(order.mallUserId || '').trim()
+    if (mid) {
+      const response = await fetch(`${MALL_API_BASE}/users/${encodeURIComponent(mid)}`, {
+        method: 'GET',
+        headers: withMallTenantHeaders(),
+      })
+      if (!response.ok) {
+        throw new Error(`查询用户失败: ${response.status}`)
+      }
+      const payload = await response.json() as { data?: { user?: { id?: string } } | null }
+      const id = payload.data?.user && typeof payload.data.user.id === 'string' ? payload.data.user.id.trim() : ''
+      if (!id) {
+        ElMessage.error('未找到该订单关联的商城注册用户')
+        return
+      }
+      riskDialogUserId.value = id
+      userRiskDialogVisible.value = true
+      return
+    }
+    const digits = normalizePhone(order.buyerPhone || '')
+    if (digits.length !== 11) {
+      ElMessage.error('订单缺少注册用户信息（mallUserId / buyerPhone），无法打开风控档案')
+      return
+    }
     const url = `${MALL_API_BASE}/users/by-phone?phone=${encodeURIComponent(digits)}`
     const response = await fetch(url, {
       method: 'GET',

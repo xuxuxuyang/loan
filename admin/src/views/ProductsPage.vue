@@ -286,6 +286,16 @@ const deletePopStyle = ref<Record<string, string>>({})
 const DELETE_POP_GAP = 8
 const DELETE_POP_VIEW_MARGIN = 8
 
+/** Teleport 到 body 且尚无坐标时会在文档流顶端闪现；先固定定位并隐藏，待算出锚点后再显示 */
+const DELETE_POP_PRE_LAYOUT_STYLE: Record<string, string> = {
+  position: 'fixed',
+  top: '0',
+  left: '0',
+  opacity: '0',
+  pointerEvents: 'none',
+  zIndex: '3000',
+}
+
 const pendingDeleteProduct = computed(() => {
   const id = pendingDeleteId.value
   if (id == null)
@@ -346,6 +356,8 @@ function updateDeletePopPosition() {
     top: `${Math.round(top)}px`,
     left: `${Math.round(left)}px`,
     zIndex: '3000',
+    opacity: '1',
+    pointerEvents: 'auto',
   }
 }
 
@@ -814,11 +826,12 @@ onUnmounted(() => {
 
 watch(pendingDeleteId, (id) => {
   detachDeletePopUiListeners()
-  deletePopStyle.value = {}
   if (id == null) {
+    deletePopStyle.value = {}
     deleteAnchorEl.value = null
     return
   }
+  deletePopStyle.value = { ...DELETE_POP_PRE_LAYOUT_STYLE }
   queueMicrotask(() => attachDeletePopUiListeners())
   void scheduleDeletePopPosition()
 })

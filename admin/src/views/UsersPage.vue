@@ -646,8 +646,9 @@ function openRemarkDialog(user: ListedUser) {
   remarkDialogVisible.value = true
 }
 
-function closeRemarkDialog() {
-  if (remarkSaving.value) return
+function closeRemarkDialog(opts?: { force?: boolean }) {
+  const force = Boolean(opts?.force)
+  if (!force && remarkSaving.value) return
   remarkDialogVisible.value = false
   remarkTarget.value = null
   remarkDraft.value = ''
@@ -670,7 +671,7 @@ async function saveRemark() {
     if (payload.data)
       upsertUserFromApiRow(payload.data)
     ElMessage.success('备注已保存')
-    closeRemarkDialog()
+    closeRemarkDialog({ force: true })
   }
   catch (error) {
     console.error('保存备注失败', error)
@@ -1082,9 +1083,10 @@ async function toggleBlacklist(user: ListedUser) {
         <el-input
           v-model="quotaInput"
           class="form-input"
-          type="number"
-          :min="0"
+          type="text"
+          inputmode="decimal"
           clearable
+          autofocus
         />
       </label>
       <div class="actions actions-right">
@@ -1105,7 +1107,7 @@ async function toggleBlacklist(user: ListedUser) {
     <div
       v-if="remarkDialogVisible && remarkTarget && canManageUsers"
       class="modal-mask"
-      @click.self="closeRemarkDialog"
+      @click.self="() => closeRemarkDialog()"
     >
     <div class="modal-panel create-modal">
       <div class="modal-header">
@@ -1114,7 +1116,7 @@ async function toggleBlacklist(user: ListedUser) {
           type="button"
           class="btn btn-ghost"
           :disabled="remarkSaving"
-          @click="closeRemarkDialog"
+          @click="() => closeRemarkDialog()"
         >
           关闭
         </button>

@@ -6,6 +6,9 @@ import { withMallTenantHeaders } from '../composables/useAdminApi'
 
 interface PendingReceivableRow {
   orderId: string
+  /** 注册用户信息（待收维度与账号一致） */
+  buyerName: string
+  buyerPhone: string
   receiverName: string
   receiverPhone: string
   productName: string
@@ -273,11 +276,14 @@ watch(
             />
           </template>
           <el-table-column
-            prop="receiverName"
-            label="姓名"
+            label="用户（注册）"
             min-width="120"
             show-overflow-tooltip
-          />
+          >
+            <template #default="{ row }">
+              {{ (row.buyerName || '').trim() || '—' }}
+            </template>
+          </el-table-column>
           <el-table-column
             prop="amount"
             label="待收金额（元）"
@@ -312,10 +318,14 @@ watch(
             show-overflow-tooltip
           />
           <el-table-column
-            prop="receiverPhone"
-            label="手机号"
+            label="注册手机"
             min-width="120"
-          />
+            show-overflow-tooltip
+          >
+            <template #default="{ row }">
+              {{ row.buyerPhone || '—' }}
+            </template>
+          </el-table-column>
         </el-table>
       </div>
     </el-card>

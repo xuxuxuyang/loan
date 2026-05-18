@@ -23,6 +23,9 @@ export interface MallOrder {
   receiverName: string
   receiverPhone: string
   receiverAddress: string
+  /** GET /orders enrichment：注册姓名（与收货人可能不同） */
+  buyerName?: string
+  buyerPhone?: string
   /** 卡包是否已领取（仅 shipping/receiving/enjoying 等有卡包业务的订单有意义） */
   cardPackageIssued?: boolean
   /** 快递运单号（后台登记后有值；shipping 填单后接口通常会改为 receiving） */
@@ -124,6 +127,8 @@ function normalizeMallOrder(item: unknown): MallOrder | null {
     receiverName: String(raw.receiverName || '').trim(),
     receiverPhone: String(raw.receiverPhone || '').trim(),
     receiverAddress: String(raw.receiverAddress || '').trim(),
+    buyerName: String(raw.buyerName || '').trim() || undefined,
+    buyerPhone: String(raw.buyerPhone || '').trim() || undefined,
     cardPackageIssued: raw.cardPackageIssued === undefined ? undefined : Boolean(raw.cardPackageIssued),
     trackingNumber: String(raw.trackingNumber || '').trim() || undefined,
   }
@@ -134,29 +139,11 @@ export function normalizeReceiverPhoneDigits(phone: string) {
   return String(phone || '').replace(/\D/g, '')
 }
 
-function mallOrderLegacyMatchByReceiver(receiverPhone: string, loginAccount: string) {
-  let u = normalizeReceiverPhoneDigits(loginAccount)
-  if (u.startsWith('86') && u.length === 13) {
-    u = u.slice(2)
-  }
-  if (!/^1\d{10}$/.test(u)) {
-    return false
-  }
-  let r = normalizeReceiverPhoneDigits(receiverPhone)
-  if (r.startsWith('86') && r.length === 13) {
-    r = r.slice(2)
-  }
-  return r === u
-}
-
-/** 订单是否属于当前登录的注册账号：优先 order.mallUserId === profileUserId；历史订单无 mallUserId 时再按收货手机号与登录手机号比对 */
-export function mallOrderBelongsToLoggedIn(order: MallOrder, loginAccount: string, profileUserId?: string) {
+/** 订单是否属于当前登录的注册账号：仅 order.mallUserId === profileUserId（禁止按收货手机号归户） */
+export function mallOrderBelongsToLoggedIn(order: MallOrder, profileUserId?: string) {
   const mid = String(order.mallUserId || '').trim()
   const pid = String(profileUserId || '').trim()
-  if (mid && pid) {
-    return mid === pid
-  }
-  return mallOrderLegacyMatchByReceiver(order.receiverPhone, loginAccount)
+  return Boolean(mid && pid && mid === pid)
 }
 
 function resolveMallApiBase() {

@@ -65,16 +65,40 @@ function onRiskDialogUserUpdated(_user: UserItem) {
 }
 
 async function openUserRiskFromOrder(order: OrderItem) {
-  const digits = normalizePhone(order.receiverPhone || '')
-  if (digits.length !== 11) {
-    ElMessage.error('订单无有效收货手机号，无法打开用户风控档案')
-    return
-  }
   if (resolvingRiskUserOrderId.value) {
     return
   }
   resolvingRiskUserOrderId.value = order.id
   try {
+    const mid = String(order.mallUserId || '').trim()
+    if (mid) {
+      const response = await fetch(`${MALL_API_BASE}/users/${encodeURIComponent(mid)}`, {
+        method: 'GET',
+        headers: withMallTenantHeaders(),
+      })
+      if (!response.ok) {
+        throw new Error(`查询用户失败: ${response.status}`)
+      }
+      const payload = await response.json() as { data?: { user?: { id?: string } } | null }
+      const id = payload.data?.user && typeof payload.data.user.id === 'string' ? payload.data.user.id.trim() : ''
+      if (!id) {
+        ElMessage.error('未找到该订单关联的商城注册用户')
+        return
+      }
+      riskDialogUserId.value = id
+      riskContextOrderShipping.value = {
+        name: String(order.receiverName ?? '').trim(),
+        phone: String(order.receiverPhone ?? '').trim(),
+        address: String(order.receiverAddress ?? ''),
+      }
+      userRiskDialogVisible.value = true
+      return
+    }
+    const digits = normalizePhone(order.buyerPhone || '')
+    if (digits.length !== 11) {
+      ElMessage.error('订单缺少注册用户信息（mallUserId / buyerPhone），无法打开用户风控档案')
+      return
+    }
     const url = `${MALL_API_BASE}/users/by-phone?phone=${encodeURIComponent(digits)}`
     const response = await fetch(url, {
       method: 'GET',
@@ -92,7 +116,7 @@ async function openUserRiskFromOrder(order: OrderItem) {
     }
     riskDialogUserId.value = id
     riskContextOrderShipping.value = {
-      name: String(order.user ?? '').trim(),
+      name: String(order.receiverName ?? '').trim(),
       phone: String(order.receiverPhone ?? '').trim(),
       address: String(order.receiverAddress ?? ''),
     }
@@ -409,9 +433,16 @@ function onNegotiateAmountChange(val: number | undefined) {
 }
 
 function customerIdentityKey(order: OrderItem): string {
-  const phoneDigits = normalizePhone(order.receiverPhone || '')
+  let phoneDigits = normalizePhone(order.buyerPhone || '')
+  if (phoneDigits.startsWith('86') && phoneDigits.length === 13) {
+    phoneDigits = phoneDigits.slice(2)
+  }
   if (phoneDigits.length === 11) {
     return `phone:${phoneDigits}`
+  }
+  const mid = String(order.mallUserId || '').trim()
+  if (mid) {
+    return `mall:${mid}`
   }
   const name = String(order.user || '').trim().toLowerCase()
   return name ? `name:${name}` : ''

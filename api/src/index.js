@@ -230,36 +230,14 @@ function resolveRegisteredMallUserByNormalizedPhone(db, phoneDigits) {
   return db.users.find(item => normalizePhone(item.phone || '') === p) || null
 }
 
-/** 订单归属：① mallUserId 与当前用户 id 一致；② 历史无 mallUserId 且收货手机=注册用户手机；
- *  ③ mallUserId 无效或指向同注册手机号下的另一用户快照、且收货手机为该注册手机（兼容重复用户行/脏数据）。
- */
+/** 订单归属：仅当 order.mallUserId 与注册用户 id 一致（禁止用收货手机号归属账号） */
 function orderBelongsToRegisteredMallUser(db, order, mallUser) {
   if (!order || !mallUser || !db) {
     return false
   }
   const uid = String(mallUser.id || '').trim()
   const mid = String(order.mallUserId || '').trim()
-  const userPhone = normalizePhone(mallUser.phone || '')
-  const receiverNorm = normalizePhone(order.receiverPhone || '')
-  const recvIsThisRegisteredMobile = /^1\d{10}$/.test(userPhone) && receiverNorm === userPhone
-
-  if (uid && mid && mid === uid) {
-    return true
-  }
-  if (!mid && recvIsThisRegisteredMobile) {
-    return true
-  }
-  if (!recvIsThisRegisteredMobile) {
-    return false
-  }
-  /** mallUserId 已填但与当前行 id 不同；收货为该注册手机（见上） */
-  const ownerByMid = db.users.find(u => String(u.id || '').trim() === mid)
-  if (!ownerByMid) {
-    /** 订单上的 mallUserId 在库里不存在（脏数据）；收货仍为该注册用户手机 → 记入本用户汇总 */
-    return true
-  }
-  /** 多套 users 快照共享同一注册手机号时，任一 id 名下的单在合并行上均能合并数量 */
-  return normalizePhone(ownerByMid.phone || '') === userPhone
+  return Boolean(uid && mid && mid === uid)
 }
 
 function ordersForRegisteredMallUser(db, mallUser) {
@@ -1143,11 +1121,24 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
 
-function buildOrderRiskDetail(order) {
+function buildOrderRiskDetail(order, db) {
   ensureOrderRiskState(order)
   const totalAmount = Number(order.totalAmount || 0)
   const periods = Number(order.installmentPeriods || (Array.isArray(order.installmentPlan) ? order.installmentPlan.length : 1) || 1)
-  const phoneTail = Number(String(order.receiverPhone || '').slice(-2) || '0')
+  let phoneForRiskTail = ''
+  if (db && Array.isArray(db.users)) {
+    const buyer = resolveMallBuyerFromOrder(db, order)
+    if (buyer) {
+      let p = normalizePhone(buyer.phone || '')
+      if (p.startsWith('86') && p.length === 13) {
+        p = p.slice(2)
+      }
+      if (/^1\d{10}$/.test(p)) {
+        phoneForRiskTail = p
+      }
+    }
+  }
+  const phoneTail = Number(String(phoneForRiskTail || '').slice(-2) || '0')
   const baseScore = Math.round(totalAmount / Math.max(1, periods)) + phoneTail
   const riskScore = order.riskStatus === 'failed'
     ? Math.min(5000, baseScore + 420)
@@ -1181,7 +1172,7 @@ function buildOrderRiskDetail(order) {
       name: '手机号尾号特征',
       hit: phoneTail >= 70,
       scoreImpact: phoneTail >= 70 ? 60 : 0,
-      detail: `手机号尾号 ${String(order.receiverPhone || '').slice(-2) || '--'} 参与辅助评分`,
+      detail: `手机号尾号 ${String(phoneForRiskTail || '').slice(-2) || '--'} 参与辅助评分`,
     },
   ]
 
@@ -1189,7 +1180,7 @@ function buildOrderRiskDetail(order) {
     `订单金额：¥${totalAmount}`,
     `支付方式：${order.payType === 'installment' ? '先享后付' : '全款'}`,
     `先享后付期数：${periods} 期`,
-    `手机号尾号：${String(order.receiverPhone || '').slice(-2) || '--'}`,
+    `手机号尾号：${String(phoneForRiskTail || '').slice(-2) || '--'}`,
   ]
 
   /** 与后台「用户风控」卡片口径一致：订单详情接口当前为简化摘要，十四槽位未在此接口实测时展示为未测/跳过 */
@@ -1898,6 +1889,40 @@ async function requirePlatformSuperAdminScope(ctx, actionLabel = '访问子系�
 
 function normalizePhone(phone) {
   return String(phone || '').replace(/\D/g, '')
+}
+
+/** 订单对应的商城注册用户：仅允许 mallUserId → users.id（禁止用收货手机号推测买家） */
+function resolveMallBuyerFromOrder(db, order) {
+  if (!order || !db || !Array.isArray(db.users)) {
+    return null
+  }
+  const mid = String(order.mallUserId || '').trim()
+  if (!mid) {
+    return null
+  }
+  return db.users.find(u => u && String(u.id || '').trim() === mid) || null
+}
+
+/** GET /orders、详情等：附带注册买家快照字段（列表「用户」须展示注册信息，非收货人） */
+function enrichMallOrderWithBuyerFields(db, order) {
+  const buyer = resolveMallBuyerFromOrder(db, order)
+  const buyerName = buyer ? String(buyer.name || '').trim() : ''
+  let buyerPhoneDigits = buyer ? normalizePhone(buyer.phone || '') : ''
+  if (buyerPhoneDigits.startsWith('86') && buyerPhoneDigits.length === 13) {
+    buyerPhoneDigits = buyerPhoneDigits.slice(2)
+  }
+  const buyerPhone = /^1\d{10}$/.test(buyerPhoneDigits) ? buyerPhoneDigits : ''
+  const rawRemark = buyer && typeof buyer.adminRemark === 'string' ? buyer.adminRemark.trim() : ''
+  const emergencyContactsComplete = buyer
+    ? isEmergencyContactsComplete(normalizeEmergencyContactsList(buyer.emergencyContacts))
+    : null
+  return {
+    ...order,
+    buyerName: buyerName || '',
+    buyerPhone,
+    buyerAdminRemark: rawRemark,
+    emergencyContactsComplete,
+  }
 }
 
 function normalizeImageExtForIdCard(file) {
@@ -5827,7 +5852,15 @@ router.get('/orders', async (ctx) => {
     const byKeyword = !keyword
       || item.id.includes(keyword)
       || item.name.includes(keyword)
-      || item.receiverName.includes(keyword)
+      || (() => {
+        const buyer = resolveMallBuyerFromOrder(db, item)
+        if (!buyer) {
+          return false
+        }
+        const bn = String(buyer.name || '')
+        const bp = normalizePhone(buyer.phone || '')
+        return bn.includes(keyword) || bp.includes(keyword)
+      })()
     const byStatus = !status || item.status === status
     const byAdminStatus = !adminStatus || getAdminStatus(item) === adminStatus
     const byPayType = !payType || item.payType === payType
@@ -5835,19 +5868,7 @@ router.get('/orders', async (ctx) => {
     return byKeyword && byStatus && byAdminStatus && byPayType && byDate
   })
 
-  const enriched = list.map((order) => {
-    const phone = normalizePhone(order.receiverPhone || '')
-    const buyer = /^1\d{10}$/.test(phone) ? db.users.find(item => item.phone === phone) : null
-    const rawRemark = buyer && typeof buyer.adminRemark === 'string' ? buyer.adminRemark.trim() : ''
-    const emergencyContactsComplete = buyer
-      ? isEmergencyContactsComplete(normalizeEmergencyContactsList(buyer.emergencyContacts))
-      : null
-    return {
-      ...order,
-      buyerAdminRemark: rawRemark,
-      emergencyContactsComplete,
-    }
-  })
+  const enriched = list.map(order => enrichMallOrderWithBuyerFields(db, order))
 
   ctx.body = success(enriched)
 })
@@ -5915,9 +5936,18 @@ router.get('/orders/pending-receivable', async (ctx) => {
         }
       }
       if (!item.paid && key === dueDate) {
+        const buyer = resolveMallBuyerFromOrder(db, order)
+        const buyerName = buyer ? String(buyer.name || '').trim() : ''
+        let buyerPhoneDigits = buyer ? normalizePhone(buyer.phone || '') : ''
+        if (buyerPhoneDigits.startsWith('86') && buyerPhoneDigits.length === 13) {
+          buyerPhoneDigits = buyerPhoneDigits.slice(2)
+        }
+        const buyerPhone = /^1\d{10}$/.test(buyerPhoneDigits) ? buyerPhoneDigits : ''
         rows.push({
           orderId: order.id,
           receiverName: String(order.receiverName || '').trim() || '商城用户',
+          buyerName,
+          buyerPhone,
           receiverPhone: String(order.receiverPhone || '').trim(),
           productName: String(order.name || '').trim(),
           period: Number(item.period),
@@ -5963,16 +5993,21 @@ router.get('/orders/:id', async (ctx) => {
   if (target.payType === 'full' && target.status !== 'reviewing' && !target.paid) {
     target.paid = true
   }
-  const phone = normalizePhone(target.receiverPhone || '')
-  const buyer = /^1\d{10}$/.test(phone)
-    ? db.users.find(item => normalizePhone(item.phone || '') === phone)
-    : null
+  const buyer = resolveMallBuyerFromOrder(db, target)
   const rawRemark = buyer && typeof buyer.adminRemark === 'string' ? buyer.adminRemark.trim() : ''
   const emergencyContactsComplete = buyer
     ? isEmergencyContactsComplete(normalizeEmergencyContactsList(buyer.emergencyContacts))
     : null
+  const buyerName = buyer ? String(buyer.name || '').trim() : ''
+  let buyerPhoneDigits = buyer ? normalizePhone(buyer.phone || '') : ''
+  if (buyerPhoneDigits.startsWith('86') && buyerPhoneDigits.length === 13) {
+    buyerPhoneDigits = buyerPhoneDigits.slice(2)
+  }
+  const buyerPhone = /^1\d{10}$/.test(buyerPhoneDigits) ? buyerPhoneDigits : ''
   ctx.body = success({
     ...target,
+    buyerName: buyerName || '',
+    buyerPhone,
     buyerAdminRemark: rawRemark,
     emergencyContactsComplete,
   })
@@ -5988,7 +6023,7 @@ router.get('/orders/:id/risk-detail', async (ctx) => {
   }
   // 模拟本地风控服务调用耗时。
   await sleep(120)
-  ctx.body = success(buildOrderRiskDetail(target))
+  ctx.body = success(buildOrderRiskDetail(target, db))
 })
 
 router.post('/orders', async (ctx) => {
@@ -6096,12 +6131,25 @@ router.post('/orders', async (ctx) => {
     const riskSubject = idUpperForRisk
       ? db.users.find(u => String(u.idNumber || '').trim().toUpperCase() === idUpperForRisk)
       : null
-    const riskUserNameForWave = riskSubject
-      ? String(riskSubject.name || '').trim()
-      : String(nextOrder.receiverName || '').trim()
-    const riskPhoneForWave = riskSubject
-      ? normalizePhone(riskSubject.phone)
-      : normalizePhone(nextOrder.receiverPhone)
+    /** 风控身份仅以注册资料为准：身份证号命中则用该行用户；否则用当前 Bearer 下单账号（绝不回落收货人） */
+    const riskIdentityUser = riskSubject || placingUser
+    const riskUserNameForWave = String(riskIdentityUser.name || '').trim()
+    let riskPhoneForWave = normalizePhone(riskIdentityUser.phone || '')
+    if (riskPhoneForWave.startsWith('86') && riskPhoneForWave.length === 13) {
+      riskPhoneForWave = riskPhoneForWave.slice(2)
+    }
+    if (!/^1\d{10}$/.test(riskPhoneForWave)) {
+      riskPhoneForWave = ''
+    }
+    if (!riskPhoneForWave) {
+      let p = normalizePhone(placingUser.phone || '')
+      if (p.startsWith('86') && p.length === 13) {
+        p = p.slice(2)
+      }
+      if (/^1\d{10}$/.test(p)) {
+        riskPhoneForWave = p
+      }
+    }
     if (isRiskUpstreamConfigured() && !idForRisk && !idPlaceholder) {
       fail(ctx, '先享后付下单需提交身份证号以便系统风控核验，请先完成注册资料', 400)
       return
@@ -6140,7 +6188,7 @@ router.post('/orders', async (ctx) => {
       try {
         const pack = await runOrderSubmitUpstreamRiskPack({
           userName: riskUserNameForWave,
-          phoneNumber: riskSubject ? riskPhoneForWave : nextOrder.receiverPhone,
+          phoneNumber: riskPhoneForWave || normalizePhone(placingUser.phone),
           idNumber: idForRisk,
         })
         orderSubmitRiskStepsFull = Array.isArray(pack.steps) ? pack.steps : []

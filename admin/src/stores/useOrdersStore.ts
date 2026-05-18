@@ -33,11 +33,18 @@ export interface InstallmentItem {
 
 export interface OrderItem {
   id: string
+  /** 下单注册用户的姓名（展示）；与收货人可能不同 */
   user: string
-  /** 下单时填写的收货地址 */
+  /** 收货人姓名（物流） */
+  receiverName: string
   receiverAddress: string
-  /** 收货人手机号；用于关联商城用户并打开与用户页一致的风控档案 */
+  /** 收货人手机号 */
+  /** 收货人手机号（物流），不得当作注册账号手机号使用 */
   receiverPhone: string
+  /** 注册账号手机号（仅来自接口 buyerPhone / 注册用户） */
+  buyerPhone: string
+  /** 下单用户 id（商城 users.id），用于优先打开档案 */
+  mallUserId?: string
   product: string
   /** 卡包金额（元）：下单时商品卡包 × 数量快照；对账回填后随 GET 订单返回 */
   cardPackageAmount: number
@@ -111,6 +118,11 @@ interface MallOrderPayload {
   receiverName: string
   receiverPhone?: string
   receiverAddress?: string
+  mallUserId?: string
+  /** 下单注册用户的姓名（接口 enrichment） */
+  buyerName?: string
+  /** 注册账号手机号 */
+  buyerPhone?: string
   installmentPlan?: Array<InstallmentItem & Record<string, unknown>>
   /** 卡包金额（元），与商品卡包配置一致并对账落库 */
   cardPackageAmount?: number
@@ -289,11 +301,26 @@ function mapMallOrderToAdminOrder(order: MallOrderPayload): OrderItem {
   const signedAt = typeof signedAtRaw === 'string' && signedAtRaw.trim() ? signedAtRaw.trim() : ''
   const rawEc = order.emergencyContactsComplete
 
+  const recvName = String(order.receiverName || '').trim()
+  const recvPhone = String(order.receiverPhone || '').trim()
+  const buyerName = String(order.buyerName || '').trim()
+  let buyerPhone = String(order.buyerPhone || '').trim().replace(/\D/g, '')
+  if (buyerPhone.startsWith('86') && buyerPhone.length === 13) {
+    buyerPhone = buyerPhone.slice(2)
+  }
+  if (!/^1\d{10}$/.test(buyerPhone)) {
+    buyerPhone = ''
+  }
+  const mallUserId = String(order.mallUserId || '').trim() || undefined
+
   return {
     id: order.id,
-    user: order.receiverName || '商城用户',
+    user: buyerName || '—',
+    receiverName: recvName,
     receiverAddress: String(order.receiverAddress || '').trim(),
-    receiverPhone: String(order.receiverPhone || '').trim(),
+    receiverPhone: recvPhone,
+    buyerPhone,
+    mallUserId,
     product: order.name,
     cardPackageAmount: Math.max(0, Math.round(Number(order.cardPackageAmount ?? 0))),
     totalAmount: Number(order.totalAmount.toFixed(2)),

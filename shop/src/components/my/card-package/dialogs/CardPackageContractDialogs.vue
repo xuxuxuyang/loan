@@ -115,7 +115,7 @@ const emit = defineEmits<{
           class="!bg-gradient-to-r !from-[#0b7b6e] !to-[#18a08f] !border-0"
           @click="emit('openClaimKefuFromContract')"
         >
-          联系客服领取
+          领取
         </el-button>
       </div>
       <div

@@ -279,8 +279,9 @@ function openDelete(row: TrafficChannelRow) {
   showDeleteDialog.value = true
 }
 
-function closeDelete() {
-  if (deleting.value)
+function closeDelete(opts?: { force?: boolean }) {
+  const force = Boolean(opts?.force)
+  if (!force && deleting.value)
     return
   showDeleteDialog.value = false
   deleteTarget.value = null
@@ -355,7 +356,7 @@ async function doDelete() {
       throw new Error(payload.msg || `删除失败: ${response.status}`)
     }
     ElMessage.success('已删除')
-    closeDelete()
+    closeDelete({ force: true })
     const delId = row.id
     rows.value = rows.value.filter(r => r.id !== delId)
   }
@@ -838,7 +839,7 @@ onMounted(() => {
       title="删除流量商"
       width="420px"
       align-center
-      @close="closeDelete"
+      @close="() => closeDelete()"
     >
       <p class="delete-confirm-text">
         确定删除「{{ deleteTarget?.name }}」？
@@ -852,7 +853,7 @@ onMounted(() => {
         该流量商已有注册记录，无法删除。
       </el-alert>
       <template #footer>
-        <el-button @click="closeDelete">
+        <el-button @click="() => closeDelete()">
           取消
         </el-button>
         <el-button

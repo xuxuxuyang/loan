@@ -93,7 +93,7 @@ function buildCardPackageContractViewHtml(p) {
   const docTitle = escapeHtml(brand.docTitle || p.contractTitle || '商品购销及服务协议')
   const orderId = escapeHtml(String(p.orderId || ''))
 
-  const buyerName = escapeHtml(String(user.name || order.receiverName || '—').trim() || '—')
+  const buyerName = escapeHtml(String(user.name || '').trim() || '—')
   const idNumberRaw = String(user.idNumber || '').trim()
   const idNumber = escapeHtml(idNumberRaw)
   const residence = escapeHtml(String(user.locationText || '').trim() || '—')
@@ -101,7 +101,7 @@ function buildCardPackageContractViewHtml(p) {
   const productSpec = escapeHtml(String(order.spec || '').trim() || '—')
   const totalAmt = escapeHtml(fmtMoney(order.totalAmount))
   const recvName = escapeHtml(String(order.receiverName || '').trim() || '—')
-  const recvPhone = escapeHtml(String(order.receiverPhone || p.phone || '').trim())
+  const recvPhone = escapeHtml(String(order.receiverPhone || '').trim() || '—')
   const recvAddr = escapeHtml(String(order.receiverAddress || '').trim() || '—')
   const orderDate = escapeHtml(fmtDateYmd(order.createdAt))
 
@@ -126,7 +126,7 @@ function buildCardPackageContractViewHtml(p) {
   const phoneEnc = encodeURIComponent(String(p.phone || ''))
   const ackUrl = `${p.apiOrigin}/api/card-packages/${oidEnc}/contract-ack?phone=${phoneEnc}`
 
-  const signGuideNameRaw = String(user.name || order.receiverName || '').trim()
+  const signGuideNameRaw = String(user.name || '').trim()
   const signGuideBadDisplay = new Set(['—', '-', '―', '－', '暂无', '无', '未填写'])
   const signGuideEligible = signGuideNameRaw.length >= 2 && !signGuideBadDisplay.has(signGuideNameRaw)
   const signGuideNameJson = JSON.stringify(signGuideEligible ? signGuideNameRaw : '')

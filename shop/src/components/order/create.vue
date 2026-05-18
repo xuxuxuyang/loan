@@ -113,17 +113,16 @@ const receiverAddressLine = computed(() =>
 /** 注册资料姓名：风控 wave 必须与下单账号一致（收货人可为他人）；手机号与 currentUserPhone 同源 */
 const registeredUserName = computed(() => String(profile.value?.name || '').trim())
 
-/** 与「我的 — 订单」一致：新版按订单 mallUserId 与注册用户 id；仅旧数据无 mallUserId 时再按收货手机号归属 */
 const currentUserPhone = computed(() =>
   normalizeMallAccount(loginPhone.value || profile.value?.phone || ''),
 )
 
+/** 与「我的 — 订单」一致：仅 order.mallUserId === 当前注册用户 id */
 const myMallOrders = computed(() => {
-  const account = currentUserPhone.value
-  if (!account) {
+  if (!profile.value?.id) {
     return []
   }
-  return orders.value.filter(o => mallOrderBelongsToLoggedIn(o, account, profile.value?.id))
+  return orders.value.filter(o => mallOrderBelongsToLoggedIn(o, profile.value?.id))
 })
 
 /** 老客户：曾有先享后付订单且卡包已发放（与订单列表「有效状态」一致） */
@@ -559,6 +558,26 @@ watch(
         >
           返回上一页
         </button>
+      </div>
+
+      <div
+        v-if="selectedProduct"
+        class="mb-4 rounded-2xl bg-white p-4 shadow-[0_8px_18px_rgba(24,39,75,0.05)]"
+      >
+        <h2 class="mb-3 text-lg font-semibold text-black/82">
+          下单账号
+        </h2>
+        <p class="text-sm text-black/55">
+          以下为您的<strong class="font-semibold text-black/75">注册信息</strong>，风控与订单归属均以此为准；收货信息可与注册人不一致。
+        </p>
+        <div class="mt-3 rounded-xl border border-black/10 bg-[#fafafa] p-3 text-sm">
+          <p class="font-medium text-black/85">
+            {{ registeredUserName || '—' }}
+          </p>
+          <p class="mt-0.5 text-black/65 tabular-nums">
+            {{ currentUserPhone || '—' }}
+          </p>
+        </div>
       </div>
 
       <div

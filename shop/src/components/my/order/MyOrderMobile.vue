@@ -9,13 +9,12 @@ import {
   normalizeOrderTrackingNumber,
   orderHasShippedTracking,
 } from '~/composables/useMallOrders'
-import { normalizeMallAccount } from '~/composables/useMallAuth'
 import { notifyInfo, notifySuccess } from '~/utils/epFeedback'
 
 const route = useRoute()
 const { smartNavigate } = useCustomRouting(route)
 const { orders, syncFromStorage, syncFromRemote } = useMallOrders()
-const { loginPhone, profile, syncFromStorage: syncAuthFromStorage } = useMallAuth()
+const { profile, syncFromStorage: syncAuthFromStorage } = useMallAuth()
 const products = useTeaProducts()
 
 const statusStyleMap: Record<MallOrderStatus, { color: string, backgroundColor: string }> = {
@@ -50,16 +49,11 @@ const activeStatus = computed<'all' | MallOrderStatus>(() => {
   return statusTabs.some(item => item.key === rawStatus) ? rawStatus as 'all' | MallOrderStatus : 'all'
 })
 
-const currentUserPhone = computed(() => {
-  return normalizeMallAccount(loginPhone.value || profile.value?.phone || '')
-})
-
 const userOrders = computed(() => {
-  const account = currentUserPhone.value
-  if (!account) {
+  if (!profile.value?.id) {
     return []
   }
-  return orders.value.filter(item => mallOrderBelongsToLoggedIn(item, account, profile.value?.id))
+  return orders.value.filter(item => mallOrderBelongsToLoggedIn(item, profile.value?.id))
 })
 
 const filteredOrders = computed(() => {
