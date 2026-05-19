@@ -40,6 +40,11 @@ interface TrafficQualityRow {
   repeatPurchaseRate: number | null
 }
 
+/** 列表行 = 渠道基础信息 + 引流质量（可能尚未拉到质量数据） */
+type TrafficMergedRow = TrafficChannelRow & {
+  quality: TrafficQualityRow | null
+}
+
 const MALL_API_BASE = `${(import.meta.env.VITE_MALL_API_BASE || 'http://localhost:3110/api').replace(/\/$/, '')}`
 
 /** 商城 H5（shop）根地址，构建时注入。未配置时：开发环境见下方映射；生产常见「后台 :8080 + 商城 :80」会回退为同主机无端口地址 */
@@ -115,12 +120,29 @@ const qualityErrorMessage = ref('')
 /** 仅展示至少有一笔「卡包已发放」订单的流量商 */
 const whitelistQualityPositive = ref(false)
 
-const displayQualityRows = computed(() => {
-  const list = qualityRows.value
-  if (!whitelistQualityPositive.value)
-    return list
-  return list.filter(r => r.issuedOrderCount > 0)
+const qualityByChannelId = computed(() => {
+  const m = new Map<string, TrafficQualityRow>()
+  for (const q of qualityRows.value) {
+    m.set(q.id, q)
+  }
+  return m
 })
+
+/** 单一表格数据源：按流量商列表顺序合并质量；白名单时仅保留有发卡包订单的渠道 */
+const displayMergedRows = computed<TrafficMergedRow[]>(() => {
+  const out: TrafficMergedRow[] = []
+  for (const r of rows.value) {
+    const q = qualityByChannelId.value.get(r.id) ?? null
+    if (whitelistQualityPositive.value && (!q || q.issuedOrderCount <= 0))
+      continue
+    out.push({ ...r, quality: q })
+  }
+  return out
+})
+
+function mergedRowClassName({ row }: { row: TrafficMergedRow }) {
+  return row.disabled ? 'traffic-quality-row--muted' : ''
+}
 
 function formatPercent(value: number | null | undefined) {
   if (value == null || Number.isNaN(Number(value)))
@@ -130,10 +152,6 @@ function formatPercent(value: number | null | undefined) {
 
 function formatMoney2(n: number) {
   return n.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-}
-
-function qualityRowClassName({ row }: { row: TrafficQualityRow }) {
-  return row.disabled ? 'traffic-quality-row--muted' : ''
 }
 
 const remarkDialogVisible = ref(false)
@@ -582,38 +600,85 @@ onMounted(() => {
     </el-alert>
 
     <el-card
-      class="traffic-table-card"
+      class="traffic-table-card traffic-unified-card"
       shadow="hover"
     >
       <template #header>
-        <div class="traffic-table-card-header">
-          <span class="traffic-table-card-title">流量商列表</span>
+        <div class="traffic-table-card-header traffic-unified-card-header">
+          <div class="traffic-unified-card-header__title">
+            <span class="traffic-table-card-title">流量商</span>
+            <el-checkbox
+              v-model="whitelistQualityPositive"
+              border
+              size="small"
+            >
+              白名单（发卡包订单数大于 0）
+            </el-checkbox>
+          </div>
           <el-tag
             v-if="rows.length"
             type="info"
             effect="plain"
             size="small"
           >
-            共 {{ rows.length }} 个
+            共 {{ displayMergedRows.length }} / {{ rows.length }} 个
           </el-tag>
         </div>
       </template>
 
+      <el-alert
+        type="info"
+        :closable="false"
+        show-icon
+        class="traffic-quality-intro"
+      >
+        <template #title>
+          指标说明
+        </template>
+        <p class="traffic-quality-intro__p">
+          <strong>订单数 / 成交金额</strong>：仅含<strong>卡包已发放</strong>且<strong>非待审核</strong>的订单，与财务报表一致。
+        </p>
+        <p class="traffic-quality-intro__p">
+          <strong>逾期率</strong>：仅统计<strong>先享后付且卡包已发放</strong>订单。分母为先享后付订单数；分子为「至少有一期应还日早于今日且仍未付清」的订单数。
+        </p>
+        <p class="traffic-quality-intro__p traffic-quality-intro__p--last">
+          <strong>注册转化率</strong>：有发卡包订单的用户数 ÷ 注册人数。<strong>复购率</strong>：下过 2 笔及以上发卡包订单的用户占「有成交用户」的比例。<strong>先享后付</strong>：先享后付发卡包订单数 ÷ 全部发卡包订单数。
+        </p>
+      </el-alert>
+
+      <el-alert
+        v-if="qualityErrorMessage && !qualityLoading"
+        type="error"
+        :closable="false"
+        show-icon
+        class="traffic-quality-error"
+      >
+        {{ qualityErrorMessage }}
+      </el-alert>
+
+      <p class="traffic-quality-stats">
+        当前展示 <strong>{{ displayMergedRows.length }}</strong> 家
+        <template v-if="whitelistQualityPositive && rows.length !== displayMergedRows.length">
+          （已过滤 {{ rows.length - displayMergedRows.length }} 家无发卡包订单）
+        </template>
+      </p>
+
       <div class="traffic-table-wrap">
         <el-table
-          v-loading="loading"
-          :data="rows"
+          v-loading="loading || qualityLoading"
+          :data="displayMergedRows"
           stripe
           border
           size="default"
-          class="traffic-table"
+          class="traffic-table traffic-unified-table"
           :header-cell-style="tableHeaderCellStyle"
           :highlight-current-row="true"
+          :row-class-name="mergedRowClassName"
           empty-text=""
         >
           <template #empty>
             <el-empty
-              description="暂无流量商，点击「新建流量商」添加"
+              :description="rows.length === 0 ? '暂无流量商，点击「新建流量商」添加' : (whitelistQualityPositive ? '无符合白名单条件的流量商' : '暂无数据')"
               :image-size="88"
             />
           </template>
@@ -650,6 +715,7 @@ onMounted(() => {
           <template #default="{ row }">
             <TrafficChannelNameTag
               :display-key="trafficChannelDisplayKey(undefined, row.name, row.code)"
+              :color-seed="row.code"
               size="default"
             />
           </template>
@@ -702,7 +768,7 @@ onMounted(() => {
 
         <el-table-column
           label="推广链接"
-          min-width="260"
+          min-width="200"
         >
           <template #default="{ row }">
             <div class="link-cell">
@@ -732,8 +798,138 @@ onMounted(() => {
         </el-table-column>
 
         <el-table-column
+          label="订单数"
+          width="88"
+          align="center"
+        >
+          <template #header>
+            <el-tooltip
+              content="卡包已发放且非待审核的订单笔数"
+              placement="top"
+            >
+              <span class="traffic-quality-th-tip">订单数</span>
+            </el-tooltip>
+          </template>
+          <template #default="{ row }">
+            {{ row.quality ? row.quality.issuedOrderCount : '—' }}
+          </template>
+        </el-table-column>
+
+        <el-table-column
+          label="成交金额"
+          min-width="112"
+          align="right"
+        >
+          <template #default="{ row }">
+            {{ row.quality ? formatMoney2(row.quality.issuedOrderAmount) : '—' }}
+          </template>
+        </el-table-column>
+
+        <el-table-column
+          min-width="100"
+          align="right"
+        >
+          <template #header>
+            <el-tooltip
+              content="成交金额 ÷ 订单数"
+              placement="top"
+            >
+              <span class="traffic-quality-th-tip">客单价</span>
+            </el-tooltip>
+          </template>
+          <template #default="{ row }">
+            {{ row.quality?.avgOrderAmount != null ? formatMoney2(row.quality.avgOrderAmount) : '—' }}
+          </template>
+        </el-table-column>
+
+        <el-table-column
+          min-width="104"
+          align="right"
+        >
+          <template #header>
+            <el-tooltip
+              content="成交金额 ÷ 注册人数，衡量导流 ROI"
+              placement="top"
+            >
+              <span class="traffic-quality-th-tip">人均产值</span>
+            </el-tooltip>
+          </template>
+          <template #default="{ row }">
+            {{ row.quality?.avgAmountPerRegistrant != null ? formatMoney2(row.quality.avgAmountPerRegistrant) : '—' }}
+          </template>
+        </el-table-column>
+
+        <el-table-column
+          min-width="104"
+          align="right"
+        >
+          <template #header>
+            <el-tooltip
+              content="至少有 1 笔发卡包订单的用户数 ÷ 注册人数"
+              placement="top"
+            >
+              <span class="traffic-quality-th-tip">注册转化</span>
+            </el-tooltip>
+          </template>
+          <template #default="{ row }">
+            {{ row.quality ? formatPercent(row.quality.registrationConversionRate) : '—' }}
+          </template>
+        </el-table-column>
+
+        <el-table-column
+          min-width="96"
+          align="right"
+        >
+          <template #header>
+            <el-tooltip
+              content="先享后付发卡包订单 ÷ 全部发卡包订单"
+              placement="top"
+            >
+              <span class="traffic-quality-th-tip">先享后付</span>
+            </el-tooltip>
+          </template>
+          <template #default="{ row }">
+            {{ row.quality ? formatPercent(row.quality.installmentShareRate) : '—' }}
+          </template>
+        </el-table-column>
+
+        <el-table-column
+          min-width="108"
+          align="right"
+        >
+          <template #header>
+            <el-tooltip
+              content="仅先享后付订单。存在逾期未付清账期的订单数 ÷ 先享后付订单数"
+              placement="top"
+            >
+              <span class="traffic-quality-th-tip">逾期率</span>
+            </el-tooltip>
+          </template>
+          <template #default="{ row }">
+            {{ row.quality ? formatPercent(row.quality.overdueRate) : '—' }}
+          </template>
+        </el-table-column>
+
+        <el-table-column
+          min-width="92"
+          align="right"
+        >
+          <template #header>
+            <el-tooltip
+              content="下过 2 笔及以上发卡包订单的用户数 ÷ 有下单用户数"
+              placement="top"
+            >
+              <span class="traffic-quality-th-tip">复购率</span>
+            </el-tooltip>
+          </template>
+          <template #default="{ row }">
+            {{ row.quality ? formatPercent(row.quality.repeatPurchaseRate) : '—' }}
+          </template>
+        </el-table-column>
+
+        <el-table-column
           label="备注"
-          min-width="160"
+          min-width="140"
           class-name="traffic-remark-col"
         >
           <template #default="{ row }">
@@ -802,251 +998,6 @@ onMounted(() => {
           </template>
         </el-table-column>
       </el-table>
-      </div>
-    </el-card>
-
-    <el-card
-      class="traffic-quality-card"
-      shadow="hover"
-    >
-      <template #header>
-        <div class="traffic-quality-card-header">
-          <div class="traffic-quality-card-header__title">
-            <span class="traffic-table-card-title">流量客户质量</span>
-            <el-tag
-              type="info"
-              effect="plain"
-              size="small"
-            >
-              发卡包订单 KPI 口径
-            </el-tag>
-          </div>
-          <el-checkbox
-            v-model="whitelistQualityPositive"
-            border
-            size="small"
-          >
-            白名单（发卡包订单数大于 0）
-          </el-checkbox>
-        </div>
-      </template>
-
-      <el-alert
-        type="info"
-        :closable="false"
-        show-icon
-        class="traffic-quality-intro"
-      >
-        <template #title>
-          指标说明
-        </template>
-        <p class="traffic-quality-intro__p">
-          <strong>订单数 / 成交金额</strong>：仅含<strong>卡包已发放</strong>且<strong>非待审核</strong>的订单，与财务报表一致。
-        </p>
-        <p class="traffic-quality-intro__p">
-          <strong>逾期率</strong>：仅统计<strong>先享后付（先享后付）且卡包已发放</strong>订单。分母为先享后付订单数；分子为「至少有一期应还日早于今日且仍未付清」的订单数。
-        </p>
-        <p class="traffic-quality-intro__p traffic-quality-intro__p--last">
-          <strong>注册转化率</strong>：有发卡包订单的用户数 ÷ 注册人数。<strong>复购率</strong>：下过 2 笔及以上发卡包订单的用户占「有成交用户」的比例。<strong>先享后付</strong>：先享后付发卡包订单数 ÷ 全部发卡包订单数。
-        </p>
-      </el-alert>
-
-      <el-alert
-        v-if="qualityErrorMessage && !qualityLoading"
-        type="error"
-        :closable="false"
-        show-icon
-        class="traffic-quality-error"
-      >
-        {{ qualityErrorMessage }}
-      </el-alert>
-
-      <p class="traffic-quality-stats">
-        当前展示 <strong>{{ displayQualityRows.length }}</strong> 家
-        <template v-if="whitelistQualityPositive && qualityRows.length !== displayQualityRows.length">
-          （已过滤 {{ qualityRows.length - displayQualityRows.length }} 家无发卡包订单）
-        </template>
-      </p>
-
-      <div class="traffic-table-wrap traffic-quality-table-wrap">
-        <el-table
-          v-loading="qualityLoading"
-          :data="displayQualityRows"
-          stripe
-          border
-          size="default"
-          class="traffic-table traffic-quality-table"
-          :header-cell-style="tableHeaderCellStyle"
-          empty-text=""
-          :row-class-name="qualityRowClassName"
-        >
-          <template #empty>
-            <el-empty
-              :description="whitelistQualityPositive ? '无符合白名单条件的流量商' : '暂无流量商数据'"
-              :image-size="72"
-            />
-          </template>
-
-          <el-table-column
-            label="流量商"
-            min-width="168"
-            fixed
-          >
-            <template #default="{ row }">
-              <div class="traffic-quality-channel-cell">
-                <TrafficChannelNameTag
-                  :display-key="trafficChannelDisplayKey(undefined, row.name, row.code)"
-                  size="default"
-                />
-                <el-tag
-                  v-if="row.disabled"
-                  type="info"
-                  size="small"
-                  effect="plain"
-                >
-                  停用
-                </el-tag>
-              </div>
-            </template>
-          </el-table-column>
-
-          <el-table-column
-            prop="registerCount"
-            label="注册人数"
-            width="92"
-            align="center"
-          />
-
-          <el-table-column
-            label="订单数"
-            width="88"
-            align="center"
-          >
-            <template #header>
-              <el-tooltip
-                content="卡包已发放且非待审核的订单笔数"
-                placement="top"
-              >
-                <span class="traffic-quality-th-tip">订单数</span>
-              </el-tooltip>
-            </template>
-            <template #default="{ row }">
-              {{ row.issuedOrderCount }}
-            </template>
-          </el-table-column>
-
-          <el-table-column
-            label="成交金额"
-            min-width="112"
-            align="right"
-          >
-            <template #default="{ row }">
-              {{ formatMoney2(row.issuedOrderAmount) }}
-            </template>
-          </el-table-column>
-
-          <el-table-column
-            min-width="100"
-            align="right"
-          >
-            <template #header>
-              <el-tooltip
-                content="成交金额 ÷ 订单数"
-                placement="top"
-              >
-                <span class="traffic-quality-th-tip">客单价</span>
-              </el-tooltip>
-            </template>
-            <template #default="{ row }">
-              {{ row.avgOrderAmount != null ? formatMoney2(row.avgOrderAmount) : '—' }}
-            </template>
-          </el-table-column>
-
-          <el-table-column
-            min-width="104"
-            align="right"
-          >
-            <template #header>
-              <el-tooltip
-                content="成交金额 ÷ 注册人数，衡量导流 ROI"
-                placement="top"
-              >
-                <span class="traffic-quality-th-tip">人均产值</span>
-              </el-tooltip>
-            </template>
-            <template #default="{ row }">
-              {{ row.avgAmountPerRegistrant != null ? formatMoney2(row.avgAmountPerRegistrant) : '—' }}
-            </template>
-          </el-table-column>
-
-          <el-table-column
-            min-width="104"
-            align="right"
-          >
-            <template #header>
-              <el-tooltip
-                content="至少有 1 笔发卡包订单的用户数 ÷ 注册人数"
-                placement="top"
-              >
-                <span class="traffic-quality-th-tip">注册转化</span>
-              </el-tooltip>
-            </template>
-            <template #default="{ row }">
-              {{ formatPercent(row.registrationConversionRate) }}
-            </template>
-          </el-table-column>
-
-          <el-table-column
-            min-width="96"
-            align="right"
-          >
-            <template #header>
-              <el-tooltip
-                content="先享后付发卡包订单 ÷ 全部发卡包订单"
-                placement="top"
-              >
-                <span class="traffic-quality-th-tip">先享后付</span>
-              </el-tooltip>
-            </template>
-            <template #default="{ row }">
-              {{ formatPercent(row.installmentShareRate) }}
-            </template>
-          </el-table-column>
-
-          <el-table-column
-            min-width="108"
-            align="right"
-          >
-            <template #header>
-              <el-tooltip
-                content="仅先享后付订单。存在逾期未付清账期的订单数 ÷ 先享后付订单数"
-                placement="top"
-              >
-                <span class="traffic-quality-th-tip">逾期率</span>
-              </el-tooltip>
-            </template>
-            <template #default="{ row }">
-              {{ formatPercent(row.overdueRate) }}
-            </template>
-          </el-table-column>
-
-          <el-table-column
-            min-width="92"
-            align="right"
-          >
-            <template #header>
-              <el-tooltip
-                content="下过 2 笔及以上发卡包订单的用户数 ÷ 有下单用户数"
-                placement="top"
-              >
-                <span class="traffic-quality-th-tip">复购率</span>
-              </el-tooltip>
-            </template>
-            <template #default="{ row }">
-              {{ formatPercent(row.repeatPurchaseRate) }}
-            </template>
-          </el-table-column>
-        </el-table>
       </div>
     </el-card>
 
@@ -1361,6 +1312,17 @@ onMounted(() => {
   padding: 0 18px 18px;
 }
 
+.traffic-unified-card :deep(.el-card__body) {
+  padding-top: 16px;
+}
+
+.traffic-unified-card-header__title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
 .traffic-table-card-header {
   display: flex;
   align-items: center;
@@ -1381,7 +1343,7 @@ onMounted(() => {
 
 .traffic-table {
   width: 100%;
-  min-width: 880px;
+  min-width: 1520px;
 }
 
 .traffic-table :deep(.el-table__row:hover > td) {
@@ -1563,30 +1525,6 @@ onMounted(() => {
   color: #475569;
 }
 
-.traffic-quality-card {
-  margin-top: 18px;
-  border-radius: 8px;
-}
-
-.traffic-quality-card :deep(.el-card__body) {
-  padding: 0 18px 18px;
-}
-
-.traffic-quality-card-header {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.traffic-quality-card-header__title {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 10px;
-}
-
 .traffic-quality-intro {
   margin-bottom: 12px;
   border-radius: 8px;
@@ -1618,23 +1556,12 @@ onMounted(() => {
   color: var(--el-text-color-primary);
 }
 
-.traffic-quality-table-wrap {
-  margin-top: 0;
-}
-
 .traffic-quality-th-tip {
   cursor: help;
   border-bottom: 1px dashed var(--el-border-color);
 }
 
-.traffic-quality-channel-cell {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-}
-
-.traffic-quality-table :deep(.traffic-quality-row--muted) {
+.traffic-unified-table :deep(.traffic-quality-row--muted) {
   opacity: 0.78;
 }
 </style>

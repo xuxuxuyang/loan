@@ -477,7 +477,11 @@ async function submitRoleChange() {
     closeRoleModal()
     return
   }
-  if (!isPlatformSession.value && (roleForm.role === 'super_admin' || roleForm.role === 'boss')) {
+  if (roleForm.role === 'super_admin') {
+    ElMessage.error('不可将账号修改为超级管理员')
+    return
+  }
+  if (!isPlatformSession.value && roleForm.role === 'boss') {
     ElMessage.error('员工角色仅可为审核员或催收员')
     return
   }
@@ -918,11 +922,6 @@ watch(
             v-model="roleForm.role"
             class="form-select"
           >
-            <el-option
-              v-if="usePlatformAccountsApi"
-              label="超级管理员"
-              value="super_admin"
-            />
             <el-option
               v-if="usePlatformAccountsApi"
               label="老板"

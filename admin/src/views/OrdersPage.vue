@@ -1243,12 +1243,6 @@ watch(
 <template>
   <div class="panel">
     <div class="toolbar">
-      <el-input
-        v-model="keyword"
-        class="toolbar-input"
-        placeholder="搜索订单号 / 用户 / 商品"
-        clearable
-      />
       <el-select
         v-if="!isCardPackageDataPage"
         v-model="status"
@@ -1284,6 +1278,13 @@ watch(
         value-format="YYYY-MM-DD"
         placeholder="下单日期"
       />
+      <el-input
+        v-model="keyword"
+        class="toolbar-input"
+        placeholder="搜索订单号 / 用户 / 商品"
+        clearable
+      />
+      
       <button
         class="btn btn-secondary"
         type="button"

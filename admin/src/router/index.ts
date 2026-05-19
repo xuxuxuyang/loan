@@ -27,29 +27,28 @@ const TrafficManagementPage = () => import('../views/TrafficManagementPage.vue')
 const ProductsPage = () => import('../views/ProductsPage.vue')
 const CsMessagesPage = () => import('../views/CsMessagesPage.vue')
 
-function adminHomeRoute(session: AdminSession | null) {
+/**
+ * 各角色登录后默认工作台（根路径 `/`、登录完毕、或无权限回退）。
+ * - 超级管理员 → 账号管理
+ * - 老板 → 财务报表
+ * - 审核员 → 未审核订单
+ * - 催收员 → 今日待收
+ */
+export function adminHomeRoute(session: AdminSession | null) {
   if (!session) {
     return { name: 'dashboard-overview' as const }
   }
-  /** 审核员/催收员固定进订单侧；避免 scopeType 被标成 platform 时误进非订单首页造成路由死循环 */
-  if (session.role === 'reviewer' || session.role === 'collector') {
-    return { name: 'orders' as const }
+  if (session.role === 'collector') {
+    return { name: 'orders-receivable-today' as const }
   }
-  /** 平台账号切到具体子系统库后，默认进入订单端（与子系统后台使用习惯一致） */
-  if (session.scopeType === 'platform' && session.workspaceType === 'tenant') {
-    return { name: 'orders' as const }
+  if (session.role === 'reviewer') {
+    return { name: 'order-review' as const }
   }
-  if (session.scopeType === 'platform' && session.workspaceType === 'self') {
-    return { name: 'orders' as const }
+  if (session.role === 'boss') {
+    return { name: 'dashboard-overview' as const }
   }
-  if (session.scopeType === 'platform') {
-    if (session.role === 'boss') {
-      return { name: 'orders' as const }
-    }
-    return { name: 'tenants' as const }
-  }
-  /** 子系统侧（老板/子系统域账号）：不可进 platformOnly 的总部路由，默认与大屏订单端一致 */
-  return { name: 'orders' as const }
+  /** super_admin：统一进账号管理（含总部/子系统工作区切换后） */
+  return { name: 'accounts' as const }
 }
 
 const router = createRouter({
@@ -206,7 +205,7 @@ router.beforeEach((to) => {
   }
   /** 子系统工作区下禁止 deep-link 进总部专页，避免误以为在读子系统数据（须先「返回总部」） */
   if (to.meta.platformOnly && isPlatformManagingTenantWorkspace(session)) {
-    return { name: 'orders' as const }
+    return adminHomeRoute(session)
   }
   return true
 })

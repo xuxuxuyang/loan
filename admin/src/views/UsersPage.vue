@@ -36,6 +36,13 @@ type ListedUser = UserItem & {
   registerChannelLabel?: string
 }
 
+/** 与 GET /admin/traffic-channels 对齐，用于注册渠道筛选项（与流量管理联动） */
+interface AdminTrafficChannelRow {
+  id: string
+  code: string
+  name: string
+}
+
 interface ApiUserItem {
   id: string
   name: string
@@ -89,6 +96,8 @@ const keyword = ref('')
 const orderDateKey = ref<string | null>(null)
 /** 注册用户页：按与列表「注册渠道」列一致的展示名筛选 */
 const registerChannelFilter = ref<string>(REGISTER_CHANNEL_FILTER_ALL)
+/** 流量管理端配置的渠道，用于下拉展示即使用户列表中尚无人从该渠道注册 */
+const trafficChannelsForFilter = ref<AdminTrafficChannelRow[]>([])
 const previewUser = ref<ListedUser | null>(null)
 const editingUserId = ref<string | null>(null)
 const userRiskDialogVisible = ref(false)
@@ -169,17 +178,15 @@ const filteredUsers = computed(() => {
   return users.value.filter(u => Number(u.orderCount || 0) > 0)
 })
 
-/** 下单用户：可选按下单日本地日期筛选，再按最近下单时间倒序；注册用户：保持接口顺序 */
+/** 下单用户：可选按注册渠道、下单日本地日期筛选，再按最近下单时间倒序；注册用户：保持接口顺序 */
 const tableUsers = computed(() => {
   let list = [...filteredUsers.value]
-  if (!isOrderingUsersView.value) {
-    const ch = registerChannelFilter.value
-    if (ch === '__none__') {
-      list = list.filter(u => !userRegisterChannelDisplay(u))
-    }
-    else if (ch && ch !== REGISTER_CHANNEL_FILTER_ALL) {
-      list = list.filter(u => userRegisterChannelDisplay(u) === ch)
-    }
+  const ch = registerChannelFilter.value
+  if (ch === '__none__') {
+    list = list.filter(u => !userRegisterChannelDisplay(u))
+  }
+  else if (ch && ch !== REGISTER_CHANNEL_FILTER_ALL) {
+    list = list.filter(u => userRegisterChannelDisplay(u) === ch)
   }
   if (isOrderingUsersView.value) {
     const dk = orderDateKey.value
@@ -209,9 +216,6 @@ watch(
     if (path !== '/users/ordering') {
       orderDateKey.value = null
     }
-    if (path === '/users/ordering') {
-      registerChannelFilter.value = REGISTER_CHANNEL_FILTER_ALL
-    }
   },
 )
 
@@ -221,6 +225,11 @@ function userRegisterChannelDisplay(u: ListedUser): string {
 
 const registerChannelOptions = computed(() => {
   const set = new Set<string>()
+  for (const ch of trafficChannelsForFilter.value) {
+    const k = trafficChannelDisplayKey(undefined, ch.name, ch.code).trim()
+    if (k)
+      set.add(k)
+  }
   for (const u of users.value) {
     const k = userRegisterChannelDisplay(u)
     if (k)
@@ -354,6 +363,24 @@ function mapApiUser(user: ApiUserItem): ListedUser {
         .filter(x => x.name && /^1\d{10}$/.test(x.phone))
         .slice(0, 2)
       : [],
+  }
+}
+
+async function fetchTrafficChannelsForFilter() {
+  try {
+    const response = await fetch(`${MALL_API_BASE}/admin/traffic-channels`, {
+      method: 'GET',
+      headers: withMallTenantHeaders(),
+    })
+    const payload = await response.json() as { success?: boolean; data?: AdminTrafficChannelRow[] }
+    if (!response.ok || payload.success === false) {
+      trafficChannelsForFilter.value = []
+      return
+    }
+    trafficChannelsForFilter.value = Array.isArray(payload.data) ? payload.data : []
+  }
+  catch {
+    trafficChannelsForFilter.value = []
   }
 }
 
@@ -559,6 +586,7 @@ watch(
   () => {
     pendingDeleteId.value = ''
     void fetchUsers()
+    void fetchTrafficChannelsForFilter()
   },
   { immediate: true },
 )
@@ -713,23 +741,7 @@ async function toggleBlacklist(user: ListedUser) {
 <template>
   <div class="panel">
     <div class="toolbar">
-      <el-input
-        v-model="keyword"
-        class="toolbar-input"
-        placeholder="搜索姓名 / 手机号"
-        clearable
-      />
-      <el-date-picker
-        v-if="isOrderingUsersView"
-        v-model="orderDateKey"
-        class="toolbar-datepicker"
-        type="date"
-        placeholder="下单日期"
-        value-format="YYYY-MM-DD"
-        clearable
-      />
       <el-select
-        v-if="!isOrderingUsersView"
         v-model="registerChannelFilter"
         class="toolbar-select-channel"
         placeholder="注册渠道"
@@ -752,11 +764,27 @@ async function toggleBlacklist(user: ListedUser) {
           :value="name"
         />
       </el-select>
+      <el-date-picker
+        v-if="isOrderingUsersView"
+        v-model="orderDateKey"
+        class="toolbar-datepicker"
+        type="date"
+        placeholder="下单日期"
+        value-format="YYYY-MM-DD"
+        clearable
+      />
+      <el-input
+        v-model="keyword"
+        class="toolbar-input"
+        placeholder="搜索姓名 / 手机号"
+        clearable
+      />
+      
       <button
         class="btn btn-refresh"
         type="button"
         :disabled="loading"
-        @click="fetchUsers"
+        @click="() => { void fetchUsers(); void fetchTrafficChannelsForFilter() }"
       >
         刷新
       </button>
@@ -796,6 +824,7 @@ async function toggleBlacklist(user: ListedUser) {
             <TrafficChannelNameTag
               mall-plain-when-empty
               :display-key="trafficChannelDisplayKey(item.registerChannelLabel, item.registerChannelName, item.registerChannelCode)"
+              :color-seed="item.registerChannelCode || undefined"
             />
           </td>
           <td class="td-credit-status">
@@ -1253,6 +1282,7 @@ async function toggleBlacklist(user: ListedUser) {
                   <TrafficChannelNameTag
                     mall-plain-when-empty
                     :display-key="trafficChannelDisplayKey(previewUser.registerChannelLabel, previewUser.registerChannelName, previewUser.registerChannelCode)"
+                    :color-seed="previewUser.registerChannelCode || undefined"
                   />
                 </span>
               </div>

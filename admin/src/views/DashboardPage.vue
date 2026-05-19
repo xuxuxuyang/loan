@@ -16,6 +16,13 @@ function formatLocalYmd(d: Date) {
 
 const todayStr = computed(() => formatLocalYmd(new Date()))
 
+function ymdPlusDays(baseYmd: string, delta: number) {
+  const m = String(baseYmd || '').match(/^(\d{4})-(\d{2})-(\d{2})/)
+  if (!m) return baseYmd
+  const dt = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]) + delta)
+  return formatLocalYmd(dt)
+}
+
 function dueKey(dueDate: string) {
   const s = String(dueDate || '').trim()
   const m = s.match(/^(\d{4}-\d{2}-\d{2})/)
@@ -39,12 +46,25 @@ const kpis = computed(() => {
 
   let totalSales = 0
   let totalPrincipal = 0
+  let totalPeriodSum = 0
+  /** 仅先享后付笔数（用于分期期数字段有意义的订单） */
+  let installmentPayOrderCount = 0
   let receivableAmount = 0
   let receivablePrincipal = 0
+  /** 已回款：已结分期应还之和 */
+  let collectedAmount = 0
   let overdueAmount = 0
   let overdueOrderCount = 0
+  /** 分期计划层全部已还的订单笔数 */
+  let settledOrderCount = 0
+  /** 今日 / 明日 / 本周（含今日起 7 天内）到期且尚未还的金额 */
+  let dueTodayAmount = 0
+  let dueTomorrowAmount = 0
+  let dueIn7DaysAmount = 0
 
   const t = todayStr.value
+  const tTomorrow = ymdPlusDays(t, 1)
+  const tWeekEnd = ymdPlusDays(t, 6)
 
   for (const order of basis) {
     const orderTotal = Number(order.totalAmount) || 0
@@ -59,19 +79,43 @@ const kpis = computed(() => {
       receivablePrincipal += pkg
     }
 
+    if (order.payType === '先享后付') {
+      installmentPayOrderCount += 1
+      const p = Number(order.periods)
+      totalPeriodSum += Number.isFinite(p) && p > 0 ? Math.round(p) : plan.length || 0
+    }
+
+    if (plan.length > 0 && plan.every(item => item.paid)) {
+      settledOrderCount += 1
+    }
+
     let orderHasOverdue = false
     for (const item of plan) {
       const a = Number(item.amount) || 0
       const dk = dueKey(item.dueDate)
 
-      if (!item.paid) {
-        receivableAmount += a
-        if (dk && dk < t) {
-          overdueAmount += a
-          orderHasOverdue = true
-        }
+      if (item.paid) {
+        collectedAmount += a
+        continue
+      }
+
+      receivableAmount += a
+
+      if (dk && dk < t) {
+        overdueAmount += a
+        orderHasOverdue = true
+      }
+      if (dk === t) {
+        dueTodayAmount += a
+      }
+      else if (dk === tTomorrow) {
+        dueTomorrowAmount += a
+      }
+      if (dk && dk >= t && dk <= tWeekEnd) {
+        dueIn7DaysAmount += a
       }
     }
+
     if (orderHasOverdue) {
       overdueOrderCount += 1
     }
@@ -79,15 +123,44 @@ const kpis = computed(() => {
 
   const overdueRate = orderCount > 0 ? (overdueOrderCount / orderCount) * 100 : 0
 
+  /** 合同约定现金流：已收回 + 仍待收回 */
+  const contractCashTotal = collectedAmount + receivableAmount
+  const collectionRateByAmount = contractCashTotal > 0 ? (collectedAmount / contractCashTotal) * 100 : 0
+
+  const settledRate = orderCount > 0 ? (settledOrderCount / orderCount) * 100 : 0
+
+  const avgTicket = orderCount > 0 ? totalSales / orderCount : 0
+
+  /** 成交金额 − 卡包本金，单笔溢价（可能为负，表示数据回填异常需核对） */
+  const premiumToPrincipal = totalSales - totalPrincipal
+
+  const avgPeriods = installmentPayOrderCount > 0 ? totalPeriodSum / installmentPayOrderCount : 0
+
+  /** 待收金额中逾期占比 */
+  const overdueShareOfReceivable = receivableAmount > 0 ? (overdueAmount / receivableAmount) * 100 : 0
+
   return {
     orderCount,
     totalSales,
     totalPrincipal,
+    premiumToPrincipal,
     receivableAmount,
     receivablePrincipal,
+    collectedAmount,
     overdueAmount,
     overdueOrderCount,
     overdueRate,
+    overdueShareOfReceivable,
+    settledOrderCount,
+    settledRate,
+    settlementGapCount: Math.max(0, orderCount - settledOrderCount),
+    collectionRateByAmount,
+    avgTicket,
+    avgPeriods,
+    dueTodayAmount,
+    dueTomorrowAmount,
+    dueIn7DaysAmount,
+    installmentPayOrderCount,
   }
 })
 
@@ -95,68 +168,175 @@ function fmtYuan(n: number) {
   return `¥${Number(n || 0).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 }
 
-type Tone = 'greenSpring' | 'greenForest' | 'teal' | 'amberGold' | 'orangeBurnt' | 'violet' | 'redTomato' | 'redCrimson' | 'redWine'
+type Tone =
+  | 'greenSpring'
+  | 'greenForest'
+  | 'cyanSky'
+  | 'teal'
+  | 'amberGold'
+  | 'orangeBurnt'
+  | 'slateInk'
+  | 'violet'
+  | 'redTomato'
+  | 'redCrimson'
+  | 'redWine'
+
+interface BoardSection {
+  kind: 'section'
+  title: string
+  subtitle?: string
+}
 
 interface KpiCard {
+  kind: 'card'
   label: string
   value: string
   hint?: string
   tone: Tone
 }
 
-/** 财务报表 KPI 卡片：每行 3 张，按业务顺序排列 */
-const kpiCards = computed<KpiCard[]>(() => {
+type BoardItem = BoardSection | KpiCard
+
+/** 分组 + KPI 卡片，便于老板说清「规模 → 回款 → 现金流日历 → 风险」 */
+const kpiBoardRows = computed<BoardItem[]>(() => {
   const k = kpis.value
   const scope = '【卡包已发放】'
+
+  const section = (title: string, subtitle?: string): BoardSection => ({ kind: 'section', title, subtitle })
+
+  const card = (payload: Omit<KpiCard, 'kind'>): KpiCard => ({
+    kind: 'card',
+    ...payload,
+  })
+
   return [
-    {
-      label: '成交总额',
-      value: fmtYuan(k.totalSales),
-      hint: `${scope}订单的成交金额合计`,
-      tone: 'greenSpring',
-    },
-    {
-      label: '成交本金',
-      value: fmtYuan(k.totalPrincipal),
-      hint: `${scope}卡包金额合计`,
-      tone: 'amberGold',
-    },
-    {
-      label: '待收金额',
-      value: fmtYuan(k.receivableAmount),
-      hint: `${scope}未还应还先享后付金额合计`,
-      tone: 'teal',
-    },
-    {
-      label: '待收本金',
-      value: fmtYuan(k.receivablePrincipal),
-      hint: `${scope}尚有未还款项的卡包金额合计`,
-      tone: 'orangeBurnt',
-    },
-    {
+    section('成交规模', `${scope} 订单汇总`),
+    card({
       label: '订单数',
       value: String(k.orderCount),
-      hint: `${scope}订单数`,
+      hint: `${scope}订单笔数`,
       tone: 'greenForest',
-    },
-    {
+    }),
+    card({
+      label: '成交总额',
+      value: fmtYuan(k.totalSales),
+      hint: `${scope}订单成交金额合计`,
+      tone: 'greenSpring',
+    }),
+    card({
+      label: '笔均成交金额',
+      value: fmtYuan(k.avgTicket),
+      hint: `${scope}成交总额 ÷ 订单笔数`,
+      tone: 'amberGold',
+    }),
+    card({
+      label: '成交本金（卡包）',
+      value: fmtYuan(k.totalPrincipal),
+      hint: `${scope}卡包金额合计`,
+      tone: 'orangeBurnt',
+    }),
+    card({
+      label: '成交金额溢价',
+      value: fmtYuan(k.premiumToPrincipal),
+      hint: `${scope}成交总额 − 卡包本金合计（含税费等业务结构）`,
+      tone: 'slateInk',
+    }),
+    card({
+      label: '分期笔均期数',
+      value: k.installmentPayOrderCount ? k.avgPeriods.toFixed(1) : '—',
+      hint: `${scope}先享后付订单的平均约定分期期数`,
+      tone: 'violet',
+    }),
+
+    section('回款与待收'),
+    card({
+      label: '已收金额',
+      value: fmtYuan(k.collectedAmount),
+      hint: `${scope}已结分期应还金额合计`,
+      tone: 'teal',
+    }),
+    card({
+      label: '待收金额',
+      value: fmtYuan(k.receivableAmount),
+      hint: `${scope}各期计划中尚未应还的金额合计（含已逾期未还与未到期）`,
+      tone: 'cyanSky',
+    }),
+    card({
+      label: '待收本金口径',
+      value: fmtYuan(k.receivablePrincipal),
+      hint: `${scope}尚有未还款项时整笔计入的卡包本金`,
+      tone: 'orangeBurnt',
+    }),
+    card({
+      label: '金额回款进度',
+      value: `${k.collectionRateByAmount.toFixed(2)}%`,
+      hint: `${scope}已收金额 ÷（已收+待收），反映合同现金流回收比例`,
+      tone: 'greenSpring',
+    }),
+
+    section('到期与催收日历', '尚未还和项按账单还款日归入今日 / 明日 / 周内'),
+    card({
+      label: '今日到期应还',
+      value: fmtYuan(k.dueTodayAmount),
+      hint: `${scope}还款日为今日且仍未还的金额`,
+      tone: 'amberGold',
+    }),
+    card({
+      label: '明日到期应还',
+      value: fmtYuan(k.dueTomorrowAmount),
+      hint: `${scope}还款日为明日且当前仍未还的金额`,
+      tone: 'cyanSky',
+    }),
+    card({
+      label: '7日内到期应还',
+      value: fmtYuan(k.dueIn7DaysAmount),
+      hint: `${scope}自今日起 7 个自然日内到期的未还之和（含今日）`,
+      tone: 'teal',
+    }),
+
+    section('逾期与风控'),
+    card({
+      label: '全额结清订单',
+      value: `${k.settledOrderCount}`,
+      hint: `${scope}全部分期均已标记还清的订单笔数`,
+      tone: 'greenForest',
+    }),
+    card({
+      label: '在贷未结清',
+      value: `${k.settlementGapCount}`,
+      hint: `${scope}仍至少有一期未还的订单`,
+      tone: 'slateInk',
+    }),
+    card({
+      label: '订单结清率',
+      value: `${k.settledRate.toFixed(2)}%`,
+      hint: `${scope}全额结清订单 ÷ 订单笔数`,
+      tone: 'violet',
+    }),
+    card({
       label: '逾期订单数',
       value: String(k.overdueOrderCount),
-      hint: `${scope}存在逾期未还的笔数`,
+      hint: `${scope}存在至少一期逾期未还的笔数`,
       tone: 'redTomato',
-    },
-    {
+    }),
+    card({
+      label: '逾期率（笔数）',
+      value: `${k.overdueRate.toFixed(2)}%`,
+      hint: `${scope}逾期订单数 ÷ 订单笔数`,
+      tone: 'redWine',
+    }),
+    card({
       label: '逾期金额',
       value: fmtYuan(k.overdueAmount),
       hint: `${scope}已到期仍未还金额合计`,
       tone: 'redCrimson',
-    },
-    {
-      label: '逾期率',
-      value: `${k.overdueRate.toFixed(2)}%`,
-      hint: `${scope}逾期订单数 ÷ 订单笔数`,
+    }),
+    card({
+      label: '逾期占待收',
+      value: `${k.overdueShareOfReceivable.toFixed(2)}%`,
+      hint: `${scope}逾期金额 ÷ 待收金额`,
       tone: 'redWine',
-    },
+    }),
   ]
 })
 
@@ -181,10 +361,13 @@ onMounted(() => {
     class="dash-page"
   >
     <div class="dash-toolbar">
-      <div>
+      <div class="dash-lead">
         <h1 class="dash-title">
           财务报表
         </h1>
+        <p class="dash-subtitle">
+          指标口径：<strong>仅统计「卡包已发放」</strong>的订单及其分期还款计划；与时间筛选无关，可与「刷新数据」按需同步最新台账。
+        </p>
       </div>
       <el-button
         type="primary"
@@ -197,26 +380,44 @@ onMounted(() => {
     </div>
 
     <div class="kpi-board">
-      <div
-        v-for="(card, idx) in kpiCards"
-        :key="idx"
-        class="kpi-card"
-        :class="`kpi-card--${card.tone}`"
+      <template
+        v-for="(row, idx) in kpiBoardRows"
+        :key="`${row.kind}-${idx}`"
       >
-        <p class="kpi-label">
-          {{ card.label }}
-        </p>
-        <div class="kpi-rule" />
-        <p class="kpi-value">
-          {{ card.value }}
-        </p>
-        <p
-          v-if="card.hint"
-          class="kpi-hint"
+        <div
+          v-if="row.kind === 'section'"
+          class="kpi-section"
         >
-          {{ card.hint }}
-        </p>
-      </div>
+          <h2 class="kpi-section-title">
+            {{ row.title }}
+          </h2>
+          <p
+            v-if="row.subtitle"
+            class="kpi-section-subtitle"
+          >
+            {{ row.subtitle }}
+          </p>
+        </div>
+        <div
+          v-else-if="row.kind === 'card'"
+          class="kpi-card"
+          :class="`kpi-card--${row.tone}`"
+        >
+          <p class="kpi-label">
+            {{ row.label }}
+          </p>
+          <div class="kpi-rule" />
+          <p class="kpi-value">
+            {{ row.value }}
+          </p>
+          <p
+            v-if="row.hint"
+            class="kpi-hint"
+          >
+            {{ row.hint }}
+          </p>
+        </div>
+      </template>
     </div>
   </div>
 </template>
@@ -234,7 +435,7 @@ onMounted(() => {
 .dash-toolbar {
   display: flex;
   flex-wrap: wrap;
-  align-items: flex-end;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
   margin-bottom: 20px;
@@ -248,13 +449,54 @@ onMounted(() => {
   color: var(--el-text-color-primary);
 }
 
+.dash-lead {
+  max-width: 720px;
+}
+
+.dash-subtitle {
+  margin: 0;
+  font-size: 13px;
+  color: var(--el-text-color-secondary);
+  line-height: 1.55;
+}
+
+.dash-subtitle strong {
+  color: var(--el-text-color-primary);
+  font-weight: 600;
+}
+
 .kpi-board {
   flex: 1;
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 18px;
   align-items: stretch;
-  grid-auto-rows: minmax(228px, auto);
+  grid-auto-rows: auto;
+}
+
+.kpi-section {
+  grid-column: 1 / -1;
+  padding: 4px 0 2px;
+  margin-top: 4px;
+}
+
+.kpi-section-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--el-text-color-primary);
+  letter-spacing: 0.02em;
+}
+
+.kpi-section-subtitle {
+  margin: 6px 0 0;
+  font-size: 13px;
+  color: var(--el-text-color-secondary);
+  line-height: 1.45;
+}
+
+.kpi-section:first-child {
+  margin-top: 0;
 }
 
 .kpi-card {
@@ -315,6 +557,14 @@ onMounted(() => {
   background: linear-gradient(145deg, #14b8a6 0%, #0d9488 100%);
 }
 
+.kpi-card--cyanSky {
+  background: linear-gradient(145deg, #22d3ee 0%, #059669 100%);
+}
+
+.kpi-card--slateInk {
+  background: linear-gradient(145deg, #475569 0%, #1e293b 100%);
+}
+
 /* 本金相关：金黄琥珀 vs 深橙，同属橙色系 */
 .kpi-card--amberGold {
   background: linear-gradient(145deg, #fbbf24 0%, #d97706 100%);
@@ -339,6 +589,12 @@ onMounted(() => {
 
 .kpi-card--violet {
   background: linear-gradient(145deg, #8b5cf6 0%, #6d28d9 100%);
+}
+
+@media (max-width: 1200px) {
+  .kpi-board {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 900px) {

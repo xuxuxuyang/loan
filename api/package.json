@@ -12,7 +12,8 @@
     "mongo:fresh": "node scripts/mongo-bootstrap-only.js",
     "json:fresh": "node scripts/local-json-reset.js",
     "fresh": "npm run reset:project",
-    "reset:project": "node scripts/project-full-reset.js"
+    "reset:project": "node scripts/project-full-reset.js",
+    "benchmark:load": "node scripts/load-benchmark.cjs"
   },
   "keywords": [],
   "author": "",
@@ -36,6 +37,7 @@
   },
   "devDependencies": {
     "cross-env": "^7.0.3",
-    "nodemon": "^3.1.14"
+    "nodemon": "^3.1.14",
+    "autocannon": "^8.0.0"
   }
 }

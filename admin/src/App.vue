@@ -28,6 +28,7 @@ import {
   ordersMenuReviewedListTotal,
   useAdminOrderReviewBadge,
 } from './composables/useAdminOrderReviewBadge'
+import { adminHomeRoute } from './router'
 
 type Role = NonNullable<AdminSession['role']>
 
@@ -212,12 +213,7 @@ function logout() {
 function backToPlatformHeadquarters() {
   switchWorkspace('core')
   session.value = getAdminSession()
-  const r = session.value?.role
-  if (r === 'boss') {
-    void router.push({ name: 'orders' })
-    return
-  }
-  void router.push({ name: 'tenants' })
+  void router.push(adminHomeRoute(session.value))
 }
 
 watch(

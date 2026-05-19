@@ -9,6 +9,10 @@ const props = withDefaults(
   defineProps<{
     /** 已与业务侧对齐的展示用渠道文案（label / name / code 择一传入即可） */
     displayKey: string
+    /**
+     * 与流量商标识（code）等稳定字段对齐，用于从固定 10 色中取值；不传则按展示文案着色（可能与改名不同步）
+     */
+    colorSeed?: string | null
     size?: 'small' | 'default'
     /**
      * 为 true 且无渠道文案时，展示「商城注册」普通文本（注册用户等场景）；
@@ -16,11 +20,11 @@ const props = withDefaults(
      */
     mallPlainWhenEmpty?: boolean
   }>(),
-  { size: 'small', mallPlainWhenEmpty: false },
+  { size: 'small', mallPlainWhenEmpty: false, colorSeed: undefined },
 )
 
 const key = computed(() => props.displayKey.trim())
-const tagStyle = computed(() => getTrafficChannelTagStyle(key.value))
+const tagStyle = computed(() => getTrafficChannelTagStyle(key.value, props.colorSeed))
 </script>
 
 <template>

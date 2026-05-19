@@ -200,6 +200,7 @@ function getStatusClass(status: ReturnType<typeof displayCreditStatusFromOrderSe
             <TrafficChannelNameTag
               mall-plain-when-empty
               :display-key="trafficChannelDisplayKey(user.registerChannelLabel, user.registerChannelName, user.registerChannelCode)"
+              :color-seed="user.registerChannelCode || undefined"
             />
           </el-descriptions-item>
           <el-descriptions-item label="额度">

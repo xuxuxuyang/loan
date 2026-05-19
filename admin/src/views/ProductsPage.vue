@@ -845,12 +845,6 @@ watch(salesMode, () => {
 <template>
   <div class="panel">
     <div class="toolbar">
-      <el-input
-        v-model="keyword"
-        class="toolbar-input"
-        placeholder="搜索商品名称 / 副标题 / 产地 / 卡包金额"
-        clearable
-      />
       <el-select
         v-if="salesMode === 'mall'"
         v-model="categoryFilter"
@@ -886,6 +880,13 @@ watch(salesMode, () => {
           value="off"
         />
       </el-select>
+      <el-input
+        v-model="keyword"
+        class="toolbar-input"
+        placeholder="搜索商品名称 / 副标题 / 产地 / 卡包金额"
+        clearable
+      />
+      
       <button
         class="btn btn-refresh"
         type="button"
