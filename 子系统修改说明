@@ -1,5 +1,11 @@
 shop
-    1.修改shop的生产文件 VITE_TENANT_ID=boos1.。
+    1.修改shop的生产文件 
+    VITE_TENANT_ID=boos1
+    VITE_TENANT_ID=boos2
+    ...
+
+    VITE_MALL_API_BASE=http://47.96.89.158/api 请求对应的服务器ip地址
+
 
 admin
     1后台对应的接口地址对应ip
