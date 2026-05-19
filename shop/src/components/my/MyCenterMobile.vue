@@ -45,13 +45,6 @@ const displayName = computed(() => {
   return `用户${loginPhone.value.slice(-4)}`
 })
 
-const displaySubText = computed(() => {
-  if (!isLoggedIn.value) {
-    return '账户还款、资产信息登录后查看'
-  }
-  return `登录账号：${loginPhone.value}`
-})
-
 const displayOrderStatus = computed(() => {
   const toneMap = {
     reviewing: 'from-[#7f8cf6] to-[#6aa9ff]',
@@ -172,9 +165,6 @@ async function handleService(key: string) {
             class="truncate text-[1.55rem] font-semibold leading-none text-[#2a2f3c]"
           >
             {{ displayName }}
-          </p>
-          <p class="mt-1 line-clamp-2 text-xs text-[#4e5974]">
-            {{ displaySubText }}
           </p>
         </div>
       </div>
