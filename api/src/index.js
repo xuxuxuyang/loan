@@ -144,8 +144,20 @@ const ADMIN_ROLE_SET = new Set(Object.values(ADMIN_ROLES))
 function isSuperEquivalentRole(role) {
   return role === ADMIN_ROLES.SUPER || role === ADMIN_ROLES.BOSS
 }
-/** 商城用户注册及未填写额度时的默认先享后付可用额度（元） */
-const DEFAULT_USER_QUOTA = 2750
+/** 商城用户注册及未填写额度时的默认先享后付可用额度（元），由 MALL_DEFAULT_CREDIT_QUOTA 配置；缺省或非法时回退 2750 */
+const DEFAULT_USER_FALLBACK_QUOTA = 2750
+function resolveDefaultUserQuotaFromEnv() {
+  const raw = process.env.MALL_DEFAULT_CREDIT_QUOTA
+  if (raw === undefined || raw === null || String(raw).trim() === '') {
+    return DEFAULT_USER_FALLBACK_QUOTA
+  }
+  const n = Number(String(raw).trim())
+  if (!Number.isFinite(n) || n < 0) {
+    return DEFAULT_USER_FALLBACK_QUOTA
+  }
+  return Math.round(n)
+}
+const DEFAULT_USER_QUOTA = resolveDefaultUserQuotaFromEnv()
 
 function hashMallUserPassword(plain) {
   const s = String(plain || '')
