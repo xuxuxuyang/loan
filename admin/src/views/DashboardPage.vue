@@ -361,14 +361,7 @@ onMounted(() => {
     class="dash-page"
   >
     <div class="dash-toolbar">
-      <div class="dash-lead">
-        <h1 class="dash-title">
-          财务报表
-        </h1>
-        <p class="dash-subtitle">
-          指标口径：<strong>仅统计「卡包已发放」</strong>的订单及其分期还款计划；与时间筛选无关，可与「刷新数据」按需同步最新台账。
-        </p>
-      </div>
+      
       <el-button
         type="primary"
         :icon="Refresh"
@@ -391,12 +384,6 @@ onMounted(() => {
           <h2 class="kpi-section-title">
             {{ row.title }}
           </h2>
-          <p
-            v-if="row.subtitle"
-            class="kpi-section-subtitle"
-          >
-            {{ row.subtitle }}
-          </p>
         </div>
         <div
           v-else-if="row.kind === 'card'"

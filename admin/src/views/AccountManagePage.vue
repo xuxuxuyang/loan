@@ -265,7 +265,7 @@ async function fetchAccounts() {
       if (!response.ok || payload.success === false) {
         const msg = payload.msg || `加载账号失败 (${response.status})`
         if (response.status === 401 || response.status === 403) {
-          throw new Error(`${msg} — 请退出后使用超级管理员（xuyang）重新登录`)
+          throw new Error(`${msg} — 请退出后重新登录`)
         }
         throw new Error(msg)
       }

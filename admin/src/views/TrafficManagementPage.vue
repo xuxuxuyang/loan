@@ -271,7 +271,7 @@ async function fetchChannels() {
     if (!response.ok || payload.success === false) {
       const msg = payload.msg || `加载失败 (${response.status})`
       if (response.status === 401 || response.status === 403) {
-        throw new Error(`${msg} — 请使用超级管理员登录`)
+        throw new Error(`${msg} — 请重新登录`)
       }
       throw new Error(msg)
     }
@@ -304,7 +304,7 @@ async function fetchQualityMetrics() {
     if (!response.ok || payload.success === false) {
       const msg = payload.msg || `加载客户质量失败 (${response.status})`
       if (response.status === 401 || response.status === 403) {
-        throw new Error(`${msg} — 请使用超级管理员登录`)
+        throw new Error(`${msg} — 请重新登录`)
       }
       throw new Error(msg)
     }
@@ -625,26 +625,6 @@ onMounted(() => {
           </el-tag>
         </div>
       </template>
-
-      <el-alert
-        type="info"
-        :closable="false"
-        show-icon
-        class="traffic-quality-intro"
-      >
-        <template #title>
-          指标说明
-        </template>
-        <p class="traffic-quality-intro__p">
-          <strong>订单数 / 成交金额</strong>：仅含<strong>卡包已发放</strong>且<strong>非待审核</strong>的订单，与财务报表一致。
-        </p>
-        <p class="traffic-quality-intro__p">
-          <strong>逾期率</strong>：仅统计<strong>先享后付且卡包已发放</strong>订单。分母为先享后付订单数；分子为「至少有一期应还日早于今日且仍未付清」的订单数。
-        </p>
-        <p class="traffic-quality-intro__p traffic-quality-intro__p--last">
-          <strong>注册转化率</strong>：有发卡包订单的用户数 ÷ 注册人数。<strong>复购率</strong>：下过 2 笔及以上发卡包订单的用户占「有成交用户」的比例。<strong>先享后付</strong>：先享后付发卡包订单数 ÷ 全部发卡包订单数。
-        </p>
-      </el-alert>
 
       <el-alert
         v-if="qualityErrorMessage && !qualityLoading"

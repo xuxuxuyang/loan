@@ -89,13 +89,13 @@ const router = createRouter({
       path: '/orders',
       name: 'orders',
       component: OrdersPage,
-      meta: { title: '订单管理', roles: ['super_admin', 'reviewer', 'collector'] },
+      meta: { title: '已审核订单', roles: ['super_admin', 'reviewer', 'collector'] },
     },
     {
       path: '/orders/review',
       name: 'order-review',
       component: OrderReviewPage,
-      meta: { title: '审核订单', roles: ['super_admin', 'reviewer', 'collector'] },
+      meta: { title: '未审核订单', roles: ['super_admin', 'reviewer', 'collector'] },
     },
     {
       path: '/orders/card-data',
