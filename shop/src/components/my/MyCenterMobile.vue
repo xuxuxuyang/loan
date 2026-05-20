@@ -384,33 +384,35 @@ async function handleService(key: string) {
         </h3>
         <div class="mx-auto mt-1 h-1 w-16 rounded-full bg-gradient-to-r from-[#ff8fb3] to-[#ff6e92]" />
       </div>
-      <div class="grid grid-cols-2 gap-3">
+      <div class="grid grid-cols-2 items-stretch gap-3">
         <article
           v-for="item in sortedRecommendProducts.slice(0, 4)"
           :key="item.id"
           role="button"
           tabindex="0"
-          class="cursor-pointer overflow-hidden rounded-xl border border-black/10 bg-white transition active:scale-[0.99]"
+          class="product-card flex h-full flex-col cursor-pointer overflow-hidden rounded-xl border border-black/10 bg-white transition active:scale-[0.99]"
           @click="openProductDetail(item)"
           @keydown.enter.prevent="openProductDetail(item)"
         >
-          <img
-            :src="item.image"
-            :alt="item.name"
-            class="pointer-events-none h-28 w-full object-cover"
-            loading="lazy"
-            decoding="async"
-            referrerpolicy="no-referrer"
-            @error="onMallProductImageError($event, item.name)"
-          >
-          <div class="p-3">
-            <h4 class="line-clamp-1 text-sm font-semibold leading-snug text-black/85">
+          <div class="product-card-media relative aspect-[4/3] w-full shrink-0 overflow-hidden bg-[#f6f8fb]">
+            <img
+              :src="item.image"
+              :alt="item.name"
+              class="pointer-events-none absolute inset-0 h-full w-full object-cover"
+              loading="lazy"
+              decoding="async"
+              referrerpolicy="no-referrer"
+              @error="onMallProductImageError($event, item.name)"
+            >
+          </div>
+          <div class="flex flex-1 flex-col p-3">
+            <h4 class="line-clamp-1 min-h-[1.25rem] text-sm font-semibold leading-5 text-black/85">
               {{ item.name }}
             </h4>
-            <p class="mb-2 line-clamp-1 text-xs text-black/60">
+            <p class="mb-2 line-clamp-1 min-h-[1.125rem] text-xs leading-[1.125rem] text-black/60">
               {{ item.subtitle }}
             </p>
-            <div class="flex items-center justify-between gap-1">
+            <div class="mt-auto flex items-center justify-between gap-1">
               <span class="text-sm font-semibold leading-5 text-[#e85a7a]">￥{{ item.price }}</span>
               <span
                 class="pointer-events-none shrink-0 rounded-md bg-gradient-to-br from-[#ff8fb3] to-[#ff6e92] px-2.5 py-1 text-xs font-medium text-white shadow-sm"

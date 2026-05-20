@@ -59,40 +59,38 @@ if (!import.meta.env.SSR) {
 
     <div
       v-else
-      class="grid grid-cols-2 gap-3"
+      class="grid grid-cols-2 items-stretch gap-3"
     >
       <article
         v-for="item in sortedProducts"
         :key="item.id"
         tabindex="0"
         :class="[
-          'cursor-pointer overflow-hidden rounded-xl border border-black/10 bg-white transition active:scale-[0.99]',
+          'product-card flex h-full flex-col cursor-pointer overflow-hidden rounded-xl border border-black/10 bg-white transition active:scale-[0.99]',
           isOverCredit(item) ? 'opacity-90' : '',
         ]"
         role="button"
         @click="openProductDetail(item)"
         @keydown.enter.prevent="openProductDetail(item)"
       >
-        <div
-          class="flex aspect-[4/3] w-full items-center justify-center rounded-t-xl bg-[#f6f8fb]"
-        >
+        <div class="product-card-media relative aspect-[4/3] w-full shrink-0 overflow-hidden rounded-t-xl bg-[#f6f8fb]">
           <img
             :src="item.image"
             :alt="item.name"
-            class="pointer-events-none max-h-full w-full max-w-full object-contain p-2"
+            class="pointer-events-none absolute inset-0 h-full w-full object-cover"
             loading="lazy"
             decoding="async"
             @error="onMallProductImageError($event, item.name)"
           >
         </div>
-        <div class="p-3">
-          <h4 class="line-clamp-2 text-sm font-semibold leading-snug">
+        <div class="flex flex-1 flex-col p-3">
+          <h4 class="line-clamp-1 min-h-[1.25rem] text-sm font-semibold leading-5">
             {{ item.name }}
           </h4>
-          <p class="mb-2 line-clamp-1 text-xs text-black/55">
+          <p class="mb-2 line-clamp-1 min-h-[1.125rem] text-xs leading-[1.125rem] text-black/55">
             {{ item.subtitle }}
           </p>
-          <div class="flex items-center justify-between gap-1">
+          <div class="mt-auto flex items-center justify-between gap-1">
             <span class="text-sm font-semibold text-[var(--theme-color)]">￥{{ item.price }}</span>
             <span
               :class="[

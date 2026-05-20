@@ -236,9 +236,9 @@ const kpiBoardRows = computed<BoardItem[]>(() => {
       tone: 'orangeBurnt',
     }),
     card({
-      label: '成交金额溢价',
+      label: '营收利润',
       value: fmtYuan(k.premiumToPrincipal),
-      hint: `${scope}成交总额 − 卡包本金合计（含税费等业务结构）`,
+      hint: `${scope}成交总额 − 卡包本金合计`,
       tone: 'slateInk',
     }),
     card({
@@ -262,7 +262,7 @@ const kpiBoardRows = computed<BoardItem[]>(() => {
       tone: 'cyanSky',
     }),
     card({
-      label: '待收本金口径',
+      label: '待收本金',
       value: fmtYuan(k.receivablePrincipal),
       hint: `${scope}尚有未还款项时整笔计入的卡包本金`,
       tone: 'orangeBurnt',

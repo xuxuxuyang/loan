@@ -54,36 +54,34 @@ async function openProductDetail(item: TeaProduct) {
       />
     </div>
 
-    <div class="grid grid-cols-2 gap-3">
+    <div class="grid grid-cols-2 items-stretch gap-3">
       <article
         v-for="item in sortedProducts"
         :key="item.id"
         role="button"
         tabindex="0"
-        class="overflow-hidden rounded-xl border border-black/10 bg-white cursor-pointer transition active:scale-[0.99]"
+        class="product-card flex h-full flex-col overflow-hidden rounded-xl border border-black/10 bg-white cursor-pointer transition active:scale-[0.99]"
         @click="openProductDetail(item)"
         @keydown.enter.prevent="openProductDetail(item)"
       >
-        <div
-          class="flex aspect-[4/3] w-full items-center justify-center rounded-t-xl bg-[#f6f8fb]"
-        >
+        <div class="product-card-media relative aspect-[4/3] w-full shrink-0 overflow-hidden rounded-t-xl bg-[#f6f8fb]">
           <img
             :src="item.image"
             :alt="item.name"
-            class="max-h-full w-full max-w-full object-contain p-2 pointer-events-none"
+            class="pointer-events-none absolute inset-0 h-full w-full object-cover"
             loading="lazy"
             decoding="async"
             @error="onMallProductImageError($event, item.name)"
           >
         </div>
-        <div class="p-3">
-          <h4 class="line-clamp-1 text-sm font-semibold">
+        <div class="flex flex-1 flex-col p-3">
+          <h4 class="line-clamp-1 min-h-[1.25rem] text-sm font-semibold leading-5">
             {{ item.name }}
           </h4>
-          <p class="mb-2 line-clamp-1 text-xs text-black/60">
+          <p class="mb-2 line-clamp-1 min-h-[1.125rem] text-xs leading-[1.125rem] text-black/60">
             {{ item.subtitle }}
           </p>
-          <div class="flex items-center justify-between">
+          <div class="mt-auto flex items-center justify-between gap-1">
             <span
               class="text-sm font-semibold leading-5"
               :class="isBnplZone ? 'text-[#e85a7a]' : 'text-[#ff5f47]'"

@@ -182,13 +182,11 @@ function openMallListFor(item: TeaProduct) {
           @click="openMallListFor(item)"
           @keydown.enter.prevent="openMallListFor(item)"
         >
-          <div
-            class="flex aspect-[5/4] w-full items-center justify-center rounded-t-lg bg-[#f6f8fb]"
-          >
+          <div class="relative aspect-[5/4] w-full overflow-hidden rounded-t-lg bg-[#f6f8fb]">
             <img
               :src="item.image"
               :alt="item.name"
-              class="max-h-[3.35rem] w-full max-w-full object-contain p-1"
+              class="pointer-events-none absolute inset-0 h-full w-full object-cover"
               loading="lazy"
               decoding="async"
               @error="onMallProductImageError($event, item.name)"
