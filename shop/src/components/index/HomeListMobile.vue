@@ -64,15 +64,18 @@ async function openProductDetail(item: TeaProduct) {
         @click="openProductDetail(item)"
         @keydown.enter.prevent="openProductDetail(item)"
       >
-        <img
-          :src="item.image"
-          :alt="item.name"
-          class="h-28 w-full object-cover pointer-events-none"
-          loading="lazy"
-          decoding="async"
-          referrerpolicy="no-referrer"
-          @error="onMallProductImageError($event, item.name)"
+        <div
+          class="flex aspect-[4/3] w-full items-center justify-center rounded-t-xl bg-[#f6f8fb]"
         >
+          <img
+            :src="item.image"
+            :alt="item.name"
+            class="max-h-full w-full max-w-full object-contain p-2 pointer-events-none"
+            loading="lazy"
+            decoding="async"
+            @error="onMallProductImageError($event, item.name)"
+          >
+        </div>
         <div class="p-3">
           <h4 class="line-clamp-1 text-sm font-semibold">
             {{ item.name }}

@@ -18,6 +18,9 @@ export const ordersMenuReviewedListTotal = ref(0)
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
+const POLL_FAST_MS = 2500
+const POLL_SLOW_MS = 12000
+
 /** 轮询仅更新侧栏角标数字，不替换 useOrdersStore.orders，避免 GET 订单全量快照覆盖 PATCH 刚合并的数据。 */
 
 async function fetchOrderSidebarBadgeCounts() {
@@ -61,43 +64,47 @@ function stopPolling() {
   }
 }
 
-function startPolling() {
+function applyOrderBadgePolling(enabled: boolean, path: string) {
   stopPolling()
+  if (!enabled) {
+    ordersMenuPendingReviewTotal.value = 0
+    ordersMenuReviewedListTotal.value = 0
+    return
+  }
+  if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+    return
+  }
   void fetchOrderSidebarBadgeCounts()
-  pollTimer = setInterval(() => void fetchOrderSidebarBadgeCounts(), 2500)
+  const ms = path.startsWith('/orders') ? POLL_FAST_MS : POLL_SLOW_MS
+  pollTimer = setInterval(() => {
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+      return
+    }
+    void fetchOrderSidebarBadgeCounts()
+  }, ms)
 }
 
 /**
  * 登录后轮询侧栏订单角标；登出时清零并停止（不按角色限制拉取）。
+ * 非订单模块页使用较长间隔，减少与客服页等场景的并发请求。
  */
 export function useAdminOrderReviewBadge(enabled: ComputedRef<boolean>) {
   const route = useRoute()
 
-  watch(
-    enabled,
-    (on) => {
-      if (on) {
-        startPolling()
-      }
-      else {
-        stopPolling()
-        ordersMenuPendingReviewTotal.value = 0
-        ordersMenuReviewedListTotal.value = 0
-      }
-    },
-    { immediate: true },
-  )
+  function reconcile() {
+    applyOrderBadgePolling(enabled.value, route.path)
+  }
 
-  watch(
-    () => route.path,
-    (path) => {
-      if (enabled.value && path.startsWith('/orders')) {
-        void fetchOrderSidebarBadgeCounts()
-      }
-    },
-  )
+  watch([enabled, () => route.path], reconcile, { immediate: true })
+
+  if (typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', reconcile)
+  }
 
   onUnmounted(() => {
+    if (typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', reconcile)
+    }
     stopPolling()
     ordersMenuPendingReviewTotal.value = 0
     ordersMenuReviewedListTotal.value = 0

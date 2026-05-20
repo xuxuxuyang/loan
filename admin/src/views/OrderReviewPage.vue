@@ -486,7 +486,6 @@ onMounted(() => {
     <table class="table">
       <thead>
         <tr>
-          <th>订单号</th>
           <th>用户</th>
           <th>备注</th>
           <th>商品</th>
@@ -502,7 +501,6 @@ onMounted(() => {
           v-for="item in reviewOrders"
           :key="item.id"
         >
-          <td>{{ item.id }}</td>
           <td class="td-user-risk">
             <el-tag
               type="info"

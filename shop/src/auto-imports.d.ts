@@ -32,7 +32,6 @@ declare global {
   const getCurrentScope: typeof import('vue').getCurrentScope
   const getCurrentWatcher: typeof import('vue').getCurrentWatcher
   const getPendingRegisterChannel: typeof import('./composables/useRegisterChannel').getPendingRegisterChannel
-  const getSimulatedLogisticsTrace: typeof import('./composables/useMallOrders').getSimulatedLogisticsTrace
   const h: typeof import('vue').h
   const inject: typeof import('vue').inject
   const isAddressPickForOrderRoute: typeof import('./composables/useMallMy').isAddressPickForOrderRoute
@@ -85,6 +84,7 @@ declare global {
   const toRef: typeof import('vue').toRef
   const toRefs: typeof import('vue').toRefs
   const toValue: typeof import('vue').toValue
+  const trackingNumberThirdPartyLookupUrl: typeof import('./composables/useMallOrders').trackingNumberThirdPartyLookupUrl
   const triggerRef: typeof import('vue').triggerRef
   const unref: typeof import('vue').unref
   const useAttrs: typeof import('vue').useAttrs
@@ -129,7 +129,7 @@ declare global {
   export type { MallMySummary, MallAddressItem, MallAddressPayload, MallBankCardItem, MallBillNegotiationEntry, MallNegotiationPayPending, MallBillItem, MallRepayPayload, MallRepayNegotiatedPayload, MallBillSummary, MallBillingRefreshPayload, MallPostOrderRefreshPayload } from './composables/useMallMy'
   import('./composables/useMallMy')
   // @ts-ignore
-  export type { MallOrderStatus, MallPayType, MallPayChannel, MallOrder, MallCreateOrderResult, SimulatedLogisticsNode } from './composables/useMallOrders'
+  export type { MallOrderStatus, MallPayType, MallPayChannel, MallOrder, MallCreateOrderResult } from './composables/useMallOrders'
   import('./composables/useMallOrders')
   // @ts-ignore
   export type { ProductSalesMode, MallShelfCategoryKey, MallCategoryKey, TeaProduct, MallCategoryItem } from './composables/useTeaProducts'
@@ -143,6 +143,7 @@ declare module 'vue' {
   interface ComponentCustomProperties {
     readonly $fetch: UnwrapRef<typeof import('@/spa-shim')['$fetch']>
     readonly EffectScope: UnwrapRef<typeof import('vue')['EffectScope']>
+    readonly ElMessage: UnwrapRef<typeof import('element-plus/es')['ElMessage']>
     readonly MALL_DEFAULT_CREDIT_QUOTA: UnwrapRef<typeof import('./composables/mallCreditQuota')['MALL_DEFAULT_CREDIT_QUOTA']>
     readonly captureRegisterChannelFromRoute: UnwrapRef<typeof import('./composables/useRegisterChannel')['captureRegisterChannelFromRoute']>
     readonly clearPendingRegisterChannel: UnwrapRef<typeof import('./composables/useRegisterChannel')['clearPendingRegisterChannel']>
@@ -166,7 +167,6 @@ declare module 'vue' {
     readonly getCurrentScope: UnwrapRef<typeof import('vue')['getCurrentScope']>
     readonly getCurrentWatcher: UnwrapRef<typeof import('vue')['getCurrentWatcher']>
     readonly getPendingRegisterChannel: UnwrapRef<typeof import('./composables/useRegisterChannel')['getPendingRegisterChannel']>
-    readonly getSimulatedLogisticsTrace: UnwrapRef<typeof import('./composables/useMallOrders')['getSimulatedLogisticsTrace']>
     readonly h: UnwrapRef<typeof import('vue')['h']>
     readonly inject: UnwrapRef<typeof import('vue')['inject']>
     readonly isAddressPickForOrderRoute: UnwrapRef<typeof import('./composables/useMallMy')['isAddressPickForOrderRoute']>
@@ -219,6 +219,7 @@ declare module 'vue' {
     readonly toRef: UnwrapRef<typeof import('vue')['toRef']>
     readonly toRefs: UnwrapRef<typeof import('vue')['toRefs']>
     readonly toValue: UnwrapRef<typeof import('vue')['toValue']>
+    readonly trackingNumberThirdPartyLookupUrl: UnwrapRef<typeof import('./composables/useMallOrders')['trackingNumberThirdPartyLookupUrl']>
     readonly triggerRef: UnwrapRef<typeof import('vue')['triggerRef']>
     readonly unref: UnwrapRef<typeof import('vue')['unref']>
     readonly useAttrs: UnwrapRef<typeof import('vue')['useAttrs']>

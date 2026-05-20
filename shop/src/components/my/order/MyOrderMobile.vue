@@ -1,13 +1,13 @@
 <script setup lang="ts">
-import { watch } from 'vue'
+import { ref, watch } from 'vue'
 import type { MallOrder, MallOrderStatus } from '~/composables/useMallOrders'
 import {
   effectiveMallOrderStatus,
   formatMallOrderTime,
-  getSimulatedLogisticsTrace,
   mallOrderBelongsToLoggedIn,
   normalizeOrderTrackingNumber,
   orderHasShippedTracking,
+  trackingNumberThirdPartyLookupUrl,
 } from '~/composables/useMallOrders'
 import { notifyInfo, notifySuccess } from '~/utils/epFeedback'
 
@@ -191,6 +191,33 @@ async function copyTrackingNumber(no: string | undefined) {
     notifyInfo(`请长按复制单号：${text}`)
   }
 }
+
+const trackingLookupVisible = ref(false)
+const trackingLookupNo = ref('')
+
+function openTrackingLookupDialog(trackingRaw: string | undefined) {
+  const text = normalizeOrderTrackingNumber(trackingRaw)
+  if (!text) {
+    return
+  }
+  trackingLookupNo.value = text
+  trackingLookupVisible.value = true
+}
+
+function closeTrackingLookupDialog() {
+  trackingLookupVisible.value = false
+}
+
+function confirmOpenKuaidi100() {
+  if (!import.meta.env.SSR) {
+    window.open(trackingNumberThirdPartyLookupUrl(), '_blank', 'noopener,noreferrer')
+  }
+  closeTrackingLookupDialog()
+}
+
+function onTrackingLookupDialogClosed() {
+  trackingLookupNo.value = ''
+}
 </script>
 
 <template>
@@ -270,7 +297,7 @@ async function copyTrackingNumber(no: string | undefined) {
           v-if="orderHasShippedTracking(item)"
           class="mt-3 rounded-xl bg-[#f7f8fb] px-3 py-2.5"
         >
-          <div class="mb-2 flex items-start justify-between gap-2">
+          <div class="flex items-start justify-between gap-2">
             <p class="min-w-0 flex-1 text-[13px] leading-[1.45] text-black/70">
               <span class="text-black/45">快递单号</span>
               <br>
@@ -284,27 +311,13 @@ async function copyTrackingNumber(no: string | undefined) {
               复制
             </button>
           </div>
-          <p class="mb-2 text-[11px] leading-snug text-black/38">
-            下列物流为模拟轨迹，正式环境将对接快递查询接口
-          </p>
-          <ul class="relative border-l border-[var(--theme-color)]/25 pl-3">
-            <li
-              v-for="(node, idx) in getSimulatedLogisticsTrace(item)"
-              :key="`${item.id}-log-${idx}`"
-              class="relative pb-3 pl-1 last:pb-0"
-            >
-              <span
-                class="absolute -left-[5px] top-1.5 h-2 w-2 rounded-full bg-[var(--theme-color)] ring-2 ring-white"
-                aria-hidden="true"
-              />
-              <p class="text-[11px] text-black/40">
-                {{ node.timeLabel }}
-              </p>
-              <p class="mt-0.5 text-[13px] leading-snug text-black/72">
-                {{ node.text }}
-              </p>
-            </li>
-          </ul>
+          <button
+            type="button"
+            class="mt-2 inline-flex items-center border-0 bg-transparent p-0 text-[13px] font-medium text-[var(--theme-color)] underline decoration-[var(--theme-color)]/45 underline-offset-2 active:opacity-80"
+            @click="openTrackingLookupDialog(item.trackingNumber)"
+          >
+            物流信息查询
+          </button>
         </div>
         <div class="my-2.5 h-px bg-black/8" />
         <div class="flex items-center justify-between">
@@ -325,5 +338,51 @@ async function copyTrackingNumber(no: string | undefined) {
         当前状态暂无订单
       </div>
     </div>
+
+    <el-dialog
+      v-model="trackingLookupVisible"
+      title="查询物流"
+      width="min(92vw, 340px)"
+      align-center
+      append-to-body
+      :close-on-click-modal="false"
+      class="mall-tracking-lookup-dialog"
+      @closed="onTrackingLookupDialogClosed"
+    >
+      <div class="space-y-3 text-sm leading-relaxed text-black/78">
+        <p>
+          即将跳转快递100，请先<strong class="font-semibold text-black/88">复制下方单号</strong>，打开网页后在搜索框粘贴查询。
+        </p>
+        <div class="rounded-xl bg-[#f7f8fb] px-3 py-2.5">
+          <p class="mb-1 text-[11px] text-black/45">
+            快递单号
+          </p>
+          <p class="break-all font-mono text-[15px] font-semibold text-black/88">
+            {{ trackingLookupNo }}
+          </p>
+        </div>
+        <el-button
+          type="primary"
+          plain
+          class="w-full"
+          @click="copyTrackingNumber(trackingLookupNo)"
+        >
+          复制单号
+        </el-button>
+      </div>
+      <template #footer>
+        <div class="flex flex-wrap justify-end gap-2">
+          <el-button @click="closeTrackingLookupDialog">
+            取消
+          </el-button>
+          <el-button
+            type="primary"
+            @click="confirmOpenKuaidi100"
+          >
+            前往快递100
+          </el-button>
+        </div>
+      </template>
+    </el-dialog>
   </section>
 </template>

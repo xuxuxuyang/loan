@@ -199,55 +199,12 @@ export function orderHasShippedTracking(order: MallOrder): boolean {
   return st === 'shipping' || st === 'receiving' || st === 'enjoying'
 }
 
-export interface SimulatedLogisticsNode {
-  timeLabel: string
-  text: string
-}
-
-/** 基于运单号与订单状态生成的示例物流轨迹，后续可整体替换为快递查询 API 结果 */
-export function getSimulatedLogisticsTrace(order: MallOrder): SimulatedLogisticsNode[] {
-  if (!orderHasShippedTracking(order)) {
-    return []
-  }
-  const tn = normalizeOrderTrackingNumber(order.trackingNumber)
-  const created = new Date(order.createdAt)
-  if (Number.isNaN(created.getTime())) {
-    return [{ timeLabel: '', text: '物流信息暂不可用' }]
-  }
-
-  const carriers = ['顺丰速运', '中通快递', '圆通速递', '韵达快递'] as const
-  let h = 0
-  for (let i = 0; i < tn.length; i++) {
-    h = (h * 31 + tn.charCodeAt(i)) | 0
-  }
-  const carrier = carriers[Math.abs(h) % carriers.length]
-
-  const pad = (n: number) => String(n).padStart(2, '0')
-  const fmt = (d: Date) =>
-    `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
-
-  const addHours = (ms: number, hours: number) => new Date(ms + hours * 3600000)
-
-  const base = created.getTime()
-  const t0 = addHours(base, 1)
-  const t1 = addHours(base, 8)
-  const t2 = addHours(base, 28)
-  const st = effectiveMallOrderStatus(order)
-  const t3 = addHours(base, st === 'enjoying' ? 52 : 40)
-
-  const nodes: SimulatedLogisticsNode[] = [
-    { timeLabel: fmt(t0), text: `【${carrier}】快递员已揽收，包裹运输中（运单号 ${tn}）` },
-    { timeLabel: fmt(t1), text: '包裹已离开发货地分拨中心，正发往目的城市' },
-    { timeLabel: fmt(t2), text: '包裹已到达收件城市分拨中心，等待安排派送' },
-  ]
-  if (st === 'enjoying') {
-    nodes.push({ timeLabel: fmt(t3), text: '快件已签收，感谢您的支持与信任' })
-  }
-  else {
-    nodes.push({ timeLabel: fmt(t3), text: '包裹正在派送中，请保持手机畅通以便派件员与您联系' })
-  }
-
-  return [...nodes].reverse()
+/**
+ * 跳转快递100 首页（https://www.kuaidi100.com/），由用户粘贴单号查询；
+ * 项目未对接快递 API 时使用。
+ */
+export function trackingNumberThirdPartyLookupUrl(): string {
+  return 'https://www.kuaidi100.com/'
 }
 
 export function useMallOrders() {

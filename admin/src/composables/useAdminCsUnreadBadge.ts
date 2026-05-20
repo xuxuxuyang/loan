@@ -10,6 +10,8 @@ export const csMenuUnreadTotal = ref(0)
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
+const POLL_MS = 5000
+
 async function fetchCsUnreadSum() {
   const s = getAdminSession()
   if (!s?.token || (!isSuperAdminRole(s.role) && s.role !== 'reviewer')) {
@@ -46,10 +48,26 @@ function stopPolling() {
   }
 }
 
-function startPolling() {
+/** 不在客服页、标签在前台时才轮询；客服页由 CsMessagesPage 拉会话并写入 csMenuUnreadTotal */
+function applyCsBadgePolling(enabled: boolean, path: string) {
   stopPolling()
+  if (!enabled) {
+    csMenuUnreadTotal.value = 0
+    return
+  }
+  if (path === '/cs-messages') {
+    return
+  }
+  if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+    return
+  }
   void fetchCsUnreadSum()
-  pollTimer = setInterval(() => void fetchCsUnreadSum(), 3500)
+  pollTimer = setInterval(() => {
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+      return
+    }
+    void fetchCsUnreadSum()
+  }, POLL_MS)
 }
 
 /**
@@ -58,30 +76,20 @@ function startPolling() {
 export function useAdminCsUnreadBadge(enabled: ComputedRef<boolean>) {
   const route = useRoute()
 
-  watch(
-    enabled,
-    (on) => {
-      if (on) {
-        startPolling()
-      }
-      else {
-        stopPolling()
-        csMenuUnreadTotal.value = 0
-      }
-    },
-    { immediate: true },
-  )
+  function reconcile() {
+    applyCsBadgePolling(enabled.value, route.path)
+  }
 
-  watch(
-    () => route.path,
-    (path) => {
-      if (enabled.value && path === '/cs-messages') {
-        void fetchCsUnreadSum()
-      }
-    },
-  )
+  watch([enabled, () => route.path], reconcile, { immediate: true })
+
+  if (typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', reconcile)
+  }
 
   onUnmounted(() => {
+    if (typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', reconcile)
+    }
     stopPolling()
     csMenuUnreadTotal.value = 0
   })

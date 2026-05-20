@@ -249,10 +249,9 @@ if (!import.meta.env.SSR) {
               :key="`detail-${i}-${url.slice(0, 40)}`"
               :src="url"
               :alt="`${product.name} 详情图 ${i + 1}`"
-              class="w-full rounded-xl object-cover"
+              class="w-full rounded-xl bg-[#f6f8fb] object-contain p-3"
               loading="lazy"
               decoding="async"
-              referrerpolicy="no-referrer"
               @error="onMallProductImageError($event, product.name)"
             >
           </div>

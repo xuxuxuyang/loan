@@ -7,6 +7,7 @@ import {
   Calendar,
   ChatDotRound,
   CircleCheck,
+  Close,
   DataAnalysis,
   DataBoard,
   Goods,
@@ -28,6 +29,12 @@ import {
   ordersMenuReviewedListTotal,
   useAdminOrderReviewBadge,
 } from './composables/useAdminOrderReviewBadge'
+import {
+  adminVisitedTags,
+  clearAdminVisitedTags,
+  removeAdminVisitedTag,
+  syncAdminVisitedTag,
+} from './composables/useAdminVisitedTags'
 import { adminHomeRoute } from './router'
 
 type Role = NonNullable<AdminSession['role']>
@@ -206,8 +213,23 @@ function roleText(role?: AdminSession['role']) {
 
 function logout() {
   clearAdminSession()
+  clearAdminVisitedTags()
   session.value = null
   void router.replace('/login')
+}
+
+function onVisitedTagClick(fullPath: string) {
+  if (fullPath === route.fullPath) {
+    return
+  }
+  void router.push(fullPath)
+}
+
+function onVisitedTagClose(fullPath: string) {
+  const next = removeAdminVisitedTag(router, fullPath, route.fullPath)
+  if (next) {
+    void router.push(next)
+  }
 }
 
 function backToPlatformHeadquarters() {
@@ -220,9 +242,18 @@ watch(
   () => route.fullPath,
   () => {
     session.value = getAdminSession()
+    if (!isLoginPage.value) {
+      syncAdminVisitedTag(router, route)
+    }
   },
   { immediate: true },
 )
+
+watch(isLoginPage, (login) => {
+  if (login) {
+    clearAdminVisitedTags()
+  }
+})
 
 const csSidebarBadgeEnabled = computed(() => {
   if (isLoginPage.value) {
@@ -396,6 +427,39 @@ useAdminOrderReviewBadge(ordersSidebarBadgeEnabled)
             </el-popconfirm>
           </div>
         </header>
+        <div
+          class="admin-visited-tags-bar"
+          aria-label="已打开页面"
+        >
+          <div class="admin-visited-tags-scroll">
+            <button
+              v-for="tag in adminVisitedTags"
+              :key="tag.fullPath"
+              type="button"
+              class="admin-tag"
+              :class="{ 'admin-tag--active': tag.fullPath === route.fullPath }"
+              @click="onVisitedTagClick(tag.fullPath)"
+            >
+              <span
+                v-if="tag.fullPath === route.fullPath"
+                class="admin-tag-dot"
+                aria-hidden="true"
+              />
+              <span class="admin-tag-title">{{ tag.title }}</span>
+              <span
+                v-if="!tag.affix"
+                class="admin-tag-close"
+                role="button"
+                tabindex="-1"
+                title="关闭"
+                aria-label="关闭标签"
+                @click.stop="onVisitedTagClose(tag.fullPath)"
+              >
+                <el-icon class="admin-tag-close-icon"><Close /></el-icon>
+              </span>
+            </button>
+          </div>
+        </div>
         <section class="admin-content">
           <div class="admin-page-root">
             <RouterView />

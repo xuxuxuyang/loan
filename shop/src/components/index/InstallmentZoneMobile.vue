@@ -73,15 +73,18 @@ if (!import.meta.env.SSR) {
         @click="openProductDetail(item)"
         @keydown.enter.prevent="openProductDetail(item)"
       >
-        <img
-          :src="item.image"
-          :alt="item.name"
-          class="pointer-events-none h-28 w-full object-cover"
-          loading="lazy"
-          decoding="async"
-          referrerpolicy="no-referrer"
-          @error="onMallProductImageError($event, item.name)"
+        <div
+          class="flex aspect-[4/3] w-full items-center justify-center rounded-t-xl bg-[#f6f8fb]"
         >
+          <img
+            :src="item.image"
+            :alt="item.name"
+            class="pointer-events-none max-h-full w-full max-w-full object-contain p-2"
+            loading="lazy"
+            decoding="async"
+            @error="onMallProductImageError($event, item.name)"
+          >
+        </div>
         <div class="p-3">
           <h4 class="line-clamp-2 text-sm font-semibold leading-snug">
             {{ item.name }}

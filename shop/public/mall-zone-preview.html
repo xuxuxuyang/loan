@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>商城专区种子预览</title>
+  <style>
+    :root {
+      font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+      background: #f4f7fb;
+      color: #1a1a1a;
+    }
+    body { margin: 0; padding: 1rem 1rem 3rem; }
+    h1 { font-size: 1.25rem; margin-bottom: 0.25rem; }
+    .hint { font-size: 0.875rem; color: #446; margin-bottom: 1rem; line-height: 1.45; max-width: 56rem; }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+      gap: 0.85rem;
+    }
+    .card {
+      background: #fff;
+      border-radius: 12px;
+      box-shadow: 0 1px 8px rgb(23 62 117 / 0.08);
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+    .card img {
+      width: 100%;
+      aspect-ratio: 1;
+      object-fit: contain;
+      background: linear-gradient(#f9fbfd, #eef3f9);
+      border-bottom: 1px solid #e5edf6;
+    }
+    .pad { padding: 0.65rem 0.75rem 0.85rem; }
+    .cat {
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: #4a6590;
+      margin-bottom: 0.35rem;
+    }
+    .name { font-weight: 600; font-size: 0.95rem; line-height: 1.35; margin: 0 0 0.35rem; }
+    .subtitle { font-size: 0.78rem; color: #557; margin: 0 0 0.5rem; line-height: 1.4; }
+    .price { font-size: 1.05rem; font-weight: 700; color: #124; }
+    .ref { margin-top: 0.35rem; font-size: 0.72rem; color: #678; word-break: break-all; line-height: 1.35; }
+    code { font-size: 0.74em; background: #eef2f9; padding: 0 0.35em; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <h1>商城专区 · 四类商品种子预览</h1>
+  <p class="hint">
+    本页读取同目录下的 <code>mall-zone-products.seed.json</code>。<strong>必须用商城 dev server 打开</strong>（例如在项目 <code>shop</code>
+    目录执行开发命令后访问 <code>http://localhost:端口/mall-zone-preview.html</code>），不能直接双击磁盘上的 file://，否则浏览器会拦截 fetch。
+    展示价已为大陆常见网页标价 ×120%（四舍五入到元）；每项中的 <code>_officialCnyReference</code> 与 <code>_officialUrl</code> 仅在 JSON 中存在，入库时会被丢弃。
+    重新生成：<code>node api/scripts/write-mall-zone-seed.js</code>。
+  </p>
+  <div id="stat" style="margin-bottom:.75rem;font-size:.875rem;"></div>
+  <div id="root" class="grid"></div>
+  <script>
+    const catZh = {
+      phone: '手机',
+      digital: '数码产品',
+      appliance: '家用电器',
+      cosmetics: '化妆品 · 大牌个护',
+    }
+
+    fetch('./mall-zone-products.seed.json')
+      .then(function (r) {
+        if (!r.ok) throw new Error(r.status + ' ' + r.statusText)
+        return r.json()
+      })
+      .then(function (doc) {
+        var list = doc.products || []
+        document.getElementById('stat').textContent =
+          '共 ' + list.length + ' 条 · 生成时间 ' + (doc.generatedAt || '—')
+
+        var root = document.getElementById('root')
+        list.forEach(function (p) {
+          var cat = catZh[p.category] || p.category
+          var official = ''
+          var urlPart = ''
+          if (typeof p._officialCnyReference === 'number')
+            official = '对标官网参考价 ≈¥' + p._officialCnyReference
+          if (p._officialUrl) urlPart = ' · ' + p._officialUrl
+
+          var card = document.createElement('article')
+          card.className = 'card'
+          card.innerHTML =
+            '<img loading="lazy" alt="" referrerpolicy="no-referrer-when-downgrade" src="' +
+            String(p.image || '').replace(/"/g, '&quot;') +
+            '" />' +
+            '<div class="pad">' +
+            '<div class="cat">' +
+            cat +
+            '</div>' +
+            '<h2 class="name">' +
+            escapeHtml(String(p.name || '')) +
+            '</h2>' +
+            '<p class="subtitle">' +
+            escapeHtml(String(p.subtitle || '')) +
+            '</p>' +
+            '<div class="price">¥ ' +
+            formatPrice(Number(p.price)) +
+            '</div>' +
+            '<div class="ref">' +
+            escapeHtml(official + urlPart) +
+            '</div>' +
+            '</div>'
+          root.appendChild(card)
+        })
+      })
+      .catch(function (e) {
+        document.getElementById('stat').innerHTML =
+          '<span style="color:#b00020;">加载失败：' + escapeHtml(e.message) +
+          '</span> — 请先启动 shop 的开发服务器再在浏览器打开本路径。'
+      })
+
+    function formatPrice(n) {
+      if (!isFinite(n)) return '—'
+      return Math.round(n).toString()
+    }
+    function escapeHtml(s) {
+      return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    }
+  </script>
+</body>
+</html>

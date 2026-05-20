@@ -475,7 +475,7 @@ function customerTypeLabel(order: OrderItem): '老客户' | '新客户' {
   return isOldCustomer(order) ? '老客户' : '新客户'
 }
 
-const orderTableColspan = computed(() => (isCardPackageDataPage.value ? 16 : 15))
+const orderTableColspan = computed(() => (isCardPackageDataPage.value ? 15 : 14))
 
 const filteredOrders = computed(() => {
   // 订单管理仅展示已通过人工审核后的订单，待审核订单统一在“审核订单”页面处理。
@@ -1307,10 +1307,9 @@ watch(
       <table class="table orders-page-table">
       <thead>
         <tr>
-          <th>订单号</th>
           <th>用户</th>
-          <th>新老客户</th>
           <th>备注</th>
+          <th>新老客户</th>
           <th>商品</th>
           <th>下单时间</th>
           <th>订单金额</th>
@@ -1319,7 +1318,6 @@ watch(
           <th>合同签署</th>
           <th>紧急联系人</th>
           <th>卡包发放</th>
-          <th>到期应还</th>
           <th>还款到期日</th>
           <th v-if="isCardPackageDataPage">
             还款状态
@@ -1332,7 +1330,6 @@ watch(
           v-for="item in filteredOrders"
           :key="item.id"
         >
-          <td>{{ item.id }}</td>
           <td class="td-user-risk">
             <el-tag
               type="info"
@@ -1346,6 +1343,15 @@ watch(
               {{ item.user }}
             </el-tag>
           </td>
+          <td class="td-user-remark">
+            <p
+              class="order-user-remark-text"
+              :class="(item.userRemark || '').trim() ? 'order-user-remark-text--filled' : 'order-user-remark-text--empty'"
+              :title="(item.userRemark || '').trim() ? item.userRemark : ''"
+            >
+              {{ (item.userRemark || '').trim() ? item.userRemark : '暂无备注' }}
+            </p>
+          </td>
           <td class="td-customer-type">
             <el-tag
               :type="customerTypeTagType(item)"
@@ -1355,15 +1361,6 @@ watch(
             >
               {{ customerTypeLabel(item) }}
             </el-tag>
-          </td>
-          <td class="td-user-remark">
-            <p
-              class="order-user-remark-text"
-              :class="(item.userRemark || '').trim() ? 'order-user-remark-text--filled' : 'order-user-remark-text--empty'"
-              :title="(item.userRemark || '').trim() ? item.userRemark : ''"
-            >
-              {{ (item.userRemark || '').trim() ? item.userRemark : '暂无备注' }}
-            </p>
           </td>
           <td
             class="td-product"
@@ -1607,7 +1604,6 @@ watch(
               {{ item.cardPackageIssued ? '已发放' : '未发放' }}
             </el-tag>
           </td>
-          <td>¥ {{ item.periodAmount }}</td>
           <td>{{ item.nextRepayDate }}</td>
           <td v-if="isCardPackageDataPage">
             <el-tag

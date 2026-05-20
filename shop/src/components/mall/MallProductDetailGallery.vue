@@ -63,10 +63,9 @@ onBeforeUnmount(() => {
         <img
           :src="url"
           :alt="`${altBase} ${i + 1}/${slides.length}`"
-          class="gallery-img mx-auto block max-h-[min(72vw,22rem)] w-full object-contain"
+          class="gallery-img mx-auto block max-h-[min(72vw,22rem)] w-full bg-[#f6f8fb] object-contain py-3"
           loading="lazy"
           decoding="async"
-          referrerpolicy="no-referrer"
           @error="onMallProductImageError($event, altBase)"
         >
       </div>

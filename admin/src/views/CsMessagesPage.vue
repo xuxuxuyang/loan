@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, onMounted, onUnmounted, ref } from 'vue'
 import { ChatDotRound } from '@element-plus/icons-vue'
+import { csMenuUnreadTotal } from '../composables/useAdminCsUnreadBadge'
 import { withMallTenantHeaders } from '../composables/useAdminApi'
 
 const MALL_API_BASE = `${(import.meta.env.VITE_MALL_API_BASE || 'http://localhost:3110/api').replace(/\/$/, '')}`
@@ -37,6 +38,9 @@ const loadingList = ref(false)
 const loadingDetail = ref(false)
 const sending = ref(false)
 let pollTimer: ReturnType<typeof setInterval> | null = null
+let visHandler: (() => void) | null = null
+
+const POLL_MS = 3200
 
 const activeSession = computed(() => sessions.value.find(s => s.id === activeId.value))
 
@@ -229,6 +233,10 @@ async function fetchSessions() {
       ...s,
       lastAt: formatListTime(s.lastAt),
     }))
+    csMenuUnreadTotal.value = list.reduce(
+      (sum, row) => sum + Math.max(0, Number(row.unread || 0)),
+      0,
+    )
     if (!activeId.value && list.length) {
       activeId.value = list[0].id
     }
@@ -326,12 +334,12 @@ async function sendReply() {
 
 function startPolling() {
   stopPolling()
-  pollTimer = setInterval(() => {
+  pollTimer = window.setInterval(() => {
     void fetchSessions()
     if (activeId.value) {
       void fetchDetail(activeId.value)
     }
-  }, 2500)
+  }, POLL_MS)
 }
 
 function stopPolling() {
@@ -341,15 +349,36 @@ function stopPolling() {
   }
 }
 
+function onDocVisibility() {
+  if (typeof document === 'undefined' || document.visibilityState === 'hidden') {
+    stopPolling()
+    return
+  }
+  void fetchSessions().then(() => {
+    if (activeId.value) {
+      void fetchDetail(activeId.value)
+    }
+  })
+  startPolling()
+}
+
 onMounted(async () => {
+  visHandler = onDocVisibility
+  document.addEventListener('visibilitychange', visHandler)
   await fetchSessions()
   if (activeId.value) {
     await fetchDetail(activeId.value)
   }
-  startPolling()
+  if (typeof document === 'undefined' || document.visibilityState === 'visible') {
+    startPolling()
+  }
 })
 
 onUnmounted(() => {
+  if (visHandler && typeof document !== 'undefined') {
+    document.removeEventListener('visibilitychange', visHandler)
+  }
+  visHandler = null
   stopPolling()
 })
 </script>

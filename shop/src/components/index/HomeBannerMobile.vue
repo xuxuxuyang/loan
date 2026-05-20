@@ -182,15 +182,18 @@ function openMallListFor(item: TeaProduct) {
           @click="openMallListFor(item)"
           @keydown.enter.prevent="openMallListFor(item)"
         >
-          <img
-            :src="item.image"
-            :alt="item.name"
-            class="h-14 w-full object-cover"
-            loading="lazy"
-            decoding="async"
-            referrerpolicy="no-referrer"
-            @error="onMallProductImageError($event, item.name)"
+          <div
+            class="flex aspect-[5/4] w-full items-center justify-center rounded-t-lg bg-[#f6f8fb]"
           >
+            <img
+              :src="item.image"
+              :alt="item.name"
+              class="max-h-[3.35rem] w-full max-w-full object-contain p-1"
+              loading="lazy"
+              decoding="async"
+              @error="onMallProductImageError($event, item.name)"
+            >
+          </div>
           <p
             class="px-1 py-0.5 text-center text-[10px] font-semibold leading-4 text-white"
             :class="homeProductZone === 'installment' ? 'preview-price-bnpl' : 'preview-price-mall'"
