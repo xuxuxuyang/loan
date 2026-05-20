@@ -20,6 +20,7 @@ import {
 } from '@element-plus/icons-vue'
 import { useRoute, useRouter } from 'vue-router'
 import AdminRoleAvatar from './components/AdminRoleAvatar.vue'
+import LoginFortuneRain from './components/auth/LoginFortuneRain.vue'
 import MallBrandLogo from './components/MallBrandLogo.vue'
 import { adminSessionRoleAllowed, clearAdminSession, getAdminSession, isPlatformManagingTenantWorkspace, isSuperAdminRole, type AdminSession } from './composables/useAdminAuth'
 import { useTenantScope } from './composables/useTenantScope'
@@ -292,7 +293,11 @@ useAdminOrderReviewBadge(ordersSidebarBadgeEnabled)
         <div
           class="admin-sidebar-bg"
           aria-hidden="true"
-        />
+        >
+          <div class="admin-sidebar-bg__base" />
+          <LoginFortuneRain variant="sidebar" />
+          <div class="admin-sidebar-bg__veil" />
+        </div>
         <div class="admin-sidebar-content">
           <div class="admin-logo">
             <MallBrandLogo class="admin-logo-mark" />
@@ -311,8 +316,8 @@ useAdminOrderReviewBadge(ordersSidebarBadgeEnabled)
             :default-openeds="defaultOpenedSubmenus"
             router
             background-color="transparent"
-            text-color="#e8eef7"
-            active-text-color="#fffaf5"
+            text-color="#fde68a"
+            active-text-color="#fffbeb"
           >
             <template
               v-for="item in menus"
@@ -488,23 +493,31 @@ useAdminOrderReviewBadge(ordersSidebarBadgeEnabled)
   align-items: center;
 }
 
+.admin-side-menu :deep(.el-menu-item),
+.admin-side-menu :deep(.el-sub-menu__title) {
+  color: rgba(254, 243, 199, 0.88) !important;
+}
+
 .admin-side-menu :deep(.el-menu-item:hover),
 .admin-side-menu :deep(.el-sub-menu__title:hover) {
-  background-color: rgba(255, 255, 255, 0.12) !important;
+  background: rgba(69, 10, 10, 0.42) !important;
+  color: #fffbeb !important;
 }
 
 .admin-side-menu :deep(.el-sub-menu__icon-arrow) {
-  color: rgba(255, 255, 255, 0.55);
+  color: rgba(253, 230, 138, 0.55);
 }
 
 .admin-side-menu :deep(.el-menu-item.is-active) {
   background: linear-gradient(
-    120deg,
-    rgba(37, 99, 235, 0.55) 0%,
-    rgba(234, 88, 12, 0.48) 100%
+    90deg,
+    rgba(127, 29, 29, 0.75) 0%,
+    rgba(120, 53, 15, 0.55) 100%
   ) !important;
-  box-shadow: 0 4px 18px rgba(37, 99, 235, 0.2);
-  color: #fffaf5 !important;
+  box-shadow:
+    inset 3px 0 0 #fbbf24,
+    0 4px 14px rgba(0, 0, 0, 0.2);
+  color: #fffbeb !important;
 }
 
 .admin-side-menu :deep(.el-sub-menu .el-menu-item) {
@@ -514,20 +527,53 @@ useAdminOrderReviewBadge(ordersSidebarBadgeEnabled)
 
 .admin-side-menu :deep(.el-sub-menu .el-menu-item.is-active) {
   background: linear-gradient(
-    120deg,
-    rgba(37, 99, 235, 0.38) 0%,
-    rgba(234, 88, 12, 0.32) 100%
+    90deg,
+    rgba(127, 29, 29, 0.6) 0%,
+    rgba(120, 53, 15, 0.4) 100%
   ) !important;
+  box-shadow: inset 3px 0 0 #fbbf24;
 }
 
 .admin-menu-icon {
   margin-right: 10px;
   font-size: 18px;
   vertical-align: middle;
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 8px;
+  color: #fef3c7;
+  background: rgba(69, 10, 10, 0.5);
+  box-shadow:
+    inset 0 0 0 1px rgba(251, 191, 36, 0.2),
+    0 2px 6px rgba(0, 0, 0, 0.15);
+}
+
+.admin-side-menu :deep(.el-icon) {
+  --el-icon-color: currentColor;
+}
+
+.admin-side-menu :deep(.el-menu-item.is-active) .admin-menu-icon,
+.admin-side-menu :deep(.el-sub-menu .el-menu-item.is-active) .admin-menu-icon {
+  color: #fffbeb;
+  background: linear-gradient(145deg, rgba(217, 119, 6, 0.55), rgba(180, 83, 9, 0.45));
+  box-shadow:
+    inset 0 0 0 1px rgba(253, 224, 71, 0.35),
+    0 0 10px rgba(251, 191, 36, 0.2);
+}
+
+.admin-side-menu :deep(.el-menu-item:hover) .admin-menu-icon,
+.admin-side-menu :deep(.el-sub-menu__title:hover) .admin-menu-icon {
+  color: #fde68a;
+  background: rgba(127, 29, 29, 0.55);
 }
 
 .admin-menu-icon--child {
-  font-size: 16px;
+  width: 24px;
+  height: 24px;
+  font-size: 15px;
 }
 
 .admin-menu-title {
@@ -601,10 +647,10 @@ useAdminOrderReviewBadge(ordersSidebarBadgeEnabled)
 .admin-sidebar.admin-sidebar--dynamic {
   position: relative;
   overflow: hidden;
-  background: linear-gradient(155deg, #1a1530 0%, #0f172a 44%, #1c1917 100%);
+  background: #3f0a0a;
   box-shadow:
-    inset -1px 0 0 rgba(255, 255, 255, 0.07),
-    6px 0 28px rgba(15, 23, 42, 0.18);
+    inset -1px 0 0 rgba(251, 191, 36, 0.15),
+    4px 0 24px rgba(69, 10, 10, 0.28);
 }
 
 .admin-sidebar--dynamic .admin-logo {
@@ -612,6 +658,8 @@ useAdminOrderReviewBadge(ordersSidebarBadgeEnabled)
   align-items: center;
   gap: 10px;
   padding: 6px 8px 14px;
+  margin-bottom: 6px;
+  border-bottom: 1px solid rgba(251, 191, 36, 0.14);
 }
 
 .admin-logo-titles {
@@ -628,27 +676,25 @@ useAdminOrderReviewBadge(ordersSidebarBadgeEnabled)
   flex-shrink: 0;
   width: 36px;
   height: 36px;
-  filter: drop-shadow(0 0 10px rgba(56, 189, 248, 0.32));
+  filter: drop-shadow(0 0 10px rgba(251, 191, 36, 0.35));
 }
 
 .admin-sidebar--dynamic .admin-logo-text {
   font-size: 15px;
   font-weight: 700;
   letter-spacing: 0.02em;
-  color: #faf6f2;
+  color: #fffbeb;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  text-shadow:
-    0 0 20px rgba(96, 165, 250, 0.35),
-    0 1px 8px rgba(0, 0, 0, 0.4);
+  text-shadow: 0 1px 8px rgba(69, 10, 10, 0.45);
 }
 
 .admin-logo-sub {
   font-size: 11px;
   font-weight: 500;
   letter-spacing: 0.06em;
-  color: rgba(232, 238, 247, 0.72);
+  color: rgba(253, 230, 138, 0.72);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -661,67 +707,40 @@ useAdminOrderReviewBadge(ordersSidebarBadgeEnabled)
   overflow: hidden;
 }
 
-.admin-sidebar-bg::before,
-.admin-sidebar-bg::after {
-  content: '';
+/* 与登录页一致的深红天光底 */
+.admin-sidebar-bg__base {
   position: absolute;
-  border-radius: 50%;
-  filter: blur(56px);
-  opacity: 0.92;
-  animation-timing-function: ease-in-out;
-  animation-iteration-count: infinite;
-  animation-direction: alternate;
-}
-
-.admin-sidebar-bg::before {
-  width: 150%;
-  height: 95%;
-  left: -40%;
-  top: -28%;
+  inset: 0;
+  z-index: 0;
   background:
-    radial-gradient(ellipse 80% 70% at 28% 38%, rgba(251, 146, 60, 0.48) 0%, transparent 58%),
-    radial-gradient(ellipse 70% 60% at 72% 28%, rgba(59, 130, 246, 0.52) 0%, transparent 55%);
-  animation: admin-sidebar-aurora-a 16s infinite;
+    radial-gradient(ellipse 70% 55% at 50% -8%, rgba(253, 224, 71, 0.18), transparent 62%),
+    radial-gradient(ellipse 90% 70% at 50% 100%, rgba(69, 10, 10, 0.75), transparent 58%),
+    linear-gradient(180deg, #3f0a0a 0%, #7f1d1d 42%, #991b1b 68%, #450a0a 100%);
 }
 
-.admin-sidebar-bg::after {
-  width: 130%;
-  height: 110%;
-  right: -45%;
-  bottom: -38%;
+/* 半透明遮罩：保留财宝雨氛围，又保证菜单可读 */
+.admin-sidebar-bg__veil {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
   background:
-    radial-gradient(ellipse 75% 65% at 55% 62%, rgba(139, 92, 246, 0.38) 0%, transparent 58%),
-    radial-gradient(ellipse 60% 50% at 35% 72%, rgba(234, 88, 12, 0.3) 0%, transparent 48%);
-  animation: admin-sidebar-aurora-b 20s infinite;
-  opacity: 0.8;
-}
-
-@keyframes admin-sidebar-aurora-a {
-  0% {
-    transform: translate(0, 0) scale(1);
-  }
-  100% {
-    transform: translate(9%, 7%) scale(1.06);
-  }
-}
-
-@keyframes admin-sidebar-aurora-b {
-  0% {
-    transform: translate(0, 0) scale(1.04);
-  }
-  100% {
-    transform: translate(-7%, -6%) scale(1);
-  }
+    linear-gradient(
+      180deg,
+      rgba(24, 6, 6, 0.35) 0%,
+      rgba(69, 10, 10, 0.52) 45%,
+      rgba(24, 6, 6, 0.62) 100%
+    );
+  pointer-events: none;
 }
 
 .admin-sidebar-content {
   position: relative;
-  z-index: 1;
+  z-index: 5;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .admin-sidebar-bg::before,
-  .admin-sidebar-bg::after {
+  .admin-sidebar-bg__base,
+  .admin-sidebar-bg__veil {
     animation: none;
   }
 }

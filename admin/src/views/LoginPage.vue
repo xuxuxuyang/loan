@@ -157,7 +157,7 @@ async function handleLogin(payload: { username: string, password: string }) {
     <header class="login-page__brand" aria-hidden="true">
       <span class="login-page__brand-mark">文硕商城</span>
       <span class="login-page__brand-divider" />
-      <span class="login-page__brand-sub">先享后付 · 管理中台</span>
+      <span class="login-page__brand-sub">日进斗金 · 管理中台</span>
     </header>
 
     <LoginWelcomeCelebration
@@ -188,7 +188,7 @@ async function handleLogin(payload: { username: string, password: string }) {
   position: relative;
   min-height: 100vh;
   overflow: hidden;
-  background: #020617;
+  background: #450a0a;
   isolation: isolate;
 }
 
@@ -204,13 +204,13 @@ async function handleLogin(payload: { username: string, password: string }) {
   font-size: 13px;
   letter-spacing: 0.12em;
   text-transform: uppercase;
-  color: rgba(226, 232, 240, 0.55);
+  color: rgba(254, 243, 199, 0.55);
   animation: brandFade 1.2s ease-out 0.15s both;
 }
 
 .login-page__brand-mark {
   font-weight: 700;
-  color: rgba(248, 250, 252, 0.88);
+  color: rgba(254, 243, 199, 0.92);
   letter-spacing: 0.18em;
 }
 
@@ -222,14 +222,14 @@ async function handleLogin(payload: { username: string, password: string }) {
 
 .login-page__brand-sub {
   font-weight: 500;
-  color: rgba(125, 211, 252, 0.75);
+  color: rgba(253, 224, 71, 0.82);
 }
 
 .login-page__flash {
   position: fixed;
   inset: 0;
   z-index: 50;
-  background: radial-gradient(circle at 50% 45%, rgba(34, 211, 238, 0.35), transparent 55%);
+  background: radial-gradient(circle at 50% 45%, rgba(251, 191, 36, 0.42), transparent 55%);
   animation: successFlash 0.55s ease-out forwards;
   pointer-events: none;
 }

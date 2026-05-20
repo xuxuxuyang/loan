@@ -23,8 +23,8 @@ body {
 }
 
 .admin-sidebar {
-  background: linear-gradient(165deg, #8f8176 0%, #6b5f56 44%, #4a4039 100%);
-  color: #ebe4dc;
+  background: linear-gradient(180deg, #3f0a0a 0%, #7f1d1d 42%, #450a0a 100%);
+  color: #fde68a;
   padding: 20px 14px;
   box-shadow: inset -1px 0 0 rgba(255, 248, 240, 0.06);
   min-height: 0;

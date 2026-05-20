@@ -44,9 +44,9 @@ const coinCount = 14
             <span
               v-for="n in coinCount"
               :key="n"
-              class="lwc__coin"
+              class="lwc__ingot"
               :style="{ '--d': `${(n * 0.12).toFixed(2)}s`, '--x': `${(n * 7.3) % 100}%` }"
-            >¥</span>
+            />
             <span class="lwc__burst lwc__burst--a" />
             <span class="lwc__burst lwc__burst--b" />
           </template>
@@ -87,7 +87,11 @@ const coinCount = 14
             class="lwc__badge"
             aria-hidden="true"
           >
-            <span v-if="role === 'boss'">财</span>
+            <span
+              v-if="role === 'boss'"
+              class="lwc__badge-ingot"
+              aria-hidden="true"
+            />
             <span v-else-if="role === 'super_admin'">管</span>
             <span v-else-if="role === 'reviewer'">审</span>
             <span v-else>收</span>
@@ -222,16 +226,45 @@ const coinCount = 14
   animation: lwc-sub-pulse 1.4s ease-in-out infinite;
 }
 
-.lwc--boss .lwc__coin {
+.lwc__badge-ingot {
+  display: block;
+  width: 22px;
+  height: 14px;
+  border-radius: 50% 50% 42% 42%;
+  background: linear-gradient(180deg, #fff7c2 0%, #fbbf24 48%, #b45309 100%);
+  box-shadow: 0 2px 8px rgba(120, 53, 15, 0.45);
+}
+
+.lwc__badge-ingot::after {
+  content: '';
+  display: block;
+  width: 70%;
+  height: 4px;
+  margin: 2px auto 0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.55);
+}
+
+.lwc--boss .lwc__ingot {
   position: absolute;
   top: -8px;
   left: var(--x);
-  font-size: 15px;
-  font-weight: 800;
-  color: rgba(253, 224, 71, 0.95);
-  text-shadow: 0 0 10px rgba(251, 191, 36, 0.9);
-  animation: lwc-coin-fall 2.4s linear infinite;
+  width: 16px;
+  height: 10px;
+  border-radius: 50% 50% 42% 42%;
+  background: linear-gradient(180deg, #fef9c3 0%, #fbbf24 52%, #b45309 100%);
+  box-shadow: 0 0 10px rgba(251, 191, 36, 0.85);
+  animation: lwc-ingot-fall 2.4s linear infinite;
   animation-delay: var(--d);
+}
+
+.lwc--boss .lwc__ingot::after {
+  content: '';
+  position: absolute;
+  inset: 2px 3px auto;
+  height: 3px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.5);
 }
 
 .lwc--boss .lwc__burst {
@@ -256,16 +289,16 @@ const coinCount = 14
   animation: lwc-burst 2s ease-out 0.35s infinite;
 }
 
-@keyframes lwc-coin-fall {
+@keyframes lwc-ingot-fall {
   0% {
-    transform: translate3d(0, -10px, 0) rotate(0deg) scale(1);
+    transform: translate3d(0, -10px, 0) rotate(-12deg) scale(1);
     opacity: 0;
   }
   10% {
     opacity: 1;
   }
   100% {
-    transform: translate3d(8px, 120px, 0) rotate(220deg) scale(0.65);
+    transform: translate3d(8px, 120px, 0) rotate(200deg) scale(0.65);
     opacity: 0;
   }
 }
@@ -503,7 +536,7 @@ const coinCount = 14
   .lwc--boss .lwc__card,
   .lwc--boss .lwc__title em,
   .lwc--boss .lwc__sub,
-  .lwc--boss .lwc__coin,
+  .lwc--boss .lwc__ingot,
   .lwc--boss .lwc__burst,
   .lwc--super_admin .lwc__orbit,
   .lwc--super_admin .lwc__sun,
@@ -512,7 +545,7 @@ const coinCount = 14
     animation: none !important;
   }
 
-  .lwc--boss .lwc__coin {
+  .lwc--boss .lwc__ingot {
     display: none;
   }
 
