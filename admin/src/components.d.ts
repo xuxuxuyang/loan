@@ -52,7 +52,6 @@ declare module 'vue' {
     ElText: typeof import('element-plus/es')['ElText']
     ElTooltip: typeof import('element-plus/es')['ElTooltip']
     ElUpload: typeof import('element-plus/es')['ElUpload']
-    FortuneIngotIcon: typeof import('./components/auth/FortuneIngotIcon.vue')['default']
     LoginCard: typeof import('./components/auth/LoginCard.vue')['default']
     LoginFortuneRain: typeof import('./components/auth/LoginFortuneRain.vue')['default']
     LoginWelcomeCelebration: typeof import('./components/auth/LoginWelcomeCelebration.vue')['default']
