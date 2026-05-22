@@ -135,11 +135,6 @@ function buildCardPackageContractViewHtml(p) {
   const ackQuery = `phone=${phoneEnc}&tenantId=${encodeURIComponent(scopedTid)}`
   const ackUrl = `${p.apiOrigin}/api/card-packages/${oidEnc}/contract-ack?${ackQuery}`
 
-  const signGuideNameRaw = String(user.name || '').trim()
-  const signGuideBadDisplay = new Set(['—', '-', '―', '－', '暂无', '无', '未填写'])
-  const signGuideEligible = signGuideNameRaw.length >= 2 && !signGuideBadDisplay.has(signGuideNameRaw)
-  const signGuideNameJson = JSON.stringify(signGuideEligible ? signGuideNameRaw : '')
-
   const sigReadStored = String(order.cardPackageContractSignaturePng || '').trim()
   const sigReadImgHtml = sigReadStored.startsWith('data:image/')
     ? `<div class="sig-readonly"><p class="muted sig-readonly-label">甲方手写签</p><img class="sig-readonly-img" src="${sigReadStored.replace(/"/g, '')}" alt="" /></div>`
@@ -153,12 +148,9 @@ function buildCardPackageContractViewHtml(p) {
         ? `<div class="signed-banner">您已于 ${signedAt} 在本页完成手写签名并提交，可关闭窗口返回商城。</div>${sigReadImgHtml}`
         : `<div class="sign-area">
         <div class="sig-wrap">
-          <p class="sig-label">${signGuideEligible
-    ? '请在下层<strong class="hl">浅色姓名笔画</strong>上描摹书写，笔画尽量与背景轨迹重合；签名完成后于下方勾选条款，再点击「提交签署」。'
-    : '请在下方<strong class="hl">手写签名</strong>（支持触摸屏或鼠标），字迹应清晰可辨；完成后于下方勾选条款并提交。'}</p>
-          <div class="sig-stack" id="sig-stack">
-            <canvas id="sig-guide" class="sig-canvas sig-canvas-guide" width="600" height="320" aria-hidden="true"></canvas>
-            <canvas id="sig-canvas" class="sig-canvas sig-canvas-ink" width="600" height="320" aria-label="签名书写层"></canvas>
+          <p class="sig-label">请在下方<strong class="hl">手写签名</strong>（支持触摸屏或鼠标），完成后勾选条款并点击「提交签署」。</p>
+          <div class="sig-pad" id="sig-pad">
+            <canvas id="sig-canvas" class="sig-canvas" width="600" height="320" aria-label="签名区"></canvas>
           </div>
           <button type="button" class="btn-secondary" id="sig-clear">清除重写</button>
         </div>
@@ -171,112 +163,45 @@ function buildCardPackageContractViewHtml(p) {
     ? ''
     : `<script>
 (function(){
-  var SIGN_GUIDE_NAME = ${signGuideNameJson};
   var agree = document.getElementById('agree');
   var btn = document.getElementById('btn-sign');
   var hint = document.getElementById('hint');
-  var guideCanvas = document.getElementById('sig-guide');
-  var inkCanvas = document.getElementById('sig-canvas');
+  var canvas = document.getElementById('sig-canvas');
   var btnClear = document.getElementById('sig-clear');
-  var stack = document.getElementById('sig-stack');
-  if (!agree || !btn || !guideCanvas || !inkCanvas || !btnClear) return;
-  var gctx = guideCanvas.getContext('2d');
-  var ctx = inkCanvas.getContext('2d');
-  if (!gctx || !ctx) return;
+  var pad = document.getElementById('sig-pad');
+  if (!agree || !btn || !canvas || !btnClear) return;
+  var ctx = canvas.getContext('2d');
+  if (!ctx) return;
   var drawing = false;
   var hasInk = false;
   var last = { x: 0, y: 0 };
-  var inkSamples = [];
-  var guideLayout = { ready: false, boxes: [], fontPx: 0, cx: 0, cy: 0 };
   var wCss = 300;
   var hCss = 260;
 
   function layoutCssSize() {
-    var rect = (stack || inkCanvas).getBoundingClientRect();
+    var rect = (pad || canvas).getBoundingClientRect();
     wCss = Math.max(300, Math.floor(rect.width));
     hCss = 260;
   }
 
-  function drawGuideLayer() {
+  function resetCanvas() {
     layoutCssSize();
     var dpr = window.devicePixelRatio || 1;
-    var pw = Math.floor(wCss * dpr);
-    var ph = Math.floor(hCss * dpr);
-    guideCanvas.width = pw;
-    guideCanvas.height = ph;
-    gctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    gctx.fillStyle = '#fafafa';
-    gctx.fillRect(0, 0, wCss, hCss);
-    guideLayout.ready = false;
-    guideLayout.boxes = [];
-    if (!SIGN_GUIDE_NAME) return;
-    var padX = 10;
-    var maxW = wCss - padX * 2;
-    var fontPx = Math.min(96, Math.floor(wCss * 0.36));
-    var fp;
-    for (fp = fontPx; fp >= 22; fp -= 2) {
-      gctx.font = 'bold ' + fp + 'px "Microsoft YaHei","PingFang SC","SimHei",sans-serif';
-      if (gctx.measureText(SIGN_GUIDE_NAME).width <= maxW) {
-        fontPx = fp;
-        break;
-      }
-    }
-    gctx.textAlign = 'center';
-    gctx.textBaseline = 'middle';
-    gctx.lineJoin = 'round';
-    gctx.lineCap = 'round';
-    var cx = wCss / 2;
-    var cy = hCss / 2;
-    var lw = Math.max(2.8, fontPx * 0.14);
-    gctx.lineWidth = lw;
-    gctx.strokeStyle = 'rgba(11, 123, 110, 0.38)';
-    gctx.strokeText(SIGN_GUIDE_NAME, cx, cy);
-    gctx.fillStyle = 'rgba(11, 123, 110, 0.07)';
-    gctx.fillText(SIGN_GUIDE_NAME, cx, cy);
-    gctx.lineWidth = lw * 0.45;
-    gctx.strokeStyle = 'rgba(15, 23, 42, 0.16)';
-    gctx.strokeText(SIGN_GUIDE_NAME, cx, cy);
-    var tw = gctx.measureText(SIGN_GUIDE_NAME).width;
-    var chars = Array.from(SIGN_GUIDE_NAME);
-    var startX = cx - tw / 2;
-    var curX = startX;
-    var halfH = fontPx * 0.56;
-    guideLayout.ready = true;
-    guideLayout.fontPx = fontPx;
-    guideLayout.cx = cx;
-    guideLayout.cy = cy;
-    guideLayout.boxes = [];
-    for (var ci = 0; ci < chars.length; ci++) {
-      var cw = gctx.measureText(chars[ci]).width;
-      guideLayout.boxes.push({ x0: curX, x1: curX + cw, y0: cy - halfH, y1: cy + halfH });
-      curX += cw;
-    }
-  }
-
-  function clearInkLayer() {
-    layoutCssSize();
-    var dpr = window.devicePixelRatio || 1;
-    inkCanvas.width = Math.floor(wCss * dpr);
-    inkCanvas.height = Math.floor(hCss * dpr);
+    canvas.width = Math.floor(wCss * dpr);
+    canvas.height = Math.floor(hCss * dpr);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.clearRect(0, 0, wCss, hCss);
+    ctx.fillStyle = '#fafafa';
+    ctx.fillRect(0, 0, wCss, hCss);
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
     ctx.lineWidth = 2.35;
     ctx.strokeStyle = '#0f172a';
-    ctx.globalAlpha = 1;
-    inkSamples = [];
-  }
-
-  function fitAll() {
-    drawGuideLayer();
-    clearInkLayer();
     hasInk = false;
     syncBtn();
   }
 
   function getPos(ev) {
-    var r = inkCanvas.getBoundingClientRect();
+    var r = canvas.getBoundingClientRect();
     return { x: ev.clientX - r.left, y: ev.clientY - r.top };
   }
 
@@ -284,197 +209,21 @@ function buildCardPackageContractViewHtml(p) {
     btn.disabled = !(agree.checked && hasInk);
   }
 
-  function clearPad() {
-    fitAll();
-  }
-
-  function totalPathLengthCss(pts) {
-    var s = 0;
-    for (var i = 1; i < pts.length; i++) {
-      var a = pts[i - 1], b = pts[i];
-      s += Math.hypot(b.x - a.x, b.y - a.y);
-    }
-    return s;
-  }
-
-  function sampleStrokeAlong(from, to) {
-    var dx = to.x - from.x;
-    var dy = to.y - from.y;
-    var d = Math.hypot(dx, dy);
-    if (d < 0.4) return;
-    var step = 3.5;
-    var n = Math.max(1, Math.ceil(d / step));
-    for (var i = 1; i <= n; i++) {
-      var t = i / n;
-      inkSamples.push({ x: from.x + dx * t, y: from.y + dy * t });
-    }
-  }
-
-  function dilateCellMap(map, radius, gwCells) {
-    var out = {};
-    var k, idx, ix, iy, dy, dx;
-    function ck(ix2, iy2) { return String(iy2 * gwCells + ix2); }
-    for (k in map) {
-      if (!Object.prototype.hasOwnProperty.call(map, k)) continue;
-      idx = Number(k);
-      if (!Number.isFinite(idx)) continue;
-      ix = idx % gwCells;
-      iy = Math.floor(idx / gwCells);
-      for (dy = -radius; dy <= radius; dy++) {
-        for (dx = -radius; dx <= radius; dx++) {
-          if (Math.abs(dx) + Math.abs(dy) <= radius) {
-            out[ck(ix + dx, iy + dy)] = 1;
-          }
-        }
-      }
-    }
-    return out;
-  }
-
-  function minDistPointToSamples(px, py, pts) {
-    var best = 1e18;
-    var i, q, d;
-    for (i = 0; i < pts.length; i++) {
-      q = pts[i];
-      d = (px - q.x) * (px - q.x) + (py - q.y) * (py - q.y);
-      if (d < best) best = d;
-    }
-    return Math.sqrt(best);
-  }
-
-  /** 轨迹 + 字形走廊：拒绝与姓名笔画无关的大叉乱涂 */
-  function validateSignatureTrajectoryStrict() {
-    if (!SIGN_GUIDE_NAME) return true;
-    if (!guideLayout.ready || !guideLayout.boxes.length) return true;
-    var gw = guideCanvas.width;
-    var gh = guideCanvas.height;
-    if (gw < 24 || gh < 24) return true;
-    if (inkSamples.length < 14) return false;
-    var plen = totalPathLengthCss(inkSamples);
-    var minLen = guideLayout.fontPx * (0.75 * guideLayout.boxes.length + 0.35);
-    if (plen < minLen) return false;
-
-    var marginCss = 10;
-    var i, b, cnt, q;
-    for (i = 0; i < guideLayout.boxes.length; i++) {
-      b = guideLayout.boxes[i];
-      cnt = 0;
-      for (var j = 0; j < inkSamples.length; j++) {
-        q = inkSamples[j];
-        if (q.x >= b.x0 - marginCss && q.x <= b.x1 + marginCss && q.y >= b.y0 - marginCss && q.y <= b.y1 + marginCss) {
-          cnt++;
-        }
-      }
-      var need = Math.max(5, Math.min(10, Math.ceil(22 / guideLayout.boxes.length)));
-      if (cnt < need) return false;
-    }
-
-    var gctx2 = guideCanvas.getContext('2d', { willReadFrequently: true });
-    var uctx2 = inkCanvas.getContext('2d', { willReadFrequently: true });
-    var gImg = gctx2.getImageData(0, 0, gw, gh);
-    var uImg = uctx2.getImageData(0, 0, gw, gh);
-    var gd = gImg.data;
-    var ud = uImg.data;
-    var cell = Math.max(2, Math.round((window.devicePixelRatio || 1) * 2));
-    var gwCells = Math.ceil(gw / cell);
-    function ckey(ix, iy) { return iy * gwCells + ix; }
-    var guideMap = {};
-    var userMap = {};
-    var x, y, ii, dr;
-    for (y = 0; y < gh; y += cell) {
-      for (x = 0; x < gw; x += cell) {
-        ii = (y * gw + x) * 4;
-        dr = Math.abs(gd[ii] - 250) + Math.abs(gd[ii + 1] - 250) + Math.abs(gd[ii + 2] - 250);
-        if (gd[ii + 3] > 14 && dr > 7) {
-          guideMap[ckey(Math.floor(x / cell), Math.floor(y / cell))] = 1;
-        }
-      }
-    }
-    var gk = Object.keys(guideMap);
-    var guideCount = gk.length;
-    if (guideCount < 20) return true;
-
-    for (y = 0; y < gh; y += cell) {
-      for (x = 0; x < gw; x += cell) {
-        ii = (y * gw + x) * 4;
-        if (ud[ii + 3] > 22) {
-          userMap[ckey(Math.floor(x / cell), Math.floor(y / cell))] = 1;
-        }
-      }
-    }
-    var corridor = dilateCellMap(guideMap, 5, gwCells);
-    var userKeys = Object.keys(userMap);
-    var uTot = userKeys.length;
-    if (uTot < 8) return false;
-    var outside = 0;
-    for (i = 0; i < uTot; i++) {
-      var uidx = Number(userKeys[i]);
-      if (!corridor[uidx]) outside++;
-    }
-    if (outside / uTot > 0.055) return false;
-
-    var covR = 3;
-    var matched = 0;
-    for (i = 0; i < gk.length; i++) {
-      var gidx = Number(gk[i]);
-      var gix = gidx % gwCells;
-      var giy = Math.floor(gidx / gwCells);
-      var hit = false;
-      var dy, dx;
-      for (dy = -covR; dy <= covR && !hit; dy++) {
-        for (dx = -covR; dx <= covR; dx++) {
-          if (userMap[ckey(gix + dx, giy + dy)]) { hit = true; break; }
-        }
-      }
-      if (hit) matched++;
-    }
-    if (matched / guideCount < 0.62) return false;
-
-    var cssPerPxX = wCss / gw;
-    var cssPerPxY = hCss / gh;
-    var sampleStep = Math.max(1, Math.floor(guideCount / 120));
-    var nearPath = 0;
-    var totalS = 0;
-    for (i = 0; i < gk.length; i += sampleStep) {
-      totalS++;
-      var gi2 = Number(gk[i]);
-      var gx = (gi2 % gwCells) * cell + cell * 0.5;
-      var gy = Math.floor(gi2 / gwCells) * cell + cell * 0.5;
-      var cpx = gx * cssPerPxX;
-      var cpy = gy * cssPerPxY;
-      if (minDistPointToSamples(cpx, cpy, inkSamples) <= 14) nearPath++;
-    }
-    if (totalS > 0 && nearPath / totalS < 0.58) return false;
-
-    return true;
-  }
-
-  function exportMergedJpeg() {
-    layoutCssSize();
-    var dpr = window.devicePixelRatio || 1;
-    var pw = Math.floor(wCss * dpr);
-    var ph = Math.floor(hCss * dpr);
-    var tmp = document.createElement('canvas');
-    tmp.width = pw;
-    tmp.height = ph;
-    var t = tmp.getContext('2d');
-    t.drawImage(guideCanvas, 0, 0);
-    t.drawImage(inkCanvas, 0, 0);
-    return tmp.toDataURL('image/jpeg', 0.88);
+  function exportJpeg() {
+    return canvas.toDataURL('image/jpeg', 0.88);
   }
 
   agree.addEventListener('change', syncBtn);
-  btnClear.addEventListener('click', function() { clearPad(); });
+  btnClear.addEventListener('click', function() { resetCanvas(); });
 
-  inkCanvas.addEventListener('pointerdown', function(e) {
+  canvas.addEventListener('pointerdown', function(e) {
     if (e.button === 2) return;
     e.preventDefault();
-    try { inkCanvas.setPointerCapture(e.pointerId); } catch (err) {}
+    try { canvas.setPointerCapture(e.pointerId); } catch (err) {}
     drawing = true;
     last = getPos(e);
-    inkSamples.push({ x: last.x, y: last.y });
   });
-  inkCanvas.addEventListener('pointermove', function(e) {
+  canvas.addEventListener('pointermove', function(e) {
     if (!drawing) return;
     e.preventDefault();
     var p = getPos(e);
@@ -482,7 +231,6 @@ function buildCardPackageContractViewHtml(p) {
     ctx.moveTo(last.x, last.y);
     ctx.lineTo(p.x, p.y);
     ctx.stroke();
-    sampleStrokeAlong(last, p);
     last = p;
     hasInk = true;
     syncBtn();
@@ -490,44 +238,23 @@ function buildCardPackageContractViewHtml(p) {
   function endDraw(e) {
     if (!drawing) return;
     drawing = false;
-    try { if (e && e.pointerId != null) inkCanvas.releasePointerCapture(e.pointerId); } catch (err2) {}
+    try { if (e && e.pointerId != null) canvas.releasePointerCapture(e.pointerId); } catch (err2) {}
   }
-  inkCanvas.addEventListener('pointerup', endDraw);
-  inkCanvas.addEventListener('pointercancel', endDraw);
+  canvas.addEventListener('pointerup', endDraw);
+  canvas.addEventListener('pointercancel', endDraw);
 
   window.addEventListener('resize', function() {
     if (hasInk) return;
-    drawGuideLayer();
-    clearInkLayer();
+    resetCanvas();
   });
 
-  requestAnimationFrame(function() { clearPad(); });
+  requestAnimationFrame(function() { resetCanvas(); });
 
   btn.addEventListener('click', function() {
     if (!agree.checked || !hasInk) return;
-    if (SIGN_GUIDE_NAME && !validateSignatureTrajectoryStrict()) {
-      var hintMsg = '检测到签名轨迹与姓名描摹要求不符（请在浅色笔画上书写、避免整幅乱涂或单笔画叉），请清除后按笔画认真描摹再提交。';
-      try {
-        if (window.parent && window.parent !== window) {
-          window.parent.postMessage({
-            type: 'mall-card-package-signature-hint',
-            orderId: ${JSON.stringify(String(p.orderId || ''))},
-            message: hintMsg,
-            variant: 'warning'
-          }, '*');
-        } else {
-          window.alert(hintMsg);
-        }
-      } catch (e0) {
-        try { window.alert(hintMsg); } catch (e1) {}
-      }
-      clearPad();
-      hint.textContent = '';
-      return;
-    }
     btn.disabled = true;
     hint.textContent = '提交中…';
-    var dataUrl = exportMergedJpeg();
+    var dataUrl = exportJpeg();
     fetch(${JSON.stringify(ackUrl)}, {
       method: 'POST',
       headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
@@ -590,17 +317,16 @@ function buildCardPackageContractViewHtml(p) {
     .sign-area { margin-top: 1.5rem; padding-top: 1.1rem; border-top: 2px dashed #cbd5e1; }
     .sig-wrap { margin-top: .85rem; }
     .sig-label { font-size: .8rem; color: #334155; margin: 0 0 .45rem; line-height: 1.55; }
-    .sig-stack {
-      position: relative; width: 100%; height: 260px; min-height: 260px; max-width: 100%;
+    .sig-pad {
+      width: 100%; height: 260px; min-height: 260px; max-width: 100%;
       border: 1px dashed #94a3b8; border-radius: .35rem; overflow: hidden;
       background: #fafafa;
     }
-    .sig-stack .sig-canvas {
-      position: absolute; left: 0; top: 0; width: 100%; height: 100%;
-      display: block; border: none; border-radius: 0; background: transparent;
+    .sig-pad .sig-canvas {
+      display: block; width: 100%; height: 100%;
+      border: none; border-radius: 0; background: #fafafa;
+      touch-action: none; cursor: crosshair;
     }
-    .sig-canvas-guide { pointer-events: none; z-index: 0; }
-    .sig-canvas-ink { z-index: 1; touch-action: none; cursor: crosshair; }
     .btn-secondary {
       margin-top: .55rem; padding: .42rem .85rem; font-size: .8rem;
       border: 1px solid #cbd5e1; border-radius: .35rem; background: #fff;
@@ -622,7 +348,7 @@ function buildCardPackageContractViewHtml(p) {
     .signed-banner { margin-top: 1rem; padding: .9rem; border-radius: .45rem; background: #ecfdf5; color: #065f46; font-size: .88rem; text-align: center; border: 1px solid #a7f3d0; }
     .signed-banner.ok { background: #ecfdf5; }
     .sig-row { display: grid; grid-template-columns: 1fr; gap: .75rem; margin-top: 1.25rem; font-size: .82rem; }
-    @media print { body { background: #fff; } .sign-area .sig-stack, .sign-area .btn-secondary, .sign-area .btn-primary { display: none !important; } .wrap { max-width: 100%; } }
+    @media print { body { background: #fff; } .sign-area .sig-pad, .sign-area .btn-secondary, .sign-area .btn-primary { display: none !important; } .wrap { max-width: 100%; } }
   </style>
 </head>
 <body>

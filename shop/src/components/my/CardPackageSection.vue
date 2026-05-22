@@ -8,7 +8,7 @@ import {
   normalizeEmergencyContactPersonName,
 } from '~/utils/emergencyContactValidate'
 import { normalizeCardPackageContractEmbedUrl } from '~/utils/cardPackageContractEmbed'
-import { alertDialog, notifyError, notifySuccess, notifyWarning } from '~/utils/epFeedback'
+import { notifyError, notifySuccess, notifyWarning } from '~/utils/epFeedback'
 const CardPackagePreClaimDialog = defineAsyncComponent(() => import('~/components/my/card-package/dialogs/CardPackagePreClaimDialog.vue'))
 const CardPackageEmergencyDialog = defineAsyncComponent(() => import('~/components/my/card-package/dialogs/CardPackageEmergencyDialog.vue'))
 const CardPackageClaimDialog = defineAsyncComponent(() => import('~/components/my/card-package/dialogs/CardPackageClaimDialog.vue'))
@@ -46,8 +46,6 @@ const emergencyForm = reactive({
 const activeItem = ref<MallCardPackageDTO | null>(null)
 
 const CARD_PACKAGE_CONTRACT_SIGNED_MSG = 'mall-card-package-contract-signed'
-/** 内嵌合同页签名校验失败时 postMessage，父页用 Element Plus 展示 */
-const CARD_PACKAGE_CONTRACT_SIGNATURE_HINT_MSG = 'mall-card-package-signature-hint'
 
 /** 订单金额 = 卡包金额 × 135% + 50（先享后付定价）；接口未给出有效 packageAmount 时列表展示可反推，与旧版兼容 */
 const CARD_PACKAGE_REVERSE_FIXED = 50
@@ -167,8 +165,6 @@ function onContractEmbedPostMessage(ev: MessageEvent) {
   const data = ev.data as {
     type?: string
     orderId?: string
-    message?: string
-    variant?: string
     /** 服务端合同 ACK 后立即返回的卡包行，避免再去 GET /card-packages 撞到旧快照 */
     cardPackageRow?: unknown
   } | null
@@ -181,15 +177,6 @@ function onContractEmbedPostMessage(ev: MessageEvent) {
   }
   if (data.type === CARD_PACKAGE_CONTRACT_SIGNED_MSG) {
     void handleContractSignedFromEmbed(data.cardPackageRow)
-    return
-  }
-  if (data.type === CARD_PACKAGE_CONTRACT_SIGNATURE_HINT_MSG) {
-    const msg = String(data.message || '').trim() || '签名校验未通过，请按页面说明重新书写后提交。'
-    void alertDialog(msg, '签署提示', {
-      confirmButtonText: '我知道了',
-      type: 'warning',
-      appendTo: document.body,
-    })
   }
 }
 

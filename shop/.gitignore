@@ -27,3 +27,20 @@ dist-ssr
 .env
 .env.*
 !.env.example
+
+# Capacitor Android
+android/app/build/
+android/.gradle/
+android/local.properties
+
+# Android SDK 勿入库（应使用本机 Sdk，见 android/local.properties）
+android/emulator/
+android/platforms/
+android/sources/
+android/build-tools/
+android/platform-tools/
+android/licenses/
+android/.knownPackages
+android/app/release/
+android/build/
+android/capacitor-cordova-android-plugins/

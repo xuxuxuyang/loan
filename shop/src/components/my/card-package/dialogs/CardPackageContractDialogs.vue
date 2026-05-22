@@ -147,7 +147,7 @@ const emit = defineEmits<{
         订单 {{ activeItem.orderId }} · 以下为合同原文（含签署记录）。
       </template>
       <template v-else>
-        订单 {{ activeItem.orderId }} · 请在内嵌合同页阅读条款，在签名区按<strong>浅色姓名笔画</strong>描摹书写后点击「提交签署」。若打开的是第三方签约页，请按其页面完成签署。
+        订单 {{ activeItem.orderId }} · 请在内嵌合同页阅读条款，在签名区手写签名后点击「提交签署」。若打开的是第三方签约页，请按其页面完成签署。
       </template>
     </p>
     <div

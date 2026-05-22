@@ -12,6 +12,7 @@ export {}
 declare module 'vue' {
   export interface GlobalComponents {
     AdminRoleAvatar: typeof import('./components/AdminRoleAvatar.vue')['default']
+    CardPackageContractViewDialog: typeof import('./components/CardPackageContractViewDialog.vue')['default']
     CsChatPanel: typeof import('./components/cs/CsChatPanel.vue')['default']
     CsSessionListPanel: typeof import('./components/cs/CsSessionListPanel.vue')['default']
     ElAlert: typeof import('element-plus/es')['ElAlert']

@@ -10,6 +10,12 @@ import { useOrdersStore } from '../stores/useOrdersStore'
 import type { UserItem } from '../components/UserRiskDetailDialog.vue'
 import type { OrderShippingSnapshot } from '../components/UserRegistrationInfoScroll.vue'
 import { donePageProgress, startPageProgress } from '../utils/progress'
+import CardPackageContractViewDialog from '../components/CardPackageContractViewDialog.vue'
+import {
+  contractEmbedUrlFromRoot,
+  mallTenantQueryForContractApi,
+  normalizeCardPackageContractEmbedUrl,
+} from '../utils/cardPackageContract'
 
 const MALL_API_BASE = `${(import.meta.env.VITE_MALL_API_BASE || 'http://localhost:3110/api').replace(/\/$/, '')}`
 
@@ -36,6 +42,13 @@ const deletingOrderId = ref('')
 const trackingDialogOpen = ref(false)
 const trackingDialogOrder = ref<OrderItem | null>(null)
 const trackingDialogInput = ref('')
+const contractViewOpen = ref(false)
+const contractViewOrderId = ref('')
+const contractViewEmbedUrl = ref('')
+const contractViewLoading = ref(false)
+const contractViewError = ref('')
+const contractViewIframeKey = ref(0)
+const contractViewOpeningId = ref('')
 const userRiskDialogVisible = ref(false)
 const riskDialogUserId = ref<string | null>(null)
 /** 从订单打开风控时带入该单收货人信息，关闭弹窗后清空 */
@@ -855,21 +868,65 @@ function issuedOptionNeedsContractTip(order: OrderItem): boolean {
   return orderHasCardPackageContract(order) && !order.cardPackageContractSigned && !order.cardPackageIssued
 }
 
-function formatContractSignedTooltip(iso: string) {
-  const s = String(iso || '').trim()
-  if (!s) {
-    return ''
+const CONTRACT_VIEW_TOOLTIP = '查看合同：点击可以查看用户签署的合同'
+
+async function fetchCardPackageContractFlow(orderId: string, phone: string) {
+  const params = new URLSearchParams({ phone, ...mallTenantQueryForContractApi() })
+  const response = await fetch(
+    `${MALL_API_BASE}/card-packages/${encodeURIComponent(orderId)}/contract-flow?${params}`,
+    { method: 'GET', headers: withMallTenantHeaders() },
+  )
+  const payload = await response.json().catch(() => ({})) as {
+    success?: boolean
+    msg?: string
+    data?: { getContract?: Record<string, unknown> }
   }
-  const d = new Date(s)
-  if (Number.isNaN(d.getTime())) {
-    return s
+  if (!response.ok || payload.success === false) {
+    throw new Error(payload.msg || `加载合同失败: ${response.status}`)
   }
-  const y = d.getFullYear()
-  const m = `${d.getMonth() + 1}`.padStart(2, '0')
-  const day = `${d.getDate()}`.padStart(2, '0')
-  const hh = `${d.getHours()}`.padStart(2, '0')
-  const mm = `${d.getMinutes()}`.padStart(2, '0')
-  return `签署时间 ${y}-${m}-${day} ${hh}:${mm}`
+  if (!payload.data) {
+    throw new Error('合同数据为空')
+  }
+  return payload.data
+}
+
+async function openOrderContractView(order: OrderItem) {
+  if (!order.cardPackageContractSigned || contractViewOpeningId.value) {
+    return
+  }
+  const phone = normalizePhone(order.buyerPhone)
+  if (!/^1\d{10}$/.test(phone)) {
+    ElMessage.warning('缺少有效注册手机号，无法加载合同')
+    return
+  }
+  contractViewOpeningId.value = order.id
+  contractViewOrderId.value = order.id
+  contractViewLoading.value = true
+  contractViewError.value = ''
+  contractViewEmbedUrl.value = ''
+  contractViewOpen.value = true
+  try {
+    const flow = await fetchCardPackageContractFlow(order.id, phone)
+    const root = flow.getContract && typeof flow.getContract === 'object'
+      ? flow.getContract
+      : null
+    const embed = normalizeCardPackageContractEmbedUrl(
+      contractEmbedUrlFromRoot(root),
+      MALL_API_BASE,
+    )
+    if (!embed) {
+      throw new Error('暂无合同链接')
+    }
+    contractViewEmbedUrl.value = embed
+    contractViewIframeKey.value += 1
+  }
+  catch (e) {
+    contractViewError.value = e instanceof Error ? e.message : '加载合同失败'
+  }
+  finally {
+    contractViewLoading.value = false
+    contractViewOpeningId.value = ''
+  }
 }
 
 function orderStatusTagType(s: OrderItem['status']): 'success' | 'warning' | 'info' | 'danger' | 'primary' {
@@ -931,6 +988,10 @@ async function applyCardPackage(order: OrderItem, next: boolean) {
 }
 
 function handleCardPackageContractCmd(order: OrderItem, cmd: string) {
+  if (cmd === 'view') {
+    void openOrderContractView(order)
+    return
+  }
   if (cmd !== 'signed' && cmd !== 'unsigned') {
     return
   }
@@ -1443,52 +1504,121 @@ watch(
           <td class="td-card-contract">
             <template v-if="orderHasCardPackageContract(item)">
               <template v-if="canOperateOrders">
+                <div
+                  v-if="item.cardPackageContractSigned"
+                  class="card-contract-cell"
+                >
+                  <el-tooltip
+                    :content="CONTRACT_VIEW_TOOLTIP"
+                    placement="top"
+                  >
+                    <el-tag
+                      type="success"
+                      effect="light"
+                      round
+                      size="small"
+                      class="card-package-tag card-package-tag--view-contract"
+                      :class="{ 'is-opening': contractViewOpeningId === item.id }"
+                      @click="openOrderContractView(item)"
+                    >
+                      已签署
+                    </el-tag>
+                  </el-tooltip>
+                  <el-dropdown
+                    trigger="click"
+                    :disabled="cardPackageContractSavingId === item.id"
+                    @command="(cmd: string) => handleCardPackageContractCmd(item, cmd)"
+                  >
+                    <button
+                      type="button"
+                      class="card-contract-status-caret"
+                      aria-label="切换合同签署状态"
+                      :disabled="cardPackageContractSavingId === item.id"
+                    >
+                      ▾
+                    </button>
+                    <template #dropdown>
+                      <el-dropdown-menu>
+                        <el-dropdown-item command="view">
+                          查看合同
+                        </el-dropdown-item>
+                        <el-dropdown-item
+                          command="unsigned"
+                          :disabled="item.cardPackageIssued"
+                        >
+                          未签署
+                        </el-dropdown-item>
+                        <el-dropdown-item
+                          command="signed"
+                          disabled
+                        >
+                          已签署
+                        </el-dropdown-item>
+                      </el-dropdown-menu>
+                    </template>
+                  </el-dropdown>
+                </div>
                 <el-dropdown
+                  v-else
                   trigger="click"
                   :disabled="cardPackageContractSavingId === item.id"
                   @command="(cmd: string) => handleCardPackageContractCmd(item, cmd)"
                 >
                   <span class="card-package-dropdown-trigger">
                     <el-tag
-                      :type="contractSignedTagType(item.cardPackageContractSigned)"
+                      :type="contractSignedTagType(false)"
                       effect="light"
                       round
                       size="small"
                       class="card-package-tag"
-                      :title="item.cardPackageContractSigned ? formatContractSignedTooltip(item.cardPackageContractSignedAt) : ''"
                     >
-                      {{ item.cardPackageContractSigned ? '已签署' : '未签署' }}
+                      未签署
                     </el-tag>
                   </span>
                   <template #dropdown>
                     <el-dropdown-menu>
                       <el-dropdown-item
                         command="unsigned"
-                        :disabled="!item.cardPackageContractSigned || item.cardPackageIssued"
+                        disabled
                       >
                         未签署
                       </el-dropdown-item>
-                      <el-dropdown-item
-                        command="signed"
-                        :disabled="item.cardPackageContractSigned"
-                      >
+                      <el-dropdown-item command="signed">
                         已签署
                       </el-dropdown-item>
                     </el-dropdown-menu>
                   </template>
                 </el-dropdown>
               </template>
-              <el-tag
-                v-else
-                :type="contractSignedTagType(item.cardPackageContractSigned)"
-                effect="light"
-                round
-                size="small"
-                class="card-package-tag"
-                :title="item.cardPackageContractSigned ? formatContractSignedTooltip(item.cardPackageContractSignedAt) : ''"
-              >
-                {{ item.cardPackageContractSigned ? '已签署' : '未签署' }}
-              </el-tag>
+              <template v-else>
+                <el-tooltip
+                  v-if="item.cardPackageContractSigned"
+                  :content="CONTRACT_VIEW_TOOLTIP"
+                  placement="top"
+                >
+                  <el-tag
+                    type="success"
+                    effect="light"
+                    round
+                    size="small"
+                    class="card-package-tag card-package-tag--view-contract"
+                    :class="{ 'is-opening': contractViewOpeningId === item.id }"
+                    @click="openOrderContractView(item)"
+                  >
+                    已签署
+                  </el-tag>
+                </el-tooltip>
+                <el-tag
+                  v-else
+                  :type="contractSignedTagType(false)"
+                  effect="light"
+                  round
+                  size="small"
+                  class="card-package-tag"
+                >
+                  未签署
+                </el-tag>
+              </template>
             </template>
             <span
               v-else
@@ -2118,6 +2248,15 @@ watch(
       </el-button>
     </template>
   </el-dialog>
+
+  <CardPackageContractViewDialog
+    v-model="contractViewOpen"
+    :order-id="contractViewOrderId"
+    :embed-url="contractViewEmbedUrl"
+    :loading="contractViewLoading"
+    :error="contractViewError"
+    :iframe-key="contractViewIframeKey"
+  />
 
   <UserRiskDetailDialog
     v-if="userRiskDialogVisible"
@@ -2873,6 +3012,48 @@ watch(
 .card-package-dropdown-trigger {
   display: inline-flex;
   vertical-align: middle;
+}
+
+.card-contract-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  vertical-align: middle;
+}
+
+.card-contract-status-caret {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.card-contract-status-caret:hover:not(:disabled) {
+  background: #f1f5f9;
+  color: #334155;
+}
+
+.card-contract-status-caret:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.card-package-tag--view-contract {
+  cursor: pointer;
+}
+
+.card-package-tag--view-contract.is-opening {
+  opacity: 0.65;
+  pointer-events: none;
 }
 
 .card-package-tag {

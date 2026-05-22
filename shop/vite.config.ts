@@ -27,6 +27,8 @@ const elementChinaAreaDataKeys = [
 
 // https://vite.dev/config/
 export default defineConfig({
+  /** Capacitor WebView 以相对路径加载 dist 资源 */
+  base: './',
   server: {
     /** 与 admin 错开端口；流量推广链接本地默认同主机此端口 */
     port: 5173,
