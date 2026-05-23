@@ -118,6 +118,8 @@ function buildEmptyRaw() {
     trafficChannels: [],
     /** 商城客服会话（用户↔客服消息，与 users 可选关联） */
     csSessions: [],
+    /** 拉卡拉支付流水（商城还款/订单支付） */
+    lakalaPayments: [],
   }
 }
 
@@ -191,6 +193,7 @@ function shapeDbFromParsed(parsed) {
     bills: Array.isArray(parsed.bills) ? parsed.bills : [],
     trafficChannels: Array.isArray(parsed.trafficChannels) ? parsed.trafficChannels : [],
     csSessions: Array.isArray(parsed.csSessions) ? parsed.csSessions : [],
+    lakalaPayments: Array.isArray(parsed.lakalaPayments) ? parsed.lakalaPayments : [],
   }
   db.users = dedupeUsersById(ensureAdminUser(db.users))
   db.adminAccounts = ensureAdminAccounts(db.adminAccounts)
@@ -205,6 +208,7 @@ function shapeDbFromParsed(parsed) {
     bills: db.bills,
     trafficChannels: db.trafficChannels,
     csSessions: db.csSessions,
+    lakalaPayments: db.lakalaPayments,
   }
 }
 
@@ -245,6 +249,7 @@ function clonePayloadForMongo(db) {
     bills: db.bills,
     trafficChannels: Array.isArray(db.trafficChannels) ? db.trafficChannels : [],
     csSessions: Array.isArray(db.csSessions) ? db.csSessions : [],
+    lakalaPayments: Array.isArray(db.lakalaPayments) ? db.lakalaPayments : [],
   }
   return JSON.parse(JSON.stringify(payload))
 }
@@ -267,6 +272,12 @@ function stablePrimaryKeyString(pk) {
 function entityMongoPrimaryKey(item, entityKey) {
   if (!item || typeof item !== 'object') {
     return undefined
+  }
+  if (entityKey === 'lakalaPayments') {
+    const outTradeNo = String(item.outTradeNo || '').trim()
+    if (outTradeNo) {
+      return outTradeNo
+    }
   }
   if (item.id !== undefined && item.id !== null) {
     return item.id

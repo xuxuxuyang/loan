@@ -12,6 +12,7 @@ import {
 import type { OrderRiskDetail, RiskDetailRule } from '../stores/useOrdersStore'
 import { getRiskFactLines, type RiskFactLine } from '../utils/riskRowFactLines'
 import { groupRadarV4FactsForTables, chunkRadarFactPairs } from '../utils/radarV4ReputationFacts'
+import { resolveMallCreditQuota } from '../utils/mallCreditQuota'
 
 export interface RiskProductRow {
   slotKey: string
@@ -37,8 +38,6 @@ export interface ApiRiskView {
   templateRows: RiskProductRow[]
   upstreamConfigured: boolean
 }
-
-const DEFAULT_USER_QUOTA = 3000
 
 /** 与 api/src/riskControl/RISK_FOURTEEN_SLOTS.md 一致：管理端卡片分组与排序 */
 interface RiskSlotCategoryDef {
@@ -636,10 +635,7 @@ function onUserRiskDialogClosed() {
 }
 function mapApiUser(user: ApiUserItem): UserItem {
   const creditStatus = displayCreditFromSnapshotBasic(user.riskControlSnapshot ?? null)
-  const quotaRaw = user.quota
-  const quota = Number.isFinite(Number(quotaRaw)) && Number(quotaRaw) >= 0
-    ? Math.round(Number(quotaRaw))
-    : DEFAULT_USER_QUOTA
+  const quota = resolveMallCreditQuota(user)
   return {
     id: user.id,
     name: user.name,

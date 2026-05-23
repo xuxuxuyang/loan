@@ -9,12 +9,22 @@ import {
   orderHasShippedTracking,
   trackingNumberThirdPartyLookupUrl,
 } from '~/composables/useMallOrders'
+import type { LakalaPreorderPayload } from '~/composables/useLakalaPayment'
+import LakalaPaySheet from '~/components/payment/LakalaPaySheet.vue'
 import { notifyInfo, notifySuccess } from '~/utils/epFeedback'
 
 const route = useRoute()
 const { smartNavigate } = useCustomRouting(route)
 const { orders, syncFromStorage, syncFromRemote } = useMallOrders()
-const { profile, syncFromStorage: syncAuthFromStorage } = useMallAuth()
+const { profile, loginPhone, syncFromStorage: syncAuthFromStorage } = useMallAuth()
+const paySheetOpen = ref(false)
+const payPreorderPayload = ref<LakalaPreorderPayload | null>(null)
+const payAmountYuan = ref(0)
+const payOrderTitle = ref('订单支付')
+
+const currentUserPhone = computed(() =>
+  String(loginPhone.value || profile.value?.phone || '').replace(/\D/g, '').replace(/^86(\d{11})$/, '$1'),
+)
 const products = useTeaProducts()
 
 const statusStyleMap: Record<MallOrderStatus, { color: string, backgroundColor: string }> = {
@@ -218,6 +228,25 @@ function confirmOpenKuaidi100() {
 function onTrackingLookupDialogClosed() {
   trackingLookupNo.value = ''
 }
+
+function canPayOrder(item: MallOrder) {
+  return item.status === 'reviewing' && !item.paid
+}
+
+function openOrderPay(item: MallOrder) {
+  payAmountYuan.value = item.totalAmount
+  payOrderTitle.value = `支付订单 ${item.id}`
+  payPreorderPayload.value = {
+    bizType: 'order_full',
+    payChannel: item.payChannel === 'wechat' ? 'wechat' : 'alipay',
+    orderId: item.id,
+  }
+  paySheetOpen.value = true
+}
+
+async function onPaySuccess() {
+  await syncFromRemote()
+}
 </script>
 
 <template>
@@ -329,6 +358,14 @@ function onTrackingLookupDialogClosed() {
             ￥{{ item.totalAmount.toFixed(2) }}
           </span>
         </div>
+        <button
+          v-if="canPayOrder(item)"
+          type="button"
+          class="mt-3 w-full rounded-xl bg-[var(--theme-color)] py-2.5 text-sm font-semibold text-white active:opacity-90"
+          @click="openOrderPay(item)"
+        >
+          去支付
+        </button>
       </article>
 
       <div
@@ -384,5 +421,14 @@ function onTrackingLookupDialogClosed() {
         </div>
       </template>
     </el-dialog>
+
+    <LakalaPaySheet
+      v-model="paySheetOpen"
+      :phone="currentUserPhone"
+      :amount-yuan="payAmountYuan"
+      :title="payOrderTitle"
+      :preorder-payload="payPreorderPayload"
+      @success="onPaySuccess"
+    />
   </section>
 </template>

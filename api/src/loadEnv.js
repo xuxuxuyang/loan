@@ -5,6 +5,7 @@
  * 2. api/.env — 可选：仅补充上一步未出现的键（兼容旧仓库单文件 .env）
  * 3. api/.env.local — 可选：本机敏感覆盖（勿提交）
  * 4. 仓库根目录 .env — 仅补充尚未出现的键（与 monorepo 其它包共用）
+ * 默认授信额度 MALL_DEFAULT_CREDIT_QUOTA 写在 api/.env.development 与 api/.env.production（各环境单独维护）
  */
 const fs = require('node:fs')
 const path = require('node:path')

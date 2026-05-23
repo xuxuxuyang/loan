@@ -1,5 +1,20 @@
-/** 新用户注册默认授信额度（与 API `DEFAULT_USER_QUOTA` 一致） */
-export const MALL_DEFAULT_CREDIT_QUOTA = 2750
+/** 未配置 `VITE_MALL_DEFAULT_CREDIT_QUOTA` 或非法时的兜底（与 API 缺省回退一致） */
+const MALL_DEFAULT_CREDIT_QUOTA_FALLBACK = 2750
+
+function resolveDefaultCreditQuotaFromEnv(): number {
+  const raw = import.meta.env.VITE_MALL_DEFAULT_CREDIT_QUOTA
+  if (raw === undefined || raw === null || String(raw).trim() === '') {
+    return MALL_DEFAULT_CREDIT_QUOTA_FALLBACK
+  }
+  const n = Number(String(raw).trim())
+  if (!Number.isFinite(n) || n < 0) {
+    return MALL_DEFAULT_CREDIT_QUOTA_FALLBACK
+  }
+  return Math.round(n)
+}
+
+/** 前端兜底授信额度：构建时从 api/.env.[mode] 注入；包内 `VITE_MALL_DEFAULT_CREDIT_QUOTA` 可覆盖 */
+export const MALL_DEFAULT_CREDIT_QUOTA = resolveDefaultCreditQuotaFromEnv()
 
 /** 商品小计（单价×数量），与授信额度比较用；不含先享后付系数 */
 export function computeMallCreditOrderPrincipal(unitPrice: number, quantity = 1): number {

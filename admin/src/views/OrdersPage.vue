@@ -143,9 +143,10 @@ async function openUserRiskFromOrder(order: OrderItem) {
   }
 }
 
+/** 快递单号可随时维护；卡包已发放（展示为已完成）时仍可填写/修改 */
 function showTrackingEditor(item: OrderItem): boolean {
   const statusText = displayOrderStatus(item)
-  return statusText === '待发货' || statusText === '待收货'
+  return statusText === '待发货' || statusText === '待收货' || statusText === '已完成'
 }
 
 function formatLocalYmd(d: Date) {
@@ -659,8 +660,8 @@ async function confirmTrackingDialog() {
     if (!t) {
       ElMessage.success('已清空快递单号')
     }
-    else if (prev) {
-      ElMessage.success('快递单号已更新')
+    else if (prev || order.cardPackageIssued) {
+      ElMessage.success(prev ? '快递单号已更新' : '快递单号已保存')
     }
     else {
       ElMessage.success('发货成功，订单已进入待收货')

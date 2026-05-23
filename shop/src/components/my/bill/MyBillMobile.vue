@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import type { MallBillItem, MallBillNegotiationEntry } from '~/composables/useMallMy'
+import type { LakalaPreorderPayload } from '~/composables/useLakalaPayment'
+import LakalaPaySheet from '~/components/payment/LakalaPaySheet.vue'
 import { h } from 'vue'
 import { confirmDialog, notifyError, notifySuccess, notifyWarning } from '~/utils/epFeedback'
 
@@ -10,14 +12,16 @@ const {
   bills: billList,
   fetchBills,
   fetchSummary,
-  repayBills,
-  repayNegotiatedBills,
 } = useMallMy()
 const currentUserAccount = computed(() => loginPhone.value || profile.value?.phone || '')
 
 const repayingAll = ref(false)
 const repayingBillKey = ref<string | null>(null)
 const negotiatedPayBillKey = ref<string | null>(null)
+const paySheetOpen = ref(false)
+const payPreorderPayload = ref<LakalaPreorderPayload | null>(null)
+const payAmountYuan = ref(0)
+const paySheetTitle = ref('账单支付')
 
 function resolveRepayError(error: unknown): string {
   if (error && typeof error === 'object' && 'data' in error) {
@@ -88,16 +92,16 @@ async function repaySingleRecord(record: MallBillItem) {
     return
   }
   repayingBillKey.value = String(record.id)
-  try {
-    await repayBills(phone, payload)
-    notifySuccess('还款成功')
+  payAmountYuan.value = Math.abs(Number(record.amount || 0))
+  paySheetTitle.value = '账单还款'
+  payPreorderPayload.value = {
+    bizType: 'bill_repay',
+    payChannel: 'alipay',
+    orderId: payload.orderId,
+    period: payload.period,
   }
-  catch (e) {
-    notifyError(resolveRepayError(e))
-  }
-  finally {
-    repayingBillKey.value = null
-  }
+  paySheetOpen.value = true
+  repayingBillKey.value = null
 }
 
 async function payNegotiatedSingle(record: MallBillItem) {
@@ -149,16 +153,16 @@ async function payNegotiatedSingle(record: MallBillItem) {
     return
   }
   negotiatedPayBillKey.value = String(record.id)
-  try {
-    await repayNegotiatedBills(phone, payload)
-    notifySuccess('协商支付成功')
+  payAmountYuan.value = Number(pend.negotiatedAmount)
+  paySheetTitle.value = '协商支付'
+  payPreorderPayload.value = {
+    bizType: 'bill_repay_negotiated',
+    payChannel: 'alipay',
+    orderId: payload.orderId,
+    period: payload.period,
   }
-  catch (e) {
-    notifyError(resolveRepayError(e))
-  }
-  finally {
-    negotiatedPayBillKey.value = null
-  }
+  paySheetOpen.value = true
+  negotiatedPayBillKey.value = null
 }
 
 async function repayAllPending() {
@@ -189,15 +193,21 @@ async function repayAllPending() {
     return
   }
   repayingAll.value = true
-  try {
-    await repayBills(phone, { all: true })
-    notifySuccess('还款成功')
+  payAmountYuan.value = total
+  paySheetTitle.value = '一键还款'
+  payPreorderPayload.value = {
+    bizType: 'bill_repay_all',
+    payChannel: 'alipay',
+    all: true,
   }
-  catch (e) {
-    notifyError(resolveRepayError(e))
-  }
-  finally {
-    repayingAll.value = false
+  paySheetOpen.value = true
+  repayingAll.value = false
+}
+
+async function onBillPaySuccess() {
+  const phone = currentUserAccount.value
+  if (phone) {
+    await Promise.all([fetchBills(phone), fetchSummary(phone)])
   }
 }
 
@@ -664,6 +674,14 @@ if (!import.meta.env.SSR) {
         {{ repayingAll ? '支付处理中…' : `立即还款 ￥${pendingRepayTotalAll.toFixed(2)}` }}
       </button>
     </div>
+    <LakalaPaySheet
+      v-model="paySheetOpen"
+      :phone="currentUserAccount"
+      :amount-yuan="payAmountYuan"
+      :title="paySheetTitle"
+      :preorder-payload="payPreorderPayload"
+      @success="onBillPaySuccess"
+    />
   </section>
 </template>
 

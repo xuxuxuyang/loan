@@ -1,10 +1,19 @@
+import { createRequire } from 'node:module'
+import { fileURLToPath, URL } from 'node:url'
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import Components from 'unplugin-vue-components/vite'
 import { ElementPlusResolver } from 'unplugin-vue-components/resolvers'
 
+const require = createRequire(import.meta.url)
+const apiRoot = fileURLToPath(new URL('../api', import.meta.url))
+const { viteDefineForMallDefaultQuota } = require('../api/readMallDefaultQuota.cjs') as {
+  viteDefineForMallDefaultQuota: (apiRoot: string, mode: string) => Record<string, string>
+}
+
 // https://vite.dev/config/
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
+  define: viteDefineForMallDefaultQuota(apiRoot, mode),
   /** 与 shop 错开端口，便于后台「流量管理」在未设 VITE_MALL_H5_ORIGIN 时默认指向商城 dev 地址 */
   server: {
     port: 5174,
@@ -72,4 +81,4 @@ export default defineConfig({
       },
     },
   },
-})
+}))

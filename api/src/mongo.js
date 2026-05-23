@@ -13,6 +13,7 @@ const COLLECTIONS = {
   bills: 'bills',
   trafficChannels: 'trafficChannels',
   csSessions: 'csSessions',
+  lakalaPayments: 'lakalaPayments',
 }
 
 /** 旧版整库单文档（启动时若存在则迁移到分集合后删除） */
@@ -31,6 +32,7 @@ const SHARDED_ENTITY_KEYS = [
   'bills',
   'trafficChannels',
   'csSessions',
+  'lakalaPayments',
 ]
 
 let client = null

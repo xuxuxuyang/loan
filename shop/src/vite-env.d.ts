@@ -2,10 +2,15 @@
 
 interface ImportMetaEnv {
   readonly VITE_MALL_API_BASE?: string
+  readonly VITE_MALL_DEFAULT_CREDIT_QUOTA?: string
 }
 
 interface ImportMeta {
   readonly env: ImportMetaEnv
+}
+
+declare module 'qrcode' {
+  export function toDataURL(text: string, options?: { width?: number, margin?: number }): Promise<string>
 }
 
 interface AdsByGoogleQueue extends Array<unknown> {

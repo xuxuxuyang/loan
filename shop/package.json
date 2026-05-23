@@ -21,6 +21,7 @@
     "element-plus": "^2.13.7",
     "js-cookie": "^3.0.5",
     "ofetch": "^1.5.1",
+    "qrcode": "^1.5.4",
     "sass": "^1.99.0",
     "tailwindcss": "^4.2.4",
     "unplugin-auto-import": "^21.0.0",

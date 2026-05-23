@@ -94,6 +94,7 @@ declare global {
   const useCssVars: typeof import('vue').useCssVars
   const useCustomRouting: typeof import('./composables/useCustomRouting').useCustomRouting
   const useId: typeof import('vue').useId
+  const useLakalaPayment: typeof import('./composables/useLakalaPayment').useLakalaPayment
   const useLink: typeof import('vue-router').useLink
   const useMallAuth: typeof import('./composables/useMallAuth').useMallAuth
   const useMallCategories: typeof import('./composables/useTeaProducts').useMallCategories
@@ -119,6 +120,9 @@ declare global {
   // @ts-ignore
   export type { Component, Slot, Slots, ComponentPublicInstance, ComputedRef, DirectiveBinding, ExtractDefaultPropTypes, ExtractPropTypes, ExtractPublicPropTypes, InjectionKey, PropType, Ref, ShallowRef, MaybeRef, MaybeRefOrGetter, VNode, WritableComputedRef } from 'vue'
   import('vue')
+  // @ts-ignore
+  export type { LakalaPayBizType, LakalaPreorderPayload, LakalaPreorderResult, LakalaPayStatusResult } from './composables/useLakalaPayment'
+  import('./composables/useLakalaPayment')
   // @ts-ignore
   export type { RegisterPayload } from './composables/useMallAuth'
   import('./composables/useMallAuth')
@@ -229,6 +233,7 @@ declare module 'vue' {
     readonly useCssVars: UnwrapRef<typeof import('vue')['useCssVars']>
     readonly useCustomRouting: UnwrapRef<typeof import('./composables/useCustomRouting')['useCustomRouting']>
     readonly useId: UnwrapRef<typeof import('vue')['useId']>
+    readonly useLakalaPayment: UnwrapRef<typeof import('./composables/useLakalaPayment')['useLakalaPayment']>
     readonly useLink: UnwrapRef<typeof import('vue-router')['useLink']>
     readonly useMallAuth: UnwrapRef<typeof import('./composables/useMallAuth')['useMallAuth']>
     readonly useMallCategories: UnwrapRef<typeof import('./composables/useTeaProducts')['useMallCategories']>

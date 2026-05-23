@@ -17,8 +17,7 @@ import {
   displayCreditStatusFromOrderSevenSnapshot,
   type DisplayCreditStatus,
 } from '../utils/orderSubmitSevenPanel'
-
-const DEFAULT_USER_QUOTA = 3000
+import { MALL_DEFAULT_CREDIT_QUOTA, resolveMallCreditQuota } from '../utils/mallCreditQuota'
 
 /** 与商城注册、后端校验一致的 18 位身份证号格式（扩展表单校验时可复用） */
 const CN_ID_CARD_RE = /^[1-9]\d{5}(18|19|20)\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])\d{3}[\dX]$/
@@ -321,10 +320,7 @@ function removeUserFromList(id: string) {
 }
 
 function mapApiUser(user: ApiUserItem): ListedUser {
-  const quotaRaw = user.quota
-  const quota = Number.isFinite(Number(quotaRaw)) && Number(quotaRaw) >= 0
-    ? Math.round(Number(quotaRaw))
-    : DEFAULT_USER_QUOTA
+  const quota = resolveMallCreditQuota(user)
   return {
     id: user.id,
     name: user.name,
@@ -468,6 +464,7 @@ async function createUser() {
       body: JSON.stringify({
         name: createForm.name.trim(),
         phone: createForm.phone.trim(),
+        quota: MALL_DEFAULT_CREDIT_QUOTA,
         ...(idRawCreate ? { idNumber: idRawCreate } : {}),
         ...(initPwd.length >= 6 ? { initialPassword: initPwd } : {}),
       }),

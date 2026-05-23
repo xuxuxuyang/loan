@@ -30,6 +30,7 @@ declare module 'vue' {
     HomeListMobile: typeof import('./components/index/HomeListMobile.vue')['default']
     Icon: typeof import('./components/Icon.vue')['default']
     InstallmentZoneMobile: typeof import('./components/index/InstallmentZoneMobile.vue')['default']
+    LakalaPaySheet: typeof import('./components/payment/LakalaPaySheet.vue')['default']
     LoginForm: typeof import('./components/auth/LoginForm.vue')['default']
     MallListMobile: typeof import('./components/list/MallListMobile.vue')['default']
     MallProductDetailGallery: typeof import('./components/mall/MallProductDetailGallery.vue')['default']

@@ -11,6 +11,9 @@ import {
   useMallShowcaseProducts,
   useTeaProducts,
 } from '~/composables/useTeaProducts'
+import { MALL_EDITION_SHOP_DIRECT_ONLY } from '~/config/mallEdition'
+import type { LakalaPreorderPayload } from '~/composables/useLakalaPayment'
+import LakalaPaySheet from '~/components/payment/LakalaPaySheet.vue'
 import { notifyError, notifySuccess, notifyWarning } from '~/utils/epFeedback'
 
 const route = useRoute()
@@ -191,6 +194,18 @@ const addressPromptPrimaryLabel = computed(() =>
   addressPromptKind.value === 'add' ? '去添加地址' : '去选择地址',
 )
 
+const paySheetOpen = ref(false)
+const payPreorderPayload = ref<LakalaPreorderPayload | null>(null)
+const payAmountYuan = ref(0)
+
+async function onOrderPaySuccess() {
+  await syncFromRemote()
+  await smartNavigate({
+    path: '/orders',
+    query: { status: 'shipping' },
+  })
+}
+
 function dismissAddressPrompt() {
   addressPromptOpen.value = false
 }
@@ -278,7 +293,7 @@ async function submitOrder() {
     return
   }
 
-  if (exceedsCreditLimit.value) {
+  if (!MALL_EDITION_SHOP_DIRECT_ONLY && exceedsCreditLimit.value) {
     notifyWarning(
       `当前商品总额（￥${itemAmount.value.toFixed(2)}）已超过您的授信额度（￥${creditQuota.value}），请更换商品后再试`,
     )
@@ -286,10 +301,28 @@ async function submitOrder() {
   }
 
   submitting.value = true
-  orderSubmitLoadingVisible.value = true
+  orderSubmitLoadingVisible.value = MALL_EDITION_SHOP_DIRECT_ONLY ? false : true
   await nextTick()
   let creationResult: Awaited<ReturnType<typeof createOrder>> | undefined
   try {
+    if (MALL_EDITION_SHOP_DIRECT_ONLY) {
+      creationResult = await createOrder({
+        productId: selectedProduct.value.id,
+        name: selectedProduct.value.name,
+        spec: selectedProduct.value.subtitle,
+        totalAmount: installmentRepayTotal.value,
+        quantity: ORDER_QUANTITY,
+        status: 'reviewing',
+        paid: false,
+        payType: 'full',
+        payChannel: 'alipay',
+        installmentPeriods: 1,
+        receiverName: receiverName.value,
+        receiverPhone: receiverPhone.value,
+        receiverAddress: receiverAddressLine.value,
+      }, { mallLoginPhone: currentUserPhone.value })
+    }
+    else {
     const apiBase = String(runtimeConfig.public.mallApiBase || '/api').replace(/\/$/, '')
     const idNumber = String(profile.value?.idNumber || '').trim()
     if (!idNumber) {
@@ -379,6 +412,7 @@ async function submitOrder() {
         installmentRiskWaveId: waveId,
       }, { mallLoginPhone: currentUserPhone.value })
     }
+    }
   }
   catch (error: unknown) {
     let msg = ''
@@ -398,6 +432,18 @@ async function submitOrder() {
   }
   currentOrderNo.value = creationResult.order.id
   const newOrder = creationResult.order
+
+  if (MALL_EDITION_SHOP_DIRECT_ONLY) {
+    payAmountYuan.value = newOrder.totalAmount
+    payPreorderPayload.value = {
+      bizType: 'order_full',
+      payChannel: 'alipay',
+      orderId: newOrder.id,
+    }
+    paySheetOpen.value = true
+    return
+  }
+
   if (newOrder.riskStatus === 'failed') {
     notifyWarning(
       newOrder.riskReason
@@ -619,7 +665,21 @@ watch(
         <h2 class="mb-3 text-lg font-semibold text-black/82">
           支付方式
         </h2>
-        <div class="rounded-xl border border-[var(--theme-color)] bg-[#eefcf8] px-3 py-3">
+        <div
+          v-if="MALL_EDITION_SHOP_DIRECT_ONLY"
+          class="rounded-xl border border-[var(--theme-color)] bg-[#eefcf8] px-3 py-3"
+        >
+          <p class="text-sm font-semibold text-black/82">
+            在线支付（微信 / 支付宝）
+          </p>
+          <p class="mt-1 text-xs text-black/55 leading-relaxed">
+            提交订单后将跳转收银台扫码支付，支付成功后订单进入待发货。
+          </p>
+        </div>
+        <div
+          v-else
+          class="rounded-xl border border-[var(--theme-color)] bg-[#eefcf8] px-3 py-3"
+        >
           <p class="text-sm font-semibold text-black/82">
             先享后付支付
           </p>
@@ -698,7 +758,7 @@ watch(
           :disabled="submitting || !canSubmitOrder"
           @click="submitOrder"
         >
-          {{ submitting ? '系统审核与提交中…' : '提交订单' }}
+          {{ submitting ? (MALL_EDITION_SHOP_DIRECT_ONLY ? '提交中…' : '系统审核与提交中…') : (MALL_EDITION_SHOP_DIRECT_ONLY ? '提交并支付' : '提交订单') }}
         </button>
         
       </div>
@@ -772,6 +832,15 @@ watch(
       </div>
     </Transition>
   </Teleport>
+
+  <LakalaPaySheet
+    v-model="paySheetOpen"
+    :phone="currentUserPhone"
+    :amount-yuan="payAmountYuan"
+    title="订单支付"
+    :preorder-payload="payPreorderPayload"
+    @success="onOrderPaySuccess"
+  />
 </template>
 
 <style scoped>

@@ -1,3 +1,4 @@
+import { createRequire } from 'node:module'
 import { fileURLToPath, URL } from 'node:url'
 import vue from '@vitejs/plugin-vue'
 import tailwindcss from '@tailwindcss/vite'
@@ -25,8 +26,15 @@ const elementChinaAreaDataKeys = [
   '/element-china-area-data/',
 ]
 
+const require = createRequire(import.meta.url)
+const apiRoot = fileURLToPath(new URL('../api', import.meta.url))
+const { viteDefineForMallDefaultQuota } = require('../api/readMallDefaultQuota.cjs') as {
+  viteDefineForMallDefaultQuota: (apiRoot: string, mode: string) => Record<string, string>
+}
+
 // https://vite.dev/config/
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
+  define: viteDefineForMallDefaultQuota(apiRoot, mode),
   /** Capacitor WebView 以相对路径加载 dist 资源 */
   base: './',
   server: {
@@ -139,4 +147,4 @@ export default defineConfig({
       },
     },
   },
-})
+}))

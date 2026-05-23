@@ -75,6 +75,8 @@ const {
 
 const { buildCardPackageContractViewHtml } = require('./cardPackageContractViewHtml')
 const { buildCardPackageContractPdfBuffer } = require('./cardPackageContractPdf')
+const lakalaPayment = require('./payment/lakalaPaymentService')
+const { registerLakalaRoutes } = require('./payment/registerLakalaRoutes')
 
 const app = new Koa()
 const router = new Router({ prefix: '/api' })
@@ -144,7 +146,7 @@ const ADMIN_ROLE_SET = new Set(Object.values(ADMIN_ROLES))
 function isSuperEquivalentRole(role) {
   return role === ADMIN_ROLES.SUPER || role === ADMIN_ROLES.BOSS
 }
-/** 商城用户注册及未填写额度时的默认先享后付可用额度（元），由 MALL_DEFAULT_CREDIT_QUOTA 配置；缺省或非法时回退 2750 */
+/** 商城用户注册及未填写额度时的默认先享后付可用额度（元），由 api/.env.[NODE_ENV] → MALL_DEFAULT_CREDIT_QUOTA；缺省或非法时回退 2750 */
 const DEFAULT_USER_FALLBACK_QUOTA = 2750
 function resolveDefaultUserQuotaFromEnv() {
   const raw = process.env.MALL_DEFAULT_CREDIT_QUOTA
@@ -5718,6 +5720,212 @@ router.get('/bills', async (ctx) => {
   ctx.body = success(buildMallBillsSuccessData(db, phone))
 })
 
+/** 拉卡拉支付成功：全款订单标记已付（与 PATCH /orders/:id/pay 一致） */
+function markOrderPaidInDb(target, payChannel) {
+  target.paid = true
+  ensureOrderInstallmentPlan(target)
+  if (target.payType === 'installment') {
+    const firstPending = target.installmentPlan.find(item => !installmentItemIsPaid(item))
+    if (firstPending) {
+      firstPending.paid = true
+    }
+  }
+  else {
+    target.installmentPlan = target.installmentPlan.map(item => ({ ...item, paid: true }))
+  }
+  applyInstallmentCompletionOrderStatus(target, { ignoreAdminSkip: true })
+  if (payChannel) {
+    target.payChannel = payChannel
+  }
+  if (target.status === 'reviewing' && target.payType === 'full') {
+    target.status = 'shipping'
+  }
+}
+
+function assertBillRepayTargetOrder(db, mallUser, orderId) {
+  const target = db.orders.find(item => String(item.id) === orderId && orderBelongsToRegisteredMallUser(db, item, mallUser))
+  if (!target) {
+    const err = new Error('订单不存在')
+    err.statusCode = 404
+    throw err
+  }
+  if (target.status === 'reviewing') {
+    const err = new Error('订单未审核通过，暂无法还款')
+    err.statusCode = 400
+    throw err
+  }
+  if (target.payType !== 'installment') {
+    const err = new Error('该订单不支持账单还款')
+    err.statusCode = 400
+    throw err
+  }
+  if (!target.cardPackageIssued) {
+    const err = new Error('卡包未发放，暂无法还款')
+    err.statusCode = 400
+    throw err
+  }
+  return target
+}
+
+function calcBillRepayAmount(db, mallUser, { orderId, period }) {
+  const target = assertBillRepayTargetOrder(db, mallUser, orderId)
+  ensureOrderInstallmentPlan(target)
+  const planItem = findInstallmentPlanItemByPeriod(target.installmentPlan, period)
+  if (!planItem) {
+    const err = new Error('账单期次不存在')
+    err.statusCode = 404
+    throw err
+  }
+  if (installmentItemIsPaid(planItem)) {
+    const err = new Error('该期已还款')
+    err.statusCode = 400
+    throw err
+  }
+  if (planItem.negotiationPayPending && Number(planItem.negotiationPayPending.negotiatedAmount || 0) > 0) {
+    const err = new Error('本期存在待协商支付款项，请使用协商支付')
+    err.statusCode = 400
+    throw err
+  }
+  const amountYuan = Number(Number(planItem.amount || target.totalAmount || 0).toFixed(2))
+  return { amountYuan, subject: `账单还款 ${orderId} 第${period}期` }
+}
+
+function calcBillNegotiatedPayAmount(db, mallUser, { orderId, period }) {
+  const target = assertBillRepayTargetOrder(db, mallUser, orderId)
+  ensureOrderInstallmentPlan(target)
+  const planItem = findInstallmentPlanItemByPeriod(target.installmentPlan, period)
+  if (!planItem) {
+    const err = new Error('账单期次不存在')
+    err.statusCode = 404
+    throw err
+  }
+  if (installmentItemIsPaid(planItem)) {
+    const err = new Error('该期已还款')
+    err.statusCode = 400
+    throw err
+  }
+  const pend = planItem.negotiationPayPending
+  if (!pend || !Number.isFinite(Number(pend.negotiatedAmount)) || Number(pend.negotiatedAmount) <= 0) {
+    const err = new Error('暂无待支付的协商款项')
+    err.statusCode = 400
+    throw err
+  }
+  const amountYuan = Number(Number(pend.negotiatedAmount).toFixed(2))
+  return { amountYuan, subject: `协商还款 ${orderId} 第${period}期` }
+}
+
+function calcBillRepayAllAmount(db, mallUser) {
+  const loanOrders = db.orders
+    .filter(item => orderBelongsToRegisteredMallUser(db, item, mallUser))
+    .filter(item => item.payType === 'installment')
+    .filter(item => item.status !== 'reviewing')
+  let total = 0
+  for (const order of loanOrders) {
+    ensureOrderInstallmentPlan(order)
+    for (const planItem of order.installmentPlan) {
+      if (planItem && !installmentItemIsPaid(planItem)) {
+        if (planItem.negotiationPayPending && Number(planItem.negotiationPayPending.negotiatedAmount || 0) > 0) {
+          const err = new Error(`订单 ${order.id} 存在待协商支付，无法一键还清`)
+          err.statusCode = 400
+          throw err
+        }
+        total += Number(planItem.amount || order.totalAmount || 0)
+      }
+    }
+    if (!order.cardPackageIssued) {
+      const err = new Error(`订单 ${order.id} 的卡包尚未发放，暂无法还款`)
+      err.statusCode = 400
+      throw err
+    }
+  }
+  const amountYuan = Number(total.toFixed(2))
+  if (amountYuan <= 0) {
+    const err = new Error('暂无待还账单')
+    err.statusCode = 400
+    throw err
+  }
+  return { amountYuan, subject: '账单一键还款' }
+}
+
+function applyBillRepayInDb(db, mallUser, { orderId, period }) {
+  const target = assertBillRepayTargetOrder(db, mallUser, orderId)
+  ensureOrderInstallmentPlan(target)
+  const planItem = findInstallmentPlanItemByPeriod(target.installmentPlan, period)
+  if (!planItem || installmentItemIsPaid(planItem)) {
+    return
+  }
+  if (planItem.negotiationPayPending && Number(planItem.negotiationPayPending.negotiatedAmount || 0) > 0) {
+    planItem.negotiationPayPending = null
+  }
+  planItem.paid = true
+  target.installmentScheduleExplicit = true
+  applyInstallmentCompletionOrderStatus(target, { ignoreAdminSkip: true })
+}
+
+function applyBillNegotiatedPayInDb(db, mallUser, { orderId, period }) {
+  const target = assertBillRepayTargetOrder(db, mallUser, orderId)
+  ensureOrderInstallmentPlan(target)
+  const planItem = findInstallmentPlanItemByPeriod(target.installmentPlan, period)
+  if (!planItem) {
+    return
+  }
+  const applied = applyInstallmentNegotiationPayCompleted(planItem)
+  if (!applied.ok) {
+    throw new Error(applied.msg || '协商支付落库失败')
+  }
+  target.installmentScheduleExplicit = true
+  applyInstallmentCompletionOrderStatus(target, { ignoreAdminSkip: true })
+}
+
+function applyBillRepayAllInDb(db, mallUser) {
+  const loanOrders = db.orders
+    .filter(item => orderBelongsToRegisteredMallUser(db, item, mallUser))
+    .filter(item => item.payType === 'installment')
+    .filter(item => item.status !== 'reviewing')
+  for (const order of loanOrders) {
+    ensureOrderInstallmentPlan(order)
+    let touched = false
+    for (const planItem of order.installmentPlan) {
+      if (planItem && !installmentItemIsPaid(planItem)) {
+        if (planItem.negotiationPayPending && Number(planItem.negotiationPayPending.negotiatedAmount || 0) > 0) {
+          planItem.negotiationPayPending = null
+        }
+        planItem.paid = true
+        touched = true
+      }
+    }
+    if (touched) {
+      order.installmentScheduleExplicit = true
+      applyInstallmentCompletionOrderStatus(order, { ignoreAdminSkip: true })
+    }
+  }
+}
+
+lakalaPayment.initLakalaPayment({
+  readDb,
+  writeDb,
+  flushMongoPersist,
+  reconcileInstallmentCompletionAcrossDb,
+  orderBelongsToRegisteredMallUser,
+  resolveRegisteredMallUserByNormalizedPhone,
+  normalizePhone,
+  buildMallBillsSuccessData,
+  markOrderPaidInDb,
+  calcBillRepayAmount,
+  calcBillNegotiatedPayAmount,
+  calcBillRepayAllAmount,
+  applyBillRepayInDb,
+  applyBillNegotiatedPayInDb,
+  applyBillRepayAllInDb,
+})
+
+registerLakalaRoutes(router, {
+  fail,
+  success,
+  readDb,
+  resolvePlacingMallUserFromBearer,
+})
+
 /**
  * 商城用户还款：与后台 PATCH /orders/:id/installments/:period/pay 写入同一套 installmentPlan，
  * 需校验下单注册账号与订单 mallUserId；与 OrdersPage 一致，卡包未发放前不允许记为已还。
@@ -6476,24 +6684,7 @@ router.patch('/orders/:id/pay', async (ctx) => {
     return
   }
 
-  target.paid = true
-  ensureOrderInstallmentPlan(target)
-  if (target.payType === 'installment') {
-    const firstPending = target.installmentPlan.find(item => !installmentItemIsPaid(item))
-    if (firstPending) {
-      firstPending.paid = true
-    }
-  }
-  else {
-    target.installmentPlan = target.installmentPlan.map(item => ({ ...item, paid: true }))
-  }
-  applyInstallmentCompletionOrderStatus(target, { ignoreAdminSkip: true })
-  if (payload.payChannel) {
-    target.payChannel = payload.payChannel
-  }
-  if (target.status === 'reviewing' && target.payType === 'full') {
-    target.status = 'shipping'
-  }
+  markOrderPaidInDb(target, payload.payChannel)
   writeDb(db)
   await flushMongoPersist()
   ctx.body = success(target)
@@ -6937,7 +7128,8 @@ router.patch('/orders/:id/shipment', async (ctx) => {
     return
   }
   const trackingNumber = String(payload.trackingNumber).trim()
-  if (target.status !== 'shipping' && target.status !== 'receiving') {
+  const shipmentLockedToTrackingOnly = target.status === 'enjoying' || Boolean(target.cardPackageIssued)
+  if (target.status !== 'shipping' && target.status !== 'receiving' && !shipmentLockedToTrackingOnly) {
     fail(ctx, '当前订单状态不可登记快递单号')
     return
   }
