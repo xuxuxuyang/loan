@@ -162,6 +162,15 @@ async function handleService(key: string) {
     await smartNavigate('/privacy-policy')
     return
   }
+  if (key === 'download') {
+    const apkUrl = String(import.meta.env.VITE_MALL_APP_APK_URL || '').trim()
+    if (!apkUrl) {
+      notifyInfo('暂未配置安装包下载地址')
+      return
+    }
+    window.open(apkUrl, '_blank', 'noopener,noreferrer')
+    return
+  }
   notifyInfo('该功能开发中')
 }
 </script>
