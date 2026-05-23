@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { MallBillItem, MallBillNegotiationEntry } from '~/composables/useMallMy'
+import { MALL_BILL_CARD_PACKAGE_REPAY_MSG, mallBillRepayAllowed } from '~/composables/useMallMy'
 import type { LakalaPreorderPayload } from '~/composables/useLakalaPayment'
 import LakalaPaySheet from '~/components/payment/LakalaPaySheet.vue'
 import { h } from 'vue'
@@ -47,6 +48,18 @@ function resolveBillPeriod(item: MallBillItem): number {
   return extractPeriod(item.title)
 }
 
+function warnCardPackageNotRepayable(): boolean {
+  notifyWarning(MALL_BILL_CARD_PACKAGE_REPAY_MSG)
+  return false
+}
+
+function assertBillRepayable(record: MallBillItem): boolean {
+  if (mallBillRepayAllowed(record)) {
+    return true
+  }
+  return warnCardPackageNotRepayable()
+}
+
 function billRepayPayload(record: MallBillItem): { orderId: string, period: number } | null {
   const orderId = String(record.orderId || extractOrderId(record.title) || '').trim()
   const period = Number.isFinite(Number(record.period)) && Number(record.period) > 0
@@ -65,6 +78,9 @@ async function repaySingleRecord(record: MallBillItem) {
   if (record.negotiationPayPending) {
     return
   }
+  if (!assertBillRepayable(record)) {
+    return
+  }
   const payload = billRepayPayload(record)
   if (!payload) {
     notifyError('账单信息不完整，无法还款')
@@ -73,7 +89,7 @@ async function repaySingleRecord(record: MallBillItem) {
   const amt = Math.abs(Number(record.amount || 0)).toFixed(2)
   try {
     await confirmDialog(
-      `确认支付 ￥${amt} 用于本笔账单还款？\n还款成功后将同步更新订单分期状态（与后台管理一致）。`,
+      `确认支付 ￥${amt} 用于本笔账单还款？`,
       '确认还款',
       {
         confirmButtonText: '确认支付',
@@ -107,6 +123,9 @@ async function repaySingleRecord(record: MallBillItem) {
 async function payNegotiatedSingle(record: MallBillItem) {
   const pend = record.negotiationPayPending
   if (!pend || record.status !== '待还款' || negotiatedPayBillKey.value !== null || repayingAll.value || repayingBillKey.value !== null) {
+    return
+  }
+  if (!assertBillRepayable(record)) {
     return
   }
   const amt = Number(pend.negotiatedAmount).toFixed(2)
@@ -170,6 +189,10 @@ async function repayAllPending() {
   if (!pending.length || repayingAll.value || repayingBillKey.value !== null || negotiatedPayBillKey.value !== null) {
     return
   }
+  if (pending.some(item => !mallBillRepayAllowed(item))) {
+    warnCardPackageNotRepayable()
+    return
+  }
   const total = pendingRepayTotalAll.value
   const totalText = total.toFixed(2)
   try {
@@ -227,6 +250,19 @@ const pendingRepayDisplayTotal = computed(() =>
 
 /** 有任意待还期次时展示底部一键还款；金额为全部待还合计。 */
 const showRepayAllBar = computed(() => pendingRepayDisplayTotal.value > 0)
+
+/** 全部待还中是否存在卡包未发放订单（一键还款需全部可还） */
+const repayAllBlockedByCardPackage = computed(() =>
+  billList.value.some(
+    item => item.status === '待还款' && billCountsTowardRepayTotal(item) && !mallBillRepayAllowed(item),
+  ),
+)
+
+function groupHasCardPackageRepayBlock(group: (typeof groupedBills.value)[number]) {
+  return group.records.some(
+    r => r.status === '待还款' && billCountsTowardRepayTotal(r) && !mallBillRepayAllowed(r),
+  )
+}
 
 /** 账单时间仅展示日期（YYYY-MM-DD） */
 function formatBillDateOnly(raw: string) {
@@ -532,6 +568,12 @@ if (!import.meta.env.SSR) {
             <span>先享后付 {{ group.records.filter(r => billCountsTowardRepayTotal(r)).length }} 笔</span>
             <span>待还 {{ group.pendingCount }} 笔</span>
           </div>
+          <p
+            v-if="groupHasCardPackageRepayBlock(group)"
+            class="mb-2 rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-2 text-[11px] leading-relaxed text-amber-900"
+          >
+            {{ MALL_BILL_CARD_PACKAGE_REPAY_MSG }}
+          </p>
 
           <div class="space-y-2">
             <div
@@ -558,7 +600,7 @@ if (!import.meta.env.SSR) {
                   <span>{{ formatBillDateOnly(record.time) }}</span>
                   <div class="flex max-w-[min(100%,11rem)] shrink-0 flex-wrap items-center justify-end gap-1.5">
                     <button
-                      v-if="record.status === '待还款' && !record.negotiationPayPending"
+                      v-if="record.status === '待还款' && !record.negotiationPayPending && mallBillRepayAllowed(record)"
                       type="button"
                       class="rounded-full bg-gradient-to-r from-[#ff8a65] to-[#f97316] px-2.5 py-1 text-[11px] font-semibold text-white shadow-sm transition hover:brightness-105 active:opacity-90 disabled:opacity-50"
                       :disabled="repayingAll || repayingBillKey !== null || negotiatedPayBillKey !== null"
@@ -566,6 +608,12 @@ if (!import.meta.env.SSR) {
                     >
                       {{ repayingBillKey === String(record.id) ? '支付中…' : '还款' }}
                     </button>
+                    <span
+                      v-else-if="record.status === '待还款' && !record.negotiationPayPending && !mallBillRepayAllowed(record)"
+                      class="rounded-full border border-amber-300 bg-amber-50 px-2 py-0.5 text-[10px] font-medium text-amber-800"
+                    >
+                      卡包未发放
+                    </span>
                     <span
                       class="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium leading-none"
                       :class="billStatusClass(record.status)"
@@ -632,7 +680,7 @@ if (!import.meta.env.SSR) {
                         </span>
                       </div>
                       <button
-                        v-if="ui.showPayBtn && record.negotiationPayPending"
+                        v-if="ui.showPayBtn && record.negotiationPayPending && mallBillRepayAllowed(record)"
                         type="button"
                         class="mt-2 w-full rounded-lg bg-gradient-to-r from-[#ef4444] to-[#dc2626] py-2.5 text-[12px] font-semibold text-white shadow-sm transition hover:brightness-105 active:opacity-90 disabled:opacity-50"
                         :disabled="repayingAll || repayingBillKey !== null || negotiatedPayBillKey !== null"
@@ -665,10 +713,16 @@ if (!import.meta.env.SSR) {
       v-if="showRepayAllBar"
       class="fixed bottom-16 left-0 right-0 z-20 border-t border-black/[0.06] bg-white/95 px-4 py-3 shadow-[0_-6px_24px_rgba(0,0,0,0.06)] backdrop-blur-sm pb-[max(0.75rem,env(safe-area-inset-bottom))]"
     >
+      <p
+        v-if="repayAllBlockedByCardPackage"
+        class="mb-2 text-center text-xs leading-relaxed text-amber-800"
+      >
+        {{ MALL_BILL_CARD_PACKAGE_REPAY_MSG }}
+      </p>
       <button
         type="button"
         class="w-full rounded-full bg-gradient-to-r from-[#ff8a65] to-[#f97316] py-3.5 text-base font-semibold text-white shadow-[0_8px_22px_rgba(249,115,22,0.35)] transition hover:brightness-105 active:opacity-90 disabled:opacity-55"
-        :disabled="repayingAll || repayingBillKey !== null || negotiatedPayBillKey !== null"
+        :disabled="repayingAll || repayingBillKey !== null || negotiatedPayBillKey !== null || repayAllBlockedByCardPackage"
         @click="repayAllPending"
       >
         {{ repayingAll ? '支付处理中…' : `立即还款 ￥${pendingRepayTotalAll.toFixed(2)}` }}

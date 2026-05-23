@@ -9,6 +9,7 @@ declare global {
   const $fetch: typeof import('@/spa-shim').$fetch
   const EffectScope: typeof import('vue').EffectScope
   const ElMessage: typeof import('element-plus/es').ElMessage
+  const MALL_BILL_CARD_PACKAGE_REPAY_MSG: typeof import('./composables/useMallMy').MALL_BILL_CARD_PACKAGE_REPAY_MSG
   const MALL_DEFAULT_CREDIT_QUOTA: typeof import('./composables/mallCreditQuota').MALL_DEFAULT_CREDIT_QUOTA
   const captureRegisterChannelFromRoute: typeof import('./composables/useRegisterChannel').captureRegisterChannelFromRoute
   const clearPendingRegisterChannel: typeof import('./composables/useRegisterChannel').clearPendingRegisterChannel
@@ -42,6 +43,7 @@ declare global {
   const isReadonly: typeof import('vue').isReadonly
   const isRef: typeof import('vue').isRef
   const isShallow: typeof import('vue').isShallow
+  const mallBillRepayAllowed: typeof import('./composables/useMallMy').mallBillRepayAllowed
   const mallOrderBelongsToLoggedIn: typeof import('./composables/useMallOrders').mallOrderBelongsToLoggedIn
   const markRaw: typeof import('vue').markRaw
   const nextTick: typeof import('vue').nextTick
@@ -148,6 +150,7 @@ declare module 'vue' {
     readonly $fetch: UnwrapRef<typeof import('@/spa-shim')['$fetch']>
     readonly EffectScope: UnwrapRef<typeof import('vue')['EffectScope']>
     readonly ElMessage: UnwrapRef<typeof import('element-plus/es')['ElMessage']>
+    readonly MALL_BILL_CARD_PACKAGE_REPAY_MSG: UnwrapRef<typeof import('./composables/useMallMy')['MALL_BILL_CARD_PACKAGE_REPAY_MSG']>
     readonly MALL_DEFAULT_CREDIT_QUOTA: UnwrapRef<typeof import('./composables/mallCreditQuota')['MALL_DEFAULT_CREDIT_QUOTA']>
     readonly captureRegisterChannelFromRoute: UnwrapRef<typeof import('./composables/useRegisterChannel')['captureRegisterChannelFromRoute']>
     readonly clearPendingRegisterChannel: UnwrapRef<typeof import('./composables/useRegisterChannel')['clearPendingRegisterChannel']>
@@ -181,6 +184,7 @@ declare module 'vue' {
     readonly isReadonly: UnwrapRef<typeof import('vue')['isReadonly']>
     readonly isRef: UnwrapRef<typeof import('vue')['isRef']>
     readonly isShallow: UnwrapRef<typeof import('vue')['isShallow']>
+    readonly mallBillRepayAllowed: UnwrapRef<typeof import('./composables/useMallMy')['mallBillRepayAllowed']>
     readonly mallOrderBelongsToLoggedIn: UnwrapRef<typeof import('./composables/useMallOrders')['mallOrderBelongsToLoggedIn']>
     readonly markRaw: UnwrapRef<typeof import('vue')['markRaw']>
     readonly nextTick: UnwrapRef<typeof import('vue')['nextTick']>

@@ -1,6 +1,7 @@
 /**
- * 商城「仅直付 / 仅商城货架」版本开关。
- * 为 true 时：隐藏先享后付入口与列表、不拉取 installment 商品、下单走 payType `full`（直接支付）。
- * 恢复先享后付时改为 false 即可（原 BNPL 逻辑保留在代码中，由分支与 v-if 控制）。
+ * 历史全局开关：曾用于整站仅直付。现下单分流以商品 `salesMode` 为准（见 order/create.vue）：
+ * - `installment` → 先享后付提交订单
+ * - `mall` → 商城专区提交后拉起收银台
+ * 保留常量供环境级兜底；默认 false，勿再全局强制直付。
  */
-export const MALL_EDITION_SHOP_DIRECT_ONLY = true
+export const MALL_EDITION_SHOP_DIRECT_ONLY = false

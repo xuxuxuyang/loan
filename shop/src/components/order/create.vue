@@ -3,7 +3,7 @@ import { normalizeMallAccount } from '~/composables/useMallAuth'
 import { resolveMallCreditQuota } from '~/composables/mallCreditQuota'
 import { formatMallAddressLine, useMallMy } from '~/composables/useMallMy'
 import { mallOrderBelongsToLoggedIn, normalizeReceiverPhoneDigits, effectiveMallOrderStatus } from '~/composables/useMallOrders'
-import type { TeaProduct } from '~/composables/useTeaProducts'
+import type { ProductSalesMode, TeaProduct } from '~/composables/useTeaProducts'
 import {
   ensureMallProductsLoaded,
   ensureMallShowcaseProductsLoaded,
@@ -64,6 +64,15 @@ const selectedProduct = computed(() => {
     return fromInstallment
   }
   return fetchedProductById.value
+})
+
+/** 商城专区直付；先享后付走提交订单 + 风控审核（全局开关仅作兜底） */
+const isMallDirectPurchase = computed(() => {
+  if (MALL_EDITION_SHOP_DIRECT_ONLY) {
+    return true
+  }
+  const mode: ProductSalesMode | undefined = selectedProduct.value?.salesMode
+  return mode === 'mall'
 })
 
 function parseAddressIdFromRoute(): number | undefined {
@@ -241,7 +250,7 @@ const canSubmitOrder = computed(() =>
     selectedProduct.value
     && addressesLoaded.value
     && !hasBlockingMallOrder.value
-    && !exceedsCreditLimit.value
+    && (isMallDirectPurchase.value || !exceedsCreditLimit.value)
     && !orderBlacklisted.value,
   ),
 )
@@ -293,7 +302,7 @@ async function submitOrder() {
     return
   }
 
-  if (!MALL_EDITION_SHOP_DIRECT_ONLY && exceedsCreditLimit.value) {
+  if (!isMallDirectPurchase.value && exceedsCreditLimit.value) {
     notifyWarning(
       `当前商品总额（￥${itemAmount.value.toFixed(2)}）已超过您的授信额度（￥${creditQuota.value}），请更换商品后再试`,
     )
@@ -301,11 +310,11 @@ async function submitOrder() {
   }
 
   submitting.value = true
-  orderSubmitLoadingVisible.value = MALL_EDITION_SHOP_DIRECT_ONLY ? false : true
+  orderSubmitLoadingVisible.value = isMallDirectPurchase.value ? false : true
   await nextTick()
   let creationResult: Awaited<ReturnType<typeof createOrder>> | undefined
   try {
-    if (MALL_EDITION_SHOP_DIRECT_ONLY) {
+    if (isMallDirectPurchase.value) {
       creationResult = await createOrder({
         productId: selectedProduct.value.id,
         name: selectedProduct.value.name,
@@ -433,7 +442,7 @@ async function submitOrder() {
   currentOrderNo.value = creationResult.order.id
   const newOrder = creationResult.order
 
-  if (MALL_EDITION_SHOP_DIRECT_ONLY) {
+  if (isMallDirectPurchase.value) {
     payAmountYuan.value = newOrder.totalAmount
     payPreorderPayload.value = {
       bizType: 'order_full',
@@ -666,7 +675,7 @@ watch(
           支付方式
         </h2>
         <div
-          v-if="MALL_EDITION_SHOP_DIRECT_ONLY"
+          v-if="isMallDirectPurchase"
           class="rounded-xl border border-[var(--theme-color)] bg-[#eefcf8] px-3 py-3"
         >
           <p class="text-sm font-semibold text-black/82">
@@ -747,7 +756,7 @@ watch(
           </button>
         </p>
         <p
-          v-else-if="exceedsCreditLimit"
+          v-else-if="!isMallDirectPurchase && exceedsCreditLimit"
           class="mb-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2.5 text-sm text-amber-900 leading-relaxed"
         >
           当前商品总额已超过授信额度（￥{{ creditQuota }}）。请选择低价商品后再试。
@@ -758,7 +767,7 @@ watch(
           :disabled="submitting || !canSubmitOrder"
           @click="submitOrder"
         >
-          {{ submitting ? (MALL_EDITION_SHOP_DIRECT_ONLY ? '提交中…' : '系统审核与提交中…') : (MALL_EDITION_SHOP_DIRECT_ONLY ? '提交并支付' : '提交订单') }}
+          {{ submitting ? (isMallDirectPurchase ? '提交中…' : '系统审核与提交中…') : (isMallDirectPurchase ? '提交并支付' : '提交订单') }}
         </button>
         
       </div>

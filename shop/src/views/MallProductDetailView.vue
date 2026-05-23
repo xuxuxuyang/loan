@@ -120,7 +120,7 @@ async function goBuy() {
   if (!passed) {
     return
   }
-  if (exceedsCredit.value) {
+  if (isBnpl.value && exceedsCredit.value) {
     notifyWarning(
       `该商品金额（￥${computeMallCreditOrderPrincipal(product.value.price, 1).toFixed(2)}）已超过您的授信额度（￥${creditQuota.value}）`,
     )
@@ -276,10 +276,10 @@ if (!import.meta.env.SSR) {
         <button
           type="button"
           class="min-h-[44px] shrink-0 rounded-xl bg-[var(--theme-color)] px-6 text-sm font-semibold text-white shadow-sm active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-          :disabled="exceedsCredit"
+          :disabled="isBnpl && exceedsCredit"
           @click="goBuy"
         >
-          立即购买
+          {{ isBnpl ? '提交订单' : '立即购买' }}
         </button>
       </div>
     </div>

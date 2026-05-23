@@ -5638,6 +5638,8 @@ function buildMallBillingListAndSummaries(db, phone) {
         amount: -Math.abs(Number(planItem.amount || 0)),
         time: `${planItem.dueDate} 00:00`,
         status: rowStatus,
+        /** 与还款/预下单校验一致：卡包未发放前不可还款 */
+        cardPackageIssued: Boolean(order.cardPackageIssued),
       }
       if (Array.isArray(planItem.negotiationHistory) && planItem.negotiationHistory.length > 0) {
         installmentRow.negotiationHistory = planItem.negotiationHistory.map((h) => ({

@@ -85,7 +85,16 @@ export interface MallBillItem {
   negotiationHistory?: MallBillNegotiationEntry[]
   /** 后台协商后待用户完成「协商支付」的款项；支付成功后顶部待还金额才会按剩余本金更新 */
   negotiationPayPending?: MallNegotiationPayPending
+  /** 对应订单卡包是否已发放；未发放时不可还款（与预下单接口一致） */
+  cardPackageIssued?: boolean
 }
+
+/** 账单是否允许发起还款/协商支付（卡包未发放时在前台拦截） */
+export function mallBillRepayAllowed(item: MallBillItem): boolean {
+  return item.cardPackageIssued !== false
+}
+
+export const MALL_BILL_CARD_PACKAGE_REPAY_MSG = '卡包尚未发放，暂无法还款，请待卡包发放后再试'
 
 export type MallRepayPayload = { orderId: string, period: number } | { all: true }
 
