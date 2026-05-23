@@ -112,7 +112,7 @@ async function repaySingleRecord(record: MallBillItem) {
   paySheetTitle.value = '账单还款'
   payPreorderPayload.value = {
     bizType: 'bill_repay',
-    payChannel: 'alipay',
+    payChannel: 'wechat',
     orderId: payload.orderId,
     period: payload.period,
   }
@@ -176,7 +176,7 @@ async function payNegotiatedSingle(record: MallBillItem) {
   paySheetTitle.value = '协商支付'
   payPreorderPayload.value = {
     bizType: 'bill_repay_negotiated',
-    payChannel: 'alipay',
+    payChannel: 'wechat',
     orderId: payload.orderId,
     period: payload.period,
   }
@@ -220,7 +220,7 @@ async function repayAllPending() {
   paySheetTitle.value = '一键还款'
   payPreorderPayload.value = {
     bizType: 'bill_repay_all',
-    payChannel: 'alipay',
+    payChannel: 'wechat',
     all: true,
   }
   paySheetOpen.value = true

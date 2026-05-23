@@ -24,10 +24,7 @@ function registerLakalaRoutes(router, ctxApi) {
     catch (err) {
       const code = err.statusCode || 400
       let msg = err.message || '创建支付失败'
-      if (err.lakalaCode === 'BBS16064') {
-        msg = '支付宝主扫暂不可用（商户门店编号无效），请改选微信支付或联系拉卡拉开通测试商户的支付宝通道'
-      }
-      else if (err.lakalaCode) {
+      if (err.lakalaCode) {
         msg = `${msg}（${err.lakalaCode}）`
       }
       fail(ctx, msg, code)
@@ -90,7 +87,8 @@ function registerLakalaRoutes(router, ctxApi) {
     ctx.body = success({
       enabled: lakala.isLakalaConfigured() || lakala.isLakalaMockEnabled(),
       mock: lakala.isLakalaMockEnabled(),
-      channels: ['wechat', 'alipay'],
+      mode: 'counter',
+      channels: ['wechat', 'alipay', 'union'],
     })
   })
 }

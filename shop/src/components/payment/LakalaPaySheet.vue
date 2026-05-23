@@ -1,7 +1,5 @@
 <script setup lang="ts">
-import QRCode from 'qrcode'
 import type { LakalaPayBizType, LakalaPreorderPayload, LakalaPreorderResult } from '~/composables/useLakalaPayment'
-import type { MallPayChannel } from '~/composables/useMallOrders'
 import type { MallBillingRefreshPayload } from '~/composables/useMallMy'
 import { notifyError, notifySuccess, notifyWarning } from '~/utils/epFeedback'
 
@@ -26,56 +24,102 @@ const visible = computed({
   set: (v: boolean) => emit('update:modelValue', v),
 })
 
-/** 拉卡拉测试商户对支付宝主扫常报 BBS16064，微信主扫可正常返回收款码 */
-const payChannel = ref<MallPayChannel>('wechat')
 const loading = ref(false)
+const redirecting = ref(false)
 const paying = ref(false)
 const preorder = ref<LakalaPreorderResult | null>(null)
-const qrDataUrl = ref('')
 const pollAbort = ref(false)
-
-const channelOptions: Array<{ key: MallPayChannel, label: string }> = [
-  { key: 'alipay', label: '支付宝' },
-  { key: 'wechat', label: '微信' },
-]
+/** 自动跳转被拦截时展示手动入口 */
+const redirectBlocked = ref(false)
 
 const displayAmount = computed(() => Number(props.amountYuan || 0).toFixed(2))
 
-/** 模拟预下单返回的假链接，扫码会 404，不可当真实收款码 */
-const isMockPayCode = computed(() => {
-  const code = String(preorder.value?.payCode || '')
+const counterUrl = computed(() => {
+  return String(preorder.value?.counterUrl || preorder.value?.payCode || '').trim()
+})
+
+const isMockPay = computed(() => {
+  const code = counterUrl.value
   return isMockPayLink(code) || Boolean(preorder.value?.mock) || Boolean(config.value?.mock)
 })
 
-const canOpenExternal = computed(() => {
-  if (isMockPayCode.value) {
-    return false
-  }
-  const code = String(preorder.value?.payCode || '')
-  return code.startsWith('http://') || code.startsWith('https://')
+const canOpenCounter = computed(() => {
+  return Boolean(counterUrl.value) && !isMockPay.value
 })
 
 function isMockPayLink(code: string) {
-  return code.includes('/mock/') || code.includes('MOCK_DEMO')
+  return code.includes('/mock-counter/') || code.includes('/mock/') || code.includes('MOCK_DEMO')
 }
 
-async function renderQr(code: string) {
-  qrDataUrl.value = ''
-  if (!code || isMockPayLink(code)) {
+function rememberPendingPay(outTradeNo: string) {
+  if (typeof sessionStorage === 'undefined') {
     return
   }
   try {
-    qrDataUrl.value = await QRCode.toDataURL(code, { width: 220, margin: 2 })
+    sessionStorage.setItem('lakala_pending_pay', JSON.stringify({
+      outTradeNo,
+      phone: props.phone,
+      at: Date.now(),
+    }))
   }
   catch {
-    qrDataUrl.value = ''
+    /* ignore */
   }
+}
+
+function normalizeCounterUrl(url: string) {
+  const raw = String(url || '').trim()
+  if (!raw) {
+    return raw
+  }
+  try {
+    const u = new URL(raw)
+    const host = u.hostname.toLowerCase()
+    if (!host.includes('pay.wsmsd.cn') && !host.includes('pay.lakala.com')) {
+      return raw
+    }
+    const q = u.search.startsWith('?') ? u.search.slice(1) : ''
+    if (q.includes('%3D') || q.includes('%26')) {
+      return `${u.origin}${u.pathname}?${decodeURIComponent(q)}`
+    }
+  }
+  catch {
+    /* ignore */
+  }
+  return raw
+}
+
+function isLikelyDesktopBrowser() {
+  if (typeof navigator === 'undefined') {
+    return false
+  }
+  const ua = navigator.userAgent || ''
+  return !/MicroMessenger/i.test(ua) && !/iPhone|iPad|iPod|Android/i.test(ua)
+}
+
+function goToCounter(url: string) {
+  if (typeof window === 'undefined' || !url) {
+    return false
+  }
+  const target = normalizeCounterUrl(url)
+  redirecting.value = true
+  redirectBlocked.value = false
+  if (preorder.value?.outTradeNo) {
+    rememberPendingPay(preorder.value.outTradeNo)
+  }
+  if (isLikelyDesktopBrowser()) {
+    notifyWarning('电脑浏览器里微信支付常会失败（拉卡拉会跳转微信小程序）。请用手机 Safari/微信打开商城，或在收银台改选支付宝。')
+  }
+  /** replace 避免返回商城后再进收银台时命中历史错误 hash */
+  window.location.replace(target)
+  return true
 }
 
 function resetState() {
   preorder.value = null
-  qrDataUrl.value = ''
   paying.value = false
+  redirecting.value = false
+  redirectBlocked.value = false
   pollAbort.value = false
 }
 
@@ -92,15 +136,24 @@ async function startPay() {
       notifyError('支付功能未配置，请联系管理员配置拉卡拉参数')
       return
     }
-    const result = await createPreorder(props.phone, {
-      ...props.preorderPayload,
-      payChannel: payChannel.value,
-    })
+    const result = await createPreorder(props.phone, props.preorderPayload)
     preorder.value = result
-    await renderQr(result.payCode)
+    const url = String(result.counterUrl || result.payCode || '').trim()
+
+    if (canOpenCounter.value && url) {
+      goToCounter(url)
+      /** 若数秒内仍在页内，说明跳转失败，展示手动按钮 */
+      window.setTimeout(() => {
+        if (visible.value && redirecting.value) {
+          redirecting.value = false
+          redirectBlocked.value = true
+        }
+      }, 2500)
+      return
+    }
+
     paying.value = true
     pollAbort.value = false
-    /** 模拟模式：支付单在服务端，轮询无意义；请点「模拟支付成功」 */
     if (!config.value?.mock) {
       void pollPaymentLoop(result.outTradeNo)
     }
@@ -130,6 +183,12 @@ async function pollPaymentLoop(outTradeNo: string) {
 function onPaySuccess(billing?: MallBillingRefreshPayload) {
   paying.value = false
   visible.value = false
+  try {
+    sessionStorage.removeItem('lakala_pending_pay')
+  }
+  catch {
+    /* ignore */
+  }
   notifySuccess('支付成功')
   emit('success', {
     billing,
@@ -154,16 +213,14 @@ async function onMockPay() {
   }
 }
 
-function openPayLink() {
-  const code = String(preorder.value?.payCode || '')
-  if (canOpenExternal.value && typeof window !== 'undefined') {
-    window.open(code, '_blank', 'noopener,noreferrer')
-  }
+function openCounter() {
+  goToCounter(counterUrl.value)
 }
 
 function closeSheet() {
   pollAbort.value = true
   paying.value = false
+  redirecting.value = false
   visible.value = false
   emit('cancel')
 }
@@ -182,8 +239,6 @@ watch(
     }
   },
 )
-
-/** 仅由 modelValue 打开时发起支付，避免与 preorderPayload 重复触发两次 preorder */
 </script>
 
 <template>
@@ -191,21 +246,30 @@ watch(
     <Transition name="order-address-mask">
       <div
         v-if="visible"
-        class="fixed inset-0 z-[7000] flex flex-col justify-end bg-black/50 sm:items-center sm:justify-center sm:p-4"
+        class="fixed inset-0 z-[7000] flex flex-col justify-end bg-black/50"
         role="dialog"
         aria-modal="true"
         @click.self="closeSheet"
       >
         <div
-          class="mx-auto w-full max-w-md overflow-hidden rounded-t-2xl bg-white shadow-xl sm:rounded-2xl"
+          class="mx-auto w-full max-w-md overflow-hidden rounded-t-2xl bg-white shadow-xl"
           @click.stop
         >
           <div class="border-b border-black/6 px-5 py-4">
             <h3 class="text-center text-lg font-semibold text-black/88">
-              {{ title || '收银台' }}
+              {{ title || '支付订单' }}
             </h3>
-            <p class="mt-1 text-center text-sm text-black/55">
-              请使用{{ payChannel === 'wechat' ? '微信' : '支付宝' }}扫码完成支付
+            <p
+              v-if="redirecting"
+              class="mt-1 text-center text-sm text-black/55"
+            >
+              正在打开拉卡拉收银台…
+            </p>
+            <p
+              v-else-if="isMockPay"
+              class="mt-1 text-center text-sm text-black/55"
+            >
+              测试环境：请使用下方模拟支付
             </p>
           </div>
 
@@ -215,80 +279,45 @@ watch(
             </p>
 
             <div
-              v-if="!preorder"
-              class="mb-4 flex justify-center gap-2"
-            >
-              <button
-                v-for="opt in channelOptions"
-                :key="opt.key"
-                type="button"
-                class="rounded-full px-4 py-1.5 text-sm"
-                :class="payChannel === opt.key ? 'bg-[var(--theme-color)] text-white' : 'bg-black/6 text-black/65'"
-                :disabled="loading"
-                @click="payChannel = opt.key"
-              >
-                {{ opt.label }}
-              </button>
-            </div>
-
-            <div
-              v-if="loading && !preorder"
+              v-if="loading || redirecting"
               class="py-8 text-center text-sm text-black/50"
             >
-              正在创建支付…
+              {{ redirecting ? '正在跳转收银台，请稍候…' : '正在创建支付…' }}
             </div>
 
-            <template v-else-if="preorder">
-              <div
-                v-if="isMockPayCode"
-                class="mb-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-3 text-sm leading-relaxed text-amber-950"
+            <template v-else-if="preorder && isMockPay">
+              <div class="mb-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-3 text-sm leading-relaxed text-amber-950">
+                当前为<strong>模拟支付</strong>，请点下方「模拟支付成功」完成联调。
+              </div>
+              <button
+                v-if="config?.mock"
+                type="button"
+                class="w-full rounded-xl border border-dashed border-amber-400 bg-amber-50 py-2.5 text-sm font-medium text-amber-900"
+                :disabled="loading"
+                @click="onMockPay"
               >
-                当前为<strong>模拟支付</strong>，二维码不可用，请勿用支付宝扫描（会打开无效链接）。请点下方「测试环境：模拟支付成功」完成联调。
-              </div>
-              <div class="flex flex-col items-center">
-                <img
-                  v-if="qrDataUrl && !isMockPayCode"
-                  :src="qrDataUrl"
-                  alt="支付二维码"
-                  class="h-[220px] w-[220px] rounded-lg border border-black/8"
-                >
-                <p
-                  v-else-if="!isMockPayCode"
-                  class="py-6 text-center text-sm text-black/55"
-                >
-                  未获取到二维码，请尝试下方按钮
-                </p>
-                <p
-                  v-if="paying"
-                  class="mt-3 text-xs text-black/45"
-                >
-                  支付结果确认中…
-                </p>
-              </div>
+                测试环境：模拟支付成功
+              </button>
+            </template>
 
-              <div class="mt-4 flex flex-col gap-2">
-                <button
-                  v-if="canOpenExternal"
-                  type="button"
-                  class="w-full rounded-xl bg-[var(--theme-color)] py-2.5 text-sm font-medium text-white"
-                  @click="openPayLink"
-                >
-                  打开支付宝付款
-                </button>
-                <button
-                  v-if="config?.mock"
-                  type="button"
-                  class="w-full rounded-xl border border-dashed border-amber-400 bg-amber-50 py-2.5 text-sm font-medium text-amber-900"
-                  :disabled="loading"
-                  @click="onMockPay"
-                >
-                  测试环境：模拟支付成功
-                </button>
-              </div>
+            <template v-else-if="preorder && redirectBlocked">
+              <p class="mb-3 text-center text-sm leading-relaxed text-black/55">
+                未能自动打开收银台，请手动点击下方按钮。若收银台提示「token解析异常」，请重新下单，勿刷新收银台页；在微信里支付失败时，请改用 Safari 打开商城或选支付宝。
+              </p>
+              <button
+                type="button"
+                class="w-full rounded-xl bg-[var(--theme-color)] py-2.5 text-sm font-medium text-white"
+                @click="openCounter"
+              >
+                前往拉卡拉收银台支付
+              </button>
             </template>
           </div>
 
-          <div class="border-t border-black/6 px-5 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
+          <div
+            v-if="!redirecting"
+            class="border-t border-black/6 px-5 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]"
+          >
             <button
               type="button"
               class="w-full rounded-xl border border-black/12 py-2.5 text-sm text-black/65"

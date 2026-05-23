@@ -30,11 +30,8 @@ function resolveNotifyUrl() {
   return url
 }
 
-function resolveRequestIp(ctx) {
-  const forwarded = String(ctx.headers['x-forwarded-for'] || '').split(',')[0].trim()
-  const realIp = String(ctx.headers['x-real-ip'] || '').trim()
-  const raw = forwarded || realIp || ctx.ip || '127.0.0.1'
-  return raw.replace(/^::ffff:/, '')
+function resolveCallbackUrl() {
+  return lakala.readEnvTrim('LAKALA_CALLBACK_URL') || ''
 }
 
 function buildPaymentRecordBase({
@@ -57,7 +54,7 @@ function buildPaymentRecordBase({
     period: Number.isFinite(Number(period)) ? Number(period) : undefined,
     amountYuan: Number(Number(amountYuan).toFixed(2)),
     amountCents: lakala.yuanToCents(amountYuan),
-    payChannel: String(payChannel || 'alipay'),
+    payChannel: String(payChannel || 'wechat'),
     accountType: lakala.mapPayChannelToAccountType(payChannel),
     status: 'pending',
     tradeState: '',
@@ -73,7 +70,7 @@ async function createMallPayment(ctx, payload, mallUser) {
   const db = deps.readDb()
   deps.reconcileInstallmentCompletionAcrossDb(db)
   const bizType = String(payload.bizType || '').trim()
-  const payChannel = String(payload.payChannel || 'alipay').trim()
+  const payChannel = String(payload.payChannel || 'wechat').trim()
   const orderId = String(payload.orderId || '').trim()
   const period = Number(payload.period)
   const repayAll = payload.all === true || payload.all === 'true' || payload.all === 1
@@ -170,17 +167,17 @@ async function createMallPayment(ctx, payload, mallUser) {
     notifyUrl = resolveNotifyUrl()
   }
 
-  const preorder = await lakala.createPreorder({
-    outTradeNo: record.outTradeNo,
+  const preorder = await lakala.createCounterOrder({
+    outOrderNo: record.outTradeNo,
     totalAmountYuan: amountYuan,
-    accountType: record.accountType,
-    subject: record.subject,
+    orderInfo: record.subject,
     notifyUrl,
-    requestIp: resolveRequestIp(ctx),
+    callbackUrl: resolveCallbackUrl(),
+    payChannel: record.payChannel,
   })
   const presentation = lakala.extractPayPresentation(preorder)
-  record.tradeNo = presentation.tradeNo
-  record.payCode = presentation.payCode
+  record.tradeNo = presentation.payOrderNo || presentation.tradeNo
+  record.payCode = presentation.counterUrl || presentation.payCode
   record.payCodeImage = presentation.payCodeImage
 
   ensurePaymentStore(db)
@@ -196,6 +193,8 @@ async function createMallPayment(ctx, payload, mallUser) {
     accountType: record.accountType,
     payCode: record.payCode,
     payCodeImage: record.payCodeImage,
+    counterUrl: record.payCode,
+    payOrderNo: record.tradeNo,
     mock: lakala.isLakalaMockEnabled(),
     bizType: record.bizType,
     orderId: record.orderId,
@@ -263,10 +262,14 @@ async function syncPaymentStatus(outTradeNo, { mallUser } = {}) {
     }
   }
 
-  const queried = await lakala.queryTrade({ outTradeNo: record.outTradeNo, tradeNo: record.tradeNo })
-  const tradeState = String(queried.trade_state || queried.trade_status || '').trim()
+  const queried = await lakala.queryCounterOrder({
+    outOrderNo: record.outTradeNo,
+    payOrderNo: record.tradeNo,
+  })
+  const payState = lakala.parseCounterQueryPaid(queried)
+  const tradeState = payState.tradeState
   record.tradeState = tradeState
-  if (lakala.isTradeSuccessState(tradeState)) {
+  if (payState.paid) {
     const result = await fulfillPaymentRecord(db, record, { tradeState })
     return {
       status: 'success',
@@ -286,10 +289,17 @@ async function syncPaymentStatus(outTradeNo, { mallUser } = {}) {
 }
 
 async function handleNotifyPayload(notifyBody) {
-  const outTradeNo = String(notifyBody.out_trade_no || '').trim()
-  const tradeStatus = String(notifyBody.trade_status || notifyBody.trade_state || '').trim()
+  const raw = notifyBody && typeof notifyBody === 'object' ? notifyBody : {}
+  const nested = raw.req_data && typeof raw.req_data === 'object' ? raw.req_data : raw
+  const outTradeNo = String(
+    nested.out_order_no || nested.out_trade_no || raw.out_order_no || raw.out_trade_no || '',
+  ).trim()
+  const tradeStatus = String(
+    nested.order_status || nested.trade_status || nested.trade_state
+    || raw.order_status || raw.trade_status || raw.trade_state || '',
+  ).trim()
   if (!outTradeNo) {
-    throw new Error('通知缺少 out_trade_no')
+    throw new Error('通知缺少 out_order_no')
   }
   const db = deps.readDb()
   const record = findPayment(db, outTradeNo)
@@ -297,7 +307,10 @@ async function handleNotifyPayload(notifyBody) {
     console.warn('[lakala-notify] 未知支付单', outTradeNo)
     return { ok: true }
   }
-  if (lakala.isTradeSuccessState(tradeStatus)) {
+  if (nested.pay_order_no || raw.pay_order_no) {
+    record.tradeNo = String(nested.pay_order_no || raw.pay_order_no)
+  }
+  if (lakala.isOrderPaidStatus(tradeStatus) || lakala.isTradeSuccessState(tradeStatus)) {
     await fulfillPaymentRecord(db, record, { tradeState: tradeStatus, notifyRaw: notifyBody })
   }
   else {

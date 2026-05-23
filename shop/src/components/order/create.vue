@@ -446,7 +446,7 @@ async function submitOrder() {
     payAmountYuan.value = newOrder.totalAmount
     payPreorderPayload.value = {
       bizType: 'order_full',
-      payChannel: 'alipay',
+      payChannel: 'wechat',
       orderId: newOrder.id,
     }
     paySheetOpen.value = true
@@ -682,7 +682,7 @@ watch(
             在线支付（微信 / 支付宝）
           </p>
           <p class="mt-1 text-xs text-black/55 leading-relaxed">
-            提交订单后将跳转收银台扫码支付，支付成功后订单进入待发货。
+            提交订单后将打开拉卡拉收银台完成支付，支付成功后订单进入待发货。
           </p>
         </div>
         <div

@@ -239,7 +239,7 @@ function openOrderPay(item: MallOrder) {
   payOrderTitle.value = `支付订单 ${item.id}`
   payPreorderPayload.value = {
     bizType: 'order_full',
-    payChannel: item.payChannel === 'wechat' ? 'wechat' : 'alipay',
+    payChannel: 'wechat',
     orderId: item.id,
   }
   paySheetOpen.value = true

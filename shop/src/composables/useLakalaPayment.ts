@@ -10,7 +10,8 @@ export type LakalaPayBizType =
 
 export interface LakalaPreorderPayload {
   bizType: LakalaPayBizType
-  payChannel: MallPayChannel
+  /** 不传则由拉卡拉收银台展示全部已开通支付方式 */
+  payChannel?: MallPayChannel
   orderId?: string
   period?: number
   all?: boolean
@@ -19,10 +20,12 @@ export interface LakalaPreorderPayload {
 export interface LakalaPreorderResult {
   outTradeNo: string
   tradeNo?: string
+  payOrderNo?: string
   amountYuan: number
-  payChannel: MallPayChannel
-  accountType: string
+  payChannel?: MallPayChannel
+  accountType?: string
   payCode: string
+  counterUrl?: string
   payCodeImage?: string
   mock?: boolean
   bizType: LakalaPayBizType
@@ -54,11 +57,11 @@ function buildMallAuthHeader(phoneRaw: string): Record<string, string> | undefin
 }
 
 export function useLakalaPayment() {
-  const config = useState<{ enabled: boolean, mock: boolean } | null>('lakala-pay-config', () => null)
+  const config = useState<{ enabled: boolean, mock: boolean, mode?: 'counter' | 'scan' } | null>('lakala-pay-config', () => null)
 
   async function fetchPayConfig() {
     try {
-      const res = await $fetch<{ success: boolean, data: { enabled: boolean, mock: boolean } }>(
+      const res = await $fetch<{ success: boolean, data: { enabled: boolean, mock: boolean, mode?: 'counter' | 'scan' } }>(
         `${resolveMallApiBase()}/payment/lakala/config`,
       )
       config.value = res.data || { enabled: false, mock: false }
