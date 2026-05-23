@@ -229,8 +229,9 @@ function onTrackingLookupDialogClosed() {
   trackingLookupNo.value = ''
 }
 
+/** 仅商城专区直购单可在订单页支付；先享后付须在「账单」还款，审核中亦不可支付 */
 function canPayOrder(item: MallOrder) {
-  return item.status === 'reviewing' && !item.paid
+  return item.payType === 'full' && item.status === 'reviewing' && !item.paid
 }
 
 function openOrderPay(item: MallOrder) {

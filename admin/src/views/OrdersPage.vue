@@ -975,6 +975,22 @@ async function applyCardPackage(order: OrderItem, next: boolean) {
     }
     return
   }
+  if (next) {
+    try {
+      await ElMessageBox.confirm(
+        '是否已检查过客户的合同签名与本人一致？确认后将标记卡包为已发放，并同步订单为已完成。',
+        '确认发放卡包',
+        {
+          confirmButtonText: '已核对，确认发放',
+          cancelButtonText: '取消',
+          type: 'warning',
+        },
+      )
+    }
+    catch {
+      return
+    }
+  }
   cardPackageSavingId.value = order.id
   try {
     await updateOrderCardPackage(order.id, next)
