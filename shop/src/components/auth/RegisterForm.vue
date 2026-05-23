@@ -46,7 +46,7 @@ const form = ref<RegisterFormModel>({
   idCardHandheld: '',
 })
 
-const uploadTips = '请上传身份证正面、反面及手持身份证照片；将自动压缩后上传，仅用于实名核验'
+const uploadTips = '请上传身份证正面、反面及手持身份证照片；仅用于实名核验'
 
 if (!import.meta.env.SSR && typeof route.query.phone === 'string') {
   form.value.phone = route.query.phone

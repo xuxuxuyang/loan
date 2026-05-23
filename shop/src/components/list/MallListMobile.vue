@@ -22,6 +22,11 @@ const banner = computed(() => {
   }
 })
 
+/** 与首页列表一致：先享后付分类下卡片 CTA 为「先享后付」，其余为「购买」 */
+const productCtaLabel = computed(() =>
+  props.activeCategory === 'installment' ? '先享后付' : '购买',
+)
+
 const route = useRoute()
 const { smartNavigate } = useCustomRouting(route)
 
@@ -103,7 +108,7 @@ async function openProductDetail(item: TeaProduct) {
               class="buy-btn rounded-md px-2.5 py-1 text-xs text-white pointer-events-none"
               aria-hidden="true"
             >
-              购买
+              {{ productCtaLabel }}
             </span>
           </div>
         </div>

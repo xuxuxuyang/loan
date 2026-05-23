@@ -679,10 +679,10 @@ watch(
           class="rounded-xl border border-[var(--theme-color)] bg-[#eefcf8] px-3 py-3"
         >
           <p class="text-sm font-semibold text-black/82">
-            在线支付（微信 / 支付宝）
+            在线支付
           </p>
           <p class="mt-1 text-xs text-black/55 leading-relaxed">
-            提交订单后将打开拉卡拉收银台完成支付，支付成功后订单进入待发货。
+            提交订单后将打开收银台完成支付，支付成功后订单进入待发货。
           </p>
         </div>
         <div

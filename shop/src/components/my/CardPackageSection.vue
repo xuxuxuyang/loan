@@ -34,6 +34,8 @@ const {
 const account = computed(() => loginPhone.value || profile.value?.phone || '')
 const isValidAccount = computed(() => /^1\d{10}$/.test(account.value))
 const loading = ref(false)
+/** 避免首屏在请求开始前短暂渲染空列表，再切到「加载中」造成高度闪动 */
+const initialCardListFetchDone = ref(false)
 const dialogVisible = ref(false)
 const emergencyDialogVisible = ref(false)
 const emergencySubmitting = ref(false)
@@ -115,6 +117,7 @@ async function refreshList() {
   const phone = account.value
   if (!/^1\d{10}$/.test(phone)) {
     cardPackages.value = []
+    initialCardListFetchDone.value = true
     return
   }
   loading.value = true
@@ -123,6 +126,7 @@ async function refreshList() {
   }
   finally {
     loading.value = false
+    initialCardListFetchDone.value = true
   }
 }
 
@@ -442,25 +446,25 @@ const claimDialogAmountText = computed(() => {
     </h3>
 
     <div
-      v-if="loading"
-      class="py-6 text-center text-black/45"
+      v-if="loading || (isValidAccount && !initialCardListFetchDone)"
+      class="flex min-h-[5.5rem] items-center justify-center py-6 text-center text-black/45"
       :class="compact ? 'text-sm' : 'text-base'"
     >
       加载中...
     </div>
     <div
       v-else-if="!isValidAccount"
-      class="py-6 text-center text-black/45"
+      class="flex min-h-[5.5rem] items-center justify-center py-6 text-center text-black/45"
       :class="compact ? 'text-sm' : 'text-base'"
     >
       登录后查看卡包
     </div>
     <ul
       v-else-if="cardPackages.length === 0"
-      class="py-4 text-center text-black/45"
+      class="flex min-h-[5.5rem] list-none flex-col items-center justify-center py-6 text-center text-black/45"
       :class="compact ? 'text-sm' : 'text-base'"
     >
-      暂无卡包
+      <li>暂无卡包</li>
     </ul>
     <ul
       v-else
