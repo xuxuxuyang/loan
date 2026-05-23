@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { normalizeMallAccount } from '~/composables/useMallAuth'
-import { resolveMallCreditQuota } from '~/composables/mallCreditQuota'
 import { formatMallAddressLine, useMallMy } from '~/composables/useMallMy'
 import { mallOrderBelongsToLoggedIn, normalizeReceiverPhoneDigits, effectiveMallOrderStatus } from '~/composables/useMallOrders'
 import type { TeaProduct } from '~/composables/useTeaProducts'
@@ -31,8 +30,8 @@ const currentOrderNo = ref('')
 const addressesLoaded = ref(false)
 const addressSectionRef = ref<HTMLElement | null>(null)
 const addressHighlight = ref(false)
-/** 下单系统审核：Teleport 全屏提示（不依赖 Element Plus Loading 的 CSS，避免 H5 上不可见） */
-const orderSubmitLoadingVisible = ref(false)
+/** 购买处理中：Teleport 全屏提示 */
+const purchaseLoadingVisible = ref(false)
 /** 自定义底部弹层：替代 ElMessageBox，避免 H5 上样式错乱、与固定底栏重叠 */
 const addressPromptOpen = ref(false)
 const addressPromptKind = ref<'add' | 'pick'>('add')
@@ -123,17 +122,10 @@ const myMallOrders = computed(() => {
   return orders.value.filter(o => mallOrderBelongsToLoggedIn(o.receiverPhone, account))
 })
 
-/** 老客户：曾有先享后付订单且卡包已发放（与订单列表「有效状态」一致） */
-const isReturningCustomer = computed(() =>
-  myMallOrders.value.some(o => o.payType === 'installment' && Boolean(o.cardPackageIssued)),
-)
-
-/** 存在任一未「已完成」的订单时，不允许再下单（卡包已发视同已完成） */
+/** 存在任一未「已完成」的订单时，不允许再下单 */
 const hasBlockingMallOrder = computed(() =>
   myMallOrders.value.some(o => effectiveMallOrderStatus(o) !== 'enjoying'),
 )
-
-const creditQuota = computed(() => resolveMallCreditQuota(profile.value))
 
 const orderBlacklisted = computed(() => Boolean(profile.value?.orderBlacklisted))
 
@@ -182,8 +174,8 @@ const addressPromptTitle = computed(() =>
 )
 const addressPromptBody = computed(() =>
   addressPromptKind.value === 'add'
-    ? '下单前需要填写收货地址。前往地址页添加并保存后，将自动返回本页继续提交。'
-    : '您已保存过收货地址，但本页尚未选中。前往地址列表选中一条并保存后即可返回提交。',
+    ? '购买前需要填写收货地址。前往地址页添加并保存后，将自动返回本页继续购买。'
+    : '您已保存过收货地址，但本页尚未选中。前往地址列表选中一条并保存后即可返回购买。',
 )
 const addressPromptPrimaryLabel = computed(() =>
   addressPromptKind.value === 'add' ? '去添加地址' : '去选择地址',
@@ -198,7 +190,7 @@ async function onAddressPromptPrimary() {
   await openAddressPicker()
 }
 
-/** 未选地址时也允许点击提交，由 submitOrder 内打开本页弹层引导（避免 Element 弹窗在移动端错位） */
+/** 未选地址时也允许点击购买，由 buyNow 内打开本页弹层引导（避免 Element 弹窗在移动端错位） */
 function promptAddressBeforeSubmit() {
   scrollToAddressSection()
   pulseAddressSection()
@@ -213,33 +205,19 @@ const itemAmount = computed(() => {
   return selectedProduct.value.price * ORDER_QUANTITY
 })
 
-/** 先享后付应还总额：与订单商品小计、后端入账 `totalAmount` 一致（不再乘以系数） */
-const installmentRepayTotal = computed(() => Number(itemAmount.value.toFixed(2)))
+/** 应付总额：与订单商品小计、后端入账 totalAmount 一致 */
+const payableTotal = computed(() => Number(itemAmount.value.toFixed(2)))
 
-/** 授信口径：商品金额（单件）与授信额度比较 */
-const exceedsCreditLimit = computed(() => itemAmount.value > creditQuota.value)
-
-const canSubmitOrder = computed(() =>
+const canBuyNow = computed(() =>
   Boolean(
     selectedProduct.value
     && addressesLoaded.value
     && !hasBlockingMallOrder.value
-    && !exceedsCreditLimit.value
     && !orderBlacklisted.value,
   ),
 )
 
-/** 按规则首期还款为下单后第 14 天；未下单前展示为自今日起第 14 天（预计） */
-const estimatedRepayDateYmd = computed(() => {
-  const d = new Date()
-  d.setDate(d.getDate() + 14)
-  const y = d.getFullYear()
-  const m = `${d.getMonth() + 1}`.padStart(2, '0')
-  const day = `${d.getDate()}`.padStart(2, '0')
-  return `${y}-${m}-${day}`
-})
-
-async function submitOrder() {
+async function buyNow() {
   if (submitting.value) {
     return
   }
@@ -267,106 +245,34 @@ async function submitOrder() {
   }
 
   if (hasBlockingMallOrder.value) {
-    notifyWarning('您尚有进行中的订单，请待订单状态为「已完成」后再下单')
+    notifyWarning('您尚有进行中的订单，请待订单状态为「已完成」后再购买')
     return
   }
 
   if (orderBlacklisted.value) {
-    notifyWarning('您的账号暂不可下单，如有疑问请联系客服')
-    return
-  }
-
-  if (exceedsCreditLimit.value) {
-    notifyWarning(
-      `当前商品总额（￥${itemAmount.value.toFixed(2)}）已超过您的授信额度（￥${creditQuota.value}），请更换商品后再试`,
-    )
+    notifyWarning('您的账号暂不可购买，如有疑问请联系客服')
     return
   }
 
   submitting.value = true
-  orderSubmitLoadingVisible.value = true
+  purchaseLoadingVisible.value = true
   await nextTick()
   let newOrder: Awaited<ReturnType<typeof createOrder>> | undefined
   try {
-    const apiBase = String(runtimeConfig.public.mallApiBase || '/api').replace(/\/$/, '')
-    const idNumber = String(profile.value?.idNumber || '').trim()
-    if (!idNumber) {
-      notifyWarning('先享后付下单需填写身份证号，请先在「我的」完善注册资料后再试')
-      return
-    }
-    if (isReturningCustomer.value) {
-      newOrder = await createOrder({
-        productId: selectedProduct.value.id,
-        name: selectedProduct.value.name,
-        spec: selectedProduct.value.subtitle,
-        totalAmount: installmentRepayTotal.value,
-        quantity: ORDER_QUANTITY,
-        /** 老客户复购：直过审核，后台进入已审核（待发货） */
-        status: 'shipping',
-        paid: false,
-        payType: 'installment',
-        payChannel: 'wechat',
-        installmentPeriods: 1,
-        receiverName: receiverName.value,
-        receiverPhone: receiverPhone.value,
-        receiverAddress: receiverAddressLine.value,
-        idNumber: profile.value?.idNumber,
-        idCardFront: profile.value?.idCardFront,
-        idCardBack: profile.value?.idCardBack,
-        riskBypassReason: 'returning_customer',
-      })
-    }
-    else {
-      type WaveCreateData = { waveId: string, stepKeys: string[] }
-      type StepData = { ok: boolean, step?: { error?: string, label?: string } }
-      const waveRes = await $fetch<{ success: boolean, msg?: string, data?: WaveCreateData }>(
-        `${apiBase}/mall/installment-risk/wave`,
-        {
-          method: 'POST',
-          body: {
-            userName: receiverName.value,
-            phoneNumber: receiverPhone.value,
-            idNumber,
-          },
-        },
-      )
-      if (!waveRes.success || !waveRes.data?.waveId || !Array.isArray(waveRes.data.stepKeys)) {
-        notifyError(typeof waveRes.msg === 'string' && waveRes.msg.trim() ? waveRes.msg : '创建风控会话失败')
-        return
-      }
-      const { waveId, stepKeys } = waveRes.data
-      for (const stepKey of stepKeys) {
-        const stepRes = await $fetch<{ success: boolean, msg?: string, data?: StepData }>(
-          `${apiBase}/mall/installment-risk/wave/${encodeURIComponent(waveId)}/step/${encodeURIComponent(stepKey)}`,
-          { method: 'POST' },
-        )
-        const ok = Boolean(stepRes.success && stepRes.data?.ok)
-        if (!ok) {
-          const errText = stepRes.data?.step?.error || (typeof stepRes.msg === 'string' ? stepRes.msg : '') || '系统审核不通过'
-          notifyError(`审核未通过（${stepRes.data?.step?.label || stepKey}）：${errText}`)
-          return
-        }
-      }
-      newOrder = await createOrder({
-        productId: selectedProduct.value.id,
-        name: selectedProduct.value.name,
-        spec: selectedProduct.value.subtitle,
-        totalAmount: installmentRepayTotal.value,
-        quantity: ORDER_QUANTITY,
-        status: 'reviewing',
-        paid: false,
-        payType: 'installment',
-        payChannel: 'wechat',
-        installmentPeriods: 1,
-        receiverName: receiverName.value,
-        receiverPhone: receiverPhone.value,
-        receiverAddress: receiverAddressLine.value,
-        idNumber: profile.value?.idNumber,
-        idCardFront: profile.value?.idCardFront,
-        idCardBack: profile.value?.idCardBack,
-        installmentRiskWaveId: waveId,
-      })
-    }
+    newOrder = await createOrder({
+      productId: selectedProduct.value.id,
+      name: selectedProduct.value.name,
+      spec: selectedProduct.value.subtitle,
+      totalAmount: payableTotal.value,
+      quantity: ORDER_QUANTITY,
+      status: 'shipping',
+      paid: true,
+      payType: 'full',
+      payChannel: 'wechat',
+      receiverName: receiverName.value,
+      receiverPhone: receiverPhone.value,
+      receiverAddress: receiverAddressLine.value,
+    })
     currentOrderNo.value = newOrder.id
   }
   catch (error: unknown) {
@@ -375,26 +281,17 @@ async function submitOrder() {
       const o = error as { data?: { msg?: string } }
       msg = typeof o.data?.msg === 'string' ? o.data.msg.trim() : ''
     }
-    notifyError(msg || '创建订单失败，请稍后重试')
+    notifyError(msg || '购买失败，请稍后重试')
     return
   }
   finally {
-    orderSubmitLoadingVisible.value = false
+    purchaseLoadingVisible.value = false
     submitting.value = false
   }
   if (!newOrder) {
     return
   }
-  if (newOrder.riskStatus === 'failed') {
-    notifyWarning(
-      newOrder.riskReason
-        ? `审核不通过：${newOrder.riskReason}`
-        : '审核不通过，请稍后在订单列表查看详情',
-    )
-  }
-  else {
-    notifySuccess(`系统审核通过，订单已提交，订单号 ${currentOrderNo.value}`)
-  }
+  notifySuccess(`购买成功，订单号 ${currentOrderNo.value}`)
   {
     let login = normalizeReceiverPhoneDigits(currentUserPhone.value)
     if (login.startsWith('86') && login.length === 13) {
@@ -407,7 +304,7 @@ async function submitOrder() {
   await smartNavigate({
     path: '/orders',
     query: {
-      status: 'reviewing',
+      status: 'shipping',
       productId: String(selectedProduct.value.id),
       fromOrderCreate: '1',
     },
@@ -427,7 +324,7 @@ async function bootstrapOrderPage() {
 if (!import.meta.env.SSR) {
   void bootstrapOrderPage()
   watch(
-    () => addressPromptOpen.value || orderSubmitLoadingVisible.value,
+    () => addressPromptOpen.value || purchaseLoadingVisible.value,
     (busy) => {
       document.body.style.overflow = busy ? 'hidden' : ''
     },
@@ -591,7 +488,7 @@ watch(
         </template>
         <template v-else>
           <p class="text-sm text-black/60 leading-relaxed">
-            您还没有收货地址。请点击右上角「添加收货地址」进入地址页添加，保存后将返回本页继续下单。
+            您还没有收货地址。请点击右上角「添加收货地址」进入地址页添加，保存后将返回本页继续购买。
           </p>
         </template>
       </div>
@@ -602,18 +499,11 @@ watch(
         </h2>
         <div class="rounded-xl border border-[var(--theme-color)] bg-[#eefcf8] px-3 py-3">
           <p class="text-sm font-semibold text-black/82">
-            先享后付支付
+            直接购买
           </p>
-          <div class="mt-2 space-y-1.5 text-sm text-black/72">
-            <p class="flex items-baseline justify-between gap-3">
-              <span class="text-black/55">还款金额</span>
-              <span class="text-lg font-semibold text-[#e35f82]">￥{{ installmentRepayTotal.toFixed(2) }}</span>
-            </p>
-            <p class="flex items-baseline justify-between gap-3">
-              <span class="text-black/55">还款日</span>
-              <span class="font-medium text-black/82 tabular-nums">{{ estimatedRepayDateYmd }}</span>
-            </p>
-          </div>
+          <p class="mt-1.5 text-sm text-black/60 leading-relaxed">
+            确认收货信息后即可完成支付，商家将尽快为您发货。
+          </p>
         </div>
       </div>
 
@@ -623,22 +513,14 @@ watch(
         </h2>
         <div class="space-y-1.5 text-sm text-black/68">
           <p class="flex items-center justify-between">
-            <span>授信额度（可下单商品总额上限）</span>
-            <span class="tabular-nums">￥{{ creditQuota }}</span>
-          </p>
-          <p class="flex items-center justify-between">
             <span>商品金额</span>
             <span>￥{{ itemAmount.toFixed(2) }}</span>
-          </p>
-          <p class="flex items-center justify-between text-black/80">
-            <span>还款金额</span>
-            <span class="font-medium text-[#e35f82]">￥{{ installmentRepayTotal.toFixed(2) }}</span>
           </p>
         </div>
         <div class="my-3 h-px bg-black/8" />
         <p class="flex items-center justify-between text-base font-semibold text-black/85">
           <span>应付金额</span>
-          <span class="text-[#e35f82]">￥{{ installmentRepayTotal.toFixed(2) }}</span>
+          <span class="text-[#e35f82]">￥{{ payableTotal.toFixed(2) }}</span>
         </p>
       </div>
 
@@ -648,20 +530,20 @@ watch(
             合计金额
           </p>
           <p class="text-xl font-semibold text-[#e35f82]">
-            ￥{{ installmentRepayTotal.toFixed(2) }}
+            ￥{{ payableTotal.toFixed(2) }}
           </p>
         </div>
         <p
           v-if="orderBlacklisted"
           class="mb-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2.5 text-sm text-red-900 leading-relaxed"
         >
-          您的账号暂不可下单
+          您的账号暂不可购买
         </p>
         <p
           v-else-if="hasBlockingMallOrder"
           class="mb-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2.5 text-sm text-amber-900 leading-relaxed"
         >
-          您已有进行中的订单，须待该订单在「我的订单」中显示为「已完成」后才可再次下单。
+          您已有进行中的订单，须待该订单在「我的订单」中显示为「已完成」后才可再次购买。
           <button
             type="button"
             class="ml-0.5 font-medium text-[var(--theme-color)] underline-offset-2 hover:underline"
@@ -670,22 +552,16 @@ watch(
             查看我的订单
           </button>
         </p>
-        <p
-          v-else-if="exceedsCreditLimit"
-          class="mb-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2.5 text-sm text-amber-900 leading-relaxed"
-        >
-          当前商品总额已超过授信额度（￥{{ creditQuota }}）。请选择低价商品后再试。
-        </p>
         <button
           type="button"
           class="w-full rounded-xl bg-[var(--theme-color)] px-5 py-3 text-sm font-semibold text-white disabled:opacity-60"
-          :disabled="submitting || !canSubmitOrder"
-          @click="submitOrder"
+          :disabled="submitting || !canBuyNow"
+          @click="buyNow"
         >
-          {{ submitting ? '系统审核与提交中…' : '提交订单' }}
+          {{ submitting ? '购买处理中…' : '立即购买' }}
         </button>
         <p class="mt-2 text-center text-xs text-black/45">
-          审核通过后可进入发货流程
+          支付成功后将进入发货流程
         </p>
       </div>
     </div>
@@ -694,7 +570,7 @@ watch(
   <Teleport to="body">
     <Transition name="order-review-loading">
       <div
-        v-if="orderSubmitLoadingVisible"
+        v-if="purchaseLoadingVisible"
         class="fixed inset-0 z-[8000] flex flex-col items-center justify-center bg-black/50 px-6"
         role="status"
         aria-live="polite"
@@ -703,7 +579,7 @@ watch(
         <div class="order-review-loading-card flex max-w-[min(100%,20rem)] flex-col items-center rounded-2xl bg-white px-8 py-7 shadow-xl">
           <span class="order-review-spinner mb-4 inline-block h-11 w-11 rounded-full border-[3px] border-[var(--theme-color)] border-t-transparent" />
           <p class="text-center text-base font-semibold text-black/88">
-            系统审核中
+            正在购买…
           </p>
         </div>
       </div>

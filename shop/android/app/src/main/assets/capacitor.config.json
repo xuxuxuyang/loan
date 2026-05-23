@@ -1,0 +1,8 @@
+{
+	"appId": "com.wenshuo.mall",
+	"appName": "文硕商城",
+	"webDir": "dist",
+	"server": {
+		"androidScheme": "http"
+	}
+}

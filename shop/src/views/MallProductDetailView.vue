@@ -1,10 +1,6 @@
 <script setup lang="ts">
 import AppTabbar from '~/components/App/AppTabbar.vue'
 import MallProductDetailGallery from '~/components/mall/MallProductDetailGallery.vue'
-import {
-  computeMallCreditOrderPrincipal,
-  resolveMallCreditQuota,
-} from '~/composables/mallCreditQuota'
 import type { TeaProduct } from '~/composables/useTeaProducts'
 import {
   ensureMallProductsLoaded,
@@ -13,12 +9,10 @@ import {
   useMallShowcaseProducts,
   useTeaProducts,
 } from '~/composables/useTeaProducts'
-import { notifyWarning } from '~/utils/epFeedback'
-
 const route = useRoute()
 const { smartNavigate } = useCustomRouting(route)
 const runtimeConfig = useRuntimeConfig()
-const { ensureRegistered, profile, syncFromStorage } = useMallAuth()
+const { ensureRegistered, syncFromStorage } = useMallAuth()
 
 const product = ref<TeaProduct | null>(null)
 const loadError = ref(false)
@@ -26,15 +20,6 @@ const loading = ref(true)
 
 const installmentProducts = useTeaProducts()
 const mallProducts = useMallShowcaseProducts()
-
-const creditQuota = computed(() => resolveMallCreditQuota(profile.value))
-
-const exceedsCredit = computed(() => {
-  if (!product.value) {
-    return false
-  }
-  return computeMallCreditOrderPrincipal(product.value.price, 1) > creditQuota.value
-})
 
 const galleryUrls = computed(() => {
   const p = product.value
@@ -66,8 +51,6 @@ const detailOnlyImages = computed(() => {
     .filter(Boolean)
     .filter(u => u !== main)
 })
-
-const isBnpl = computed(() => product.value?.salesMode === 'installment')
 
 async function resolveProduct(id: number) {
   loadError.value = false
@@ -120,12 +103,6 @@ async function goBuy() {
   if (!passed) {
     return
   }
-  if (exceedsCredit.value) {
-    notifyWarning(
-      `该商品金额（￥${computeMallCreditOrderPrincipal(product.value.price, 1).toFixed(2)}）已超过您的授信额度（￥${creditQuota.value}）`,
-    )
-    return
-  }
   await smartNavigate({
     path: '/order-create',
     query: { productId: String(product.value.id), productName: product.value.name },
@@ -137,7 +114,7 @@ function goBack() {
     window.history.back()
     return
   }
-  void smartNavigate({ path: isBnpl.value ? '/installment' : '/list' })
+  void smartNavigate({ path: '/list' })
 }
 
 if (!import.meta.env.SSR) {
@@ -209,12 +186,6 @@ if (!import.meta.env.SSR) {
           </p>
           <div class="mt-3 flex flex-wrap items-center gap-2">
             <span class="text-xl font-semibold tabular-nums text-[#e35f82]">￥{{ product.price }}</span>
-            <span
-              v-if="isBnpl"
-              class="shrink-0 rounded-md bg-gradient-to-r from-[#ff7b87] to-[#f06b81] px-2 py-0.5 text-[11px] font-medium text-white"
-            >
-              先享后付
-            </span>
           </div>
         </section>
 
@@ -277,7 +248,6 @@ if (!import.meta.env.SSR) {
         <button
           type="button"
           class="min-h-[44px] shrink-0 rounded-xl bg-[var(--theme-color)] px-6 text-sm font-semibold text-white shadow-sm active:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-          :disabled="exceedsCredit"
           @click="goBuy"
         >
           立即购买
