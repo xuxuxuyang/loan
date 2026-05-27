@@ -288,6 +288,42 @@ async function syncPaymentStatus(outTradeNo, { mallUser } = {}) {
   }
 }
 
+/** 同步当前用户近期 pending 支付单（覆盖 session 丢失、收银台内换支付方式等场景） */
+async function syncAllPendingPayments(mallUser, { maxAgeMs = 24 * 60 * 60 * 1000, limit = 5 } = {}) {
+  const db = deps.readDb()
+  ensurePaymentStore(db)
+  const userId = String(mallUser?.id || '')
+  if (!userId) {
+    return { synced: 0, billing: undefined }
+  }
+  const cutoff = Date.now() - maxAgeMs
+  const pending = db.lakalaPayments.filter((item) => {
+    if (String(item.mallUserId) !== userId || item.status === 'success') {
+      return false
+    }
+    const created = Date.parse(String(item.createdAt || ''))
+    return Number.isFinite(created) && created >= cutoff
+  }).slice(0, limit)
+
+  let synced = 0
+  let billing
+  for (const item of pending) {
+    try {
+      const result = await syncPaymentStatus(item.outTradeNo, { mallUser })
+      if (result.status === 'success') {
+        synced += 1
+        if (result.billing) {
+          billing = result.billing
+        }
+      }
+    }
+    catch (err) {
+      console.warn('[lakala] sync pending failed', item.outTradeNo, err.message)
+    }
+  }
+  return { synced, billing }
+}
+
 async function handleNotifyPayload(notifyBody) {
   const raw = notifyBody && typeof notifyBody === 'object' ? notifyBody : {}
   const nested = raw.req_data && typeof raw.req_data === 'object' ? raw.req_data : raw
@@ -342,6 +378,7 @@ module.exports = {
   initLakalaPayment,
   createMallPayment,
   syncPaymentStatus,
+  syncAllPendingPayments,
   handleNotifyPayload,
   mockCompletePayment,
   findPayment,

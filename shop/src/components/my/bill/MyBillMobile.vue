@@ -2,6 +2,7 @@
 import type { MallBillItem, MallBillNegotiationEntry } from '~/composables/useMallMy'
 import { MALL_BILL_CARD_PACKAGE_REPAY_MSG, mallBillRepayAllowed } from '~/composables/useMallMy'
 import type { LakalaPreorderPayload } from '~/composables/useLakalaPayment'
+import { useLakalaPayment } from '~/composables/useLakalaPayment'
 import LakalaPaySheet from '~/components/payment/LakalaPaySheet.vue'
 import { h } from 'vue'
 import { confirmDialog, notifyError, notifySuccess, notifyWarning } from '~/utils/epFeedback'
@@ -14,6 +15,7 @@ const {
   fetchBills,
   fetchSummary,
 } = useMallMy()
+const { resumePendingPay } = useLakalaPayment()
 const currentUserAccount = computed(() => loginPhone.value || profile.value?.phone || '')
 
 const repayingAll = ref(false)
@@ -230,6 +232,19 @@ async function repayAllPending() {
 async function onBillPaySuccess() {
   const phone = currentUserAccount.value
   if (phone) {
+    await Promise.all([fetchBills(phone), fetchSummary(phone)])
+  }
+}
+
+/** 从拉卡拉收银台返回后查单落库（本地开发无异步通知时依赖此逻辑） */
+async function syncPendingLakalaPay() {
+  const phone = currentUserAccount.value
+  if (!phone) {
+    return
+  }
+  const status = await resumePendingPay(phone)
+  if (status?.status === 'success') {
+    notifySuccess('支付成功')
     await Promise.all([fetchBills(phone), fetchSummary(phone)])
   }
 }
@@ -480,6 +495,7 @@ let billVisibilityRefreshTimer: ReturnType<typeof setTimeout> | undefined
 if (!import.meta.env.SSR) {
   onMounted(() => {
     void syncFromStorage()
+    void syncPendingLakalaPay()
     const onVisibility = () => {
       if (document.visibilityState !== 'visible') {
         return
@@ -493,7 +509,7 @@ if (!import.meta.env.SSR) {
       }
       billVisibilityRefreshTimer = setTimeout(() => {
         billVisibilityRefreshTimer = undefined
-        void Promise.all([fetchBills(account), fetchSummary(account)])
+        void syncPendingLakalaPay().then(() => Promise.all([fetchBills(account), fetchSummary(account)]))
       }, 400)
     }
     document.addEventListener('visibilitychange', onVisibility)

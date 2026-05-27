@@ -1,5 +1,10 @@
 <script setup lang="ts">
-import type { LakalaPayBizType, LakalaPreorderPayload, LakalaPreorderResult } from '~/composables/useLakalaPayment'
+import {
+  LAKALA_PENDING_PAY_KEY,
+  type LakalaPayBizType,
+  type LakalaPreorderPayload,
+  type LakalaPreorderResult,
+} from '~/composables/useLakalaPayment'
 import type { MallBillingRefreshPayload } from '~/composables/useMallMy'
 import { notifyError, notifySuccess, notifyWarning } from '~/utils/epFeedback'
 
@@ -56,7 +61,7 @@ function rememberPendingPay(outTradeNo: string) {
     return
   }
   try {
-    sessionStorage.setItem('lakala_pending_pay', JSON.stringify({
+    sessionStorage.setItem(LAKALA_PENDING_PAY_KEY, JSON.stringify({
       outTradeNo,
       phone: props.phone,
       at: Date.now(),
@@ -184,7 +189,7 @@ function onPaySuccess(billing?: MallBillingRefreshPayload) {
   paying.value = false
   visible.value = false
   try {
-    sessionStorage.removeItem('lakala_pending_pay')
+    sessionStorage.removeItem(LAKALA_PENDING_PAY_KEY)
   }
   catch {
     /* ignore */

@@ -40,6 +40,57 @@ export interface LakalaPayStatusResult {
   billing?: MallBillingRefreshPayload
 }
 
+export const LAKALA_PENDING_PAY_KEY = 'lakala_pending_pay'
+
+interface LakalaPendingPaySession {
+  outTradeNo: string
+  phone: string
+  at: number
+}
+
+function normalizePayPhone(raw: string) {
+  let u = normalizeReceiverPhoneDigits(raw)
+  if (u.startsWith('86') && u.length === 13) {
+    u = u.slice(2)
+  }
+  return u
+}
+
+function readPendingPaySession(): LakalaPendingPaySession | null {
+  if (typeof sessionStorage === 'undefined') {
+    return null
+  }
+  try {
+    const raw = sessionStorage.getItem(LAKALA_PENDING_PAY_KEY)
+    if (!raw) {
+      return null
+    }
+    const parsed = JSON.parse(raw) as LakalaPendingPaySession
+    const outTradeNo = String(parsed?.outTradeNo || '').trim()
+    const phone = String(parsed?.phone || '').trim()
+    const at = Number(parsed?.at)
+    if (!outTradeNo || !phone || !Number.isFinite(at)) {
+      return null
+    }
+    return { outTradeNo, phone, at }
+  }
+  catch {
+    return null
+  }
+}
+
+function clearPendingPaySession() {
+  if (typeof sessionStorage === 'undefined') {
+    return
+  }
+  try {
+    sessionStorage.removeItem(LAKALA_PENDING_PAY_KEY)
+  }
+  catch {
+    /* ignore */
+  }
+}
+
 function resolveMallApiBase() {
   const runtimeConfig = useRuntimeConfig()
   return String(runtimeConfig.public.mallApiBase || '/api').replace(/\/$/, '')
@@ -126,6 +177,64 @@ export function useLakalaPayment() {
     return res.data
   }
 
+  async function syncAllPendingPayments(phone: string) {
+    const headers = buildMallAuthHeader(phone)
+    if (!headers) {
+      return { synced: 0, billing: undefined as MallBillingRefreshPayload | undefined }
+    }
+    const res = await $fetch<{ success: boolean, data: { synced: number, billing?: MallBillingRefreshPayload }, msg?: string }>(
+      `${resolveMallApiBase()}/payment/lakala/sync-pending`,
+      { method: 'POST', headers },
+    ).catch(() => null)
+    if (!res?.success || !res.data) {
+      return { synced: 0, billing: undefined }
+    }
+    return res.data
+  }
+
+  /**
+   * 从拉卡拉收银台返回后：先查 session 单号，再扫服务端 pending 单（覆盖换支付方式、session 丢失等）。
+   */
+  async function resumePendingPay(
+    phone: string,
+    { maxAttempts = 8, intervalMs = 2000 } = {},
+  ): Promise<LakalaPayStatusResult | null> {
+    const pending = readPendingPaySession()
+    if (pending && normalizePayPhone(pending.phone) === normalizePayPhone(phone)) {
+      if (Date.now() - pending.at > 2 * 60 * 60 * 1000) {
+        clearPendingPaySession()
+      }
+      else {
+        for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+          try {
+            const status = await queryPayStatus(phone, pending.outTradeNo)
+            if (status.status === 'success') {
+              clearPendingPaySession()
+              return status
+            }
+          }
+          catch {
+            /* 查单失败则稍后重试 */
+          }
+          if (attempt < maxAttempts - 1) {
+            await new Promise(r => setTimeout(r, intervalMs))
+          }
+        }
+      }
+    }
+
+    const batch = await syncAllPendingPayments(phone)
+    if (batch.synced > 0) {
+      clearPendingPaySession()
+      return {
+        status: 'success',
+        outTradeNo: pending?.outTradeNo || '',
+        billing: batch.billing,
+      }
+    }
+    return null
+  }
+
   /** 轮询直至成功或超时 */
   async function pollUntilPaid(
     phone: string,
@@ -152,5 +261,8 @@ export function useLakalaPayment() {
     queryPayStatus,
     mockCompletePay,
     pollUntilPaid,
+    resumePendingPay,
+    syncAllPendingPayments,
+    clearPendingPaySession,
   }
 }

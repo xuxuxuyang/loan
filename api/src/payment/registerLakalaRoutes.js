@@ -31,6 +31,23 @@ function registerLakalaRoutes(router, ctxApi) {
     }
   })
 
+  router.post('/payment/lakala/sync-pending', async (ctx) => {
+    try {
+      const db = readDb()
+      const mallUser = resolvePlacingMallUserFromBearer(ctx, db)
+      if (!mallUser) {
+        fail(ctx, '请先登录商城账号', 401)
+        return
+      }
+      const data = await lakalaPayment.syncAllPendingPayments(mallUser)
+      ctx.body = success(data)
+    }
+    catch (err) {
+      const code = err.statusCode || 400
+      fail(ctx, err.message || '同步支付状态失败', code)
+    }
+  })
+
   router.get('/payment/lakala/status/:outTradeNo', async (ctx) => {
     try {
       const db = readDb()
