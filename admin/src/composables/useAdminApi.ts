@@ -1,4 +1,31 @@
-import { getAdminSession } from './useAdminAuth'
+import { getAdminSession, setAdminSession } from './useAdminAuth'
+
+const MALL_API_BASE = `${(import.meta.env.VITE_MALL_API_BASE || 'http://localhost:3110/api').replace(/\/$/, '')}`
+
+/** 旧会话无 name 时，从 /admin/profile 补全顶栏展示姓名 */
+export async function syncAdminSessionDisplayName(): Promise<boolean> {
+  const current = getAdminSession()
+  if (!current || String(current.name || '').trim()) {
+    return false
+  }
+  try {
+    const response = await fetch(`${MALL_API_BASE}/admin/profile`, {
+      headers: withAdminAuthHeaders(),
+    })
+    const result = await response.json() as {
+      data?: { name?: string }
+    }
+    const name = String(result?.data?.name || '').trim()
+    if (!response.ok || !name) {
+      return false
+    }
+    setAdminSession({ ...current, name })
+    return true
+  }
+  catch {
+    return false
+  }
+}
 
 /**
  * 请求头工作区约定（与 api mongo 分库一致）：

@@ -150,7 +150,6 @@ declare module 'vue' {
   interface ComponentCustomProperties {
     readonly $fetch: UnwrapRef<typeof import('@/spa-shim')['$fetch']>
     readonly EffectScope: UnwrapRef<typeof import('vue')['EffectScope']>
-    readonly ElMessage: UnwrapRef<typeof import('element-plus/es')['ElMessage']>
     readonly LAKALA_PENDING_PAY_KEY: UnwrapRef<typeof import('./composables/useLakalaPayment')['LAKALA_PENDING_PAY_KEY']>
     readonly MALL_BILL_CARD_PACKAGE_REPAY_MSG: UnwrapRef<typeof import('./composables/useMallMy')['MALL_BILL_CARD_PACKAGE_REPAY_MSG']>
     readonly MALL_DEFAULT_CREDIT_QUOTA: UnwrapRef<typeof import('./composables/mallCreditQuota')['MALL_DEFAULT_CREDIT_QUOTA']>

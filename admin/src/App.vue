@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { Component } from 'vue'
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import zhCn from 'element-plus/es/locale/lang/zh-cn'
 import {
   Avatar,
@@ -36,6 +36,7 @@ import {
   removeAdminVisitedTag,
   syncAdminVisitedTag,
 } from './composables/useAdminVisitedTags'
+import { syncAdminSessionDisplayName } from './composables/useAdminApi'
 import { adminHomeRoute } from './router'
 
 type Role = NonNullable<AdminSession['role']>
@@ -256,6 +257,17 @@ watch(isLoginPage, (login) => {
   }
 })
 
+onMounted(() => {
+  if (isLoginPage.value || !session.value || String(session.value.name || '').trim()) {
+    return
+  }
+  void syncAdminSessionDisplayName().then((updated) => {
+    if (updated) {
+      session.value = getAdminSession()
+    }
+  })
+})
+
 const csSidebarBadgeEnabled = computed(() => {
   if (isLoginPage.value) {
     return false
@@ -413,7 +425,7 @@ useAdminOrderReviewBadge(ordersSidebarBadgeEnabled)
               <template v-if="isPlatformManagingTenant">数据总览（{{ roleText(session.role) }}）</template>
               <template v-else>{{ roleText(session.role) }}</template>
             </span>
-            <span class="admin-user">{{ session.username }}</span>
+            <span class="admin-user">{{ session.name?.trim() || session.username }}</span>
             <el-popconfirm
               width="240"
               title="确定退出登录吗？"

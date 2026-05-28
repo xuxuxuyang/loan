@@ -9,7 +9,9 @@
     "preview": "vite preview",
     "build:app": "npm run build && npx cap sync android",
     "open:android": "npx cap open android",
-    "icons:android": "npx capacitor-assets generate --android --assetPath assets --iconBackgroundColor \"#4a1515\" --iconBackgroundColorDark \"#4a1515\""
+    "icons:android": "npx capacitor-assets generate --android --assetPath assets --iconBackgroundColor \"#4a1515\" --iconBackgroundColorDark \"#4a1515\"",
+    "build:apk": "npm run build:app && bash scripts/build-android-release.sh",
+    "init:android-keystore": "bash scripts/init-android-keystore.sh"
   },
   "dependencies": {
     "@capacitor/android": "^7.4.2",

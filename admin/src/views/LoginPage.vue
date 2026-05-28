@@ -69,6 +69,7 @@ async function handleLogin(payload: { username: string, password: string }) {
       msg?: string
       data?: {
         username: string
+        name?: string
         token: string
         adminRole: AdminRole
         roleLabel?: string
@@ -91,8 +92,11 @@ async function handleLogin(payload: { username: string, password: string }) {
     const role = (result.data.adminRole || 'super_admin') as AdminRole
     const roleName = String(result.data.roleLabel || '').trim() || adminRoleDisplayLabel(role)
 
+    const displayName = String(result.data.name || '').trim()
+
     setAdminSession({
       username: result.data.username || payload.username,
+      ...(displayName ? { name: displayName } : {}),
       token: result.data.token,
       role,
       loginAt: new Date().toISOString(),

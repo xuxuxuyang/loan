@@ -3096,6 +3096,7 @@ async function handleAdminLogin(ctx) {
 
   ctx.body = success({
     username,
+    name: String(account.name || '').trim(),
     token: `mock-token-${account.phone}`,
     adminRole: account.role,
     roleLabel: getRoleLabel(account.role),
@@ -3113,6 +3114,20 @@ router.post('/admin/login', async (ctx) => {
 // 兼容部分前端将后台登录请求到 /api/login 的场景。
 router.post('/login', async (ctx) => {
   await handleAdminLogin(ctx)
+})
+
+router.get('/admin/profile', async (ctx) => {
+  const account = await resolveAdminAccount(ctx)
+  if (!account || account.status !== 'active') {
+    fail(ctx, '未登录或账号无效', 401)
+    return
+  }
+  ctx.body = success({
+    username: account.username,
+    name: String(account.name || '').trim() || getRoleLabel(account.role),
+    role: account.role,
+    roleLabel: getRoleLabel(account.role),
+  })
 })
 
 function toAdminAccountView(account) {

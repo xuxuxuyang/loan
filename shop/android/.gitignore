@@ -108,3 +108,6 @@ build-tools/
 platform-tools/
 licenses/
 .knownPackages
+
+keystore.properties
+keystore/

@@ -61,6 +61,8 @@ function inferScopeTypeFromLegacySession(parsed: Partial<AdminSession>, role: Ad
 
 export interface AdminSession {
   username: string
+  /** 账号姓名（顶栏展示用，无则回退 username） */
+  name?: string
   role: AdminRole
   token: string
   loginAt: string
@@ -105,9 +107,11 @@ function safeParseSession(value: string | null): AdminSession | null {
     }
     if (r !== 'super_admin' && r !== 'boss' && r !== 'reviewer' && r !== 'collector') return null
     const role = r as AdminRole
+    const name = String(parsed.name || '').trim()
     return {
       token: String(parsed.token),
       username: String(parsed.username),
+      ...(name ? { name } : {}),
       role,
       loginAt: String(parsed.loginAt),
       scopeType: inferScopeTypeFromLegacySession(parsed, role),
