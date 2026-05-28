@@ -84,6 +84,20 @@ function isMongoMutationPersistFlushSkipped() {
   return raw === 'true' || raw === '1' || raw === 'yes'
 }
 
+/**
+ * Mongo 快照 refresh 策略（api/src/store.js refreshScopeCacheFromMongo）：
+ * - version（默认）：仅 app_meta.updatedAt 变化时全量读（语义等价，显著降 Mongo 读）
+ * - every_request：每个 /api 请求全量读 Mongo（紧急回滚）
+ * - single_instance：单 Node 进程内跳过跨请求 refresh（仅单实例部署时使用）
+ */
+function getMongoRefreshMode() {
+  const raw = String(process.env.MONGO_REFRESH_MODE || 'version').trim().toLowerCase()
+  if (raw === 'every_request' || raw === 'single_instance') {
+    return raw
+  }
+  return 'version'
+}
+
 module.exports = {
   getMongoConfig,
   isMongoConfigured,
@@ -92,4 +106,5 @@ module.exports = {
   isJsonFallbackAllowed,
   isMongoAwaitPersistEnabled,
   isMongoMutationPersistFlushSkipped,
+  getMongoRefreshMode,
 }

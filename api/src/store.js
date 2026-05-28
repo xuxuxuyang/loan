@@ -37,6 +37,8 @@ let mongoBacked = false
  */
 let mongoMemoryDb = null
 let mongoMemoryDbByTenant = new Map()
+/** version 模式：scopeKey → app_meta.updatedAt 毫秒时间戳，用于跳过无变更的全量 hydrate */
+const mongoScopeMetaUpdatedAtByKey = new Map()
 
 /** 单次 HTTP 请求内已对某 scopeKey 执行过 refresh 时跳过，避免重复全库拉取 */
 const mongoScopeRefreshDedup = new AsyncLocalStorage()
@@ -89,6 +91,33 @@ function getScopeState() {
 
 function hasScopeCache(workspaceType, tenantId) {
   return mongoMemoryDbByTenant.has(buildScopeKey(workspaceType, tenantId))
+}
+
+async function readAppMetaUpdatedAtMs(dbm) {
+  if (!dbm) {
+    return null
+  }
+  const metaDoc = await dbm.collection(mongo.APP_META).findOne(
+    { _id: MAIN_STATE_ID },
+    { projection: { updatedAt: 1 } },
+  )
+  if (!metaDoc || metaDoc.updatedAt == null) {
+    return null
+  }
+  const t = metaDoc.updatedAt instanceof Date
+    ? metaDoc.updatedAt.getTime()
+    : new Date(metaDoc.updatedAt).getTime()
+  return Number.isFinite(t) ? t : null
+}
+
+async function syncScopeMetaUpdatedAtCache(cacheKey, dbm) {
+  const at = await readAppMetaUpdatedAtMs(dbm)
+  if (at != null) {
+    mongoScopeMetaUpdatedAtByKey.set(cacheKey, at)
+  }
+  else {
+    mongoScopeMetaUpdatedAtByKey.delete(cacheKey)
+  }
 }
 
 function ensureDbFile() {
@@ -517,6 +546,7 @@ async function hydrateTenantDbFromMongo(workspaceType, tenantId) {
       if (scoped.key === 'tenant:default') {
         mongoMemoryDb = nextDb
       }
+      await syncScopeMetaUpdatedAtCache(scoped.key, dbm)
       return true
     })
   }
@@ -708,7 +738,9 @@ function evictTenantMemoryCache(rawTenantId) {
   if (!t || t === DEFAULT_TENANT_ID) {
     return
   }
-  mongoMemoryDbByTenant.delete(`tenant:${t}`)
+  const key = `tenant:${t}`
+  mongoMemoryDbByTenant.delete(key)
+  mongoScopeMetaUpdatedAtByKey.delete(key)
 }
 
 /**
@@ -728,6 +760,31 @@ async function refreshScopeCacheFromMongo(workspaceType, rawTenantIdFromRequest)
   if (dedup && dedup.has(cacheKey)) {
     return
   }
+
+  const refreshMode = mongoConfig.getMongoRefreshMode()
+  const hasMemory = mongoMemoryDbByTenant.has(cacheKey)
+  if (refreshMode !== 'every_request' && hasMemory) {
+    if (refreshMode === 'single_instance') {
+      if (dedup) {
+        dedup.add(cacheKey)
+      }
+      return
+    }
+    if (refreshMode === 'version') {
+      const dbm = mongo.getMongoDb()
+      if (dbm) {
+        const cachedAt = mongoScopeMetaUpdatedAtByKey.get(cacheKey)
+        const remoteAt = await readAppMetaUpdatedAtMs(dbm)
+        if (cachedAt != null && remoteAt != null && cachedAt === remoteAt) {
+          if (dedup) {
+            dedup.add(cacheKey)
+          }
+          return
+        }
+      }
+    }
+  }
+
   mongoMemoryDbByTenant.delete(cacheKey)
   if (ws === 'core') {
     await hydrateTenantDbFromMongo('core', DEFAULT_TENANT_ID)
@@ -737,6 +794,10 @@ async function refreshScopeCacheFromMongo(workspaceType, rawTenantIdFromRequest)
   }
   else {
     await hydrateTenantDbFromMongo('tenant', hydrateTenantId)
+  }
+  const dbm = mongo.getMongoDb()
+  if (dbm) {
+    await syncScopeMetaUpdatedAtCache(cacheKey, dbm)
   }
   if (dedup) {
     dedup.add(cacheKey)

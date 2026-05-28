@@ -6245,6 +6245,50 @@ router.delete('/users/:id', async (ctx) => {
   ctx.body = success({ id, phone: target.phone })
 })
 
+/** 与 admin 侧栏角标、GET /orders?adminStatus= 展示口径一致 */
+function resolveAdminOrderDisplayStatus(item) {
+  ensureOrderRiskState(item)
+  if (item.status === 'reviewing' && item.payType === 'installment') {
+    return item.riskStatus === 'failed' ? '风控未通过' : '待审核'
+  }
+  if (item.status === 'reviewing' && !item.paid) {
+    return '待付款'
+  }
+  if (item.status === 'reviewing' || item.status === 'shipping') {
+    return '待发货'
+  }
+  if (item.status === 'receiving') {
+    ensureOrderShipment(item)
+    return '待收货'
+  }
+  return '已完成'
+}
+
+/** admin 侧栏：未审核 / 已审核列表角标（与 admin computeAdminOrderSidebarCounts 一致） */
+function computeAdminOrderSidebarCountsFromDb(db) {
+  let pendingReview = 0
+  let reviewedOrdersList = 0
+  for (const item of db.orders || []) {
+    ensureOrderInstallmentPlan(item)
+    ensureOrderCardPackage(item)
+    ensureOrderShipment(item)
+    const adminStatus = resolveAdminOrderDisplayStatus(item)
+    if (adminStatus === '待审核' || adminStatus === '风控未通过') {
+      pendingReview += 1
+    }
+    if (adminStatus !== '待审核' && adminStatus !== '风控未通过' && !item.cardPackageIssued) {
+      reviewedOrdersList += 1
+    }
+  }
+  return { pendingReview, reviewedOrdersList }
+}
+
+router.get('/admin/orders/sidebar-counts', async (ctx) => {
+  const db = readDb()
+  reconcileInstallmentCompletionAcrossDb(db)
+  ctx.body = success(computeAdminOrderSidebarCountsFromDb(db))
+})
+
 router.get('/orders', async (ctx) => {
   const db = readDb()
   reconcileInstallmentCompletionAcrossDb(db)
@@ -6255,24 +6299,6 @@ router.get('/orders', async (ctx) => {
     payType = '',
     date = '',
   } = ctx.query
-
-  const getAdminStatus = (item) => {
-    ensureOrderRiskState(item)
-    if (item.status === 'reviewing' && item.payType === 'installment') {
-      return item.riskStatus === 'failed' ? '风控未通过' : '待审核'
-    }
-    if (item.status === 'reviewing' && !item.paid) {
-      return '待付款'
-    }
-    if (item.status === 'reviewing' || item.status === 'shipping') {
-      return '待发货'
-    }
-    if (item.status === 'receiving') {
-      ensureOrderShipment(item)
-      return '待收货'
-    }
-    return '已完成'
-  }
 
   const list = db.orders.filter((item) => {
     ensureOrderInstallmentPlan(item)
@@ -6297,7 +6323,7 @@ router.get('/orders', async (ctx) => {
         return bn.includes(keyword) || bp.includes(keyword)
       })()
     const byStatus = !status || item.status === status
-    const byAdminStatus = !adminStatus || getAdminStatus(item) === adminStatus
+    const byAdminStatus = !adminStatus || resolveAdminOrderDisplayStatus(item) === adminStatus
     const byPayType = !payType || item.payType === payType
     const byDate = !date || formatDateTime(item.createdAt).startsWith(String(date))
     return byKeyword && byStatus && byAdminStatus && byPayType && byDate
@@ -7793,6 +7819,16 @@ app.use(riskControlRouter.allowedMethods())
     mongoPersistenceActive = await hydrateFromMongoAfterConnect()
     if (mongoPersistenceActive) {
       console.log(`[mongo] 已启用 MongoDB 持久化（分集合: ${mongo.SHARDED_ENTITY_KEYS.join(', ')}；元数据: ${mongo.APP_META}）`)
+      const refreshMode = mongoConfig.getMongoRefreshMode()
+      if (refreshMode === 'every_request') {
+        console.log('[mongo] MONGO_REFRESH_MODE=every_request：每个 /api 请求全量读 Mongo（默认，可随时回滚）')
+      }
+      else if (refreshMode === 'version') {
+        console.log('[mongo] MONGO_REFRESH_MODE=version：仅 app_meta.updatedAt 变化时全量读 Mongo')
+      }
+      else if (refreshMode === 'single_instance') {
+        console.log('[mongo] MONGO_REFRESH_MODE=single_instance：单进程内跳过跨请求 refresh（勿用于多实例）')
+      }
       if (!mongoConfig.isMongoMutationPersistFlushSkipped()) {
         if (mongoConfig.isMongoAwaitPersistEnabled()) {
           console.log('[mongo] MONGO_AWAIT_PERSIST=true：任意 /api 请求结束后等待落库（含 GET）')
