@@ -1979,6 +1979,55 @@ function resolveMallBuyerFromOrder(db, order) {
   return db.users.find(u => u && String(u.id || '').trim() === mid) || null
 }
 
+function normalizeBuyerPhoneDigits(phone) {
+  let digits = normalizePhone(phone || '')
+  if (digits.startsWith('86') && digits.length === 13) {
+    digits = digits.slice(2)
+  }
+  return digits
+}
+
+/** 后台 GET /orders keyword：订单号、商品、注册/收货用户姓名、注册/收货手机号 */
+function orderMatchesAdminKeyword(db, order, keywordRaw) {
+  const keyword = String(keywordRaw || '').trim()
+  if (!keyword) {
+    return true
+  }
+  const keywordLower = keyword.toLowerCase()
+  const keywordDigits = normalizePhone(keyword)
+
+  if (String(order.id || '').includes(keyword)) {
+    return true
+  }
+  if (String(order.name || '').toLowerCase().includes(keywordLower)) {
+    return true
+  }
+  if (String(order.receiverName || '').toLowerCase().includes(keywordLower)) {
+    return true
+  }
+  if (keywordDigits) {
+    const receiverPhone = normalizePhone(order.receiverPhone || '')
+    if (receiverPhone.includes(keywordDigits)) {
+      return true
+    }
+  }
+
+  const buyer = resolveMallBuyerFromOrder(db, order)
+  if (buyer) {
+    const buyerName = String(buyer.name || '').toLowerCase()
+    if (buyerName.includes(keywordLower)) {
+      return true
+    }
+    if (keywordDigits) {
+      const buyerPhone = normalizeBuyerPhoneDigits(buyer.phone || '')
+      if (buyerPhone.includes(keywordDigits)) {
+        return true
+      }
+    }
+  }
+  return false
+}
+
 /** GET /orders、详情等：附带注册买家快照字段（列表「用户」须展示注册信息，非收货人） */
 function enrichMallOrderWithBuyerFields(db, order) {
   const buyer = resolveMallBuyerFromOrder(db, order)
@@ -4661,6 +4710,99 @@ router.get('/admin/traffic-channels/quality', async (ctx) => {
   ctx.body = success(buildTrafficChannelQualityRows(db))
 })
 
+router.get('/admin/traffic-channels/portal-stats', async (ctx) => {
+  if (!await requireAdminPermission(ctx, [ADMIN_ROLES.SUPER], '查看流量渠道')) {
+    return
+  }
+  const db = readDb()
+  ctx.body = success(buildTrafficChannelPortalStatsRows(db))
+})
+
+/**
+ * 新建渠道时绑定流量商数据后台（admin-liuliang）登录账号。
+ * 同 username 已存在则追加 channelCodes，并更新密码。
+ */
+function bindTrafficPartnerPortalAccount(db, opts) {
+  const username = String(opts.username || '').trim()
+  const password = String(opts.password || '').trim()
+  const name = String(opts.name || username).trim()
+  const code = String(opts.code || '').trim()
+  const now = opts.now || new Date().toISOString()
+  if (!username || !password || !code) {
+    return { ok: false, reason: '请填写数据后台登录账号与密码' }
+  }
+  ensureTrafficPartners(db)
+  const existing = db.trafficPartners.find(p => p && String(p.username) === username)
+  if (existing) {
+    const codes = Array.isArray(existing.channelCodes) ? [...existing.channelCodes] : []
+    if (!codes.includes(code)) {
+      codes.push(code)
+    }
+    existing.channelCodes = codes
+    existing.password = password
+    if (name) {
+      existing.name = name
+    }
+    existing.status = 'active'
+    existing.updatedAt = now
+    return { ok: true, partner: existing, merged: true }
+  }
+  const row = {
+    id: `TP${Date.now()}`,
+    username,
+    password,
+    name: name || username,
+    status: 'active',
+    channelCodes: [code],
+    createdAt: now,
+    updatedAt: now,
+  }
+  db.trafficPartners.push(row)
+  return { ok: true, partner: row, merged: false }
+}
+
+/** 删除流量渠道时，同步解除/删除数据后台登录账号（trafficPartners） */
+function removeTrafficPartnerBindingsForChannel(db, code, now = new Date().toISOString()) {
+  ensureTrafficPartners(db)
+  const channelCode = String(code || '').trim()
+  if (!channelCode) {
+    return { removedPartnerIds: [] }
+  }
+  const removedPartnerIds = []
+  for (let i = db.trafficPartners.length - 1; i >= 0; i--) {
+    const p = db.trafficPartners[i]
+    if (!p || !Array.isArray(p.channelCodes)) {
+      continue
+    }
+    const codes = p.channelCodes.map(c => String(c || '').trim()).filter(Boolean)
+    if (!codes.includes(channelCode)) {
+      continue
+    }
+    const nextCodes = codes.filter(c => c !== channelCode)
+    if (nextCodes.length === 0) {
+      removedPartnerIds.push(String(p.id))
+      db.trafficPartners.splice(i, 1)
+    } else {
+      p.channelCodes = nextCodes
+      p.updatedAt = now
+    }
+  }
+  return { removedPartnerIds }
+}
+
+function trafficPartnerHasActiveChannel(db, partner) {
+  ensureTrafficChannels(db)
+  const codes = Array.isArray(partner.channelCodes) ? partner.channelCodes : []
+  return codes.some((code) => {
+    const key = String(code || '').trim()
+    if (!key) {
+      return false
+    }
+    const ch = db.trafficChannels.find(c => c && String(c.code) === key)
+    return Boolean(ch && !ch.disabled)
+  })
+}
+
 router.post('/admin/traffic-channels', async (ctx) => {
   if (!await requireAdminPermission(ctx, [ADMIN_ROLES.SUPER], '新增流量渠道')) {
     return
@@ -4682,6 +4824,23 @@ router.post('/admin/traffic-channels', async (ctx) => {
     fail(ctx, '该渠道标识已存在', 409)
     return
   }
+  const createPortalAccount = payload.createPortalAccount !== false
+  const portalUsername = String(
+    payload.portalUsername != null ? payload.portalUsername : '',
+  ).trim()
+  const portalPassword = String(
+    payload.portalPassword != null ? payload.portalPassword : '',
+  ).trim()
+  if (createPortalAccount) {
+    if (!portalUsername) {
+      fail(ctx, '请填写数据后台登录账号')
+      return
+    }
+    if (portalPassword.length < 6) {
+      fail(ctx, '数据后台登录密码至少 6 位')
+      return
+    }
+  }
   const now = new Date().toISOString()
   const row = {
     id: `TC${Date.now()}`,
@@ -4693,8 +4852,29 @@ router.post('/admin/traffic-channels', async (ctx) => {
     updatedAt: now,
   }
   db.trafficChannels.push(row)
+  let portalBind = null
+  if (createPortalAccount) {
+    portalBind = bindTrafficPartnerPortalAccount(db, {
+      username: portalUsername,
+      password: portalPassword,
+      name: norm.name,
+      code,
+      now,
+    })
+    if (!portalBind.ok) {
+      fail(ctx, portalBind.reason || '创建数据后台账号失败')
+      return
+    }
+  }
   writeDb(db)
-  ctx.body = success(toTrafficChannelView(row, 0))
+  const view = toTrafficChannelView(row, 0)
+  if (portalBind && portalBind.partner) {
+    view.portalAccount = {
+      username: portalBind.partner.username,
+      merged: Boolean(portalBind.merged),
+    }
+  }
+  ctx.body = success(view)
 })
 
 router.patch('/admin/traffic-channels/:id', async (ctx) => {
@@ -4748,9 +4928,330 @@ router.delete('/admin/traffic-channels/:id', async (ctx) => {
     fail(ctx, '该渠道已有用户注册记录，无法删除', 400)
     return
   }
+  const now = new Date().toISOString()
+  const channelCode = String(ch.code || '').trim()
   db.trafficChannels.splice(idx, 1)
+  const portalCleanup = removeTrafficPartnerBindingsForChannel(db, channelCode, now)
   writeDb(db)
-  ctx.body = success({ id })
+  ctx.body = success({
+    id,
+    removedPortalAccountCount: portalCleanup.removedPartnerIds.length,
+  })
+})
+
+function ensureTrafficPartners(db) {
+  if (!Array.isArray(db.trafficPartners)) {
+    db.trafficPartners = []
+  }
+}
+
+function normalizeTrafficPartnerBody(body = {}) {
+  const username = String(body.username != null ? body.username : '').trim()
+  const password = String(body.password != null ? body.password : '').trim()
+  const name = String(body.name != null ? body.name : '').trim()
+  const status = String(body.status != null ? body.status : 'active').trim() || 'active'
+  const channelCodes = Array.isArray(body.channelCodes)
+    ? body.channelCodes.map(c => String(c || '').trim()).filter(c => TRAFFIC_CHANNEL_CODE_RE.test(c))
+    : []
+  return { username, password, name, status, channelCodes }
+}
+
+function toTrafficPartnerView(partner) {
+  return {
+    id: partner.id,
+    username: partner.username,
+    name: partner.name || partner.username,
+    status: partner.status || 'active',
+    channelCodes: Array.isArray(partner.channelCodes) ? [...partner.channelCodes] : [],
+    createdAt: partner.createdAt,
+    updatedAt: partner.updatedAt,
+  }
+}
+
+function resolveTrafficPartnerFromAuthHeader(ctx) {
+  const auth = String(ctx.headers.authorization || '').trim()
+  const m = /^Bearer\s+traffic-partner-token-(.+)$/i.exec(auth)
+  if (!m) {
+    return null
+  }
+  const db = readDb()
+  ensureTrafficPartners(db)
+  const partner = db.trafficPartners.find(p => p && String(p.id) === m[1])
+  if (!partner || String(partner.status || 'active') !== 'active') {
+    return null
+  }
+  ensureTrafficChannels(db)
+  if (!trafficPartnerHasActiveChannel(db, partner)) {
+    return null
+  }
+  return partner
+}
+
+/** 流量商门户：与截图口径一致（注册率=注册/点击，申请率=申请用户/注册，通过率=发卡包订单/申请用户，逾期率=逾期订单/通过订单，注册转化率=通过订单/注册，申请转化率=申请用户/通过订单） */
+function buildTrafficPartnerPortalStatsRow(db, ch, todayKey) {
+  const code = String(ch.code || '')
+  const clickCount = Math.max(0, Number(ch.clickCount) || 0)
+  const users = db.users.filter(
+    u => u && String(u.registerChannelCode || '').trim() === code,
+  )
+  const registerCount = users.length
+  let applicationCount = 0
+  let approvedCount = 0
+  let overdueCount = 0
+  for (const u of users) {
+    const orders = ordersForRegisteredMallUser(db, u)
+    if (orders.length > 0) {
+      applicationCount += 1
+    }
+    for (const order of orders) {
+      if (!isTrafficQualityIssuedOrder(order)) {
+        continue
+      }
+      approvedCount += 1
+      if (
+        order.payType === 'installment'
+        && trafficInstallmentOrderHasUnpaidOverdue(order, todayKey)
+      ) {
+        overdueCount += 1
+      }
+    }
+  }
+  const pct = (num, den) => (den > 0 ? Number(((num / den) * 100).toFixed(2)) : null)
+  return {
+    id: ch.id,
+    code,
+    name: String(ch.name || code),
+    clickCount,
+    registerCount,
+    applicationCount,
+    approvedCount,
+    overdueCount,
+    registerRate: pct(registerCount, clickCount),
+    applicationRate: pct(applicationCount, registerCount),
+    approvalRate: pct(approvedCount, applicationCount),
+    overdueRate: pct(overdueCount, approvedCount),
+    registrationConversionRate: pct(approvedCount, registerCount),
+    applicationConversionRate: pct(applicationCount, approvedCount),
+  }
+}
+
+/** 全部渠道引流统计（与 admin-liuliang / traffic-partner/stats 同口径） */
+function buildTrafficChannelPortalStatsRows(db) {
+  reconcileInstallmentCompletionAcrossDb(db)
+  ensureTrafficChannels(db)
+  const todayKey = normalizeInstallmentDueDateKey(formatDate(new Date().toISOString()))
+  return [...db.trafficChannels]
+    .sort((a, b) => String(a.createdAt || '').localeCompare(String(b.createdAt || '')))
+    .map(ch => buildTrafficPartnerPortalStatsRow(db, ch, todayKey))
+}
+
+function buildTrafficPartnerPortalStats(db, partner) {
+  reconcileInstallmentCompletionAcrossDb(db)
+  ensureTrafficChannels(db)
+  const todayKey = normalizeInstallmentDueDateKey(formatDate(new Date().toISOString()))
+  const codes = new Set(
+    (Array.isArray(partner.channelCodes) ? partner.channelCodes : [])
+      .map(c => String(c || '').trim())
+      .filter(Boolean),
+  )
+  const channels = db.trafficChannels.filter((ch) => {
+    if (!ch || ch.disabled) {
+      return false
+    }
+    return codes.has(String(ch.code || '').trim())
+  })
+  return channels
+    .sort((a, b) => String(a.createdAt || '').localeCompare(String(b.createdAt || '')))
+    .map(ch => buildTrafficPartnerPortalStatsRow(db, ch, todayKey))
+}
+
+function incrementTrafficChannelClick(db, code) {
+  ensureTrafficChannels(db)
+  const ch = db.trafficChannels.find(
+    c => c && String(c.code) === code && !c.disabled,
+  )
+  if (!ch) {
+    return false
+  }
+  ch.clickCount = Math.max(0, Number(ch.clickCount) || 0) + 1
+  ch.updatedAt = new Date().toISOString()
+  return true
+}
+
+router.post('/traffic/channel-click', async (ctx) => {
+  const code = String((ctx.request.body || {}).channel || '').trim()
+  if (!TRAFFIC_CHANNEL_CODE_RE.test(code)) {
+    fail(ctx, '渠道标识无效')
+    return
+  }
+  const db = readDb()
+  if (!incrementTrafficChannelClick(db, code)) {
+    fail(ctx, '渠道不存在或已停用', 404)
+    return
+  }
+  writeDb(db)
+  ctx.body = success({ channel: code })
+})
+
+router.post('/traffic-partner/login', async (ctx) => {
+  const db = readDb()
+  ensureTrafficPartners(db)
+  const payload = ctx.request.body || {}
+  const username = String(payload.username || '').trim()
+  const password = String(payload.password || '').trim()
+  if (!username || !password) {
+    fail(ctx, '请输入账号和密码')
+    return
+  }
+  const partner = db.trafficPartners.find(
+    p => p
+      && String(p.username) === username
+      && String(p.password) === password
+      && String(p.status || 'active') === 'active',
+  )
+  if (!partner) {
+    fail(ctx, '账号或密码错误', 401)
+    return
+  }
+  ensureTrafficChannels(db)
+  if (!trafficPartnerHasActiveChannel(db, partner)) {
+    fail(ctx, '账号已失效，请联系管理员', 401)
+    return
+  }
+  ctx.body = success({
+    token: `traffic-partner-token-${partner.id}`,
+    username: partner.username,
+    name: String(partner.name || partner.username).trim(),
+    partnerId: partner.id,
+  })
+})
+
+router.get('/traffic-partner/stats', async (ctx) => {
+  const partner = resolveTrafficPartnerFromAuthHeader(ctx)
+  if (!partner) {
+    fail(ctx, '未登录或登录已失效', 401)
+    return
+  }
+  const db = readDb()
+  ctx.body = success(buildTrafficPartnerPortalStats(db, partner))
+})
+
+router.get('/admin/traffic-partners', async (ctx) => {
+  if (!await requireAdminPermission(ctx, [ADMIN_ROLES.SUPER], '查看流量商账号')) {
+    return
+  }
+  const db = readDb()
+  ensureTrafficPartners(db)
+  const list = [...db.trafficPartners]
+    .sort((a, b) => String(a.createdAt || '').localeCompare(String(b.createdAt || '')))
+    .map(toTrafficPartnerView)
+  ctx.body = success(list)
+})
+
+router.post('/admin/traffic-partners', async (ctx) => {
+  if (!await requireAdminPermission(ctx, [ADMIN_ROLES.SUPER], '新增流量商账号')) {
+    return
+  }
+  const db = readDb()
+  ensureTrafficPartners(db)
+  ensureTrafficChannels(db)
+  const norm = normalizeTrafficPartnerBody(ctx.request.body || {})
+  if (!norm.username || !norm.password) {
+    fail(ctx, '请填写账号与密码')
+    return
+  }
+  if (!norm.name) {
+    fail(ctx, '请填写流量商名称')
+    return
+  }
+  if (norm.channelCodes.length === 0) {
+    fail(ctx, '请至少绑定一个渠道标识')
+    return
+  }
+  if (db.trafficPartners.some(p => String(p.username) === norm.username)) {
+    fail(ctx, '该账号已存在', 409)
+    return
+  }
+  for (const code of norm.channelCodes) {
+    if (!db.trafficChannels.some(c => c && String(c.code) === code)) {
+      fail(ctx, `渠道 ${code} 不存在，请先在流量管理中创建`)
+      return
+    }
+  }
+  const now = new Date().toISOString()
+  const row = {
+    id: `TP${Date.now()}`,
+    username: norm.username,
+    password: norm.password,
+    name: norm.name,
+    status: norm.status === 'disabled' ? 'disabled' : 'active',
+    channelCodes: norm.channelCodes,
+    createdAt: now,
+    updatedAt: now,
+  }
+  db.trafficPartners.push(row)
+  writeDb(db)
+  ctx.body = success(toTrafficPartnerView(row))
+})
+
+router.patch('/admin/traffic-partners/:id', async (ctx) => {
+  if (!await requireAdminPermission(ctx, [ADMIN_ROLES.SUPER], '编辑流量商账号')) {
+    return
+  }
+  const db = readDb()
+  ensureTrafficPartners(db)
+  ensureTrafficChannels(db)
+  const { id } = ctx.params
+  const idx = db.trafficPartners.findIndex(p => p.id === id)
+  if (idx < 0) {
+    fail(ctx, '流量商账号不存在', 404)
+    return
+  }
+  const body = ctx.request.body || {}
+  const norm = normalizeTrafficPartnerBody({ ...db.trafficPartners[idx], ...body })
+  if (body.username != null && !norm.username) {
+    fail(ctx, '账号不能为空')
+    return
+  }
+  if (body.name != null && !norm.name) {
+    fail(ctx, '名称不能为空')
+    return
+  }
+  if (body.channelCodes != null && norm.channelCodes.length === 0) {
+    fail(ctx, '请至少绑定一个渠道标识')
+    return
+  }
+  const prev = db.trafficPartners[idx]
+  if (
+    body.username != null
+    && norm.username !== prev.username
+    && db.trafficPartners.some(p => p.id !== id && String(p.username) === norm.username)
+  ) {
+    fail(ctx, '该账号已存在', 409)
+    return
+  }
+  const codes = body.channelCodes != null ? norm.channelCodes : (prev.channelCodes || [])
+  for (const code of codes) {
+    if (!db.trafficChannels.some(c => c && String(c.code) === code)) {
+      fail(ctx, `渠道 ${code} 不存在`)
+      return
+    }
+  }
+  const now = new Date().toISOString()
+  const merged = {
+    ...prev,
+    username: body.username != null ? norm.username : prev.username,
+    password: body.password != null && norm.password ? norm.password : prev.password,
+    name: body.name != null ? norm.name : prev.name,
+    status: body.status != null
+      ? (norm.status === 'disabled' ? 'disabled' : 'active')
+      : (prev.status || 'active'),
+    channelCodes: body.channelCodes != null ? norm.channelCodes : (prev.channelCodes || []),
+    updatedAt: now,
+  }
+  db.trafficPartners[idx] = merged
+  writeDb(db)
+  ctx.body = success(toTrafficPartnerView(merged))
 })
 
 router.get('/users', async (ctx) => {
@@ -6310,18 +6811,7 @@ router.get('/orders', async (ctx) => {
     if (item.payType === 'full' && item.status !== 'reviewing' && !item.paid) {
       item.paid = true
     }
-    const byKeyword = !keyword
-      || item.id.includes(keyword)
-      || item.name.includes(keyword)
-      || (() => {
-        const buyer = resolveMallBuyerFromOrder(db, item)
-        if (!buyer) {
-          return false
-        }
-        const bn = String(buyer.name || '')
-        const bp = normalizePhone(buyer.phone || '')
-        return bn.includes(keyword) || bp.includes(keyword)
-      })()
+    const byKeyword = orderMatchesAdminKeyword(db, item, keyword)
     const byStatus = !status || item.status === status
     const byAdminStatus = !adminStatus || resolveAdminOrderDisplayStatus(item) === adminStatus
     const byPayType = !payType || item.payType === payType
@@ -7154,7 +7644,7 @@ router.patch('/orders/:id/status', async (ctx) => {
 })
 
 router.patch('/orders/:id/shipment', async (ctx) => {
-  if (!await requireAdminPermission(ctx, [ADMIN_ROLES.SUPER], '登记快递单号')) {
+  if (!await requireAdminPermission(ctx, [ADMIN_ROLES.SUPER, ADMIN_ROLES.REVIEWER], '登记快递单号')) {
     return
   }
   const db = readDb()

@@ -25,6 +25,42 @@ export function resolveChannelFromRouteQuery(query: Record<string, unknown>): st
   return safeTrimChannel(first as unknown)
 }
 
+const CLICK_SENT_KEY = 'mall_channel_click_sent'
+
+function mallApiBase() {
+  const raw = import.meta.env.VITE_MALL_API_BASE || '/api'
+  return `${String(raw).replace(/\/$/, '')}`
+}
+
+/** 上报渠道点击（用于流量商后台「点击数」）；同一会话同一渠道只上报一次 */
+function reportChannelClickOnce(code: string) {
+  if (import.meta.env.SSR || typeof sessionStorage === 'undefined') {
+    return
+  }
+  const flagKey = `${CLICK_SENT_KEY}:${code}`
+  try {
+    if (sessionStorage.getItem(flagKey)) {
+      return
+    }
+    sessionStorage.setItem(flagKey, '1')
+  }
+  catch {
+    return
+  }
+  void fetch(`${mallApiBase()}/traffic/channel-click`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ channel: code }),
+  }).catch(() => {
+    try {
+      sessionStorage.removeItem(flagKey)
+    }
+    catch {
+      /* ignore */
+    }
+  })
+}
+
 /** 路由进入时调用：若 URL 含合法 channel 且尚未锁定，则写入 sessionStorage */
 export function captureRegisterChannelFromRoute(query: Record<string, unknown>) {
   if (import.meta.env.SSR || typeof sessionStorage === 'undefined') {
@@ -34,6 +70,7 @@ export function captureRegisterChannelFromRoute(query: Record<string, unknown>) 
   if (!code) {
     return
   }
+  reportChannelClickOnce(code)
   try {
     if (!sessionStorage.getItem(STORAGE_KEY)) {
       sessionStorage.setItem(STORAGE_KEY, code)

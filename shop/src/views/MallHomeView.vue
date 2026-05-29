@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import AppBeianFooter from '~/components/App/AppBeianFooter.vue'
 import AppTabbar from '~/components/App/AppTabbar.vue'
 import HomeBannerMobile from '~/components/index/HomeBannerMobile.vue'
 import HomeListMobile from '~/components/index/HomeListMobile.vue'
@@ -96,6 +97,8 @@ function handleSelectZone(zone: 'installment' | 'mall') {
         :list-zone="activeHomeZone"
       />
     </section>
+
+    <AppBeianFooter />
     <AppTabbar />
   </div>
 </template>

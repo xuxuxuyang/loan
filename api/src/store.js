@@ -145,6 +145,8 @@ function buildEmptyRaw() {
     bills: [],
     /** 推广渠道（H5 ?channel= 与注册归因） */
     trafficChannels: [],
+    /** 流量商门户登录账号（admin-liuliang） */
+    trafficPartners: [],
     /** 商城客服会话（用户↔客服消息，与 users 可选关联） */
     csSessions: [],
     /** 拉卡拉支付流水（商城还款/订单支付） */
@@ -221,6 +223,7 @@ function shapeDbFromParsed(parsed) {
     bankCards: Array.isArray(parsed.bankCards) ? parsed.bankCards : [],
     bills: Array.isArray(parsed.bills) ? parsed.bills : [],
     trafficChannels: Array.isArray(parsed.trafficChannels) ? parsed.trafficChannels : [],
+    trafficPartners: Array.isArray(parsed.trafficPartners) ? parsed.trafficPartners : [],
     csSessions: Array.isArray(parsed.csSessions) ? parsed.csSessions : [],
     lakalaPayments: Array.isArray(parsed.lakalaPayments) ? parsed.lakalaPayments : [],
   }
@@ -236,6 +239,7 @@ function shapeDbFromParsed(parsed) {
     bankCards: db.bankCards,
     bills: db.bills,
     trafficChannels: db.trafficChannels,
+    trafficPartners: db.trafficPartners,
     csSessions: db.csSessions,
     lakalaPayments: db.lakalaPayments,
   }
@@ -277,6 +281,7 @@ function clonePayloadForMongo(db) {
     bankCards: db.bankCards,
     bills: db.bills,
     trafficChannels: Array.isArray(db.trafficChannels) ? db.trafficChannels : [],
+    trafficPartners: Array.isArray(db.trafficPartners) ? db.trafficPartners : [],
     csSessions: Array.isArray(db.csSessions) ? db.csSessions : [],
     lakalaPayments: Array.isArray(db.lakalaPayments) ? db.lakalaPayments : [],
   }

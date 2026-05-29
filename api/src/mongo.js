@@ -12,6 +12,7 @@ const COLLECTIONS = {
   bankCards: 'bankCards',
   bills: 'bills',
   trafficChannels: 'trafficChannels',
+  trafficPartners: 'trafficPartners',
   csSessions: 'csSessions',
   lakalaPayments: 'lakalaPayments',
 }
@@ -31,6 +32,7 @@ const SHARDED_ENTITY_KEYS = [
   'bankCards',
   'bills',
   'trafficChannels',
+  'trafficPartners',
   'csSessions',
   'lakalaPayments',
 ]

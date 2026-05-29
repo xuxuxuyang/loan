@@ -1447,7 +1447,7 @@ watch(salesMode, () => {
 }
 
 .toolbar-input {
-  width: 260px;
+  width: 360px;
   max-width: 100%;
 }
 

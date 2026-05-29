@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { CirclePlus, CopyDocument, Delete, EditPen, Loading } from '@element-plus/icons-vue'
+import { CirclePlus, CopyDocument, Delete, EditPen, Loading, QuestionFilled } from '@element-plus/icons-vue'
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import TrafficChannelNameTag from '../components/TrafficChannelNameTag.vue'
@@ -18,31 +18,27 @@ interface TrafficChannelRow {
   registerCount: number
 }
 
-/** 与 GET /admin/traffic-channels/quality 对齐 */
-interface TrafficQualityRow {
+/** 与 GET /admin/traffic-channels/portal-stats、admin-liuliang 数据表同口径 */
+interface TrafficPortalStatsRow {
   id: string
   code: string
   name: string
-  disabled: boolean
+  clickCount: number
   registerCount: number
-  issuedOrderCount: number
-  issuedOrderAmount: number
-  usersWithIssuedOrder: number
-  registrationConversionRate: number | null
-  avgOrderAmount: number | null
-  avgAmountPerRegistrant: number | null
-  installmentIssuedOrderCount: number
-  fullPaymentIssuedOrderCount: number
-  installmentShareRate: number | null
-  overdueInstallmentOrderCount: number
+  applicationCount: number
+  approvedCount: number
+  overdueCount: number
+  registerRate: number | null
+  applicationRate: number | null
+  approvalRate: number | null
   overdueRate: number | null
-  repeatPurchaseUsers: number
-  repeatPurchaseRate: number | null
+  registrationConversionRate: number | null
+  applicationConversionRate: number | null
 }
 
-/** 列表行 = 渠道基础信息 + 引流质量（可能尚未拉到质量数据） */
+/** 列表行 = 渠道基础信息 + 引流统计 */
 type TrafficMergedRow = TrafficChannelRow & {
-  quality: TrafficQualityRow | null
+  stats: TrafficPortalStatsRow | null
 }
 
 const MALL_API_BASE = `${(import.meta.env.VITE_MALL_API_BASE || 'http://localhost:3110/api').replace(/\/$/, '')}`
@@ -114,28 +110,28 @@ const showDeleteDialog = ref(false)
 const deleting = ref(false)
 const errorMessage = ref('')
 
-const qualityRows = ref<TrafficQualityRow[]>([])
-const qualityLoading = ref(false)
-const qualityErrorMessage = ref('')
-/** 仅展示至少有一笔「卡包已发放」订单的流量商 */
-const whitelistQualityPositive = ref(false)
+const statsRows = ref<TrafficPortalStatsRow[]>([])
+const statsLoading = ref(false)
+const statsErrorMessage = ref('')
+/** 仅展示至少有一笔「通过」（发卡包）订单的流量商 */
+const whitelistStatsPositive = ref(false)
 
-const qualityByChannelId = computed(() => {
-  const m = new Map<string, TrafficQualityRow>()
-  for (const q of qualityRows.value) {
-    m.set(q.id, q)
+const statsByChannelId = computed(() => {
+  const m = new Map<string, TrafficPortalStatsRow>()
+  for (const s of statsRows.value) {
+    m.set(s.id, s)
   }
   return m
 })
 
-/** 单一表格数据源：按流量商列表顺序合并质量；白名单时仅保留有发卡包订单的渠道 */
+/** 单一表格数据源：按流量商列表顺序合并统计；白名单时仅保留通过数 > 0 的渠道 */
 const displayMergedRows = computed<TrafficMergedRow[]>(() => {
   const out: TrafficMergedRow[] = []
   for (const r of rows.value) {
-    const q = qualityByChannelId.value.get(r.id) ?? null
-    if (whitelistQualityPositive.value && (!q || q.issuedOrderCount <= 0))
+    const s = statsByChannelId.value.get(r.id) ?? null
+    if (whitelistStatsPositive.value && (!s || s.approvedCount <= 0))
       continue
-    out.push({ ...r, quality: q })
+    out.push({ ...r, stats: s })
   }
   return out
 })
@@ -144,14 +140,28 @@ function mergedRowClassName({ row }: { row: TrafficMergedRow }) {
   return row.disabled ? 'traffic-quality-row--muted' : ''
 }
 
-function formatPercent(value: number | null | undefined) {
+/** 与 api buildTrafficPartnerPortalStatsRow 口径一致 */
+const TRAFFIC_PORTAL_STAT_HEADER_TIPS = {
+  clickCount:
+    '用户打开带本渠道参数（?channel=标识）的商城推广页时累计 +1；渠道已停用则不再累计。',
+  registerCount: '注册时「渠道标识」等于本流量商的用户总数。',
+  applicationCount: '上述注册用户中，至少存在 1 笔商城订单的用户数（含待审核订单）。',
+  approvedCount: '上述用户订单中，状态非「待审核」且已发放卡包的订单笔数。',
+  overdueCount:
+    '通过订单中的分期订单里，存在已到期且未还清期次的订单笔数（按统计当日计算）。',
+  registerRate: '注册数 ÷ 点击数 × 100，保留两位小数；点击数为 0 时显示 —。',
+  applicationRate: '申请数 ÷ 注册数 × 100，保留两位小数；注册数为 0 时显示 —。',
+  approvalRate: '通过数 ÷ 申请数 × 100，保留两位小数；申请数为 0 时显示 —。',
+  overdueRate: '逾期数 ÷ 通过数 × 100，保留两位小数；通过数为 0 时显示 —。',
+  registrationConversionRate: '通过数 ÷ 注册数 × 100，保留两位小数；注册数为 0 时显示 —。',
+  applicationConversionRate: '申请数 ÷ 通过数 × 100，保留两位小数；通过数为 0 时显示 —。',
+} as const
+
+/** 与 admin-liuliang 一致：比率展示为两位小数，不带 % 号 */
+function formatRate(value: number | null | undefined) {
   if (value == null || Number.isNaN(Number(value)))
     return '—'
-  return `${Number(value).toFixed(2)}%`
-}
-
-function formatMoney2(n: number) {
-  return n.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+  return Number(value).toFixed(2)
 }
 
 const remarkDialogVisible = ref(false)
@@ -167,6 +177,10 @@ const createForm = reactive({
   name: '',
   remark: '',
   disabled: false,
+  /** 同步创建 admin-liuliang 流量商数据后台登录账号 */
+  createPortalAccount: true,
+  portalUsername: '',
+  portalPassword: '',
 })
 
 const editForm = reactive({
@@ -288,40 +302,48 @@ async function fetchChannels() {
   }
 }
 
-async function fetchQualityMetrics() {
-  qualityLoading.value = true
-  qualityErrorMessage.value = ''
+async function fetchPortalStats() {
+  statsLoading.value = true
+  statsErrorMessage.value = ''
   try {
-    const response = await fetch(`${MALL_API_BASE}/admin/traffic-channels/quality`, {
+    const response = await fetch(`${MALL_API_BASE}/admin/traffic-channels/portal-stats`, {
       method: 'GET',
       headers: withMallTenantHeaders(),
     })
     const payload = await response.json() as {
       success?: boolean
       msg?: string
-      data?: TrafficQualityRow[]
+      data?: TrafficPortalStatsRow[]
     }
     if (!response.ok || payload.success === false) {
-      const msg = payload.msg || `加载客户质量失败 (${response.status})`
+      const msg = payload.msg || `加载引流统计失败 (${response.status})`
       if (response.status === 401 || response.status === 403) {
         throw new Error(`${msg} — 请重新登录`)
       }
       throw new Error(msg)
     }
-    qualityRows.value = Array.isArray(payload.data) ? payload.data : []
+    statsRows.value = Array.isArray(payload.data) ? payload.data : []
   }
   catch (error) {
-    qualityRows.value = []
-    qualityErrorMessage.value = error instanceof Error ? error.message : '加载客户质量失败'
-    ElMessage.error(qualityErrorMessage.value)
+    statsRows.value = []
+    statsErrorMessage.value = error instanceof Error ? error.message : '加载引流统计失败'
+    ElMessage.error(statsErrorMessage.value)
   }
   finally {
-    qualityLoading.value = false
+    statsLoading.value = false
   }
 }
 
 async function refreshTrafficPage() {
-  await Promise.all([fetchChannels(), fetchQualityMetrics()])
+  await Promise.all([fetchChannels(), fetchPortalStats()])
+}
+
+function syncPortalUsernameFromCode() {
+  const code = createForm.code.trim()
+  if (!code || createForm.portalUsername.trim()) {
+    return
+  }
+  createForm.portalUsername = code
 }
 
 function openCreate() {
@@ -330,6 +352,9 @@ function openCreate() {
   createForm.name = ''
   createForm.remark = ''
   createForm.disabled = false
+  createForm.createPortalAccount = true
+  createForm.portalUsername = ''
+  createForm.portalPassword = ''
   errorMessage.value = ''
 }
 
@@ -356,6 +381,25 @@ function closeEdit() {
 async function submitCreate() {
   if (submitting.value)
     return
+  syncPortalUsernameFromCode()
+  const code = createForm.code.trim()
+  const name = createForm.name.trim()
+  if (!code || !name) {
+    ElMessage.warning('请填写流量商标识与名称')
+    return
+  }
+  if (createForm.createPortalAccount) {
+    const portalUsername = createForm.portalUsername.trim()
+    const portalPassword = createForm.portalPassword.trim()
+    if (!portalUsername) {
+      ElMessage.warning('请填写数据后台登录账号')
+      return
+    }
+    if (portalPassword.length < 6) {
+      ElMessage.warning('数据后台登录密码至少 6 位')
+      return
+    }
+  }
   submitting.value = true
   errorMessage.value = ''
   try {
@@ -363,21 +407,38 @@ async function submitCreate() {
       method: 'POST',
       headers: withMallTenantHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({
-        code: createForm.code.trim(),
-        name: createForm.name.trim(),
+        code,
+        name,
         remark: createForm.remark.trim(),
         disabled: createForm.disabled,
+        createPortalAccount: createForm.createPortalAccount,
+        portalUsername: createForm.portalUsername.trim(),
+        portalPassword: createForm.portalPassword.trim(),
       }),
     })
-    const payload = await response.json() as { msg?: string; success?: boolean; data?: TrafficChannelRow }
+    const payload = await response.json() as {
+      msg?: string
+      success?: boolean
+      data?: TrafficChannelRow & { portalAccount?: { username: string, merged?: boolean } }
+    }
     if (!response.ok || payload.success === false) {
       throw new Error(payload.msg || `创建失败: ${response.status}`)
     }
-    ElMessage.success('流量商已创建')
+    const portal = payload.data?.portalAccount
+    if (portal?.username) {
+      ElMessage.success(
+        portal.merged
+          ? `流量商已创建；数据后台账号 ${portal.username} 已绑定本渠道`
+          : `流量商已创建；数据后台账号 ${portal.username} 已开通`,
+      )
+    }
+    else {
+      ElMessage.success('流量商已创建')
+    }
     showCreate.value = false
     if (payload.data)
       applyTrafficChannelPatchRow(payload.data)
-    void fetchQualityMetrics()
+    void fetchPortalStats()
   }
   catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '创建失败'
@@ -410,7 +471,7 @@ async function submitEdit() {
     showEdit.value = false
     if (payload.data)
       applyTrafficChannelPatchRow(payload.data)
-    void fetchQualityMetrics()
+    void fetchPortalStats()
   }
   catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '保存失败'
@@ -533,7 +594,7 @@ async function doDelete() {
     closeDelete({ force: true })
     const delId = row.id
     rows.value = rows.value.filter(r => r.id !== delId)
-    void fetchQualityMetrics()
+    void fetchPortalStats()
   }
   catch (error) {
     ElMessage.error(error instanceof Error ? error.message : '删除失败')
@@ -582,7 +643,7 @@ onMounted(() => {
       <button
         class="btn btn-refresh"
         type="button"
-        :disabled="loading || qualityLoading"
+        :disabled="loading || statsLoading"
         @click="refreshTrafficPage"
       >
         刷新
@@ -608,11 +669,11 @@ onMounted(() => {
           <div class="traffic-unified-card-header__title">
             <span class="traffic-table-card-title">流量商</span>
             <el-checkbox
-              v-model="whitelistQualityPositive"
+              v-model="whitelistStatsPositive"
               border
               size="small"
             >
-              白名单（发卡包订单数大于 0）
+              白名单（通过数大于 0）
             </el-checkbox>
           </div>
           <el-tag
@@ -627,25 +688,25 @@ onMounted(() => {
       </template>
 
       <el-alert
-        v-if="qualityErrorMessage && !qualityLoading"
+        v-if="statsErrorMessage && !statsLoading"
         type="error"
         :closable="false"
         show-icon
         class="traffic-quality-error"
       >
-        {{ qualityErrorMessage }}
+        {{ statsErrorMessage }}
       </el-alert>
 
       <p class="traffic-quality-stats">
         当前展示 <strong>{{ displayMergedRows.length }}</strong> 家
-        <template v-if="whitelistQualityPositive && rows.length !== displayMergedRows.length">
-          （已过滤 {{ rows.length - displayMergedRows.length }} 家无发卡包订单）
+        <template v-if="whitelistStatsPositive && rows.length !== displayMergedRows.length">
+          （已过滤 {{ rows.length - displayMergedRows.length }} 家通过数为 0）
         </template>
       </p>
 
       <div class="traffic-table-wrap">
         <el-table
-          v-loading="loading || qualityLoading"
+          v-loading="loading || statsLoading"
           :data="displayMergedRows"
           stripe
           border
@@ -658,7 +719,7 @@ onMounted(() => {
         >
           <template #empty>
             <el-empty
-              :description="rows.length === 0 ? '暂无流量商，点击「新建流量商」添加' : (whitelistQualityPositive ? '无符合白名单条件的流量商' : '暂无数据')"
+              :description="rows.length === 0 ? '暂无流量商，点击「新建流量商」添加' : (whitelistStatsPositive ? '无符合白名单条件的流量商' : '暂无数据')"
               :image-size="88"
             />
           </template>
@@ -688,7 +749,7 @@ onMounted(() => {
         </el-table-column>
 
         <el-table-column
-          label="名称"
+          label="渠道名称"
           min-width="120"
           show-overflow-tooltip
         >
@@ -702,11 +763,40 @@ onMounted(() => {
         </el-table-column>
 
         <el-table-column
-          prop="registerCount"
-          label="注册人数"
-          width="96"
-          align="center"
-        />
+          label="备注"
+          min-width="140"
+          class-name="traffic-remark-col"
+        >
+          <template #default="{ row }">
+            <el-button
+              type="primary"
+              link
+              class="remark-table-trigger"
+              :title="row.remark?.trim() ? '点击编辑备注' : '点击添加备注'"
+              @click="openRemarkDialog(row)"
+            >
+              <span class="remark-cell">
+                <span
+                  class="remark-cell__icon-wrap"
+                  aria-hidden="true"
+                >
+                  <el-icon
+                    class="remark-cell__icon"
+                    :class="row.remark?.trim() ? 'remark-cell__icon--edit' : 'remark-cell__icon--add'"
+                    :size="17"
+                  >
+                    <EditPen v-if="row.remark?.trim()" />
+                    <CirclePlus v-else />
+                  </el-icon>
+                </span>
+                <span
+                  class="remark-cell__text remark-preview"
+                  :class="row.remark?.trim() ? 'remark-preview--filled' : 'remark-preview--empty'"
+                >{{ row.remark?.trim() ? row.remark : '暂无备注' }}</span>
+              </span>
+            </el-button>
+          </template>
+        </el-table-column>
 
         <el-table-column
           label="状态"
@@ -778,168 +868,300 @@ onMounted(() => {
         </el-table-column>
 
         <el-table-column
-          label="订单数"
           width="88"
           align="center"
         >
           <template #header>
-            <el-tooltip
-              content="卡包已发放且非待审核的订单笔数"
-              placement="top"
-            >
-              <span class="traffic-quality-th-tip">订单数</span>
-            </el-tooltip>
-          </template>
-          <template #default="{ row }">
-            {{ row.quality ? row.quality.issuedOrderCount : '—' }}
-          </template>
-        </el-table-column>
-
-        <el-table-column
-          label="成交金额"
-          min-width="112"
-          align="right"
-        >
-          <template #default="{ row }">
-            {{ row.quality ? formatMoney2(row.quality.issuedOrderAmount) : '—' }}
-          </template>
-        </el-table-column>
-
-        <el-table-column
-          min-width="100"
-          align="right"
-        >
-          <template #header>
-            <el-tooltip
-              content="成交金额 ÷ 订单数"
-              placement="top"
-            >
-              <span class="traffic-quality-th-tip">客单价</span>
-            </el-tooltip>
-          </template>
-          <template #default="{ row }">
-            {{ row.quality?.avgOrderAmount != null ? formatMoney2(row.quality.avgOrderAmount) : '—' }}
-          </template>
-        </el-table-column>
-
-        <el-table-column
-          min-width="104"
-          align="right"
-        >
-          <template #header>
-            <el-tooltip
-              content="成交金额 ÷ 注册人数，衡量导流 ROI"
-              placement="top"
-            >
-              <span class="traffic-quality-th-tip">人均产值</span>
-            </el-tooltip>
-          </template>
-          <template #default="{ row }">
-            {{ row.quality?.avgAmountPerRegistrant != null ? formatMoney2(row.quality.avgAmountPerRegistrant) : '—' }}
-          </template>
-        </el-table-column>
-
-        <el-table-column
-          min-width="104"
-          align="right"
-        >
-          <template #header>
-            <el-tooltip
-              content="至少有 1 笔发卡包订单的用户数 ÷ 注册人数"
-              placement="top"
-            >
-              <span class="traffic-quality-th-tip">注册转化</span>
-            </el-tooltip>
-          </template>
-          <template #default="{ row }">
-            {{ row.quality ? formatPercent(row.quality.registrationConversionRate) : '—' }}
-          </template>
-        </el-table-column>
-
-        <el-table-column
-          min-width="96"
-          align="right"
-        >
-          <template #header>
-            <el-tooltip
-              content="先享后付发卡包订单 ÷ 全部发卡包订单"
-              placement="top"
-            >
-              <span class="traffic-quality-th-tip">先享后付</span>
-            </el-tooltip>
-          </template>
-          <template #default="{ row }">
-            {{ row.quality ? formatPercent(row.quality.installmentShareRate) : '—' }}
-          </template>
-        </el-table-column>
-
-        <el-table-column
-          min-width="108"
-          align="right"
-        >
-          <template #header>
-            <el-tooltip
-              content="仅先享后付订单。存在逾期未付清账期的订单数 ÷ 先享后付订单数"
-              placement="top"
-            >
-              <span class="traffic-quality-th-tip">逾期率</span>
-            </el-tooltip>
-          </template>
-          <template #default="{ row }">
-            {{ row.quality ? formatPercent(row.quality.overdueRate) : '—' }}
-          </template>
-        </el-table-column>
-
-        <el-table-column
-          min-width="92"
-          align="right"
-        >
-          <template #header>
-            <el-tooltip
-              content="下过 2 笔及以上发卡包订单的用户数 ÷ 有下单用户数"
-              placement="top"
-            >
-              <span class="traffic-quality-th-tip">复购率</span>
-            </el-tooltip>
-          </template>
-          <template #default="{ row }">
-            {{ row.quality ? formatPercent(row.quality.repeatPurchaseRate) : '—' }}
-          </template>
-        </el-table-column>
-
-        <el-table-column
-          label="备注"
-          min-width="140"
-          class-name="traffic-remark-col"
-        >
-          <template #default="{ row }">
-            <el-button
-              type="primary"
-              link
-              class="remark-table-trigger"
-              :title="row.remark?.trim() ? '点击编辑备注' : '点击添加备注'"
-              @click="openRemarkDialog(row)"
-            >
-              <span class="remark-cell">
-                <span
-                  class="remark-cell__icon-wrap"
-                  aria-hidden="true"
+            <span class="traffic-col-header">
+              点击数
+              <el-tooltip
+                :content="TRAFFIC_PORTAL_STAT_HEADER_TIPS.clickCount"
+                placement="top"
+                :show-after="300"
+              >
+                <el-icon
+                  class="traffic-col-header__tip"
+                  aria-label="点击数计算规则"
                 >
-                  <el-icon
-                    class="remark-cell__icon"
-                    :class="row.remark?.trim() ? 'remark-cell__icon--edit' : 'remark-cell__icon--add'"
-                    :size="17"
-                  >
-                    <EditPen v-if="row.remark?.trim()" />
-                    <CirclePlus v-else />
-                  </el-icon>
-                </span>
-                <span
-                  class="remark-cell__text remark-preview"
-                  :class="row.remark?.trim() ? 'remark-preview--filled' : 'remark-preview--empty'"
-                >{{ row.remark?.trim() ? row.remark : '暂无备注' }}</span>
-              </span>
-            </el-button>
+                  <QuestionFilled />
+                </el-icon>
+              </el-tooltip>
+            </span>
+          </template>
+          <template #default="{ row }">
+            {{ row.stats ? row.stats.clickCount : '—' }}
+          </template>
+        </el-table-column>
+
+        <el-table-column
+          width="88"
+          align="center"
+        >
+          <template #header>
+            <span class="traffic-col-header">
+              注册数
+              <el-tooltip
+                :content="TRAFFIC_PORTAL_STAT_HEADER_TIPS.registerCount"
+                placement="top"
+                :show-after="300"
+              >
+                <el-icon
+                  class="traffic-col-header__tip"
+                  aria-label="注册数计算规则"
+                >
+                  <QuestionFilled />
+                </el-icon>
+              </el-tooltip>
+            </span>
+          </template>
+          <template #default="{ row }">
+            {{ row.stats ? row.stats.registerCount : '—' }}
+          </template>
+        </el-table-column>
+
+        <el-table-column
+          width="88"
+          align="center"
+        >
+          <template #header>
+            <span class="traffic-col-header">
+              申请数
+              <el-tooltip
+                :content="TRAFFIC_PORTAL_STAT_HEADER_TIPS.applicationCount"
+                placement="top"
+                :show-after="300"
+              >
+                <el-icon
+                  class="traffic-col-header__tip"
+                  aria-label="申请数计算规则"
+                >
+                  <QuestionFilled />
+                </el-icon>
+              </el-tooltip>
+            </span>
+          </template>
+          <template #default="{ row }">
+            <span
+              v-if="row.stats"
+              class="traffic-stats-link-num"
+            >{{ row.stats.applicationCount }}</span>
+            <template v-else>
+              —
+            </template>
+          </template>
+        </el-table-column>
+
+        <el-table-column
+          width="88"
+          align="center"
+        >
+          <template #header>
+            <span class="traffic-col-header">
+              通过数
+              <el-tooltip
+                :content="TRAFFIC_PORTAL_STAT_HEADER_TIPS.approvedCount"
+                placement="top"
+                :show-after="300"
+              >
+                <el-icon
+                  class="traffic-col-header__tip"
+                  aria-label="通过数计算规则"
+                >
+                  <QuestionFilled />
+                </el-icon>
+              </el-tooltip>
+            </span>
+          </template>
+          <template #default="{ row }">
+            <span
+              v-if="row.stats"
+              class="traffic-stats-link-num"
+            >{{ row.stats.approvedCount }}</span>
+            <template v-else>
+              —
+            </template>
+          </template>
+        </el-table-column>
+
+        <el-table-column
+          width="88"
+          align="center"
+        >
+          <template #header>
+            <span class="traffic-col-header">
+              逾期数
+              <el-tooltip
+                :content="TRAFFIC_PORTAL_STAT_HEADER_TIPS.overdueCount"
+                placement="top"
+                :show-after="300"
+              >
+                <el-icon
+                  class="traffic-col-header__tip"
+                  aria-label="逾期数计算规则"
+                >
+                  <QuestionFilled />
+                </el-icon>
+              </el-tooltip>
+            </span>
+          </template>
+          <template #default="{ row }">
+            {{ row.stats ? row.stats.overdueCount : '—' }}
+          </template>
+        </el-table-column>
+
+        <el-table-column
+          width="96"
+          align="center"
+        >
+          <template #header>
+            <span class="traffic-col-header">
+              注册率
+              <el-tooltip
+                :content="TRAFFIC_PORTAL_STAT_HEADER_TIPS.registerRate"
+                placement="top"
+                :show-after="300"
+              >
+                <el-icon
+                  class="traffic-col-header__tip"
+                  aria-label="注册率计算规则"
+                >
+                  <QuestionFilled />
+                </el-icon>
+              </el-tooltip>
+            </span>
+          </template>
+          <template #default="{ row }">
+            {{ row.stats ? formatRate(row.stats.registerRate) : '—' }}
+          </template>
+        </el-table-column>
+
+        <el-table-column
+          width="96"
+          align="center"
+        >
+          <template #header>
+            <span class="traffic-col-header">
+              申请率
+              <el-tooltip
+                :content="TRAFFIC_PORTAL_STAT_HEADER_TIPS.applicationRate"
+                placement="top"
+                :show-after="300"
+              >
+                <el-icon
+                  class="traffic-col-header__tip"
+                  aria-label="申请率计算规则"
+                >
+                  <QuestionFilled />
+                </el-icon>
+              </el-tooltip>
+            </span>
+          </template>
+          <template #default="{ row }">
+            {{ row.stats ? formatRate(row.stats.applicationRate) : '—' }}
+          </template>
+        </el-table-column>
+
+        <el-table-column
+          width="96"
+          align="center"
+        >
+          <template #header>
+            <span class="traffic-col-header">
+              通过率
+              <el-tooltip
+                :content="TRAFFIC_PORTAL_STAT_HEADER_TIPS.approvalRate"
+                placement="top"
+                :show-after="300"
+              >
+                <el-icon
+                  class="traffic-col-header__tip"
+                  aria-label="通过率计算规则"
+                >
+                  <QuestionFilled />
+                </el-icon>
+              </el-tooltip>
+            </span>
+          </template>
+          <template #default="{ row }">
+            {{ row.stats ? formatRate(row.stats.approvalRate) : '—' }}
+          </template>
+        </el-table-column>
+
+        <el-table-column
+          width="96"
+          align="center"
+        >
+          <template #header>
+            <span class="traffic-col-header">
+              逾期率
+              <el-tooltip
+                :content="TRAFFIC_PORTAL_STAT_HEADER_TIPS.overdueRate"
+                placement="top"
+                :show-after="300"
+              >
+                <el-icon
+                  class="traffic-col-header__tip"
+                  aria-label="逾期率计算规则"
+                >
+                  <QuestionFilled />
+                </el-icon>
+              </el-tooltip>
+            </span>
+          </template>
+          <template #default="{ row }">
+            {{ row.stats ? formatRate(row.stats.overdueRate) : '—' }}
+          </template>
+        </el-table-column>
+
+        <el-table-column
+          width="108"
+          align="center"
+        >
+          <template #header>
+            <span class="traffic-col-header">
+              注册转化率
+              <el-tooltip
+                :content="TRAFFIC_PORTAL_STAT_HEADER_TIPS.registrationConversionRate"
+                placement="top"
+                :show-after="300"
+              >
+                <el-icon
+                  class="traffic-col-header__tip"
+                  aria-label="注册转化率计算规则"
+                >
+                  <QuestionFilled />
+                </el-icon>
+              </el-tooltip>
+            </span>
+          </template>
+          <template #default="{ row }">
+            {{ row.stats ? formatRate(row.stats.registrationConversionRate) : '—' }}
+          </template>
+        </el-table-column>
+
+        <el-table-column
+          width="108"
+          align="center"
+        >
+          <template #header>
+            <span class="traffic-col-header">
+              申请转化率
+              <el-tooltip
+                :content="TRAFFIC_PORTAL_STAT_HEADER_TIPS.applicationConversionRate"
+                placement="top"
+                :show-after="300"
+              >
+                <el-icon
+                  class="traffic-col-header__tip"
+                  aria-label="申请转化率计算规则"
+                >
+                  <QuestionFilled />
+                </el-icon>
+              </el-tooltip>
+            </span>
+          </template>
+          <template #default="{ row }">
+            {{ row.stats ? formatRate(row.stats.applicationConversionRate) : '—' }}
           </template>
         </el-table-column>
 
@@ -1001,10 +1223,11 @@ onMounted(() => {
         >
           <el-input
             v-model="createForm.code"
-            placeholder="2～40 位，如 partner_a、shop01"
+            placeholder="2～40 位，如 liuliang1"
             maxlength="40"
             show-word-limit
             clearable
+            @blur="syncPortalUsernameFromCode"
           />
         </el-form-item>
         <el-form-item
@@ -1035,6 +1258,36 @@ onMounted(() => {
             inactive-text="启"
           />
         </el-form-item>
+        <el-form-item label="开通登录账号">
+          <el-switch v-model="createForm.createPortalAccount" />
+        </el-form-item>
+        <template v-if="createForm.createPortalAccount">
+          <el-form-item
+            label="登录账号"
+            required
+          >
+            <el-input
+              v-model="createForm.portalUsername"
+              placeholder="默认可与流量商标识相同"
+              maxlength="40"
+              clearable
+              @blur="syncPortalUsernameFromCode"
+            />
+          </el-form-item>
+          <el-form-item
+            label="登录密码"
+            required
+          >
+            <el-input
+              v-model="createForm.portalPassword"
+              type="password"
+              placeholder="至少 6 位"
+              show-password
+              maxlength="64"
+              autocomplete="new-password"
+            />
+          </el-form-item>
+        </template>
       </el-form>
       <template #footer>
         <el-button @click="closeCreate">
@@ -1536,9 +1789,27 @@ onMounted(() => {
   color: var(--el-text-color-primary);
 }
 
-.traffic-quality-th-tip {
+.traffic-stats-link-num {
+  color: var(--el-color-primary);
+  font-weight: 500;
+}
+
+.traffic-col-header {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  line-height: 1.2;
+}
+
+.traffic-col-header__tip {
+  font-size: 14px;
+  color: var(--el-text-color-secondary);
   cursor: help;
-  border-bottom: 1px dashed var(--el-border-color);
+}
+
+.traffic-col-header__tip:hover {
+  color: var(--el-color-primary);
 }
 
 .traffic-unified-table :deep(.traffic-quality-row--muted) {

@@ -12,6 +12,7 @@ export {}
 declare module 'vue' {
   export interface GlobalComponents {
     AddressEditorDialog: typeof import('./components/my/address/AddressEditorDialog.vue')['default']
+    AppBeianFooter: typeof import('./components/App/AppBeianFooter.vue')['default']
     AppTabbar: typeof import('./components/App/AppTabbar.vue')['default']
     CardPackageClaimDialog: typeof import('./components/my/card-package/dialogs/CardPackageClaimDialog.vue')['default']
     CardPackageContractDialogs: typeof import('./components/my/card-package/dialogs/CardPackageContractDialogs.vue')['default']

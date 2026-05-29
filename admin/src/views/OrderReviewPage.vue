@@ -68,17 +68,6 @@ const reviewOrders = computed(() => {
   if (riskFilter.value !== '全部') {
     list = list.filter(item => item.riskStatus === riskFilter.value)
   }
-  const kw = userFilter.value.trim().toLowerCase()
-  if (kw) {
-    list = list.filter((item) => {
-      const hay = [
-        item.user,
-        item.buyerPhone,
-        item.id,
-      ].join(' ').toLowerCase()
-      return hay.includes(kw)
-    })
-  }
   return list
 })
 
@@ -172,6 +161,7 @@ async function loadReviewOrders() {
   try {
     await fetchOrders({
       status: '待审核',
+      keyword: userFilter.value.trim(),
     })
   }
   finally {
@@ -470,9 +460,17 @@ onMounted(() => {
       <el-input
         v-model="userFilter"
         class="toolbar-input"
-        placeholder="按用户筛选"
+        placeholder="搜索订单号 / 用户 / 商品 / 手机号"
         clearable
       />
+      <button
+        class="btn btn-secondary"
+        type="button"
+        :disabled="loading"
+        @click="loadReviewOrders"
+      >
+        查询
+      </button>
       <button
         class="btn btn-refresh"
         type="button"
@@ -684,7 +682,7 @@ onMounted(() => {
 }
 
 .toolbar-input {
-  width: 200px;
+  width: 320px;
   max-width: 100%;
 }
 

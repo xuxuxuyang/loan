@@ -56,6 +56,11 @@ const riskContextOrderShipping = ref<OrderShippingSnapshot | undefined>(undefine
 const resolvingRiskUserOrderId = ref<string | null>(null)
 const { orders, recalculateOrderFields, fetchOrders, fetchOrderById, updateInstallmentPaid, updateInstallmentDueDate, updateInstallmentSettleAmount, updateInstallmentNegotiate, updateInstallmentNegotiationHistoryPaid, updateOrderStatus, updateOrderShipment, updateOrderCardPackage, updateOrderCardPackageContract, deleteOrder } = useOrdersStore()
 const canOperateOrders = computed(() => isSuperAdminRole(getAdminSession()?.role))
+/** 审核员可填写/修改快递单号，其余订单操作仍仅超级管理员 */
+const canEditTrackingNumber = computed(() => {
+  const role = getAdminSession()?.role
+  return isSuperAdminRole(role) || role === 'reviewer'
+})
 
 function normalizePhone(raw: string): string {
   return String(raw || '').replace(/\D/g, '')
@@ -622,7 +627,7 @@ async function toggleRepay(order: OrderItem, period: InstallmentItem) {
 }
 
 function openTrackingDialog(order: OrderItem) {
-  if (!canOperateOrders.value || !showTrackingEditor(order)) {
+  if (!canEditTrackingNumber.value || !showTrackingEditor(order)) {
     return
   }
   trackingDialogOrder.value = order
@@ -637,7 +642,7 @@ function onTrackingDialogClosed() {
 
 async function confirmTrackingDialog() {
   const order = trackingDialogOrder.value
-  if (!order || !canOperateOrders.value) {
+  if (!order || !canEditTrackingNumber.value) {
     return
   }
   if (trackingSavingId.value) {
@@ -1359,7 +1364,7 @@ watch(
       <el-input
         v-model="keyword"
         class="toolbar-input"
-        placeholder="搜索订单号 / 用户 / 商品"
+        placeholder="搜索订单号 / 用户 / 商品 / 手机号"
         clearable
       />
       
@@ -1503,7 +1508,7 @@ watch(
             </el-tag>
           </td>
           <td class="td-tracking">
-            <template v-if="canOperateOrders && showTrackingEditor(item)">
+            <template v-if="canEditTrackingNumber && showTrackingEditor(item)">
               <button
                 type="button"
                 class="tracking-display-btn"
@@ -2903,7 +2908,8 @@ watch(
 }
 
 .toolbar-input {
-  width: 260px;
+  width: 320px;
+  max-width: 100%;
 }
 
 .toolbar-select,

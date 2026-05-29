@@ -21,6 +21,8 @@ const route = useRoute()
 const loading = ref(false)
 const errorMsg = ref('')
 const rows = ref<PendingReceivableRow[]>([])
+const keyword = ref('')
+const appliedKeyword = ref('')
 /** 应还日 = 统计日 的期次：应还总额（已还+未还） */
 const totalDueOnDate = ref(0)
 /** 应还日 = 统计日 且已还 */
@@ -51,6 +53,45 @@ const dueDate = computed(() => {
 const routeTitle = computed(() => String(route.meta.title || '待收'))
 
 const pageHint = computed(() => `统计日 ${dueDate.value}`)
+
+function normalizePhoneDigits(raw: string): string {
+  return String(raw || '').replace(/\D/g, '')
+}
+
+function applySearch() {
+  appliedKeyword.value = keyword.value.trim()
+}
+
+const filteredRows = computed(() => {
+  const kw = appliedKeyword.value
+  if (!kw) {
+    return rows.value
+  }
+  const kwLower = kw.toLowerCase()
+  const kwDigits = normalizePhoneDigits(kw)
+  return rows.value.filter((row) => {
+    if (String(row.orderId || '').includes(kw)) {
+      return true
+    }
+    if (String(row.productName || '').toLowerCase().includes(kwLower)) {
+      return true
+    }
+    if (String(row.buyerName || '').toLowerCase().includes(kwLower)) {
+      return true
+    }
+    if (String(row.receiverName || '').toLowerCase().includes(kwLower)) {
+      return true
+    }
+    if (kwDigits) {
+      const buyerPhone = normalizePhoneDigits(row.buyerPhone || '')
+      const receiverPhone = normalizePhoneDigits(row.receiverPhone || '')
+      if (buyerPhone.includes(kwDigits) || receiverPhone.includes(kwDigits)) {
+        return true
+      }
+    }
+    return false
+  })
+})
 
 const statDayPrefix = computed(() => (offsetDays.value === 0 ? '今日' : '明日'))
 
@@ -128,6 +169,8 @@ onMounted(() => {
 watch(
   () => [route.name, dueDate.value] as const,
   () => {
+    appliedKeyword.value = ''
+    keyword.value = ''
     void load()
   },
 )
@@ -248,20 +291,36 @@ watch(
         <div class="table-card-header">
           <span class="table-card-title">待收明细</span>
           <el-tag
-            v-if="rows.length"
+            v-if="filteredRows.length"
             type="warning"
             effect="plain"
             size="small"
           >
-            共 {{ rows.length }} 笔
+            共 {{ filteredRows.length }} 笔
           </el-tag>
         </div>
       </template>
 
+      <div class="receivable-toolbar">
+        <el-input
+          v-model="keyword"
+          class="receivable-search-input"
+          placeholder="搜索订单号 / 用户 / 商品 / 手机号"
+          clearable
+        />
+        <el-button
+          type="default"
+          :disabled="loading"
+          @click="applySearch"
+        >
+          查询
+        </el-button>
+      </div>
+
       <div class="receivable-table-wrap">
         <el-table
           v-loading="loading"
-          :data="rows"
+          :data="filteredRows"
           stripe
           border
           size="default"
@@ -418,6 +477,19 @@ watch(
   font-weight: 600;
   font-size: 15px;
   color: var(--el-text-color-primary);
+}
+
+.receivable-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+  flex-shrink: 0;
+}
+
+.receivable-search-input {
+  width: min(100%, 320px);
 }
 
 .receivable-table-wrap {
