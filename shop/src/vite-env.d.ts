@@ -5,6 +5,8 @@ interface ImportMetaEnv {
   readonly VITE_MALL_DEFAULT_CREDIT_QUOTA?: string
   /** 安卓 APK 直链（如 OSS 静态托管 URL），供「我的 → App下载」打开 */
   readonly VITE_MALL_APP_APK_URL?: string
+  /** 原生 App OTA：latest.json 地址（仅 Capacitor Android/iOS 启动时读取） */
+  readonly VITE_APP_OTA_MANIFEST_URL?: string
 }
 
 interface ImportMeta {

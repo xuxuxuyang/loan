@@ -4,6 +4,7 @@ import type { IconifyJSON } from '@iconify/vue'
 import tablerIcons from '@iconify-json/tabler/icons.json'
 import App from './App.vue'
 import router from './router'
+import { runAppOtaCheck } from './composables/useAppOtaUpdate'
 import { captureRegisterChannelFromRoute } from './composables/useRegisterChannel'
 import { installTenantFetchInterceptor } from './utils/tenant'
 
@@ -18,7 +19,15 @@ router.beforeEach((to) => {
   return true
 })
 
-const app = createApp(App)
-app.use(router)
-installTenantFetchInterceptor()
-app.mount('#app')
+async function bootstrap() {
+  if (!import.meta.env.SSR) {
+    await runAppOtaCheck()
+  }
+
+  const app = createApp(App)
+  app.use(router)
+  installTenantFetchInterceptor()
+  app.mount('#app')
+}
+
+void bootstrap()

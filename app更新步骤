@@ -1,0 +1,14 @@
+1. 改版本号
+
+shop/package.json 里 "version" 改大，例如 1.0.1 → 1.0.2
+
+2. 打包
+
+cd shop
+npm run build:ota
+
+3. 上传 OSS
+进 bucket 的 app-ota/，上传 ota-out/ 里这两个文件：
+
+新的 wenshuo-mall-x.x.x.zip
+覆盖 latest.json

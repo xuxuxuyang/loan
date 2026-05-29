@@ -7,6 +7,12 @@ const config: CapacitorConfig = {
   server: {
     androidScheme: 'https',
   },
+  plugins: {
+    CapacitorUpdater: {
+      /** manual 模式：由 useAppOtaUpdate 拉取 OSS latest.json 并更新 */
+      autoUpdate: false,
+    },
+  },
 }
 
 export default config

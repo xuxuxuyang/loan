@@ -80,6 +80,7 @@ declare global {
   const resolveComponent: typeof import('vue').resolveComponent
   const resolveCsImageDisplayUrl: typeof import('./composables/useMallCsChat').resolveCsImageDisplayUrl
   const resolveMallCreditQuota: typeof import('./composables/mallCreditQuota').resolveMallCreditQuota
+  const runAppOtaCheck: typeof import('./composables/useAppOtaUpdate').runAppOtaCheck
   const shallowReactive: typeof import('vue').shallowReactive
   const shallowReadonly: typeof import('vue').shallowReadonly
   const shallowRef: typeof import('vue').shallowRef
@@ -123,6 +124,9 @@ declare global {
   // @ts-ignore
   export type { Component, Slot, Slots, ComponentPublicInstance, ComputedRef, DirectiveBinding, ExtractDefaultPropTypes, ExtractPropTypes, ExtractPublicPropTypes, InjectionKey, PropType, Ref, ShallowRef, MaybeRef, MaybeRefOrGetter, VNode, WritableComputedRef } from 'vue'
   import('vue')
+  // @ts-ignore
+  export type { OtaManifest } from './composables/useAppOtaUpdate'
+  import('./composables/useAppOtaUpdate')
   // @ts-ignore
   export type { LakalaPayBizType, LakalaPreorderPayload, LakalaPreorderResult, LakalaPayStatusResult } from './composables/useLakalaPayment'
   import('./composables/useLakalaPayment')
@@ -222,6 +226,7 @@ declare module 'vue' {
     readonly resolveComponent: UnwrapRef<typeof import('vue')['resolveComponent']>
     readonly resolveCsImageDisplayUrl: UnwrapRef<typeof import('./composables/useMallCsChat')['resolveCsImageDisplayUrl']>
     readonly resolveMallCreditQuota: UnwrapRef<typeof import('./composables/mallCreditQuota')['resolveMallCreditQuota']>
+    readonly runAppOtaCheck: UnwrapRef<typeof import('./composables/useAppOtaUpdate')['runAppOtaCheck']>
     readonly shallowReactive: UnwrapRef<typeof import('vue')['shallowReactive']>
     readonly shallowReadonly: UnwrapRef<typeof import('vue')['shallowReadonly']>
     readonly shallowRef: UnwrapRef<typeof import('vue')['shallowRef']>

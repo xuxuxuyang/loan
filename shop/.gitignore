@@ -44,3 +44,6 @@ android/.knownPackages
 android/app/release/
 android/build/
 android/capacitor-cordova-android-plugins/
+
+# OTA 构建产物
+ota-out/

@@ -1,7 +1,7 @@
 {
   "name": "shop",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -11,11 +11,13 @@
     "open:android": "npx cap open android",
     "icons:android": "npx capacitor-assets generate --android --assetPath assets --iconBackgroundColor \"#4a1515\" --iconBackgroundColorDark \"#4a1515\"",
     "build:apk": "npm run build:app && bash scripts/build-android-release.sh",
-    "init:android-keystore": "bash scripts/init-android-keystore.sh"
+    "init:android-keystore": "bash scripts/init-android-keystore.sh",
+    "build:ota": "bash scripts/build-ota-bundle.sh"
   },
   "dependencies": {
     "@capacitor/android": "^7.4.2",
     "@capacitor/core": "^7.4.2",
+    "@capgo/capacitor-updater": "^7.45.10",
     "@iconify-json/tabler": "^1.2.34",
     "@iconify/vue": "^5.0.1",
     "@tailwindcss/vite": "^4.2.4",
