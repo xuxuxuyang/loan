@@ -376,57 +376,55 @@ async function loadShardedRawFromDb(dbm) {
 const BULK_CHUNK = 400
 
 /**
- * 将快照写入分集合 + app_meta（已深拷贝的 plain 对象）。
- * 每集合：删除内存中已不存在的 _id，再 bulkWrite replace upsert。
+ * 同步单个分集合：删除库中不在快照内的 _id，再 bulkWrite replace upsert。
  */
-async function persistShardedSnapshot(dbm, snapshot) {
-  const updatedAt = new Date()
-  for (const spec of ENTITY_SPECS) {
-    const coll = dbm.collection(spec.collection)
-    const items = Array.isArray(snapshot[spec.key]) ? snapshot[spec.key] : []
-    const wantKeys = new Set()
-    const keyedItems = []
-    for (const item of items) {
-      const pk = entityMongoPrimaryKey(item, spec.key)
-      if (pk === undefined || pk === null) {
-        console.warn(`[store] 跳过缺少主键的 ${spec.key} 记录`, item && typeof item === 'object' ? Object.keys(item) : item)
-        continue
-      }
-      wantKeys.add(stablePrimaryKeyString(pk))
-      keyedItems.push({ pk, item })
+async function persistEntityCollection(dbm, spec, items) {
+  const coll = dbm.collection(spec.collection)
+  const list = Array.isArray(items) ? items : []
+  const wantKeys = new Set()
+  const keyedItems = []
+  for (const item of list) {
+    const pk = entityMongoPrimaryKey(item, spec.key)
+    if (pk === undefined || pk === null) {
+      console.warn(`[store] 跳过缺少主键的 ${spec.key} 记录`, item && typeof item === 'object' ? Object.keys(item) : item)
+      continue
     }
+    wantKeys.add(stablePrimaryKeyString(pk))
+    keyedItems.push({ pk, item })
+  }
 
-    const existing = await coll.find({}, { projection: { _id: 1 } }).toArray()
-    const toRemove = existing
-      .map(e => e._id)
-      .filter(_id => !wantKeys.has(stablePrimaryKeyString(_id)))
+  const existing = await coll.find({}, { projection: { _id: 1 } }).toArray()
+  const toRemove = existing
+    .map(e => e._id)
+    .filter(_id => !wantKeys.has(stablePrimaryKeyString(_id)))
 
-    for (let i = 0; i < toRemove.length; i += 500) {
-      const slice = toRemove.slice(i, i + 500)
-      if (slice.length) {
-        await coll.deleteMany({ _id: { $in: slice } })
-      }
-    }
-
-    for (let i = 0; i < keyedItems.length; i += BULK_CHUNK) {
-      const chunk = keyedItems.slice(i, i + BULK_CHUNK)
-      const ops = chunk.map(({ pk, item }) => {
-        const body = JSON.parse(JSON.stringify(item))
-        delete body._id
-        return {
-          replaceOne: {
-            filter: { _id: pk },
-            replacement: { ...body, _id: pk },
-            upsert: true,
-          },
-        }
-      })
-      if (ops.length) {
-        await coll.bulkWrite(ops, { ordered: false })
-      }
+  for (let i = 0; i < toRemove.length; i += 500) {
+    const slice = toRemove.slice(i, i + 500)
+    if (slice.length) {
+      await coll.deleteMany({ _id: { $in: slice } })
     }
   }
 
+  for (let i = 0; i < keyedItems.length; i += BULK_CHUNK) {
+    const chunk = keyedItems.slice(i, i + BULK_CHUNK)
+    const ops = chunk.map(({ pk, item }) => {
+      const body = JSON.parse(JSON.stringify(item))
+      delete body._id
+      return {
+        replaceOne: {
+          filter: { _id: pk },
+          replacement: { ...body, _id: pk },
+          upsert: true,
+        },
+      }
+    })
+    if (ops.length) {
+      await coll.bulkWrite(ops, { ordered: false })
+    }
+  }
+}
+
+async function persistAppMeta(dbm, snapshot, updatedAt = new Date()) {
   const meta = snapshot._meta && typeof snapshot._meta === 'object' ? snapshot._meta : {}
   await dbm.collection(mongo.APP_META).replaceOne(
     { _id: MAIN_STATE_ID },
@@ -439,22 +437,46 @@ async function persistShardedSnapshot(dbm, snapshot) {
   )
 }
 
+/**
+ * 将快照写入分集合 + app_meta（已深拷贝的 plain 对象）。
+ * 每集合：删除内存中已不存在的 _id，再 bulkWrite replace upsert。
+ */
+async function persistShardedSnapshot(dbm, snapshot) {
+  for (const spec of ENTITY_SPECS) {
+    await persistEntityCollection(dbm, spec, snapshot[spec.key])
+  }
+  await persistAppMeta(dbm, snapshot)
+}
+
+/**
+ * 仅同步指定实体键（供商品种子脚本等使用，避免误删 adminAccounts 等未加载字段）。
+ * @param {string[]} entityKeys ENTITY_SPECS.key 子集，如 ['products']
+ */
+async function persistShardedSnapshotPartial(dbm, snapshot, entityKeys) {
+  const allowed = new Set(Array.isArray(entityKeys) ? entityKeys : [])
+  for (const spec of ENTITY_SPECS) {
+    if (!allowed.has(spec.key)) {
+      continue
+    }
+    await persistEntityCollection(dbm, spec, snapshot[spec.key])
+  }
+  await persistAppMeta(dbm, snapshot)
+}
+
 function legacyAppStateDocToRaw(legacyDoc) {
   const { _id: _drop, updatedAt: _u, ...rest } = legacyDoc
   return rest
 }
 
-function scheduleMongoPersist(snapshot) {
-  const scope = getScopeState()
-  const currentTail = persistTailByTenant.get(scope.key) || Promise.resolve()
+function scheduleMongoPersistJob(scopeKey, job) {
+  const currentTail = persistTailByTenant.get(scopeKey) || Promise.resolve()
   const nextTail = currentTail
     .then(async () => {
-      const dbm = mongo.getMongoDb()
-      if (!dbm || !mongoBacked) {
+      if (!mongoBacked) {
         return
       }
       try {
-        await persistShardedSnapshot(dbm, snapshot)
+        await job()
       }
       catch (err) {
         console.error('[store] MongoDB 分集合持久化失败:', err?.message || err)
@@ -463,10 +485,32 @@ function scheduleMongoPersist(snapshot) {
     .catch((err) => {
       console.error('[store] MongoDB 持久化队列失败:', err?.message || err)
     })
-  persistTailByTenant.set(scope.key, nextTail)
-  if (scope.key === 'tenant:default') {
+  persistTailByTenant.set(scopeKey, nextTail)
+  if (scopeKey === 'tenant:default') {
     persistTail = nextTail
   }
+}
+
+function scheduleMongoPersist(snapshot) {
+  const scope = getScopeState()
+  scheduleMongoPersistJob(scope.key, async () => {
+    const dbm = mongo.getMongoDb()
+    if (!dbm) {
+      return
+    }
+    await persistShardedSnapshot(dbm, snapshot)
+  })
+}
+
+function scheduleMongoPersistPartial(snapshot, entityKeys) {
+  const scope = getScopeState()
+  scheduleMongoPersistJob(scope.key, async () => {
+    const dbm = mongo.getMongoDb()
+    if (!dbm) {
+      return
+    }
+    await persistShardedSnapshotPartial(dbm, snapshot, entityKeys)
+  })
 }
 
 function assertDatastoreReady() {
@@ -605,6 +649,24 @@ function writeDb(db) {
   ensureDbFile()
   const file = tenantDbFile(scope.tenantId)
   fs.writeFileSync(file, JSON.stringify(db, null, 2), 'utf-8')
+}
+
+/**
+ * 更新内存快照并仅持久化指定实体（Mongo 模式）。JSON 回退模式仍写整文件（内存中其它字段未改则安全）。
+ * @param {object} db
+ * @param {string[]} entityKeys 如 ['products']
+ */
+function writeDbPartial(db, entityKeys) {
+  const scope = getScopeState()
+  if (mongoBacked) {
+    mongoMemoryDbByTenant.set(scope.key, db)
+    if (scope.key === 'tenant:default') {
+      mongoMemoryDb = db
+    }
+    scheduleMongoPersistPartial(clonePayloadForMongo(db), entityKeys)
+    return
+  }
+  writeDb(db)
 }
 
 /** 供脚本在 writeDb 后 await，确保 Mongo 持久化已完成再断开连接 */
@@ -848,6 +910,7 @@ module.exports = {
   readDb,
   resetDb,
   writeDb,
+  writeDbPartial,
   flushMongoPersist,
   hydrateFromMongoAfterConnect,
   hydrateTenantDbFromMongo,
@@ -866,4 +929,5 @@ module.exports = {
   /** 脚本：删除根库 + mall__* 后缀库（完整重置多子系统/workspace 数据） */
   dropAllMongoProjectDatabases,
   persistShardedSnapshot,
+  persistShardedSnapshotPartial,
 }

@@ -12,6 +12,7 @@ loadDotenvExports(require('node:path').join(__dirname, '..', 'src'))
 const mongoConfig = require('../src/mongoConfig')
 const mongo = require('../src/mongo')
 const store = require('../src/store')
+const { runWithTenant, DEFAULT_TENANT_ID } = require('../src/tenantContext')
 
 const DJ = 'https://cdn.dummyjson.com/product-images'
 
@@ -157,47 +158,52 @@ async function main() {
 
   if (mongoConfig.isMongoConfigured()) {
     await mongo.connectMongo()
-    await store.hydrateFromMongoAfterConnect()
   }
 
-  const db = store.readDb()
-  if (!Array.isArray(db.products)) {
-    db.products = []
-  }
+  await runWithTenant(DEFAULT_TENANT_ID, async () => {
+    if (mongoConfig.isMongoConfigured()) {
+      await store.hydrateFromMongoAfterConnect()
+    }
 
-  const kept = db.products.filter((p) => String(p.salesMode || '').trim() !== 'mall')
-  const maxId = kept.reduce((m, p) => {
-    const id = Number(p.id || 0)
-    return id > m ? id : m
-  }, 0)
+    const db = store.readDb()
+    if (!Array.isArray(db.products)) {
+      db.products = []
+    }
 
-  const now = new Date().toISOString()
-  const templates = catalogRows()
-  const newMall = templates.map((row, idx) => ({
-    id: maxId + idx + 1,
-    name: row.name,
-    subtitle: row.subtitle,
-    description: row.description,
-    origin: row.origin,
-    price: row.price,
-    image: row.image,
-    category: row.category,
-    salesMode: 'mall',
-    onSale: true,
-    createdAt: now,
-    updatedAt: now,
-  }))
+    const kept = db.products.filter((p) => String(p.salesMode || '').trim() !== 'mall')
+    const maxId = kept.reduce((m, p) => {
+      const id = Number(p.id || 0)
+      return id > m ? id : m
+    }, 0)
 
-  const removed = db.products.length - kept.length
-  db.products = [...newMall, ...kept]
-  store.writeDb(db)
+    const now = new Date().toISOString()
+    const templates = catalogRows()
+    const newMall = templates.map((row, idx) => ({
+      id: maxId + idx + 1,
+      name: row.name,
+      subtitle: row.subtitle,
+      description: row.description,
+      origin: row.origin,
+      price: row.price,
+      image: row.image,
+      category: row.category,
+      salesMode: 'mall',
+      onSale: true,
+      createdAt: now,
+      updatedAt: now,
+    }))
 
-  if (mongoConfig.isMongoConfigured()) {
-    await store.flushMongoPersist()
-    await mongo.closeMongo()
-  }
+    const removed = db.products.length - kept.length
+    db.products = [...newMall, ...kept]
+    store.writeDbPartial(db, ['products'])
 
-  console.log('[seed-mall] 已移除 mall 商品:', removed, '条；写入新 mall 商品:', newMall.length, '条；保留非 mall:', kept.length, '条')
+    if (mongoConfig.isMongoConfigured()) {
+      await store.flushMongoPersist()
+      await mongo.closeMongo()
+    }
+
+    console.log('[seed-mall] 已移除 mall 商品:', removed, '条；写入新 mall 商品:', newMall.length, '条；保留非 mall:', kept.length, '条')
+  })
 }
 
 main().catch((e) => {
