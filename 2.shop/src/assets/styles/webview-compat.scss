@@ -1,0 +1,155 @@
+/**
+ * Android System WebView 兼容层（Chrome < 111 不支持 Tailwind v4 的 in oklab 渐变等语法）。
+ * 关键视觉用标准 linear-gradient + background-color 兜底，不依赖 Tailwind 渐变工具类。
+ */
+
+/* ---------- 页面背景 ---------- */
+.wv-bg-login-page {
+  background-color: #eef1f7;
+  background-image: linear-gradient(180deg, #f3f1f8 0%, #eef1f7 100%);
+}
+
+/* ---------- 主色渐变（粉） ---------- */
+.wv-gradient-primary {
+  background-color: #f06b81;
+  background-image: linear-gradient(90deg, #ff8292 0%, #f06b81 100%);
+  color: #fff;
+}
+
+.wv-gradient-primary-soft {
+  background-color: #f56a7d;
+  background-image: linear-gradient(90deg, #ff8594 0%, #f56a7d 100%);
+  color: #fff;
+}
+
+.wv-gradient-bnpl {
+  background-color: #ff6e92;
+  background-image: linear-gradient(135deg, #ff8fb3 0%, #ff6e92 100%);
+  color: #fff;
+}
+
+.wv-gradient-bnpl-h {
+  background-color: #ff6e92;
+  background-image: linear-gradient(90deg, #ff8fb3 0%, #ff6e92 100%);
+}
+
+.wv-gradient-mall {
+  background-color: #ff5f6b;
+  background-image: linear-gradient(135deg, #ff8a5b 0%, #ff5f6b 100%);
+  color: #fff;
+}
+
+.wv-gradient-mall-h {
+  background-color: #f06b81;
+  background-image: linear-gradient(90deg, #ff7b87 0%, #f06b81 100%);
+  color: #fff;
+}
+
+.wv-gradient-category-active {
+  background-color: #ff7bb0;
+  background-image: linear-gradient(90deg, #ff8ea5 0%, #ff7bb0 100%);
+  border-color: #f07b98;
+  color: #fff;
+}
+
+/* ---------- 青绿（注册/卡包） ---------- */
+.wv-gradient-teal {
+  background-color: #18a08f;
+  background-image: linear-gradient(90deg, #0b7b6e 0%, #18a08f 100%);
+  color: #fff;
+}
+
+/* ---------- 账单/警示橙红 ---------- */
+.wv-gradient-bill {
+  background-color: #f97316;
+  background-image: linear-gradient(90deg, #ff8a65 0%, #f97316 100%);
+  color: #fff;
+}
+
+.wv-gradient-bill.bill-submit,
+.bill-submit.wv-gradient-bill {
+  box-shadow: 0 8px 22px rgba(249, 115, 22, 0.35);
+}
+
+.wv-gradient-danger {
+  background-color: #dc2626;
+  background-image: linear-gradient(90deg, #ef4444 0%, #dc2626 100%);
+  color: #fff;
+}
+
+/* ---------- 装饰 ---------- */
+.wv-gradient-amber-icon {
+  background-color: #f8bb54;
+  background-image: linear-gradient(135deg, #ffdba0 0%, #f8bb54 100%);
+}
+
+.wv-gradient-card-subtle {
+  background-color: #f8fafc;
+  background-image: linear-gradient(180deg, #fff 0%, #f8fafc 100%);
+}
+
+/* ---------- 订单状态图标底色 ---------- */
+.wv-tone-reviewing {
+  background-color: #7f8cf6;
+  background-image: linear-gradient(135deg, #7f8cf6 0%, #6aa9ff 100%);
+}
+
+.wv-tone-shipping {
+  background-color: #f6a54e;
+  background-image: linear-gradient(135deg, #f6a54e 0%, #ff7f63 100%);
+}
+
+.wv-tone-receiving {
+  background-color: #38b2ac;
+  background-image: linear-gradient(135deg, #38b2ac 0%, #4fd1c5 100%);
+}
+
+.wv-tone-enjoying {
+  background-color: #e879f9;
+  background-image: linear-gradient(135deg, #e879f9 0%, #f472b6 100%);
+}
+
+/* ---------- 银行卡主题 ---------- */
+.wv-card-blue {
+  background-color: #2468f2;
+  background-image: linear-gradient(90deg, #2468f2 0%, #2e8cff 100%);
+}
+
+.wv-card-coral {
+  background-color: #ff6b7f;
+  background-image: linear-gradient(90deg, #ff6b7f 0%, #ff8b6b 100%);
+}
+
+.wv-card-green {
+  background-color: #0f8b6f;
+  background-image: linear-gradient(90deg, #0f8b6f 0%, #28b491 100%);
+}
+
+.wv-card-purple {
+  background-color: #6539d8;
+  background-image: linear-gradient(90deg, #6539d8 0%, #8d6cff 100%);
+}
+
+/* ---------- 文案兜底（避免 color-mix 失效） ---------- */
+.wv-text-muted {
+  color: rgba(0, 0, 0, 0.5);
+}
+
+.wv-text-white {
+  color: #fff;
+}
+
+/* Element Plus 按钮覆盖 */
+.wv-gradient-teal-el.el-button {
+  background-color: #18a08f !important;
+  background-image: linear-gradient(90deg, #0b7b6e 0%, #18a08f 100%) !important;
+  border-color: transparent !important;
+  color: #fff !important;
+}
+
+.wv-gradient-teal-el.el-button:hover,
+.wv-gradient-teal-el.el-button:focus {
+  background-color: #159a8a !important;
+  background-image: linear-gradient(90deg, #0a7266 0%, #159a8a 100%) !important;
+  color: #fff !important;
+}

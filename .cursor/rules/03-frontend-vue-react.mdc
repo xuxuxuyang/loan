@@ -1,0 +1,36 @@
+---
+description: 前端 Vue/React：组件与性能（通用）
+globs: "**/*.{vue,tsx,jsx}"
+alwaysApply: false
+---
+
+# 前端组件与性能（通用）
+
+## 组件
+
+- **单一职责**：>300 行考虑拆；业务进 composable/hook，UI 只渲染。
+- **复用优先**：第二处相似 UI → 抽组件或配置驱动，不复制粘贴改类名。
+- **状态位置**：能局部不全局；能 derived 不 duplicate 存两份。
+- **禁止**：在 `setup` 里写大块未抽离业务；父子层层 emit 传 5 层以上。
+
+## 数据获取
+
+- 列表页：**服务端分页**；`onMounted` 不要默认拉「全部用户/订单」。
+- 轮询：可见才 poll；`hidden` 停；间隔 ≥3s 除非实时必需；离开页 `clearInterval`。
+- 防抖/节流：搜索、resize、scroll 必做。
+- 图片：`loading="lazy"`、合适尺寸/CDN，列表不用原图。
+
+## 性能红线
+
+```text
+❌ watch 里无差别 deep + 立即全量 refetch
+❌ 大数组每次 render 重新 map/filter（应用 computed/memo）
+❌ v-for 无稳定 key；把整库对象传进子组件
+❌ 弹窗打开时拉全站数据「以备后用」
+```
+
+## 改页面前
+
+1. 数据从哪个 API 来？字段是否够轻？
+2. 打开/关闭是否泄漏 listener/timer？
+3. 是否重复请求（StrictMode 双 mount、tab 切换）→ 用 abort/请求序号。
