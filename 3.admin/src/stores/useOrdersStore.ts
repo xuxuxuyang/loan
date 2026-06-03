@@ -356,7 +356,7 @@ function mapMallOrderToAdminOrder(order: MallOrderPayload): OrderItem {
 }
 
 /**
- * 侧栏订单角标：与 OrderReviewPage「待审核」、OrdersPage「已审核订单」（未发卡包）列表口径一致。
+ * 侧栏订单角标：与 OrderReviewPage 默认「待审核」列表、OrdersPage「已审核订单」（未发卡包）口径一致。
  */
 export function computeAdminOrderSidebarCounts(payloads: unknown[]): {
   pendingReview: number
@@ -372,7 +372,7 @@ export function computeAdminOrderSidebarCounts(payloads: unknown[]): {
       continue
     }
     const o = mapMallOrderToAdminOrder(raw as MallOrderPayload)
-    if (o.status === '待审核' || o.status === '风控未通过') {
+    if (o.status === '待审核') {
       pendingReview += 1
     }
     if (o.status !== '待审核' && o.status !== '风控未通过' && !o.cardPackageIssued) {

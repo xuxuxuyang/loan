@@ -3333,6 +3333,16 @@ function prepareAdminOrderListItem(item) {
   }
 }
 
+/** 未审核列表风控筛选：未传 risk 时默认排除「风控未通过」，仅显式 risk=failed 时展示 */
+function adminPendingListMatchesRiskFilter(item, risk) {
+  ensureOrderRiskState(item)
+  const rs = item.riskStatus === 'failed' ? 'failed' : 'passed'
+  if (risk === 'passed' || risk === 'failed') {
+    return rs === risk
+  }
+  return rs !== 'failed'
+}
+
 function adminOrderPassesListFilters(db, item, filters) {
   const {
     keyword = '',
@@ -3347,12 +3357,8 @@ function adminOrderPassesListFilters(db, item, filters) {
   if (scope && !matchesAdminOrderListScope(item, scope)) {
     return false
   }
-  if (scope === 'pending' && risk && (risk === 'passed' || risk === 'failed')) {
-    ensureOrderRiskState(item)
-    const rs = item.riskStatus === 'failed' ? 'failed' : 'passed'
-    if (rs !== risk) {
-      return false
-    }
+  if (scope === 'pending' && !adminPendingListMatchesRiskFilter(item, risk)) {
+    return false
   }
   if (scope === 'card-data' && repay && repay !== '全部') {
     if (orderRepayBucketForAdmin(item) !== repay) {
@@ -8106,7 +8112,7 @@ function computeAdminDashboardKpisFromDb(db) {
   }
 }
 
-/** admin 侧栏：未审核 / 已审核列表角标（与 admin computeAdminOrderSidebarCounts 一致） */
+/** admin 侧栏：未审核（默认列表，不含风控未通过）/ 已审核列表角标 */
 function computeAdminOrderSidebarCountsFromDb(db) {
   let pendingReview = 0
   let reviewedOrdersList = 0
@@ -8115,7 +8121,7 @@ function computeAdminOrderSidebarCountsFromDb(db) {
     ensureOrderCardPackage(item)
     ensureOrderShipment(item)
     const adminStatus = resolveAdminOrderDisplayStatus(item)
-    if (adminStatus === '待审核' || adminStatus === '风控未通过') {
+    if (adminStatus === '待审核') {
       pendingReview += 1
     }
     if (adminStatus !== '待审核' && adminStatus !== '风控未通过' && !item.cardPackageIssued) {
@@ -8240,12 +8246,8 @@ router.get('/orders', async (ctx) => {
     if (scope && !matchesAdminOrderListScope(item, scope)) {
       return false
     }
-    if (scope === 'pending' && risk && (risk === 'passed' || risk === 'failed')) {
-      ensureOrderRiskState(item)
-      const rs = item.riskStatus === 'failed' ? 'failed' : 'passed'
-      if (rs !== risk) {
-        return false
-      }
+    if (scope === 'pending' && !adminPendingListMatchesRiskFilter(item, risk)) {
+      return false
     }
     if (scope === 'card-data' && repay && repay !== '全部') {
       if (orderRepayBucketForAdmin(item) !== repay) {

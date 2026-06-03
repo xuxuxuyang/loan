@@ -10,7 +10,7 @@ const MALL_API_BASE = `${(import.meta.env.VITE_MALL_API_BASE || 'http://localhos
 const USE_LEGACY_ORDER_BADGE_POLL = String(import.meta.env.VITE_ADMIN_LEGACY_ORDER_BADGE_POLL || '').trim() === 'true'
 
 /**
- * 侧栏「未审核订单」：与审核页一致，含「待审核」与「风控未通过」（仍处于 reviewing 人工队列）。
+ * 侧栏「未审核订单」：与审核页默认列表一致，仅统计「待审核」（不含「风控未通过」）。
  */
 export const ordersMenuPendingReviewTotal = ref(0)
 
