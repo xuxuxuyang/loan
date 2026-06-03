@@ -15,6 +15,7 @@ import { MALL_EDITION_SHOP_DIRECT_ONLY } from '~/config/mallEdition'
 import type { LakalaPreorderPayload } from '~/composables/useLakalaPayment'
 import LakalaPaySheet from '~/components/payment/LakalaPaySheet.vue'
 import { notifyError, notifySuccess, notifyWarning } from '~/utils/epFeedback'
+import { installmentRiskRejectToast } from '~/utils/installmentRiskMessage'
 
 const route = useRoute()
 const router = useRouter()
@@ -397,8 +398,8 @@ async function submitOrder() {
         )
         const ok = Boolean(stepRes.success && stepRes.data?.ok)
         if (!ok) {
-          const errText = stepRes.data?.step?.error || (typeof stepRes.msg === 'string' ? stepRes.msg : '') || '系统审核不通过'
-          notifyError(`审核未通过（${stepRes.data?.step?.label || stepKey}）：${errText}`)
+          const errText = stepRes.data?.step?.error || (typeof stepRes.msg === 'string' ? stepRes.msg : '') || ''
+          notifyError(installmentRiskRejectToast(errText))
           return
         }
       }
@@ -457,7 +458,7 @@ async function submitOrder() {
   if (newOrder.riskStatus === 'failed') {
     notifyWarning(
       newOrder.riskReason
-        ? `审核不通过：${newOrder.riskReason}`
+        ? installmentRiskRejectToast(newOrder.riskReason, '审核不通过')
         : '审核不通过，请稍后在订单列表查看详情',
     )
   }
