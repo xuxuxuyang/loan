@@ -3,7 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import TrafficPartnerLogo from '../components/TrafficPartnerLogo.vue'
-import { clearTrafficPartnerSession, getTrafficPartnerSession } from '../composables/useTrafficPartnerAuth'
+import { clearTrafficPartnerSession } from '../composables/useTrafficPartnerAuth'
 import { trafficPartnerFetch } from '../composables/useTrafficPartnerApi'
 
 const MALL_H5_ORIGIN = (import.meta.env.VITE_MALL_H5_ORIGIN || '').replace(/\/$/, '')
@@ -27,7 +27,6 @@ interface TrafficPartnerStatsRow {
 }
 
 const router = useRouter()
-const session = getTrafficPartnerSession()
 const loading = ref(false)
 const rows = ref<TrafficPartnerStatsRow[]>([])
 const errorMessage = ref('')
@@ -52,8 +51,6 @@ const STAT_HEADER_TIPS = {
   registrationConversionRate: '注册转化率 = 通过用户数 / 注册用户数',
   applicationConversionRate: '申请转化率 = 通过用户数 / 申请用户数',
 } as const
-
-const displayName = computed(() => session?.name || session?.username || '流量商')
 
 const summary = computed(() => {
   if (!rows.value.length) {
@@ -206,14 +203,6 @@ onMounted(() => {
               引流数据
             </h1>
           </div>
-          <el-tag
-            type="primary"
-            effect="dark"
-            round
-            class="workspace__partner-tag"
-          >
-            {{ displayName }}
-          </el-tag>
         </div>
         <div class="workspace__actions">
           <el-button
@@ -300,21 +289,6 @@ onMounted(() => {
               :header-cell-style="tableHeaderCellStyle"
               empty-text="暂无数据，请联系管理员配置渠道"
             >
-              <el-table-column
-                label="渠道名称"
-                min-width="120"
-                show-overflow-tooltip
-              >
-                <template #default="{ row }">
-                  <el-tag
-                    type="primary"
-                    effect="plain"
-                    round
-                  >
-                    {{ row.name || row.code }}
-                  </el-tag>
-                </template>
-              </el-table-column>
               <el-table-column
                 label="推广链接"
                 min-width="240"
@@ -615,11 +589,6 @@ onMounted(() => {
   color: #1e3a8a;
 }
 
-.workspace__partner-tag {
-  margin-left: 8px;
-  flex-shrink: 0;
-}
-
 .workspace__actions {
   display: flex;
   gap: 8px;
@@ -627,9 +596,11 @@ onMounted(() => {
 }
 
 .workspace__main {
-  max-width: 1400px;
-  margin: 0 auto;
-  padding: 20px 20px 40px;
+  width: 100%;
+  max-width: none;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 20px 24px 40px;
 }
 
 .workspace__alert {
@@ -672,6 +643,8 @@ onMounted(() => {
 .kpi-card--overdue .kpi-card__value { color: #dc2626; }
 
 .panel {
+  width: 100%;
+  box-sizing: border-box;
   background: #fff;
   border-radius: 14px;
   border: 1px solid rgba(30, 58, 138, 0.08);
@@ -716,6 +689,10 @@ onMounted(() => {
 .panel__body {
   padding: 16px 20px 20px;
   overflow-x: auto;
+}
+
+.data-table {
+  width: 100%;
 }
 
 .promo-link {
@@ -769,8 +746,8 @@ onMounted(() => {
     padding: 12px 16px;
   }
 
-  .workspace__partner-tag {
-    display: none;
+  .workspace__main {
+    padding: 16px 14px 32px;
   }
 
   .kpi-row {

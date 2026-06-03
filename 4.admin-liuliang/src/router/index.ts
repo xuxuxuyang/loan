@@ -1,5 +1,5 @@
 import { createRouter, createWebHistory } from 'vue-router'
-import { getTrafficPartnerSession, isTrafficPartnerAuthenticated } from '../composables/useTrafficPartnerAuth'
+import { isTrafficPartnerAuthenticated } from '../composables/useTrafficPartnerAuth'
 
 const LoginPage = () => import('../views/LoginPage.vue')
 const StatsPage = () => import('../views/StatsPage.vue')
@@ -34,11 +34,7 @@ router.beforeEach((to) => {
   if (to.name === 'login' && isTrafficPartnerAuthenticated()) {
     return { name: 'stats' }
   }
-  const session = getTrafficPartnerSession()
-  if (session?.name && to.meta.title) {
-    document.title = `${to.meta.title} · ${session.name}`
-  }
-  else if (to.meta.title) {
+  if (to.meta.title) {
     document.title = String(to.meta.title)
   }
 })
