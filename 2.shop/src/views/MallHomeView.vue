@@ -9,11 +9,12 @@ import {
   isMallCategoryKey,
   useMallShowcaseProducts,
   useTeaProducts,
+  ensureMallShowcaseProductsLoaded,
 } from '~/composables/useTeaProducts'
 
 const route = useRoute()
 const installmentProducts = useTeaProducts()
-const mallProducts = useMallShowcaseProducts()
+const mallProducts = useMallShowcaseProducts({ immediate: false })
 /** 首页分类条仅展示商城品类；「先享后付」由顶部分区切换，避免与 installment 商品维度混淆 */
 const categories = useMallCategories().filter(item => item.key !== 'all' && item.key !== 'installment')
 const selectedCategory = ref<MallCategoryKey>('phones')
@@ -65,6 +66,16 @@ watch(
   { immediate: true },
 )
 
+watch(
+  activeHomeZone,
+  (zone) => {
+    if (zone === 'mall') {
+      void ensureMallShowcaseProductsLoaded()
+    }
+  },
+  { immediate: true },
+)
+
 function handleSelectCategory(category: MallCategoryKey) {
   if (category === 'all') {
     return
@@ -74,6 +85,9 @@ function handleSelectCategory(category: MallCategoryKey) {
 
 function handleSelectZone(zone: 'installment' | 'mall') {
   activeHomeZone.value = zone
+  if (zone === 'mall') {
+    void ensureMallShowcaseProductsLoaded()
+  }
 }
 </script>
 

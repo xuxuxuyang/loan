@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import AppTabbar from '~/components/App/AppTabbar.vue'
 import MallListMobile from '~/components/list/MallListMobile.vue'
-import type { MallCategoryKey } from '~/composables/useTeaProducts'
+import type { MallCategoryKey, TeaProduct } from '~/composables/useTeaProducts'
 import {
   useMallCategories,
   isMallCategoryKey,
@@ -32,19 +32,22 @@ function sortByPriceAsc(a: { price: number, name: string, id: number }, b: { pri
   return String(a.name).localeCompare(String(b.name), 'zh-Hans-CN') || a.id - b.id
 }
 
+function sortedProducts(list: TeaProduct[]) {
+  return [...list].sort(sortByPriceAsc)
+}
+
 const filteredProducts = computed(() => {
   const mode = selectedCategory.value
-  let list
   if (mode === 'installment') {
-    list = installmentProducts.value
+    return sortedProducts(installmentProducts.value)
   }
-  else if (mode === 'all') {
-    list = mallProducts.value
+  if (mode === 'all') {
+    return [
+      ...sortedProducts(installmentProducts.value),
+      ...sortedProducts(mallProducts.value),
+    ]
   }
-  else {
-    list = mallProducts.value.filter(item => item.category === mode)
-  }
-  return [...list].sort(sortByPriceAsc)
+  return sortedProducts(mallProducts.value.filter(item => item.category === mode))
 })
 
 function handleSelectCategory(category: MallCategoryKey) {

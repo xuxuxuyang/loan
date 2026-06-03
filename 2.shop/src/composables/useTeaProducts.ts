@@ -262,9 +262,10 @@ export function useTeaProducts() {
   return useState<TeaProduct[]>(STATE_INSTALLMENT, () => [])
 }
 
-export function useMallShowcaseProducts() {
+export function useMallShowcaseProducts(options: { immediate?: boolean } = {}) {
   getMallRefs()
-  if (!import.meta.env.SSR) {
+  const immediate = options.immediate !== false
+  if (!import.meta.env.SSR && immediate) {
     const vm = getCurrentInstance()
     if (vm) {
       onMounted(() => {

@@ -59,10 +59,10 @@ router.afterEach((to) => {
     return
   }
   nextTick(() => {
-    if (to.name === 'installment') {
+    if (to.name === 'installment' || to.name === 'index') {
       void ensureMallProductsLoaded()
     }
-    else if (to.name === 'search' || to.name === 'index') {
+    else if (to.name === 'search') {
       void ensureShopHomeProductsLoaded()
     }
     else {

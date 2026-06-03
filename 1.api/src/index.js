@@ -3121,6 +3121,9 @@ function resolveApiMongoRefreshPlan(ctx) {
   const trafficListKeys = ['adminAccounts', 'trafficChannels', 'trafficPartners', 'users']
   const csSessionsWithUsersKeys = ['csSessions', 'users']
   const adminOrdersUsersKeys = ['orders', 'users']
+  const adminOrdersUsersAuthKeys = ['adminAccounts', 'orders', 'users']
+  const adminUsersAuthKeys = ['adminAccounts', 'users', 'orders', 'trafficChannels']
+  const mallOrdersUsersKeys = ['users', 'orders']
   const byPath = {
     '/api/admin/dashboard/kpis': ['orders'],
     '/api/admin/cs/badge': ['csSessions'],
@@ -3130,13 +3133,31 @@ function resolveApiMongoRefreshPlan(ctx) {
     '/api/admin/traffic-channels/quality': trafficOverviewKeys,
     '/api/admin/traffic-channels': trafficListKeys,
     '/api/admin/cs/sessions': csSessionsWithUsersKeys,
+    '/api/my/summary': ['users', 'orders', 'bankCards'],
+    '/api/my/orders': mallOrdersUsersKeys,
+    '/api/card-packages': mallOrdersUsersKeys,
+    '/api/bills': mallOrdersUsersKeys,
+    '/api/addresses': ['addresses'],
+    '/api/bank-cards': ['bankCards'],
   }
   const keys = byPath[path]
   if (keys) {
     return { mode: 'partial', keys, allowColdPartial: true }
   }
+  if (/^\/api\/products\/[^/]+$/.test(path)) {
+    return { mode: 'partial', keys: ['products'], allowColdPartial: true }
+  }
   if (/^\/api\/admin\/cs\/sessions\/[^/]+$/.test(path)) {
     return { mode: 'partial', keys: csSessionsWithUsersKeys, allowColdPartial: true }
+  }
+  if (/^\/api\/orders\/[^/]+$/.test(path)) {
+    return { mode: 'partial', keys: adminOrdersUsersAuthKeys, allowColdPartial: true }
+  }
+  if (/^\/api\/users\/[^/]+$/.test(path)) {
+    return { mode: 'partial', keys: adminUsersAuthKeys, allowColdPartial: true }
+  }
+  if (/^\/api\/card-packages\/[^/]+\/contract-(view|flow)$/.test(path)) {
+    return { mode: 'partial', keys: mallOrdersUsersKeys, allowColdPartial: true }
   }
   if (path === '/api/orders' && isPaginatedListQuery(ctx)) {
     return { mode: 'partial', keys: adminOrdersUsersKeys, allowColdPartial: true }
@@ -3242,10 +3263,13 @@ function buildRegisterChannelUserCounts(db) {
 }
 
 /** 单次扫描 orders，供用户列表 filter/sort 与 attachUserOrderStats 复用 */
-function buildMallUserOrderStatsIndex(db) {
+function buildMallUserOrderStatsIndex(db, opts = {}) {
   const index = new Map()
   for (const order of db.orders || []) {
     if (!order || order.status === 'reviewing') {
+      continue
+    }
+    if (opts.kpiCardPackageIssuedOnly === true && !order.cardPackageIssued) {
       continue
     }
     const mid = String(order.mallUserId || '').trim()
@@ -4911,12 +4935,16 @@ router.get('/platform/mall-users', async (ctx) => {
   for (const tenantId of targetTenants) {
     const db = await readDbByTenantId(tenantId)
     const usersRaw = Array.isArray(db.users) ? db.users : []
+    const orderStatsIndex = buildMallUserOrderStatsIndex(db, { kpiCardPackageIssuedOnly: true })
     const tenantLabel = tenantId === DEFAULT_TENANT_ID ? '主系统' : tenantId
     for (const user of usersRaw) {
       if (!user || typeof user !== 'object') {
         continue
       }
-      const row = attachUserOrderStats(db, user, { kpiCardPackageIssuedOnly: true })
+      const row = attachUserOrderStats(db, user, {
+        kpiCardPackageIssuedOnly: true,
+        precomputedOrderStats: orderStatsIndex.get(String(user.id || '').trim()),
+      })
       if (row.adminPasswordPlain) {
         delete row.adminPasswordPlain
       }
