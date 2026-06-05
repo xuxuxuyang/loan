@@ -3478,8 +3478,10 @@ function listAdminUsersPaginatedBeforeEnrich(db, query) {
       return String(a.user.phone).localeCompare(String(b.user.phone))
     })
   }
-  else if (view === 'no-order') {
-    rows = rows.filter(item => Number(item.orderCount || 0) === 0)
+  else {
+    if (view === 'no-order') {
+      rows = rows.filter(item => Number(item.orderCount || 0) === 0)
+    }
     rows.sort((a, b) => {
       const ta = a.user.registerAt ? new Date(a.user.registerAt).getTime() : 0
       const tb = b.user.registerAt ? new Date(b.user.registerAt).getTime() : 0
@@ -6461,8 +6463,10 @@ router.get('/users', async (ctx) => {
       return String(a.phone).localeCompare(String(b.phone))
     })
   }
-  else if (view === 'no-order') {
-    rows = rows.filter(item => Number(item.orderCount || 0) === 0)
+  else {
+    if (view === 'no-order') {
+      rows = rows.filter(item => Number(item.orderCount || 0) === 0)
+    }
     rows.sort((a, b) => {
       const ta = a.registerAt ? new Date(a.registerAt).getTime() : 0
       const tb = b.registerAt ? new Date(b.registerAt).getTime() : 0
