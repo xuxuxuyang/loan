@@ -23,6 +23,9 @@ const errorMsg = ref('')
 const rows = ref<PendingReceivableRow[]>([])
 const keyword = ref('')
 const appliedKeyword = ref('')
+const page = ref(1)
+const pageSize = ref(50)
+const totalRows = ref(0)
 /** 应还日 = 统计日 的期次：应还总额（已还+未还） */
 const totalDueOnDate = ref(0)
 /** 应还日 = 统计日 且已还 */
@@ -60,6 +63,8 @@ function normalizePhoneDigits(raw: string): string {
 
 function applySearch() {
   appliedKeyword.value = keyword.value.trim()
+  page.value = 1
+  void load()
 }
 
 const filteredRows = computed(() => {
@@ -117,7 +122,12 @@ async function load() {
   loading.value = true
   errorMsg.value = ''
   try {
-    const url = `${base}/orders/pending-receivable?dueDate=${encodeURIComponent(dueDate.value)}`
+    const qs = new URLSearchParams({ dueDate: dueDate.value })
+    if (!appliedKeyword.value) {
+      qs.set('page', String(page.value))
+      qs.set('pageSize', String(pageSize.value))
+    }
+    const url = `${base}/orders/pending-receivable?${qs.toString()}`
     const res = await fetch(url, { method: 'GET', headers: withMallTenantHeaders() })
     const text = await res.text()
     let payload: {
@@ -125,6 +135,9 @@ async function load() {
       msg?: string
       data?: {
         rows?: PendingReceivableRow[]
+        total?: number
+        page?: number
+        pageSize?: number
         totalAmount?: number
         totalDueOnDate?: number
         paidDueOnDate?: number
@@ -143,6 +156,7 @@ async function load() {
     }
     const list = Array.isArray(payload.data?.rows) ? payload.data!.rows! : []
     rows.value = list
+    totalRows.value = Number(payload.data?.total ?? list.length)
     const unpaid = Number(payload.data?.unpaidDueOnDate ?? payload.data?.totalAmount ?? 0)
     unpaidDueOnDate.value = unpaid
     totalDueOnDate.value = Number(payload.data?.totalDueOnDate ?? unpaid)
@@ -152,6 +166,7 @@ async function load() {
   catch (e) {
     errorMsg.value = e instanceof Error ? e.message : '加载失败'
     rows.value = []
+    totalRows.value = 0
     totalDueOnDate.value = 0
     paidDueOnDate.value = 0
     unpaidDueOnDate.value = 0
@@ -171,9 +186,21 @@ watch(
   () => {
     appliedKeyword.value = ''
     keyword.value = ''
+    page.value = 1
     void load()
   },
 )
+
+function handlePageChange(nextPage: number) {
+  page.value = nextPage
+  void load()
+}
+
+function handlePageSizeChange(nextPageSize: number) {
+  pageSize.value = nextPageSize
+  page.value = 1
+  void load()
+}
 </script>
 
 <template>
@@ -387,6 +414,21 @@ watch(
           </el-table-column>
         </el-table>
       </div>
+      <div
+        v-if="!appliedKeyword && totalRows > pageSize"
+        class="receivable-pagination"
+      >
+        <el-pagination
+          v-model:current-page="page"
+          v-model:page-size="pageSize"
+          background
+          layout="total, sizes, prev, pager, next"
+          :total="totalRows"
+          :page-sizes="[20, 50, 100, 200]"
+          @current-change="handlePageChange"
+          @size-change="handlePageSizeChange"
+        />
+      </div>
     </el-card>
   </div>
 </template>
@@ -505,6 +547,12 @@ watch(
 
 .receivable-table :deep(.el-table__row:hover > td) {
   background-color: var(--el-fill-color-lighter) !important;
+}
+
+.receivable-pagination {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 14px;
 }
 
 .amount-cell {

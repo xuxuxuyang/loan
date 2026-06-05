@@ -48,6 +48,8 @@ let detailInFlight = false
 
 const DETAIL_POLL_MS = 10000
 const SESSIONS_POLL_MS = 30000
+const SESSION_LIST_PAGE_SIZE = 100
+const DETAIL_MESSAGE_PAGE_SIZE = 100
 
 const activeSession = computed(() => sessions.value.find(s => s.id === activeId.value))
 
@@ -261,19 +263,25 @@ async function fetchSessions(options?: { silent?: boolean }) {
     loadingList.value = true
   }
   try {
-    const response = await fetch(`${MALL_API_BASE}/admin/cs/sessions`, {
+    const qs = new URLSearchParams({
+      page: '1',
+      pageSize: String(SESSION_LIST_PAGE_SIZE),
+    })
+    const response = await fetch(`${MALL_API_BASE}/admin/cs/sessions?${qs.toString()}`, {
       method: 'GET',
       headers: withMallTenantHeaders(),
     })
     const payload = await response.json() as {
       success?: boolean
       msg?: string
-      data?: SessionRow[]
+      data?: SessionRow[] | { list?: SessionRow[] }
     }
     if (!response.ok || payload.success === false) {
       throw new Error(payload.msg || `加载失败 (${response.status})`)
     }
-    const list = Array.isArray(payload.data) ? payload.data : []
+    const list = Array.isArray(payload.data)
+      ? payload.data
+      : (Array.isArray(payload.data?.list) ? payload.data.list : [])
     sessions.value = list.map(s => ({
       ...s,
       lastAt: formatListTime(s.lastAt),
@@ -314,8 +322,14 @@ async function fetchDetail(id: string, options?: { markRead?: boolean, silent?: 
     loadingDetail.value = true
   }
   try {
+    const qs = new URLSearchParams({ read: markRead ? '1' : '0' })
+    const latestMessageId = detailMessages.value[detailMessages.value.length - 1]?.id
+    if (silent && latestMessageId) {
+      qs.set('afterMessageId', latestMessageId)
+      qs.set('pageSize', String(DETAIL_MESSAGE_PAGE_SIZE))
+    }
     const response = await fetch(
-      `${MALL_API_BASE}/admin/cs/sessions/${encodeURIComponent(sessionId)}?read=${markRead ? '1' : '0'}`,
+      `${MALL_API_BASE}/admin/cs/sessions/${encodeURIComponent(sessionId)}?${qs.toString()}`,
       { method: 'GET', headers: withMallTenantHeaders() },
     )
     const payload = await response.json() as {

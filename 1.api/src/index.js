@@ -388,6 +388,31 @@ function success(data) {
   return { success: true, code: 0, msg: 'ok', data }
 }
 
+function parseOptionalListPagination(query, { defaultPageSize = 20, maxPageSize = 100 } = {}) {
+  const hasPage = query && Object.prototype.hasOwnProperty.call(query, 'page')
+  const hasPageSize = query && Object.prototype.hasOwnProperty.call(query, 'pageSize')
+  if (!hasPage && !hasPageSize) {
+    return { enabled: false }
+  }
+  const page = Math.max(1, parseInt(String(query.page || '1'), 10) || 1)
+  const pageSize = Math.min(
+    maxPageSize,
+    Math.max(1, parseInt(String(query.pageSize || defaultPageSize), 10) || defaultPageSize),
+  )
+  return { enabled: true, page, pageSize }
+}
+
+function paginateRows(rows, page, pageSize) {
+  const total = Array.isArray(rows) ? rows.length : 0
+  const start = (page - 1) * pageSize
+  return {
+    list: Array.isArray(rows) ? rows.slice(start, start + pageSize) : [],
+    total,
+    page,
+    pageSize,
+  }
+}
+
 function formatDateTime(iso) {
   const date = new Date(iso)
   if (Number.isNaN(date.getTime())) {
@@ -8301,6 +8326,27 @@ function normalizeInstallmentDueDateKey(dueDate) {
   return formatDate(s).slice(0, 10)
 }
 
+function mapPendingReceivableRow(db, { order, item, key }) {
+  const buyer = resolveMallBuyerFromOrder(db, order)
+  const buyerName = buyer ? String(buyer.name || '').trim() : ''
+  let buyerPhoneDigits = buyer ? normalizePhone(buyer.phone || '') : ''
+  if (buyerPhoneDigits.startsWith('86') && buyerPhoneDigits.length === 13) {
+    buyerPhoneDigits = buyerPhoneDigits.slice(2)
+  }
+  const buyerPhone = /^1\d{10}$/.test(buyerPhoneDigits) ? buyerPhoneDigits : ''
+  return {
+    orderId: order.id,
+    receiverName: String(order.receiverName || '').trim() || '商城用户',
+    buyerName,
+    buyerPhone,
+    receiverPhone: String(order.receiverPhone || '').trim(),
+    productName: String(order.name || '').trim(),
+    period: Number(item.period),
+    dueDate: key,
+    amount: Number(Number(item.amount || 0).toFixed(2)),
+  }
+}
+
 router.get('/orders/pending-receivable', async (ctx) => {
   if (!await requireAdminPermission(ctx, [ADMIN_ROLES.SUPER, ADMIN_ROLES.COLLECTOR], '查看先享后付待收明细')) {
     return
@@ -8311,7 +8357,7 @@ router.get('/orders/pending-receivable', async (ctx) => {
     return
   }
   const db = readDb()
-  const rows = []
+  const rowRefs = []
   let totalDueOnDate = 0
   let paidDueOnDate = 0
   let unpaidDueOnDate = 0
@@ -8350,24 +8396,7 @@ router.get('/orders/pending-receivable', async (ctx) => {
         }
       }
       if (!item.paid && key === dueDate) {
-        const buyer = resolveMallBuyerFromOrder(db, order)
-        const buyerName = buyer ? String(buyer.name || '').trim() : ''
-        let buyerPhoneDigits = buyer ? normalizePhone(buyer.phone || '') : ''
-        if (buyerPhoneDigits.startsWith('86') && buyerPhoneDigits.length === 13) {
-          buyerPhoneDigits = buyerPhoneDigits.slice(2)
-        }
-        const buyerPhone = /^1\d{10}$/.test(buyerPhoneDigits) ? buyerPhoneDigits : ''
-        rows.push({
-          orderId: order.id,
-          receiverName: String(order.receiverName || '').trim() || '商城用户',
-          buyerName,
-          buyerPhone,
-          receiverPhone: String(order.receiverPhone || '').trim(),
-          productName: String(order.name || '').trim(),
-          period: Number(item.period),
-          dueDate: key,
-          amount: Number(Number(item.amount || 0).toFixed(2)),
-        })
+        rowRefs.push({ order, item, key })
       }
     }
   }
@@ -8378,9 +8407,19 @@ router.get('/orders/pending-receivable', async (ctx) => {
   const overdueRateAsOfDate = unpaidDueOnOrBeforeDateCount > 0
     ? Number(((overdueBeforeDateCount / unpaidDueOnOrBeforeDateCount) * 100).toFixed(2))
     : 0
+  const pagination = parseOptionalListPagination(ctx.query, { defaultPageSize: 20, maxPageSize: 200 })
+  const pagedRefs = pagination.enabled
+    ? paginateRows(rowRefs, pagination.page, pagination.pageSize)
+    : null
+  const rows = (pagedRefs ? pagedRefs.list : rowRefs).map(ref => mapPendingReceivableRow(db, ref))
   ctx.body = success({
     dueDate,
     rows,
+    ...(pagedRefs ? {
+      total: pagedRefs.total,
+      page: pagedRefs.page,
+      pageSize: pagedRefs.pageSize,
+    } : {}),
     totalAmount,
     totalDueOnDate,
     paidDueOnDate,
@@ -9454,6 +9493,11 @@ router.get('/admin/cs/sessions', async (ctx) => {
       mallUserId: s.mallUserId || '',
       visitorKey: s.visitorKey || '',
     }))
+  const pagination = parseOptionalListPagination(ctx.query, { defaultPageSize: 30, maxPageSize: 100 })
+  if (pagination.enabled) {
+    ctx.body = success(paginateRows(list, pagination.page, pagination.pageSize))
+    return
+  }
   ctx.body = success(list)
 })
 
@@ -9472,12 +9516,28 @@ router.get('/admin/cs/sessions/:sessionId', async (ctx) => {
     s.unreadAgent = 0
     writeCsSessionsDb(db)
   }
+  const allMessages = Array.isArray(s.messages) ? s.messages : []
+  const afterMessageId = String(ctx.query.afterMessageId || ctx.query.after || '').trim()
+  const messagePagination = parseOptionalListPagination(ctx.query, { defaultPageSize: 50, maxPageSize: 200 })
+  let messages = allMessages
+  if (afterMessageId) {
+    const afterIndex = allMessages.findIndex(item => String(item && item.id || '') === afterMessageId)
+    messages = afterIndex >= 0 ? allMessages.slice(afterIndex + 1) : []
+  }
+  if (messagePagination.enabled) {
+    messages = paginateRows(messages, messagePagination.page, messagePagination.pageSize).list
+  }
   ctx.body = success({
     id: s.id,
     displayName: resolveCsSessionDisplayName(db, s),
     online: csUserOnline(s),
-    messages: Array.isArray(s.messages) ? s.messages : [],
+    messages,
     mallUserId: s.mallUserId || '',
+    ...(afterMessageId || messagePagination.enabled ? {
+      messageTotal: allMessages.length,
+      messageReturned: messages.length,
+      latestMessageId: allMessages.length ? String(allMessages[allMessages.length - 1]?.id || '') : '',
+    } : {}),
   })
 })
 
