@@ -37,7 +37,8 @@ const detailOnline = ref(false)
 const loadingList = ref(false)
 const loadingDetail = ref(false)
 const sending = ref(false)
-let pollTimer: ReturnType<typeof setInterval> | null = null
+let sessionsPollTimer: ReturnType<typeof setInterval> | null = null
+let detailPollTimer: ReturnType<typeof setInterval> | null = null
 let visHandler: (() => void) | null = null
 /** 递增后使进行中的 fetchDetail 结果失效，避免轮询慢响应覆盖刚发送的消息 */
 let detailFetchGen = 0
@@ -45,7 +46,8 @@ let sessionsInFlight = false
 /** 轮询 tick 时若详情请求未返回则跳过，避免慢响应叠加并发 GET */
 let detailInFlight = false
 
-const POLL_MS = 10000
+const DETAIL_POLL_MS = 10000
+const SESSIONS_POLL_MS = 30000
 
 const activeSession = computed(() => sessions.value.find(s => s.id === activeId.value))
 
@@ -398,18 +400,24 @@ async function sendReply() {
 
 function startPolling() {
   stopPolling()
-  pollTimer = window.setInterval(() => {
+  sessionsPollTimer = window.setInterval(() => {
     void fetchSessions({ silent: true })
+  }, SESSIONS_POLL_MS)
+  detailPollTimer = window.setInterval(() => {
     if (activeId.value) {
       void fetchDetail(activeId.value, { markRead: false, silent: true })
     }
-  }, POLL_MS)
+  }, DETAIL_POLL_MS)
 }
 
 function stopPolling() {
-  if (pollTimer) {
-    clearInterval(pollTimer)
-    pollTimer = null
+  if (sessionsPollTimer) {
+    clearInterval(sessionsPollTimer)
+    sessionsPollTimer = null
+  }
+  if (detailPollTimer) {
+    clearInterval(detailPollTimer)
+    detailPollTimer = null
   }
 }
 

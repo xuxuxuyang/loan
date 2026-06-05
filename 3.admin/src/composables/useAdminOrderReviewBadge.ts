@@ -6,7 +6,7 @@ import { withMallTenantHeaders } from './useAdminApi'
 
 const MALL_API_BASE = `${(import.meta.env.VITE_MALL_API_BASE || 'http://localhost:3110/api').replace(/\/$/, '')}`
 
-/** 设为 true 时回退为轮询全量 GET /orders（紧急回滚用） */
+/** 设为 true 时才使用全量 GET /orders（仅作紧急回滚用，默认禁用以避免后台角标读全库） */
 const USE_LEGACY_ORDER_BADGE_POLL = String(import.meta.env.VITE_ADMIN_LEGACY_ORDER_BADGE_POLL || '').trim() === 'true'
 
 /**
@@ -78,10 +78,7 @@ async function fetchOrderSidebarBadgeCounts() {
       await fetchOrderSidebarBadgeCountsFromLegacyOrders()
       return
     }
-    const ok = await fetchOrderSidebarBadgeCountsFromLightweight()
-    if (!ok) {
-      await fetchOrderSidebarBadgeCountsFromLegacyOrders()
-    }
+    await fetchOrderSidebarBadgeCountsFromLightweight()
   }
   catch {
     /* 静默失败，保留上次数字 */
