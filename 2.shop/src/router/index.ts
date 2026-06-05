@@ -4,6 +4,7 @@ import {
   ensureMallProductsLoaded,
   ensureMallShowcaseProductsLoaded,
   ensureShopHomeProductsLoaded,
+  isMallCategoryKey,
 } from '../composables/useTeaProducts'
 
 /** 商城 SPA：与原 Nuxt 页面等价的 tab + 登录/下单/个人信息子场景 */
@@ -55,18 +56,25 @@ router.afterEach((to) => {
   if (import.meta.env.SSR) {
     return
   }
-  if (to.name !== 'index' && to.name !== 'list' && to.name !== 'installment' && to.name !== 'search') {
+  if (to.name !== 'index' && to.name !== 'list' && to.name !== 'installment') {
     return
   }
   nextTick(() => {
     if (to.name === 'installment' || to.name === 'index') {
       void ensureMallProductsLoaded()
     }
-    else if (to.name === 'search') {
-      void ensureShopHomeProductsLoaded()
-    }
     else {
-      void ensureMallShowcaseProductsLoaded()
+      const raw = typeof to.query.category === 'string' ? to.query.category : 'installment'
+      const category = isMallCategoryKey(raw) ? raw : 'installment'
+      if (category === 'installment') {
+        void ensureMallProductsLoaded()
+      }
+      else if (category === 'all') {
+        void ensureShopHomeProductsLoaded()
+      }
+      else {
+        void ensureMallShowcaseProductsLoaded()
+      }
     }
   })
 })

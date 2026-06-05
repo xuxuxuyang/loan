@@ -7,8 +7,6 @@ import {
 } from '~/composables/mallCreditQuota'
 import type { TeaProduct } from '~/composables/useTeaProducts'
 import {
-  ensureMallProductsLoaded,
-  ensureMallShowcaseProductsLoaded,
   normalizeApiProduct,
   useMallShowcaseProducts,
   useTeaProducts,
@@ -24,8 +22,8 @@ const product = ref<TeaProduct | null>(null)
 const loadError = ref(false)
 const loading = ref(true)
 
-const installmentProducts = useTeaProducts()
-const mallProducts = useMallShowcaseProducts()
+const installmentProducts = useTeaProducts({ immediate: false })
+const mallProducts = useMallShowcaseProducts({ immediate: false })
 
 const creditQuota = computed(() => resolveMallCreditQuota(profile.value))
 
@@ -73,7 +71,6 @@ async function resolveProduct(id: number) {
   loadError.value = false
   loading.value = true
   product.value = null
-  await Promise.all([ensureMallProductsLoaded(), ensureMallShowcaseProductsLoaded()])
   const hit = [...mallProducts.value, ...installmentProducts.value].find(p => p.id === id)
   if (hit) {
     product.value = hit

@@ -244,9 +244,10 @@ export async function ensureShopHomeProductsLoaded(options?: { refresh?: boolean
   ])
 }
 
-export function useTeaProducts() {
+export function useTeaProducts(options: { immediate?: boolean } = {}) {
   getInstallmentRefs()
-  if (!import.meta.env.SSR) {
+  const immediate = options.immediate !== false
+  if (!import.meta.env.SSR && immediate) {
     const vm = getCurrentInstance()
     if (vm) {
       onMounted(() => {

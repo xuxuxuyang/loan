@@ -7,11 +7,13 @@ import {
   isMallCategoryKey,
   useMallShowcaseProducts,
   useTeaProducts,
+  ensureMallProductsLoaded,
+  ensureMallShowcaseProductsLoaded,
   ensureShopHomeProductsLoaded,
 } from '~/composables/useTeaProducts'
 
-const mallProducts = useMallShowcaseProducts()
-const installmentProducts = useTeaProducts()
+const mallProducts = useMallShowcaseProducts({ immediate: false })
+const installmentProducts = useTeaProducts({ immediate: false })
 const route = useRoute()
 const categories = useMallCategories()
 const selectedCategory = ref<MallCategoryKey>('installment')
@@ -20,8 +22,26 @@ if (typeof route.query.category === 'string' && isMallCategoryKey(route.query.ca
   selectedCategory.value = route.query.category
 }
 
+async function ensureProductsForCategory(category: MallCategoryKey) {
+  if (category === 'installment') {
+    await ensureMallProductsLoaded()
+    return
+  }
+  if (category === 'all') {
+    await ensureShopHomeProductsLoaded()
+    return
+  }
+  await ensureMallShowcaseProductsLoaded()
+}
+
 if (!import.meta.env.SSR) {
-  void ensureShopHomeProductsLoaded()
+  watch(
+    selectedCategory,
+    (category) => {
+      void ensureProductsForCategory(category)
+    },
+    { immediate: true },
+  )
 }
 
 function sortByPriceAsc(a: { price: number, name: string, id: number }, b: { price: number, name: string, id: number }) {

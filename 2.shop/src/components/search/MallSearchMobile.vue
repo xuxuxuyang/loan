@@ -10,11 +10,12 @@ const route = useRoute()
 const router = useRouter()
 const { smartNavigate } = useCustomRouting(route)
 
-const installmentProducts = useTeaProducts()
-const mallProducts = useMallShowcaseProducts()
+const installmentProducts = useTeaProducts({ immediate: false })
+const mallProducts = useMallShowcaseProducts({ immediate: false })
 
 const keyword = ref('')
 const loading = ref(true)
+const catalogLoaded = ref(false)
 
 const catalog = computed(() => {
   const map = new Map<number, TeaProduct>()
@@ -41,7 +42,7 @@ const searchResults = computed(() => {
   })
 })
 
-const hasSearched = computed(() => trimmedKeyword.value.length > 0)
+const hasSearched = computed(() => trimmedKeyword.value.length > 0 && catalogLoaded.value)
 
 function readQueryToKeyword() {
   const q = route.query.q
@@ -49,9 +50,14 @@ function readQueryToKeyword() {
 }
 
 async function loadCatalog() {
+  if (catalogLoaded.value) {
+    loading.value = false
+    return
+  }
   loading.value = true
   try {
     await ensureShopHomeProductsLoaded()
+    catalogLoaded.value = true
   }
   finally {
     loading.value = false
@@ -63,8 +69,11 @@ function syncQueryUrl() {
   void router.replace({ path: '/search', query: q ? { q } : {} })
 }
 
-function onSubmitSearch() {
+async function onSubmitSearch() {
   syncQueryUrl()
+  if (trimmedKeyword.value) {
+    await loadCatalog()
+  }
 }
 
 function goBack() {
@@ -83,12 +92,20 @@ watch(
   () => route.query.q,
   () => {
     readQueryToKeyword()
+    if (trimmedKeyword.value) {
+      void loadCatalog()
+    }
   },
 )
 
 onMounted(async () => {
   readQueryToKeyword()
-  await loadCatalog()
+  if (trimmedKeyword.value) {
+    await loadCatalog()
+  }
+  else {
+    loading.value = false
+  }
   await nextTick()
   const input = document.querySelector<HTMLInputElement>('[data-mall-search-input]')
   input?.focus()

@@ -5,8 +5,6 @@ import { formatMallAddressLine, useMallMy } from '~/composables/useMallMy'
 import { mallOrderBelongsToLoggedIn, normalizeReceiverPhoneDigits, effectiveMallOrderStatus, isReturningMallCustomer } from '~/composables/useMallOrders'
 import type { ProductSalesMode, TeaProduct } from '~/composables/useTeaProducts'
 import {
-  ensureMallProductsLoaded,
-  ensureMallShowcaseProductsLoaded,
   normalizeApiProduct,
   useMallShowcaseProducts,
   useTeaProducts,
@@ -20,8 +18,8 @@ import { installmentRiskRejectToast } from '~/utils/installmentRiskMessage'
 const route = useRoute()
 const router = useRouter()
 const { smartNavigate } = useCustomRouting(route)
-const installmentProducts = useTeaProducts()
-const mallShowcaseProducts = useMallShowcaseProducts()
+const installmentProducts = useTeaProducts({ immediate: false })
+const mallShowcaseProducts = useMallShowcaseProducts({ immediate: false })
 const { ensureRegistered, profile, loginPhone, syncFromStorage } = useMallAuth()
 const { addresses, fetchAddresses, fetchBills, fetchSummary, applyPostOrderCreationBundles } = useMallMy()
 const { orders, createOrder, syncFromRemote } = useMallOrders()
@@ -491,11 +489,7 @@ async function submitOrder() {
 
 async function bootstrapOrderPage() {
   await syncFromStorage()
-  await Promise.all([
-    ensureMallProductsLoaded(),
-    ensureMallShowcaseProductsLoaded(),
-    loadShippingAddresses(),
-  ])
+  await loadShippingAddresses()
   const phone = currentUserPhone.value
   if (/^1\d{10}$/.test(phone)) {
     await syncFromRemote(phone)
@@ -529,7 +523,6 @@ watch(
     if (!pidStr || Number.isNaN(id) || id <= 0) {
       return
     }
-    await Promise.all([ensureMallProductsLoaded(), ensureMallShowcaseProductsLoaded()])
     const hitMall = mallShowcaseProducts.value.some(p => p.id === id)
     const hitInst = installmentProducts.value.some(p => p.id === id)
     if (hitMall || hitInst) {
