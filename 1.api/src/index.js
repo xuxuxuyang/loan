@@ -3416,6 +3416,7 @@ function listAdminOrdersPaginatedBeforeEnrich(db, filters, page, pageSize) {
       matched.push(item)
     }
   }
+  matched.sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')))
   const total = matched.length
   const start = (page - 1) * pageSize
   const pageSlice = matched.slice(start, start + pageSize)
@@ -8290,6 +8291,8 @@ router.get('/orders', async (ctx) => {
     const byDate = !date || formatDateTime(item.createdAt).startsWith(String(date))
     return byKeyword && byStatus && byAdminStatus && byPayType && byDate
   })
+
+  list.sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')))
 
   const userOrdersCache = new Map()
   const enriched = list.map((order) => {
