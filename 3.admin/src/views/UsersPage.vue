@@ -81,6 +81,24 @@ const pageSize = ref(20)
 const totalUsers = ref(0)
 const PAGE_SIZE_OPTIONS = [10, 20, 50, 100] as const
 const loading = ref(false)
+const exporting = ref(false)
+const exportDialogVisible = ref(false)
+/** 导出弹窗独立筛选，不复用列表工具栏 */
+const exportChannelFilter = ref<string>(REGISTER_CHANNEL_FILTER_ALL)
+
+const EXPORT_FIELD_OPTIONS = [
+  { key: 'registerAt', label: '注册时间' },
+  { key: 'name', label: '姓名' },
+  { key: 'phone', label: '手机号' },
+  { key: 'registerChannel', label: '注册渠道' },
+  { key: 'creditStatus', label: '信誉状态' },
+  { key: 'quota', label: '额度' },
+  { key: 'orderCount', label: '订单数' },
+  { key: 'remark', label: '备注' },
+] as const
+
+const DEFAULT_EXPORT_FIELDS = ['name', 'phone'] as const
+const exportSelectedFields = ref<string[]>([...DEFAULT_EXPORT_FIELDS])
 const deletingId = ref('')
 const pendingDeleteId = ref('')
 const creating = ref(false)
@@ -169,6 +187,8 @@ const isOrderingUsersView = computed(() => route.path === '/users/ordering')
 const isNoOrderUsersView = computed(() => route.path === '/users/no-order')
 /** 注册用户 / 未下单用户：展示注册时间、支持添加用户 */
 const isRegisteredLikeView = computed(() => !isOrderingUsersView.value)
+/** 仅「注册用户」页提供渠道导出 */
+const isRegisteredUsersPage = computed(() => route.name === 'users')
 
 const editForm = reactive({
   name: '',
@@ -323,6 +343,105 @@ async function fetchTrafficChannelsForFilter() {
   }
   catch {
     trafficChannelsForFilter.value = []
+  }
+}
+
+function parseExportFilename(contentDisposition: string | null): string {
+  if (!contentDisposition) {
+    return ''
+  }
+  const utf8Match = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i)
+  if (utf8Match?.[1]) {
+    try {
+      return decodeURIComponent(utf8Match[1].trim())
+    }
+    catch {
+      return utf8Match[1].trim()
+    }
+  }
+  const plainMatch = contentDisposition.match(/filename="?([^";]+)"?/i)
+  return plainMatch?.[1]?.trim() || ''
+}
+
+function openExportDialog() {
+  if (!canManageUsers.value || !isRegisteredUsersPage.value) {
+    return
+  }
+  exportChannelFilter.value = REGISTER_CHANNEL_FILTER_ALL
+  exportSelectedFields.value = [...DEFAULT_EXPORT_FIELDS]
+  exportDialogVisible.value = true
+  void fetchTrafficChannelsForFilter()
+}
+
+function closeExportDialog() {
+  if (exporting.value) {
+    return
+  }
+  exportDialogVisible.value = false
+}
+
+function exportChannelLabel(ch: string): string {
+  if (ch === '__none__') {
+    return '商城注册'
+  }
+  if (!ch || ch === REGISTER_CHANNEL_FILTER_ALL) {
+    return '全部'
+  }
+  return ch
+}
+
+async function exportRegisteredUsers() {
+  if (!canManageUsers.value || !isRegisteredUsersPage.value) {
+    return
+  }
+  const ch = exportChannelFilter.value || REGISTER_CHANNEL_FILTER_ALL
+  const fields = exportSelectedFields.value.filter(Boolean)
+  if (!fields.length) {
+    ElMessage.warning('请至少选择一个导出字段')
+    return
+  }
+  exporting.value = true
+  startPageProgress()
+  try {
+    const params = new URLSearchParams()
+    params.set('registerChannel', ch)
+    params.set('fields', fields.join(','))
+    const response = await fetch(`${MALL_API_BASE}/users/export?${params}`, {
+      method: 'GET',
+      headers: withMallTenantHeaders(),
+    })
+    if (!response.ok) {
+      let msg = `导出失败: ${response.status}`
+      try {
+        const err = await response.json() as { msg?: string }
+        if (err.msg) {
+          msg = err.msg
+        }
+      }
+      catch {
+        // ignore
+      }
+      throw new Error(msg)
+    }
+    const blob = await response.blob()
+    const filename = parseExportFilename(response.headers.get('Content-Disposition'))
+      || `注册用户_${exportChannelLabel(ch)}.csv`
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = filename
+    anchor.click()
+    URL.revokeObjectURL(url)
+    exportDialogVisible.value = false
+    ElMessage.success('导出成功')
+  }
+  catch (error) {
+    console.error('导出用户失败', error)
+    ElMessage.error(error instanceof Error ? error.message : '导出失败')
+  }
+  finally {
+    exporting.value = false
+    donePageProgress()
   }
 }
 
@@ -824,6 +943,15 @@ async function toggleBlacklist(user: ListedUser) {
       >
         添加用户
       </button>
+      <button
+        v-if="canManageUsers && isRegisteredUsersPage"
+        class="btn btn-export"
+        type="button"
+        :disabled="exporting || loading"
+        @click="openExportDialog"
+      >
+        导出数据
+      </button>
     </div>
     <div class="users-table-wrap">
     <table class="table">
@@ -1224,6 +1352,97 @@ async function toggleBlacklist(user: ListedUser) {
     </div>
   </Teleport>
 
+  <Teleport to="body">
+    <div
+      v-if="exportDialogVisible && canManageUsers"
+      class="modal-mask"
+      @click.self="closeExportDialog"
+    >
+      <div class="modal-panel create-modal export-modal">
+        <div class="modal-header">
+          <h3>导出注册用户</h3>
+          <button
+            type="button"
+            class="btn btn-ghost"
+            :disabled="exporting"
+            @click="closeExportDialog"
+          >
+            关闭
+          </button>
+        </div>
+        <label class="quota-label full">
+          注册渠道
+          <el-select
+            v-model="exportChannelFilter"
+            class="export-channel-select"
+            placeholder="选择注册渠道"
+            filterable
+          >
+            <el-option
+              label="全部"
+              :value="REGISTER_CHANNEL_FILTER_ALL"
+            />
+            <el-option
+              label="商城注册"
+              value="__none__"
+            />
+            <el-option
+              v-for="name in registerChannelOptions"
+              :key="name"
+              :label="name"
+              :value="name"
+            />
+          </el-select>
+        </label>
+        <div class="export-fields-block">
+          <p class="export-fields-block__title">
+            导出字段
+          </p>
+          <el-checkbox-group
+            v-model="exportSelectedFields"
+            class="export-fields-grid"
+          >
+            <el-checkbox
+              v-for="opt in EXPORT_FIELD_OPTIONS"
+              :key="opt.key"
+              :value="opt.key"
+              :label="opt.key"
+            >
+              {{ opt.label }}
+            </el-checkbox>
+          </el-checkbox-group>
+          <p
+            v-if="!exportSelectedFields.length"
+            class="export-fields-block__warn"
+          >
+            请至少选择一个字段
+          </p>
+        </div>
+        <p class="export-modal-format">
+          文件格式为 <strong>CSV 表格</strong>（.csv），可用 Microsoft Excel、WPS 等直接打开。
+        </p>
+        <div class="actions actions-right">
+          <button
+            class="btn btn-ghost"
+            type="button"
+            :disabled="exporting"
+            @click="closeExportDialog"
+          >
+            取消
+          </button>
+          <button
+            class="btn btn-export-solid"
+            type="button"
+            :disabled="exporting || !exportSelectedFields.length"
+            @click="exportRegisteredUsers"
+          >
+            {{ exporting ? '导出中…' : '确认导出' }}
+          </button>
+        </div>
+      </div>
+    </div>
+  </Teleport>
+
   <UserRiskDetailDialog
     v-model="userRiskDialogVisible"
     :user-id="riskDialogUserId"
@@ -1480,6 +1699,85 @@ async function toggleBlacklist(user: ListedUser) {
   border-color: #059669;
   background: #059669;
   color: #fff;
+}
+
+.btn-export {
+  border-color: #d97706;
+  background: #fff;
+  color: #b45309;
+}
+
+.btn-export:hover:not(:disabled) {
+  background: #fffbeb;
+}
+
+.btn-export:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.btn-export-solid {
+  border-color: #d97706;
+  background: #d97706;
+  color: #fff;
+}
+
+.btn-export-solid:hover:not(:disabled) {
+  background: #b45309;
+  border-color: #b45309;
+}
+
+.btn-export-solid:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.export-channel-select {
+  width: 100%;
+}
+
+.export-channel-select :deep(.el-select__wrapper) {
+  min-height: 36px;
+  border-radius: 8px;
+}
+
+.export-fields-block {
+  margin-top: 4px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+}
+
+.export-fields-block__title {
+  margin: 0 0 10px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #334155;
+}
+
+.export-fields-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 12px;
+}
+
+.export-fields-grid :deep(.el-checkbox) {
+  margin-right: 0;
+  height: auto;
+}
+
+.export-fields-block__warn {
+  margin: 10px 0 0;
+  font-size: 12px;
+  color: #b45309;
+}
+
+.export-modal-format {
+  margin: 12px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #64748b;
 }
 
 .btn-muted {

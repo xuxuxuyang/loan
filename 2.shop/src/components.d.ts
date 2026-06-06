@@ -47,6 +47,7 @@ declare module 'vue' {
     RegisterForm: typeof import('./components/auth/RegisterForm.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
+    TrafficCreditLeadDialog: typeof import('./components/traffic/TrafficCreditLeadDialog.vue')['default']
     UserAgreementContent: typeof import('./components/my/user-agreement/UserAgreementContent.vue')['default']
   }
 }

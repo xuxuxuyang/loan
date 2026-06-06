@@ -20,6 +20,17 @@ router.beforeEach((to) => {
   return true
 })
 
+function registerMallServiceWorker() {
+  if (import.meta.env.DEV || typeof window === 'undefined' || !('serviceWorker' in navigator)) {
+    return
+  }
+  window.addEventListener('load', () => {
+    void navigator.serviceWorker.register('/sw.js').catch((err) => {
+      console.warn('[pwa] service worker registration failed', err)
+    })
+  })
+}
+
 async function bootstrap() {
   if (!import.meta.env.SSR) {
     await runAppOtaCheck()
@@ -30,5 +41,7 @@ async function bootstrap() {
   installTenantFetchInterceptor()
   app.mount('#app')
 }
+
+registerMallServiceWorker()
 
 void bootstrap()

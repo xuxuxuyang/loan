@@ -57,6 +57,7 @@ const {
 const {
   runOrderSubmitUpstreamRiskPack,
   runOrderSubmitSingleRiskStep,
+  ORDER_INSTALLMENT_RISK_STEP_KEYS,
   ORDER_INSTALLMENT_RISK_STEP_LABELS,
   postCreateContract,
   postAddPersonalUser,
@@ -3431,16 +3432,15 @@ function listAdminOrdersPaginatedBeforeEnrich(db, filters, page, pageSize) {
   return { list, total, page, pageSize }
 }
 
-function listAdminUsersPaginatedBeforeEnrich(db, query) {
+function listAdminUsersFilteredRows(db, query, opts = {}) {
   const {
     key = '',
     view = 'registered',
     registerChannel = '',
     orderDate = '',
-    page = 1,
-    pageSize = 20,
   } = query
-  const statsIndex = buildMallUserOrderStatsIndex(db)
+  const needOrderStats = opts.needOrderStats !== false
+  const statsIndex = needOrderStats ? buildMallUserOrderStatsIndex(db) : null
 
   let candidates = db.users
   if (key) {
@@ -3455,6 +3455,9 @@ function listAdminUsersPaginatedBeforeEnrich(db, query) {
   }
 
   let rows = candidates.map((user) => {
+    if (!needOrderStats) {
+      return { user, orderCount: 0, lastOrderAt: '' }
+    }
     const uid = String(user.id || '').trim()
     const stats = statsIndex.get(uid) || { orderCount: 0, totalAmount: 0, lastOrderAt: '' }
     return { user, orderCount: stats.orderCount, lastOrderAt: stats.lastOrderAt }
@@ -3493,14 +3496,176 @@ function listAdminUsersPaginatedBeforeEnrich(db, query) {
     })
   }
 
+  return { rows, statsIndex }
+}
+
+function listAdminUsersPaginatedBeforeEnrich(db, query) {
+  const {
+    page = 1,
+    pageSize = 20,
+  } = query
+  const { rows, statsIndex } = listAdminUsersFilteredRows(db, query)
   const total = rows.length
   const start = (page - 1) * pageSize
   const pageRows = rows.slice(start, start + pageSize)
   const list = pageRows.map(({ user }) => attachUserOrderStats(db, user, {
     includeAdminPasswordEcho: true,
-    precomputedOrderStats: statsIndex.get(String(user.id || '').trim()),
+    precomputedOrderStats: statsIndex && statsIndex.get(String(user.id || '').trim()),
   }))
   return { list, total, page, pageSize }
+}
+
+/** 与管理端 UsersPage 列表「信誉状态」列一致：仅依据先享后付下单七项快照 */
+function displayCreditStatusFromOrderSevenSnapshot(snapshot) {
+  if (!snapshot || !Array.isArray(snapshot.fourteenRows)) {
+    return '待风控'
+  }
+  const byKey = new Map()
+  for (const row of snapshot.fourteenRows) {
+    if (row && row.slotKey) {
+      byKey.set(row.slotKey, row)
+    }
+  }
+  for (const key of ORDER_INSTALLMENT_RISK_STEP_KEYS) {
+    const row = byKey.get(key)
+    if (row && row.state === 'fail') {
+      return '风险'
+    }
+  }
+  for (const key of ORDER_INSTALLMENT_RISK_STEP_KEYS) {
+    const row = byKey.get(key)
+    if (!row || row.state !== 'ok') {
+      return '待风控'
+    }
+  }
+  return '良好'
+}
+
+function escapeCsvCell(value) {
+  const s = String(value ?? '')
+  if (/[",\n\r]/.test(s)) {
+    return `"${s.replace(/"/g, '""')}"`
+  }
+  return s
+}
+
+function registerChannelExportLabelFromUser(db, user) {
+  const label = resolveUserRegisterChannelLabel(db, user)
+  if (label) {
+    return label
+  }
+  return '商城注册'
+}
+
+function exportNeedsOrderStats(fields) {
+  return Array.isArray(fields) && fields.includes('orderCount')
+}
+
+function exportNeedsChannelResolution(fields, registerChannel) {
+  if (Array.isArray(fields) && fields.includes('registerChannel')) {
+    return true
+  }
+  return registerChannel === '__none__' || Boolean(registerChannel && registerChannel !== '__all__')
+}
+
+/** 按导出勾选字段逐项取值，避免 attachUserOrderStats 的无关 enrich */
+function pickRegisteredUserExportValues(user, db, fields, statsIndex) {
+  const values = {}
+  for (const key of fields) {
+    switch (key) {
+      case 'registerAt':
+        values.registerAt = formatDateTime(user.registerAt || '')
+        break
+      case 'name':
+        values.name = String(user.name || '').trim()
+        break
+      case 'phone':
+        values.phone = String(user.phone || '').trim()
+        break
+      case 'registerChannel':
+        values.registerChannel = registerChannelExportLabelFromUser(db, user)
+        break
+      case 'creditStatus': {
+        const snap = user.riskControlSnapshot && typeof user.riskControlSnapshot === 'object'
+          ? user.riskControlSnapshot
+          : null
+        values.creditStatus = displayCreditStatusFromOrderSevenSnapshot(snap)
+        break
+      }
+      case 'quota':
+        values.quota = normalizeUserQuota(user.quota)
+        break
+      case 'orderCount': {
+        const uid = String(user.id || '').trim()
+        const stats = statsIndex && statsIndex.get(uid)
+        values.orderCount = stats ? Math.max(0, Number(stats.orderCount || 0)) : 0
+        break
+      }
+      case 'remark':
+        values.remark = String(user.adminRemark || '').trim() || '暂无备注'
+        break
+      default:
+        break
+    }
+  }
+  return values
+}
+
+const REGISTERED_USER_EXPORT_FIELDS = Object.freeze({
+  registerAt: '注册时间',
+  name: '姓名',
+  phone: '手机号',
+  registerChannel: '注册渠道',
+  creditStatus: '信誉状态',
+  quota: '额度',
+  orderCount: '订单数',
+  remark: '备注',
+})
+
+const REGISTERED_USER_EXPORT_FIELD_KEYS = Object.freeze(Object.keys(REGISTERED_USER_EXPORT_FIELDS))
+
+function parseRegisteredUserExportFields(raw) {
+  const allowed = new Set(REGISTERED_USER_EXPORT_FIELD_KEYS)
+  const parts = String(raw || '')
+    .split(',')
+    .map(item => item.trim())
+    .filter(Boolean)
+  const picked = parts.filter(key => allowed.has(key))
+  if (picked.length > 0) {
+    return picked
+  }
+  return ['name', 'phone']
+}
+
+function buildRegisteredUsersExportCsv(db, query) {
+  const fields = parseRegisteredUserExportFields(query.fields)
+  const registerChannel = String(query.registerChannel || '').trim() || '__all__'
+  if (exportNeedsChannelResolution(fields, registerChannel)) {
+    ensureTrafficChannels(db)
+  }
+  const { rows, statsIndex } = listAdminUsersFilteredRows(db, {
+    registerChannel,
+    view: 'registered',
+  }, {
+    needOrderStats: exportNeedsOrderStats(fields),
+  })
+  const headers = fields.map(key => REGISTERED_USER_EXPORT_FIELDS[key])
+  const lines = [headers.map(escapeCsvCell).join(',')]
+  for (const { user } of rows) {
+    const valuesByField = pickRegisteredUserExportValues(user, db, fields, statsIndex)
+    lines.push(fields.map(key => valuesByField[key]).map(escapeCsvCell).join(','))
+  }
+  return `${lines.join('\r\n')}\r\n`
+}
+
+function exportFilenameDateStamp() {
+  const d = new Date()
+  const y = d.getFullYear()
+  const m = `${d.getMonth() + 1}`.padStart(2, '0')
+  const day = `${d.getDate()}`.padStart(2, '0')
+  const hh = `${d.getHours()}`.padStart(2, '0')
+  const min = `${d.getMinutes()}`.padStart(2, '0')
+  return `${y}${m}${day}_${hh}${min}`
 }
 
 function getUserPhone(ctx) {
@@ -6405,6 +6570,26 @@ function localYmdFromIso(iso) {
   const day = `${d.getDate()}`.padStart(2, '0')
   return `${y}-${m}-${day}`
 }
+
+router.get('/users/export', async (ctx) => {
+  if (!await requireAdminPermission(ctx, [ADMIN_ROLES.SUPER, ADMIN_ROLES.BOSS], '导出注册用户数据')) {
+    return
+  }
+  const registerChannel = String(ctx.query.registerChannel || '').trim() || '__all__'
+  const fields = String(ctx.query.fields || '').trim()
+  const db = readDb()
+  const csv = buildRegisteredUsersExportCsv(db, { registerChannel, fields })
+  const channelLabel = registerChannel === '__none__'
+    ? '商城注册'
+    : registerChannel === '__all__'
+      ? '全部'
+      : registerChannel
+  const safeName = channelLabel.replace(/[\\/:*?"<>|]/g, '_')
+  const filename = `注册用户_${safeName}_${exportFilenameDateStamp()}.csv`
+  ctx.set('Content-Type', 'text/csv; charset=utf-8')
+  ctx.set('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`)
+  ctx.body = `\uFEFF${csv}`
+})
 
 router.get('/users', async (ctx) => {
   if (!await requireAdminPermission(ctx, [ADMIN_ROLES.SUPER, ADMIN_ROLES.REVIEWER], '查看用户列表')) {

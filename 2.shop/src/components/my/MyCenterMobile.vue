@@ -1,7 +1,8 @@
 <script setup lang="ts">
+import { h } from 'vue'
 import type { TeaProduct } from '~/composables/useTeaProducts'
 import mallDefaultAvatarUrl from '~/assets/mall-default-avatar.png?url'
-import { notifyInfo, notifySuccess } from '~/utils/epFeedback'
+import { alertDialog, notifyInfo, notifySuccess } from '~/utils/epFeedback'
 
 const route = useRoute()
 const { smartNavigate } = useCustomRouting(route)
@@ -144,6 +145,73 @@ function handleLogout() {
   notifySuccess('已退出登录')
 }
 
+function isAppleMobileBrowser() {
+  if (typeof navigator === 'undefined') {
+    return false
+  }
+  const ua = navigator.userAgent || ''
+  return /iPhone|iPad|iPod/i.test(ua)
+    || (navigator.platform === 'MacIntel' && Number(navigator.maxTouchPoints || 0) > 1)
+}
+
+function isSafariBrowser() {
+  if (typeof navigator === 'undefined') {
+    return false
+  }
+  const ua = navigator.userAgent || ''
+  return /Safari/i.test(ua) && !/CriOS|FxiOS|EdgiOS|Chrome|Android/i.test(ua)
+}
+
+function isAndroidBrowser() {
+  return typeof navigator !== 'undefined' && /Android/i.test(navigator.userAgent || '')
+}
+
+async function showIosPwaGuide() {
+  const guideItems = isSafariBrowser()
+    ? [
+        '打开商城首页',
+        '点击 Safari 右下角底部的...',
+        '点击“共享”按钮',
+        '选择“查看更多”',
+        '选择“添加到主屏幕”',
+        '桌面即可生成入口',
+      ]
+    : [
+        '请先用 Safari 打开商城',
+        '访问 https://wenshuosc.com',
+        '点击右下角底部的...',
+        '点击“共享”按钮',
+        '选择“查看更多”',
+        '选择“添加到主屏幕”',
+        '桌面即可生成入口',
+      ]
+
+  await alertDialog(
+    h('div', { class: 'mall-pwa-guide' }, [
+      h('div', { class: 'mall-pwa-guide__hero' }, [
+        h('span', { class: 'mall-pwa-guide__icon' }, '★'),
+        h('div', null, [
+          h('p', { class: 'mall-pwa-guide__eyebrow' }, '快速变成桌面 App'),
+          h('p', { class: 'mall-pwa-guide__intro' }, '添加后，iPhone 桌面会生成“文硕商城”图标，下次打开更方便。'),
+        ]),
+      ]),
+      h('div', { class: 'mall-pwa-guide__steps' }, guideItems.map((item, index) => h('div', { class: 'mall-pwa-guide__step' }, [
+        h('span', { class: 'mall-pwa-guide__step-index' }, String(index + 1)),
+        h('span', { class: 'mall-pwa-guide__step-text' }, item),
+      ]))),
+      h('div', { class: 'mall-pwa-guide__note' }, [
+        h('span', { class: 'mall-pwa-guide__note-icon' }, '!'),
+        h('span', null, '若没看到该选项，请确认是用 Safari 打开。'),
+      ]),
+    ]),
+    'iPhone 添加到主屏幕',
+    {
+      confirmButtonText: '知道了',
+      customClass: 'mall-pwa-guide-dialog',
+    },
+  )
+}
+
 async function handleService(key: string) {
   /** 收货地址需登录；在线客服允许访客会话，不校验 */
   if (key === 'address' && !isLoggedIn.value) {
@@ -163,9 +231,13 @@ async function handleService(key: string) {
     return
   }
   if (key === 'download') {
+    if (isAppleMobileBrowser()) {
+      await showIosPwaGuide()
+      return
+    }
     const apkUrl = String(import.meta.env.VITE_MALL_APP_APK_URL || '').trim()
     if (!apkUrl) {
-      notifyInfo('暂未配置安装包下载地址')
+      notifyInfo(isAndroidBrowser() ? '暂未配置 APK 下载链接' : 'iPhone 请使用 Safari 添加到主屏幕，安卓请下载 APK')
       return
     }
     window.open(apkUrl, '_blank', 'noopener,noreferrer')
@@ -507,4 +579,146 @@ section :is(h3, h4, p, button, span) {
   font-family: "PingFang SC", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
   line-height: 1.3;
 }
+:global(.mall-pwa-guide-dialog) {
+  width: min(86vw, 390px);
+  border: 1px solid rgba(255, 179, 115, 0.3);
+  border-radius: 18px;
+  background: linear-gradient(180deg, #fffefd 0%, #fff8f1 100%);
+  box-shadow: 0 18px 48px rgba(160, 80, 48, 0.2);
+  overflow: hidden;
+}
+
+:global(.mall-pwa-guide-dialog .el-message-box__header) {
+  padding: 18px 20px 8px;
+}
+
+:global(.mall-pwa-guide-dialog .el-message-box__title) {
+  color: #2f3542;
+  font-size: 17px;
+  font-weight: 700;
+}
+
+:global(.mall-pwa-guide-dialog .el-message-box__content) {
+  padding: 8px 20px 4px;
+}
+
+:global(.mall-pwa-guide-dialog .el-message-box__btns) {
+  padding: 12px 20px 18px;
+}
+
+:global(.mall-pwa-guide-dialog .el-button--primary) {
+  min-width: 96px;
+  border: 0;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #ff8a45, #ff4f46);
+  box-shadow: 0 8px 18px rgba(255, 94, 67, 0.28);
+  font-weight: 700;
+}
+
+:global(.mall-pwa-guide) {
+  color: #3d4658;
+  font-family: "PingFang SC", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
+}
+
+:global(.mall-pwa-guide__hero) {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  border-radius: 14px;
+  background: linear-gradient(135deg, rgba(255, 245, 218, 0.95), rgba(255, 237, 228, 0.92));
+  padding: 12px;
+}
+
+:global(.mall-pwa-guide__icon) {
+  display: inline-flex;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #ffd56a, #ff8a3d);
+  color: #fff;
+  font-size: 15px;
+  box-shadow: 0 7px 14px rgba(245, 142, 42, 0.28);
+}
+
+:global(.mall-pwa-guide__eyebrow) {
+  margin: 0 0 4px;
+  color: #d76b26;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+:global(.mall-pwa-guide__intro) {
+  margin: 0;
+  color: #596172;
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+:global(.mall-pwa-guide__steps) {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+:global(.mall-pwa-guide__step) {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  border: 1px solid rgba(255, 152, 82, 0.18);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.78);
+  padding: 9px 10px;
+}
+
+:global(.mall-pwa-guide__step-index) {
+  display: inline-flex;
+  width: 22px;
+  height: 22px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: #fff0df;
+  color: #f06b30;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+:global(.mall-pwa-guide__step-text) {
+  color: #303846;
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+:global(.mall-pwa-guide__note) {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  margin-top: 12px;
+  border-radius: 12px;
+  background: #fff3e8;
+  padding: 9px 10px;
+  color: #b95d22;
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+:global(.mall-pwa-guide__note-icon) {
+  display: inline-flex;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: #ffc86a;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 900;
+}
+
 </style>
