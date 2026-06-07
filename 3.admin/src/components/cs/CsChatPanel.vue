@@ -22,6 +22,7 @@ defineProps<{
   loadingDetail: boolean
   sending: boolean
   draft: string
+  canReply?: boolean
   isCsImageMessage: (m: CsChatMessage) => boolean
   csChatImageSrc: (m: CsChatMessage) => string
   formatMsgTime: (iso: string) => string
@@ -106,7 +107,10 @@ function onDraftInput(value: string) {
       </template>
     </div>
 
-    <footer class="cs-composer">
+    <footer
+      v-if="canReply !== false"
+      class="cs-composer"
+    >
       <input
         ref="fileInputRef"
         type="file"

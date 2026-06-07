@@ -1,4 +1,5 @@
 import { ref } from 'vue'
+import type { AdminPermissions } from './useAdminPermissions'
 
 export type AdminRole = 'super_admin' | 'boss' | 'reviewer' | 'collector'
 
@@ -70,6 +71,8 @@ export interface AdminSession {
   workspaceType?: 'core' | 'self' | 'tenant'
   tenantId?: string
   scopeTenantIds?: string[]
+  /** 登录后下发的菜单/数据权限，用于侧栏与路由控制 */
+  permissions?: AdminPermissions
 }
 
 /** 平台总览账号已切到 mall__tenant_x（与 withMallTenantHeaders 一致） */
@@ -93,6 +96,31 @@ const STORAGE_KEY = 'mall-admin-session'
 
 /** localStorage 会话变更时递增，供依赖 getAdminSession() 的 computed 失效重读（避免切换子系统视图后仍用缓存） */
 export const adminSessionRevision = ref(0)
+
+function normalizeStoredPermissions(raw: unknown): AdminPermissions | undefined {
+  if (!raw || typeof raw !== 'object')
+    return undefined
+  const input = raw as { menus?: unknown, actions?: unknown }
+  const menus = Array.isArray(input.menus)
+    ? input.menus.map(item => String(item || '').trim()).filter(Boolean)
+    : []
+  const actions: Record<string, string[]> = {}
+  if (input.actions && typeof input.actions === 'object') {
+    Object.entries(input.actions as Record<string, unknown>).forEach(([key, list]) => {
+      const menuKey = String(key || '').trim()
+      if (!menuKey)
+        return
+      const next = Array.isArray(list)
+        ? list.map(item => String(item || '').trim()).filter(Boolean)
+        : []
+      if (next.length)
+        actions[menuKey] = next
+    })
+  }
+  if (!menus.length)
+    return undefined
+  return { menus, actions }
+}
 
 function safeParseSession(value: string | null): AdminSession | null {
   if (!value) return null
@@ -126,6 +154,7 @@ function safeParseSession(value: string | null): AdminSession | null {
       scopeTenantIds: Array.isArray(parsed.scopeTenantIds)
         ? parsed.scopeTenantIds.map(item => String(item || '').trim()).filter(Boolean)
         : undefined,
+      permissions: normalizeStoredPermissions(parsed.permissions),
     }
   }
   catch {

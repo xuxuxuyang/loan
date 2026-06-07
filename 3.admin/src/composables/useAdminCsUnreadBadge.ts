@@ -1,6 +1,7 @@
 import { onUnmounted, ref, watch, type ComputedRef } from 'vue'
 import { useRoute } from 'vue-router'
-import { getAdminSession, isSuperAdminRole } from './useAdminAuth'
+import { getAdminSession } from './useAdminAuth'
+import { adminCanAccessMenuPath } from './useAdminPermissions'
 import { withMallTenantHeaders } from './useAdminApi'
 
 const MALL_API_BASE = `${(import.meta.env.VITE_MALL_API_BASE || 'http://localhost:3110/api').replace(/\/$/, '')}`
@@ -15,7 +16,7 @@ const POLL_MS = 15000
 
 async function fetchCsBadge() {
   const s = getAdminSession()
-  if (!s?.token || (!isSuperAdminRole(s.role) && s.role !== 'reviewer')) {
+  if (!s?.token || !adminCanAccessMenuPath(s, '/cs-messages')) {
     csMenuHasUnread.value = false
     return
   }

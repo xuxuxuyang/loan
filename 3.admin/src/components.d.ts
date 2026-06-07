@@ -54,6 +54,7 @@ declare module 'vue' {
     ElTag: typeof import('element-plus/es')['ElTag']
     ElText: typeof import('element-plus/es')['ElText']
     ElTooltip: typeof import('element-plus/es')['ElTooltip']
+    ElTree: typeof import('element-plus/es')['ElTree']
     ElUpload: typeof import('element-plus/es')['ElUpload']
     LoginCard: typeof import('./components/auth/LoginCard.vue')['default']
     LoginFortuneRain: typeof import('./components/auth/LoginFortuneRain.vue')['default']

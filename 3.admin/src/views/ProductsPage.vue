@@ -3,6 +3,8 @@ import type { UploadProps } from 'element-plus'
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { withMallTenantHeaders } from '../composables/useAdminApi'
+import { getAdminSession, isSuperAdminRole } from '../composables/useAdminAuth'
+import { useAdminPagePermission } from '../composables/useAdminPagePermission'
 import { donePageProgress, startPageProgress } from '../utils/progress'
 
 import { useRoute } from 'vue-router'
@@ -100,6 +102,12 @@ const route = useRoute()
 const salesMode = computed<SalesMode>(() =>
   route.path.includes('installment') ? 'installment' : 'mall',
 )
+const {
+  canCreate: canCreateProduct,
+  canUpdate: canUpdateProduct,
+  canDelete: canDeleteProduct,
+} = useAdminPagePermission(undefined, () => isSuperAdminRole(getAdminSession()?.role))
+const showProductRowActions = computed(() => canUpdateProduct.value || canDeleteProduct.value)
 
 const products = ref<ProductItem[]>([])
 const loading = ref(false)
@@ -896,6 +904,7 @@ watch(salesMode, () => {
         刷新
       </button>
       <button
+        v-if="canCreateProduct"
         class="btn btn-primary"
         type="button"
         @click="openCreate"
@@ -921,7 +930,9 @@ watch(salesMode, () => {
           </th>
           <th>状态</th>
           <th>更新时间</th>
-          <th>操作</th>
+          <th v-if="showProductRowActions">
+            操作
+          </th>
         </tr>
       </thead>
       <tbody>
@@ -965,9 +976,10 @@ watch(salesMode, () => {
             </span>
           </td>
           <td>{{ formatDateTime(item.updatedAt || item.createdAt) }}</td>
-          <td>
+          <td v-if="showProductRowActions">
             <div class="actions">
               <button
+                v-if="canUpdateProduct"
                 class="btn btn-primary"
                 type="button"
                 @click="openEdit(item)"
@@ -975,6 +987,7 @@ watch(salesMode, () => {
                 编辑
               </button>
               <button
+                v-if="canUpdateProduct"
                 class="btn btn-warning"
                 type="button"
                 :disabled="onSalePatchingId !== null || deletingId === item.id"
@@ -986,7 +999,10 @@ watch(salesMode, () => {
                     : item.onSale ? '下架' : '上架'
                 }}
               </button>
-              <div class="delete-wrap">
+              <div
+                v-if="canDeleteProduct"
+                class="delete-wrap"
+              >
                 <button
                   class="btn btn-danger"
                   type="button"

@@ -3,7 +3,8 @@ import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { withAdminAuthHeaders, withMallTenantHeaders } from '../composables/useAdminApi'
-import { getAdminSession } from '../composables/useAdminAuth'
+import { getAdminSession, isSuperAdminRole } from '../composables/useAdminAuth'
+import { useAdminPagePermission } from '../composables/useAdminPagePermission'
 import { useTenantScope } from '../composables/useTenantScope'
 
 interface TenantSummary {
@@ -58,6 +59,16 @@ const roleTarget = ref<TenantAdminAccount | null>(null)
 const passwordTarget = ref<TenantAdminAccount | null>(null)
 const route = useRoute()
 const router = useRouter()
+const {
+  canCreate: canCreateTenant,
+  canUpdate: canUpdateTenant,
+  canDelete: canDeleteTenant,
+  canSwitchTenant,
+} = useAdminPagePermission('tenants.system', () => isSuperAdminRole(getAdminSession()?.role))
+const showTenantListActions = computed(
+  () => canUpdateTenant.value || canDeleteTenant.value || canSwitchTenant.value,
+)
+const showTenantAccountActions = computed(() => canUpdateTenant.value || canDeleteTenant.value)
 const { isPlatform, switchTenant } = useTenantScope()
 const deletingTenantId = ref('')
 
@@ -1092,7 +1103,10 @@ onUnmounted(() => {
       :description="errorMessage"
       @close="clearGlobalPageError"
     />
-    <div class="tenant-page__quick-open">
+    <div
+      v-if="canCreateTenant"
+      class="tenant-page__quick-open"
+    >
       <div class="tenant-page__quick-open-row">
         <span class="tenant-page__quick-label">新建子系统</span>
         <el-input
@@ -1143,7 +1157,9 @@ onUnmounted(() => {
             <th>用户数</th>
             <th>订单数</th>
             <th>商品数</th>
-            <th>操作</th>
+            <th v-if="showTenantListActions">
+              操作
+            </th>
           </tr>
         </thead>
         <tbody>
@@ -1158,9 +1174,10 @@ onUnmounted(() => {
             <td>{{ item.userCount }}</td>
             <td>{{ item.orderCount }}</td>
             <td>{{ item.productCount }}</td>
-            <td>
+            <td v-if="showTenantListActions">
               <div class="actions">
                 <button
+                  v-if="canUpdateTenant"
                   class="btn btn-danger"
                   type="button"
                   @click="openEditTenantBossAccount(item.tenantId)"
@@ -1168,6 +1185,7 @@ onUnmounted(() => {
                   修改老板账号
                 </button>
                 <button
+                  v-if="canSwitchTenant"
                   class="btn btn-primary"
                   type="button"
                   @click="jumpToTenant(item.tenantId)"
@@ -1175,6 +1193,7 @@ onUnmounted(() => {
                   切换到该子系统
                 </button>
                 <button
+                  v-if="canDeleteTenant"
                   class="btn btn-danger"
                   type="button"
                   :disabled="!!deletingTenantId"
@@ -1250,7 +1269,9 @@ onUnmounted(() => {
             <th>所属数据库</th>
             <th>状态</th>
             <th>更新时间</th>
-            <th>操作</th>
+            <th v-if="showTenantAccountActions">
+              操作
+            </th>
           </tr>
         </thead>
         <tbody>
@@ -1266,9 +1287,10 @@ onUnmounted(() => {
             <td>{{ resolveTenantOwnerName(item.sourceTenantId) }}</td>
             <td>{{ item.status === 'disabled' ? '禁用' : '启用' }}</td>
             <td>{{ item.updatedAt || '-' }}</td>
-            <td>
+            <td v-if="showTenantAccountActions">
               <div class="actions">
                 <button
+                  v-if="canUpdateTenant"
                   class="btn btn-warning"
                   type="button"
                   :disabled="Boolean(updatingStatusId) || deletingAccountId === item.id"
@@ -1281,6 +1303,7 @@ onUnmounted(() => {
                   }}
                 </button>
                 <button
+                  v-if="canUpdateTenant"
                   class="btn btn-role-edit"
                   type="button"
                   @click="openRoleDialog(item)"
@@ -1288,6 +1311,7 @@ onUnmounted(() => {
                   修改角色
                 </button>
                 <button
+                  v-if="canUpdateTenant"
                   class="btn btn-primary"
                   type="button"
                   @click="openPasswordDialog(item)"
@@ -1295,6 +1319,7 @@ onUnmounted(() => {
                   修改密码
                 </button>
                 <button
+                  v-if="canDeleteTenant"
                   class="btn btn-danger"
                   type="button"
                   :disabled="deletingAccountId === item.id"

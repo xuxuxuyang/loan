@@ -3,7 +3,9 @@ import { CircleCheck, Postcard, WarningFilled } from '@element-plus/icons-vue'
 import { ElIcon, ElMessage, ElMessageBox } from 'element-plus'
 import { type VNode, computed, h, onMounted, ref, watch } from 'vue'
 import type { OrderItem } from '../stores/useOrdersStore'
-import { getAdminSession, isSuperAdminRole } from '../composables/useAdminAuth'
+import { adminSessionRevision, getAdminSession, isSuperAdminRole } from '../composables/useAdminAuth'
+import { adminHasConfiguredPermissions } from '../composables/useAdminPermissions'
+import { useAdminPagePermission } from '../composables/useAdminPagePermission'
 import { useOrdersStore } from '../stores/useOrdersStore'
 import { withMallTenantHeaders } from '../composables/useAdminApi'
 import UserRiskDetailDialog, { type UserItem } from '../components/UserRiskDetailDialog.vue'
@@ -38,7 +40,22 @@ const { orders, fetchOrders, updateOrderStatus, rejectOrderReview, deleteOrder }
 type RiskApproveGateState = 'idle' | 'loading' | 'ok' | 'blocked'
 const riskApproveGateByOrderId = ref<Record<string, RiskApproveGateState>>({})
 
-const canDeleteOrder = computed(() => isSuperAdminRole(getAdminSession()?.role))
+const { canReview: canReviewOrder, canDelete: canDeleteFromPerm } = useAdminPagePermission(undefined, () => {
+  const role = getAdminSession()?.role
+  return isSuperAdminRole(role) || role === 'reviewer'
+})
+/** 未配置权限时仅超管可删；已配置时走 orders.review 的 delete 权限 */
+const canDeleteOrder = computed(() => {
+  void adminSessionRevision.value
+  const session = getAdminSession()
+  if (!session)
+    return false
+  if (session.role === 'super_admin')
+    return true
+  if (!adminHasConfiguredPermissions(session))
+    return isSuperAdminRole(session.role)
+  return canDeleteFromPerm.value
+})
 
 function normalizePhone(raw: string): string {
   return String(raw || '').replace(/\D/g, '')
@@ -555,6 +572,7 @@ watch(riskFilter, () => {
           <td>
             <div class="review-actions">
               <button
+                v-if="canReviewOrder"
                 :class="['btn', item.riskStatus === 'passed' ? 'btn-success' : 'btn-danger']"
                 type="button"
                 :disabled="reviewingId === item.id || rejectingId === item.id || item.riskStatus !== 'passed'"
@@ -567,7 +585,7 @@ watch(riskFilter, () => {
                 }}
               </button>
               <button
-                v-if="item.payType === '先享后付' && item.riskStatus === 'passed'"
+                v-if="canReviewOrder && item.payType === '先享后付' && item.riskStatus === 'passed'"
                 class="btn btn-danger"
                 type="button"
                 :disabled="reviewingId === item.id || rejectingId === item.id || deletingOrderId === item.id"

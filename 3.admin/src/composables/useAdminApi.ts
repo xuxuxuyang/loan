@@ -1,30 +1,72 @@
+import type { AdminPermissions } from './useAdminPermissions'
 import { getAdminSession, setAdminSession } from './useAdminAuth'
 
 const MALL_API_BASE = `${(import.meta.env.VITE_MALL_API_BASE || 'http://localhost:3110/api').replace(/\/$/, '')}`
 
-/** 旧会话无 name 时，从 /admin/profile 补全顶栏展示姓名 */
-export async function syncAdminSessionDisplayName(): Promise<boolean> {
-  const current = getAdminSession()
-  if (!current || String(current.name || '').trim()) {
-    return false
+function normalizeProfilePermissions(raw: unknown): AdminPermissions | undefined {
+  if (!raw || typeof raw !== 'object')
+    return undefined
+  const input = raw as { menus?: unknown, actions?: unknown }
+  const menus = Array.isArray(input.menus)
+    ? input.menus.map(item => String(item || '').trim()).filter(Boolean)
+    : []
+  if (!menus.length)
+    return undefined
+  const actions: Record<string, string[]> = {}
+  if (input.actions && typeof input.actions === 'object') {
+    Object.entries(input.actions as Record<string, unknown>).forEach(([key, list]) => {
+      const menuKey = String(key || '').trim()
+      if (!menuKey)
+        return
+      const next = Array.isArray(list)
+        ? list.map(item => String(item || '').trim()).filter(Boolean)
+        : []
+      if (next.length)
+        actions[menuKey] = next
+    })
   }
+  return { menus, actions }
+}
+
+/** 从 /admin/profile 同步姓名与权限（权限变更后无需重新登录即可刷新侧栏） */
+export async function syncAdminSessionProfile(): Promise<boolean> {
+  const current = getAdminSession()
+  if (!current)
+    return false
   try {
     const response = await fetch(`${MALL_API_BASE}/admin/profile`, {
       headers: withAdminAuthHeaders(),
     })
     const result = await response.json() as {
-      data?: { name?: string }
+      data?: { name?: string, permissions?: AdminPermissions }
     }
-    const name = String(result?.data?.name || '').trim()
-    if (!response.ok || !name) {
+    if (!response.ok || !result?.data)
       return false
+    const name = String(result.data.name || '').trim()
+    const permissions = normalizeProfilePermissions(result.data.permissions)
+    const next = { ...current }
+    let changed = false
+    if (name && name !== String(current.name || '').trim()) {
+      next.name = name
+      changed = true
     }
-    setAdminSession({ ...current, name })
+    if (permissions && JSON.stringify(permissions) !== JSON.stringify(current.permissions || null)) {
+      next.permissions = permissions
+      changed = true
+    }
+    if (!changed)
+      return false
+    setAdminSession(next)
     return true
   }
   catch {
     return false
   }
+}
+
+/** @deprecated 使用 syncAdminSessionProfile */
+export async function syncAdminSessionDisplayName(): Promise<boolean> {
+  return syncAdminSessionProfile()
 }
 
 /**

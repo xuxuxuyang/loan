@@ -285,11 +285,12 @@ function normalizeInstallmentPlan(payload: MallOrderPayload) {
 function mapMallOrderToAdminOrder(order: MallOrderPayload): OrderItem {
   const fallbackPeriods = order.payType === 'installment' ? 1 : 1
   const installmentPlan = normalizeInstallmentPlan(order)
+  const cardPackageIssued = Boolean(order.cardPackageIssued)
   const safePlan = installmentPlan.length > 0
     ? installmentPlan
     : [{
         period: 1,
-        dueDate: formatDateTime(order.createdAt).slice(0, 10),
+        dueDate: cardPackageIssued ? formatDateTime(order.createdAt).slice(0, 10) : '',
         principal: Number(order.totalAmount.toFixed(2)),
         fee: 0,
         amount: Number(order.totalAmount.toFixed(2)),
@@ -298,6 +299,7 @@ function mapMallOrderToAdminOrder(order: MallOrderPayload): OrderItem {
   const periods = safePlan.length || fallbackPeriods
   const nextPending = safePlan.find(item => !item.paid)
   const allPaid = safePlan.every(item => item.paid)
+  const nextRepayDue = nextPending?.dueDate?.trim()
   const periodAmount = Number(
     ((nextPending || safePlan[0])?.amount ?? 0).toFixed(2),
   )
@@ -335,14 +337,14 @@ function mapMallOrderToAdminOrder(order: MallOrderPayload): OrderItem {
     periods,
     periodAmount,
     currentPeriod: allPaid ? periods : (nextPending?.period || 1),
-    nextRepayDate: allPaid ? '-' : (nextPending?.dueDate || '-'),
+    nextRepayDate: allPaid ? '-' : (cardPackageIssued && nextRepayDue ? nextRepayDue : '-'),
     status,
     riskStatus,
     riskReason: order.riskReason || '',
     payType: order.payType === 'installment' ? '先享后付' : '全款',
     createdAt: formatDateTime(order.createdAt),
     installmentPlan: safePlan,
-    cardPackageIssued: Boolean(order.cardPackageIssued),
+    cardPackageIssued,
     cardPackageContractSigned: Boolean(signedAt),
     cardPackageContractSignedAt: signedAt,
     trackingNumber: tracking,
@@ -750,7 +752,8 @@ function recalculateOrderFields(order: OrderItem) {
   }
   if (nextPending) {
     order.currentPeriod = nextPending.period
-    order.nextRepayDate = nextPending.dueDate
+    const due = String(nextPending.dueDate || '').trim()
+    order.nextRepayDate = order.cardPackageIssued && due ? due : '-'
   }
   if (order.status === '已完成') {
     const tn = (order.trackingNumber || '').trim()

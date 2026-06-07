@@ -4,6 +4,8 @@ import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { InstallmentItem, InstallmentNegotiationRecord, OrderItem } from '../stores/useOrdersStore'
 import { getAdminSession, isSuperAdminRole } from '../composables/useAdminAuth'
+import { adminHasConfiguredPermissions } from '../composables/useAdminPermissions'
+import { useAdminPagePermission } from '../composables/useAdminPagePermission'
 import { withMallTenantHeaders } from '../composables/useAdminApi'
 import { useOrdersStore } from '../stores/useOrdersStore'
 import type { UserItem } from '../components/UserRiskDetailDialog.vue'
@@ -58,12 +60,27 @@ const riskDialogUserId = ref<string | null>(null)
 const riskContextOrderShipping = ref<OrderShippingSnapshot | undefined>(undefined)
 const resolvingRiskUserOrderId = ref<string | null>(null)
 const { orders, recalculateOrderFields, fetchOrders, fetchOrderById, updateInstallmentPaid, updateInstallmentDueDate, updateInstallmentSettleAmount, updateInstallmentNegotiate, updateInstallmentNegotiationHistoryPaid, updateOrderStatus, updateOrderShipment, updateOrderCardPackage, updateOrderCardPackageContract, deleteOrder } = useOrdersStore()
-const canOperateOrders = computed(() => isSuperAdminRole(getAdminSession()?.role))
-/** 审核员可填写/修改快递单号，其余订单操作仍仅超级管理员 */
+const {
+  canUpdate: canUpdateOrder,
+  canIssueCard,
+  canDelete: canDeleteOrder,
+  canMarkPaid,
+} = useAdminPagePermission(undefined, () => isSuperAdminRole(getAdminSession()?.role))
+const canOperateOrders = computed(() => canUpdateOrder.value || canIssueCard.value)
+const canShowApprovedRowActions = computed(() => !isCardPackageDataPage.value && (canOperateOrders.value || canDeleteOrder.value))
+/** 填写/修改快递单号须具备「编辑」权限；未配置权限时审核员仍可改（旧逻辑） */
 const canEditTrackingNumber = computed(() => {
-  const role = getAdminSession()?.role
-  return isSuperAdminRole(role) || role === 'reviewer'
+  if (canUpdateOrder.value)
+    return true
+  const session = getAdminSession()
+  if (session && !adminHasConfiguredPermissions(session))
+    return session.role === 'reviewer'
+  return false
 })
+/** 卡包发放：已审核订单页发卡包，订单数据页可维护发放状态 */
+const canManageCardPackage = computed(() => canIssueCard.value)
+/** 标记回款操作仅在「订单数据」页 */
+const canManageRepayment = computed(() => isCardPackageDataPage.value && canMarkPaid.value)
 
 function normalizePhone(raw: string): string {
   return String(raw || '').replace(/\D/g, '')
@@ -486,7 +503,7 @@ async function openPlan(order: OrderItem) {
 }
 
 async function toggleNegotiationHistoryPaid(order: OrderItem, plan: InstallmentItem, historyIndex: number, paid: boolean) {
-  if (!canOperateOrders.value) {
+  if (!canManageRepayment.value) {
     return
   }
   if (deferDueSavingKey.value || negotiateSavingKey.value || negotiationHistorySavingKey.value || settleAmountSavingKey.value) {
@@ -537,7 +554,8 @@ function closePlan() {
 }
 
 async function toggleRepay(order: OrderItem, period: InstallmentItem) {
-  if (!canOperateOrders.value) return
+  if (!canManageRepayment.value)
+    return
   if (deferDueSavingKey.value || negotiateSavingKey.value || negotiationHistorySavingKey.value || settleAmountSavingKey.value) {
     return
   }
@@ -692,7 +710,7 @@ function orderStatusOptionTitle(order: OrderItem, opt: (typeof ORDER_STATUS_EDIT
 }
 
 async function handleOrderStatusCommand(order: OrderItem, label: string) {
-  if (!canOperateOrders.value) {
+  if (!canUpdateOrder.value) {
     return
   }
   if (order.cardPackageIssued) {
@@ -735,7 +753,8 @@ async function handleOrderStatusCommand(order: OrderItem, label: string) {
 }
 
 async function rollbackToReview(order: OrderItem) {
-  if (!canOperateOrders.value) return
+  if (!canUpdateOrder.value)
+    return
   if (order.cardPackageIssued) {
     ElMessage.warning('卡包已发放时不可打回审核，请先改为未发放')
     return
@@ -760,7 +779,7 @@ async function rollbackToReview(order: OrderItem) {
 }
 
 async function handleDeleteOrder(order: OrderItem) {
-  if (!canOperateOrders.value) {
+  if (!canDeleteOrder.value) {
     return
   }
   if (deletingOrderId.value) {
@@ -915,7 +934,7 @@ function handleCardPackageCmd(order: OrderItem, cmd: string) {
 }
 
 async function applyCardPackage(order: OrderItem, next: boolean) {
-  if (!canOperateOrders.value) {
+  if (!canManageCardPackage.value) {
     return
   }
   if (cardPackageSavingId.value) {
@@ -977,7 +996,7 @@ function handleCardPackageContractCmd(order: OrderItem, cmd: string) {
 }
 
 async function applyCardPackageContract(order: OrderItem, nextSigned: boolean) {
-  if (!canOperateOrders.value || !orderHasCardPackageContract(order)) {
+  if (!canUpdateOrder.value || !orderHasCardPackageContract(order)) {
     return
   }
   if (cardPackageContractSavingId.value) {
@@ -1004,7 +1023,7 @@ async function applyCardPackageContract(order: OrderItem, nextSigned: boolean) {
 }
 
 async function deferRepaymentDue(order: OrderItem, plan: InstallmentItem) {
-  if (!canOperateOrders.value || plan.paid) {
+  if (!canManageRepayment.value || plan.paid) {
     return
   }
   if (!order.cardPackageIssued) {
@@ -1060,7 +1079,7 @@ async function deferRepaymentDue(order: OrderItem, plan: InstallmentItem) {
 }
 
 function openNegotiateRepayDialog(order: OrderItem, plan: InstallmentItem) {
-  if (!canOperateOrders.value || plan.paid) {
+  if (!canManageRepayment.value || plan.paid) {
     return
   }
   if (!order.cardPackageIssued) {
@@ -1091,7 +1110,7 @@ function onNegotiateRepayDialogClosed() {
 async function confirmNegotiateRepay() {
   const order = negotiateDialogOrder.value
   const plan = negotiateDialogPlan.value
-  if (!order || !plan || !canOperateOrders.value) {
+  if (!order || !plan || !canManageRepayment.value) {
     return
   }
   if (negotiationHistorySavingKey.value || settleAmountSavingKey.value) {
@@ -1156,7 +1175,7 @@ async function confirmNegotiateRepay() {
 }
 
 async function promptSettleRepayAmount(order: OrderItem, plan: InstallmentItem) {
-  if (!canOperateOrders.value || plan.paid) {
+  if (!canManageRepayment.value || plan.paid) {
     return
   }
   if (!order.cardPackageIssued) {
@@ -1394,7 +1413,7 @@ watch(
           <th v-if="isCardPackageDataPage">
             还款状态
           </th>
-          <th>{{ canOperateOrders ? '操作' : '查看' }}</th>
+          <th>{{ canShowApprovedRowActions ? '操作' : '查看' }}</th>
         </tr>
       </thead>
       <tbody>
@@ -1444,7 +1463,7 @@ watch(
           <td>¥ {{ item.totalAmount }}</td>
           <td class="td-order-status">
             <el-dropdown
-              v-if="canOperateOrders && !item.cardPackageIssued"
+              v-if="!isCardPackageDataPage && canUpdateOrder && !item.cardPackageIssued"
               trigger="click"
               :disabled="changingStatusOrderId === item.id"
               @command="(cmd: string) => handleOrderStatusCommand(item, cmd)"
@@ -1475,7 +1494,7 @@ watch(
               </template>
             </el-dropdown>
             <el-tag
-              v-else-if="canOperateOrders && item.cardPackageIssued"
+              v-else-if="!isCardPackageDataPage && canUpdateOrder && item.cardPackageIssued"
               :type="orderStatusTagType(displayOrderStatus(item))"
               effect="light"
               round
@@ -1497,7 +1516,7 @@ watch(
             </el-tag>
           </td>
           <td class="td-tracking">
-            <template v-if="canEditTrackingNumber && showTrackingEditor(item)">
+            <template v-if="!isCardPackageDataPage && canEditTrackingNumber && showTrackingEditor(item)">
               <button
                 type="button"
                 class="tracking-display-btn"
@@ -1514,7 +1533,7 @@ watch(
           </td>
           <td class="td-card-contract">
             <template v-if="orderHasCardPackageContract(item)">
-              <template v-if="canOperateOrders">
+              <template v-if="!isCardPackageDataPage && canUpdateOrder">
                 <div
                   v-if="item.cardPackageContractSigned"
                   class="card-contract-cell"
@@ -1664,7 +1683,7 @@ watch(
             >—</span>
           </td>
           <td class="td-card-package">
-            <template v-if="canOperateOrders">
+            <template v-if="canManageCardPackage">
               <el-dropdown
                 trigger="click"
                 :disabled="cardPackageSavingId === item.id"
@@ -1766,9 +1785,9 @@ watch(
               >
                 {{ openingPlanOrderId === item.id ? '加载中…' : '查看还款' }}
               </button>
-              <template v-if="canOperateOrders">
+              <template v-if="canShowApprovedRowActions">
                 <button
-                  v-if="displayOrderStatus(item) !== '已完成' && !item.cardPackageIssued"
+                  v-if="canUpdateOrder && displayOrderStatus(item) !== '已完成' && !item.cardPackageIssued"
                   class="btn btn-warning"
                   type="button"
                   :disabled="changingStatusOrderId === item.id || displayOrderStatus(item) === '待审核'"
@@ -1777,6 +1796,7 @@ watch(
                   {{ changingStatusOrderId === item.id ? '处理中...' : '打回审核' }}
                 </button>
                 <button
+                  v-if="canDeleteOrder"
                   class="btn btn-danger"
                   type="button"
                   :disabled="deletingOrderId === item.id"
@@ -1858,7 +1878,7 @@ watch(
             <th v-if="selectedOrderHasNegotiationHistory">
               协商还款日
             </th>
-            <th v-if="canOperateOrders">
+            <th v-if="canManageRepayment">
               操作
             </th>
           </tr>
@@ -1896,7 +1916,7 @@ watch(
               </template>
               <span v-else class="plan-modal-negotiate-empty">—</span>
             </td>
-            <td v-if="canOperateOrders">
+            <td v-if="canManageRepayment">
               <div class="plan-modal-actions">
                 <template v-if="plan.paid">
                   <button
@@ -2003,7 +2023,7 @@ watch(
             <div class="modal-negotiation-records__table-wrap">
               <table
                 class="table table--negotiation-records"
-                :class="{ 'table--negotiation-records--with-actions': canOperateOrders }"
+                :class="{ 'table--negotiation-records--with-actions': canManageRepayment }"
               >
                 <colgroup>
                   <col class="table--negotiation-records__col-datetime">
@@ -2012,7 +2032,7 @@ watch(
                   <col class="table--negotiation-records__col-due">
                   <col class="table--negotiation-records__col-status">
                   <col
-                    v-if="canOperateOrders"
+                    v-if="canManageRepayment"
                     class="table--negotiation-records__col-actions"
                   />
                 </colgroup>
@@ -2034,7 +2054,7 @@ watch(
                       协商金额还款状态
                     </th>
                     <th
-                      v-if="canOperateOrders"
+                      v-if="canManageRepayment"
                       class="table--negotiation-records__th-actions"
                     >
                       操作
@@ -2075,7 +2095,7 @@ watch(
                       </template>
                     </td>
                     <td
-                      v-if="canOperateOrders"
+                      v-if="canManageRepayment"
                       class="table--negotiation-records__actions"
                     >
                       <div class="table--negotiation-records__actions-inner">

@@ -3,6 +3,8 @@ import { computed, defineAsyncComponent, onMounted, onUnmounted, ref } from 'vue
 import { ChatDotRound } from '@element-plus/icons-vue'
 import { csMenuHasUnread } from '../composables/useAdminCsUnreadBadge'
 import { withMallTenantHeaders } from '../composables/useAdminApi'
+import { getAdminSession, isSuperAdminRole } from '../composables/useAdminAuth'
+import { useAdminPagePermission } from '../composables/useAdminPagePermission'
 
 const MALL_API_BASE = `${(import.meta.env.VITE_MALL_API_BASE || 'http://localhost:3110/api').replace(/\/$/, '')}`
 
@@ -45,6 +47,11 @@ let detailFetchGen = 0
 let sessionsInFlight = false
 /** 轮询 tick 时若详情请求未返回则跳过，避免慢响应叠加并发 GET */
 let detailInFlight = false
+
+const { canReply: canReplyCs } = useAdminPagePermission('cs.messages', () => {
+  const role = getAdminSession()?.role
+  return isSuperAdminRole(role) || role === 'reviewer' || role === 'collector'
+})
 
 const DETAIL_POLL_MS = 10000
 const SESSIONS_POLL_MS = 30000
@@ -503,6 +510,7 @@ onUnmounted(() => {
           :loading-detail="loadingDetail"
           :sending="sending"
           :draft="draft"
+          :can-reply="canReplyCs"
           :is-cs-image-message="isCsImageMessage"
           :cs-chat-image-src="csChatImageSrc"
           :format-msg-time="formatMsgTime"

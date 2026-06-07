@@ -1,6 +1,13 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import type { AdminRole, AdminSession } from '../composables/useAdminAuth'
 import { adminSessionRoleAllowed, getAdminSession, isAdminAuthenticated, isPlatformManagingTenantWorkspace } from '../composables/useAdminAuth'
+import {
+  adminHasConfiguredPermissions,
+  adminHasMenuView,
+  listAccessibleAdminRoutes,
+  permissionKeyForPath,
+  resolveAdminHomeRoute,
+} from '../composables/useAdminPermissions'
 
 declare module 'vue-router' {
   interface RouteMeta {
@@ -11,6 +18,7 @@ declare module 'vue-router' {
     /** true：仅超级管理员（不含主系统老板蹭 super_admin） */
     strictSuperAdminOnly?: boolean
     receivableOffsetDays?: number
+    permissionKey?: string
   }
 }
 
@@ -28,27 +36,31 @@ const ProductsPage = () => import('../views/ProductsPage.vue')
 const CsMessagesPage = () => import('../views/CsMessagesPage.vue')
 
 /**
- * 各角色登录后默认工作台（根路径 `/`、登录完毕、或无权限回退）。
- * - 超级管理员 → 账号管理
- * - 老板 → 财务报表
- * - 审核员 → 未审核订单
- * - 催收员 → 今日待收
+ * 登录后默认工作台：
+ * - 老板 → 财务报表（需有 dashboard 权限）
+ * - 审核员 → 未审核订单（需有 orders.review 权限）
+ * - 催收员 → 今日待收（需有 orders.receivable.today 权限）
+ * - 无首选页权限时 → 进入其它已配置权限中的第一个页面
  */
 export function adminHomeRoute(session: AdminSession | null) {
-  if (!session) {
-    return { name: 'dashboard-overview' as const }
+  return resolveAdminHomeRoute(session)
+}
+
+function resolvePermissionDeniedRedirect(
+  session: AdminSession | null,
+  currentRouteName: string | symbol | null | undefined,
+) {
+  const accessible = listAccessibleAdminRoutes(session)
+  const fallback = accessible.length
+    ? { name: accessible[0].name }
+    : adminHomeRoute(session)
+  if (fallback.name === currentRouteName) {
+    const alternate = accessible.find(item => item.name !== currentRouteName)
+    if (alternate)
+      return { name: alternate.name }
+    return true
   }
-  if (session.role === 'collector') {
-    return { name: 'orders-receivable-today' as const }
-  }
-  if (session.role === 'reviewer') {
-    return { name: 'order-review' as const }
-  }
-  if (session.role === 'boss') {
-    return { name: 'dashboard-overview' as const }
-  }
-  /** super_admin：统一进账号管理（含总部/子系统工作区切换后） */
-  return { name: 'accounts' as const }
+  return fallback
 }
 
 const router = createRouter({
@@ -75,7 +87,7 @@ const router = createRouter({
       path: '/dashboard',
       name: 'dashboard-overview',
       component: DashboardPage,
-      meta: { title: '财务报表', roles: ['super_admin'] },
+      meta: { title: '财务报表', roles: ['super_admin'], permissionKey: 'dashboard' },
     },
     {
       path: '/dashboard/receivable/today',
@@ -89,85 +101,85 @@ const router = createRouter({
       path: '/orders',
       name: 'orders',
       component: OrdersPage,
-      meta: { title: '已审核订单', roles: ['super_admin', 'reviewer', 'collector'] },
+      meta: { title: '已审核订单', roles: ['super_admin', 'reviewer', 'collector'], permissionKey: 'orders.approved' },
     },
     {
       path: '/orders/review',
       name: 'order-review',
       component: OrderReviewPage,
-      meta: { title: '未审核订单', roles: ['super_admin', 'reviewer', 'collector'] },
+      meta: { title: '未审核订单', roles: ['super_admin', 'reviewer', 'collector'], permissionKey: 'orders.review' },
     },
     {
       path: '/orders/card-data',
       name: 'orders-card-data',
       component: OrdersPage,
-      meta: { title: '订单数据', roles: ['super_admin', 'reviewer', 'collector'] },
+      meta: { title: '订单数据', roles: ['super_admin', 'reviewer', 'collector'], permissionKey: 'orders.cardData' },
     },
     {
       path: '/orders/receivable/today',
       name: 'orders-receivable-today',
       component: ReceivableByDatePage,
-      meta: { title: '今日待收', roles: ['super_admin', 'collector'], receivableOffsetDays: 0 },
+      meta: { title: '今日待收', roles: ['super_admin', 'collector'], receivableOffsetDays: 0, permissionKey: 'orders.receivable.today' },
     },
     {
       path: '/orders/receivable/tomorrow',
       name: 'orders-receivable-tomorrow',
       component: ReceivableByDatePage,
-      meta: { title: '明日待收', roles: ['super_admin', 'collector'], receivableOffsetDays: 1 },
+      meta: { title: '明日待收', roles: ['super_admin', 'collector'], receivableOffsetDays: 1, permissionKey: 'orders.receivable.tomorrow' },
     },
     {
       path: '/users/ordering',
       name: 'users-ordering',
       component: UsersPage,
-      meta: { title: '下单用户', roles: ['super_admin'] },
+      meta: { title: '下单用户', roles: ['super_admin'], permissionKey: 'users.ordering' },
     },
     {
       path: '/users/no-order',
       name: 'users-no-order',
       component: UsersPage,
-      meta: { title: '未下单用户', roles: ['super_admin'] },
+      meta: { title: '未下单用户', roles: ['super_admin'], permissionKey: 'users.noOrder' },
     },
     {
       path: '/users',
       name: 'users',
       component: UsersPage,
-      meta: { title: '注册用户', roles: ['super_admin'] },
+      meta: { title: '注册用户', roles: ['super_admin'], permissionKey: 'users.registered' },
     },
     {
       path: '/accounts',
       name: 'accounts',
       component: AccountManagePage,
-      meta: { title: '账号管理', roles: ['super_admin', 'boss'] },
+      meta: { title: '账号管理', roles: ['super_admin', 'boss'], permissionKey: 'accounts' },
     },
     {
       path: '/tenants',
       name: 'tenants',
       component: TenantManagePage,
-      meta: { title: '子系统管理', roles: ['super_admin'], platformOnly: true, strictSuperAdminOnly: true },
+      meta: { title: '子系统管理', roles: ['super_admin'], platformOnly: true, strictSuperAdminOnly: true, permissionKey: 'tenants.system' },
     },
     {
       path: '/tenants/mall-users-data',
       name: 'tenants-mall-users-data',
       component: TenantMallUsersDataPage,
-      meta: { title: '子系统数据', roles: ['super_admin'], platformOnly: true, strictSuperAdminOnly: true },
+      meta: { title: '子系统数据', roles: ['super_admin'], platformOnly: true, strictSuperAdminOnly: true, permissionKey: 'tenants.mallUsersData' },
     },
     {
       path: '/traffic',
       name: 'traffic',
       component: TrafficManagementPage,
-      meta: { title: '流量管理', roles: ['super_admin'] },
+      meta: { title: '流量管理', roles: ['super_admin'], permissionKey: 'traffic' },
     },
     {
       path: '/products/mall',
       name: 'products-mall',
       component: ProductsPage,
-      meta: { title: '商城产品', roles: ['super_admin'] },
+      meta: { title: '商城产品', roles: ['super_admin'], permissionKey: 'products.mall' },
     },
     {
       path: '/products/installment',
       name: 'products-installment',
       component: ProductsPage,
-      meta: { title: '先享后付产品', roles: ['super_admin'] },
+      meta: { title: '先享后付产品', roles: ['super_admin'], permissionKey: 'products.installment' },
     },
     {
       path: '/products',
@@ -177,7 +189,7 @@ const router = createRouter({
       path: '/cs-messages',
       name: 'cs-messages',
       component: CsMessagesPage,
-      meta: { title: '客服消息', roles: ['super_admin', 'reviewer'] },
+      meta: { title: '客服消息', roles: ['super_admin', 'reviewer', 'collector'], permissionKey: 'cs.messages' },
     },
   ],
 })
@@ -200,11 +212,12 @@ router.beforeEach((to) => {
   const strictSuperAdminOnly = Boolean(to.meta.strictSuperAdminOnly)
   if (
     allowRoles.length > 0
+    && !adminHasConfiguredPermissions(session)
     && !adminSessionRoleAllowed(session?.role, allowRoles, {
       inheritBossAsSuperAdmin: !strictSuperAdminOnly,
     })
   ) {
-    return adminHomeRoute(session)
+    return resolvePermissionDeniedRedirect(session, to.name)
   }
   if (to.meta.platformOnly && session?.scopeType !== 'platform') {
     return adminHomeRoute(session)
@@ -212,6 +225,14 @@ router.beforeEach((to) => {
   /** 子系统工作区下禁止 deep-link 进总部专页，避免误以为在读子系统数据（须先「返回总部」） */
   if (to.meta.platformOnly && isPlatformManagingTenantWorkspace(session)) {
     return adminHomeRoute(session)
+  }
+  const permissionKey = String(to.meta.permissionKey || permissionKeyForPath(to.path) || '').trim()
+  if (
+    permissionKey
+    && session?.permissions?.menus?.length
+    && !adminHasMenuView(session, permissionKey)
+  ) {
+    return resolvePermissionDeniedRedirect(session, to.name)
   }
   return true
 })

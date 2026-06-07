@@ -4,6 +4,8 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import TrafficChannelNameTag from '../components/TrafficChannelNameTag.vue'
 import { withMallTenantHeaders } from '../composables/useAdminApi'
+import { getAdminSession, isSuperAdminRole } from '../composables/useAdminAuth'
+import { useAdminPagePermission } from '../composables/useAdminPagePermission'
 import { donePageProgress, startPageProgress } from '../utils/progress'
 import { trafficChannelDisplayKey } from '../utils/trafficChannelTagStyle'
 
@@ -104,6 +106,13 @@ const tableHeaderCellStyle = {
   color: 'var(--el-text-color-primary)',
   fontWeight: 600 as const,
 }
+
+const {
+  canCreate: canCreateTraffic,
+  canUpdate: canUpdateTraffic,
+  canDelete: canDeleteTraffic,
+} = useAdminPagePermission('traffic', () => isSuperAdminRole(getAdminSession()?.role))
+const showTrafficRowActions = computed(() => canUpdateTraffic.value || canDeleteTraffic.value)
 
 const loading = ref(false)
 const rows = ref<TrafficChannelRow[]>([])
@@ -645,6 +654,7 @@ onMounted(() => {
 
     <div class="toolbar">
       <button
+        v-if="canCreateTraffic"
         class="btn btn-primary"
         type="button"
         :disabled="loading"
@@ -781,6 +791,7 @@ onMounted(() => {
         >
           <template #default="{ row }">
             <el-button
+              v-if="canUpdateTraffic"
               type="primary"
               link
               class="remark-table-trigger"
@@ -807,6 +818,11 @@ onMounted(() => {
                 >{{ row.remark?.trim() ? row.remark : '暂无备注' }}</span>
               </span>
             </el-button>
+            <span
+              v-else
+              class="remark-cell__text remark-preview"
+              :class="row.remark?.trim() ? 'remark-preview--filled' : 'remark-preview--empty'"
+            >{{ row.remark?.trim() ? row.remark : '暂无备注' }}</span>
           </template>
         </el-table-column>
 
@@ -817,6 +833,7 @@ onMounted(() => {
         >
           <template #default="{ row }">
             <el-tooltip
+              v-if="canUpdateTraffic"
               :content="row.disabled ? '点击启用' : '点击停用'"
               placement="top"
               :show-after="400"
@@ -845,6 +862,15 @@ onMounted(() => {
                 </template>
               </el-tag>
             </el-tooltip>
+            <el-tag
+              v-else
+              :type="row.disabled ? 'info' : 'success'"
+              effect="light"
+              round
+              size="small"
+            >
+              {{ row.disabled ? '已停用' : '启用' }}
+            </el-tag>
           </template>
         </el-table-column>
 
@@ -1178,6 +1204,7 @@ onMounted(() => {
         </el-table-column>
 
         <el-table-column
+          v-if="showTrafficRowActions"
           label="操作"
           width="132"
           fixed="right"
@@ -1189,6 +1216,7 @@ onMounted(() => {
               spacer="|"
             >
               <el-button
+                v-if="canUpdateTraffic"
                 type="primary"
                 link
                 size="small"
@@ -1198,6 +1226,7 @@ onMounted(() => {
                 编辑
               </el-button>
               <el-button
+                v-if="canDeleteTraffic"
                 type="danger"
                 link
                 size="small"

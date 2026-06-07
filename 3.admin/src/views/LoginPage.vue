@@ -3,7 +3,20 @@ import { onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import LoginCard from '../components/auth/LoginCard.vue'
 import LoginWelcomeCelebration from '../components/auth/LoginWelcomeCelebration.vue'
-import { adminRoleDisplayLabel, isPlatformBootstrapUser, setAdminSession, type AdminRole } from '../composables/useAdminAuth'
+import { syncAdminSessionProfile } from '../composables/useAdminApi'
+import {
+  adminCanAccessMenuPath,
+  resolveAdminHomeRoute,
+  type AdminPermissions,
+} from '../composables/useAdminPermissions'
+import {
+  adminRoleDisplayLabel,
+  getAdminSession,
+  isPlatformBootstrapUser,
+  setAdminSession,
+  type AdminRole,
+} from '../composables/useAdminAuth'
+import { clearAdminVisitedTags } from '../composables/useAdminVisitedTags'
 
 const route = useRoute()
 const router = useRouter()
@@ -77,6 +90,7 @@ async function handleLogin(payload: { username: string, password: string }) {
         workspaceType?: 'core' | 'self' | 'tenant'
         tenantId?: string
         scopeTenantIds?: string[]
+        permissions?: AdminPermissions
       }
     } = {}
     try {
@@ -120,6 +134,7 @@ async function handleLogin(payload: { username: string, password: string }) {
       scopeTenantIds: Array.isArray(result.data.scopeTenantIds)
         ? result.data.scopeTenantIds.map(item => String(item || '').trim()).filter(Boolean)
         : undefined,
+      ...(result.data.permissions ? { permissions: result.data.permissions } : {}),
     })
 
     loginWelcomeRole.value = role
@@ -136,8 +151,30 @@ async function handleLogin(payload: { username: string, password: string }) {
     enteringSystem.value = true
     await new Promise(r => setTimeout(r, 1400))
 
-    const redirect = String(route.query.redirect || '/')
-    await router.replace(redirect.startsWith('/') ? redirect : '/')
+    if (!result.data.permissions) {
+      await syncAdminSessionProfile()
+    }
+
+    clearAdminVisitedTags()
+
+    const session = getAdminSession()
+    const homeTarget = resolveAdminHomeRoute(session)
+    const rawRedirect = String(route.query.redirect || '').trim()
+    let target: ReturnType<typeof resolveAdminHomeRoute> | string = homeTarget
+
+    if (rawRedirect && rawRedirect !== '/' && rawRedirect.startsWith('/')) {
+      const resolved = router.resolve(rawRedirect)
+      const allowRoles = Array.isArray(resolved.meta?.roles) ? resolved.meta.roles : undefined
+      if (
+        resolved.matched.length
+        && resolved.name !== 'login'
+        && adminCanAccessMenuPath(session, resolved.path, allowRoles)
+      ) {
+        target = resolved.fullPath
+      }
+    }
+
+    await router.replace(target)
   }
   catch (err) {
     error.value = err instanceof Error ? err.message : '登录失败，请稍后重试'

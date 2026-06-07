@@ -23,7 +23,8 @@ import { useRoute, useRouter } from 'vue-router'
 import AdminRoleAvatar from './components/AdminRoleAvatar.vue'
 import LoginFortuneRain from './components/auth/LoginFortuneRain.vue'
 import MallBrandLogo from './components/MallBrandLogo.vue'
-import { adminSessionRoleAllowed, clearAdminSession, getAdminSession, isPlatformManagingTenantWorkspace, isSuperAdminRole, type AdminSession } from './composables/useAdminAuth'
+import { clearAdminSession, getAdminSession, isPlatformManagingTenantWorkspace, type AdminSession } from './composables/useAdminAuth'
+import { adminCanAccessMenuPath, adminHasMenuView, permissionKeyForPath } from './composables/useAdminPermissions'
 import { useTenantScope } from './composables/useTenantScope'
 import { csMenuHasUnread, useAdminCsUnreadBadge } from './composables/useAdminCsUnreadBadge'
 import {
@@ -37,7 +38,7 @@ import {
   removeAdminVisitedTag,
   syncAdminVisitedTag,
 } from './composables/useAdminVisitedTags'
-import { syncAdminSessionDisplayName } from './composables/useAdminApi'
+import { syncAdminSessionProfile } from './composables/useAdminApi'
 import { adminHomeRoute } from './router'
 
 type Role = NonNullable<AdminSession['role']>
@@ -82,7 +83,7 @@ const managedTenantHeadline = computed(() => {
 })
 
 const allMenus: MenuEntry[] = [
-{ label: '客服消息', path: '/cs-messages', icon: ChatDotRound, roles: ['super_admin', 'reviewer'] },
+{ label: '客服消息', path: '/cs-messages', icon: ChatDotRound, roles: ['super_admin', 'reviewer', 'collector'] },
   
 
   {
@@ -147,31 +148,46 @@ const allMenus: MenuEntry[] = [
   },
 ]
 
+function isMenuEntryVisible(item: MenuEntry, hideHeadquartersEntries: boolean): boolean {
+  const sess = session.value
+  if (!sess)
+    return false
+  if (item.platformOnly && hideHeadquartersEntries)
+    return false
+  if (item.strictSuperAdminOnly && sess.role !== 'super_admin')
+    return false
+  if (item.children?.length)
+    return item.children.some(child => isMenuChildVisible(child, item, hideHeadquartersEntries))
+  return adminCanAccessMenuPath(sess, item.path, item.roles, {
+    inheritBossAsSuperAdmin: !item.strictSuperAdminOnly,
+  })
+}
+
+function isMenuChildVisible(child: MenuChild, parent: MenuEntry, hideHeadquartersEntries: boolean): boolean {
+  const sess = session.value
+  if (!sess)
+    return false
+  if (parent.platformOnly && hideHeadquartersEntries)
+    return false
+  return adminCanAccessMenuPath(sess, child.path, child.roles ?? parent.roles, {
+    inheritBossAsSuperAdmin: !parent.strictSuperAdminOnly,
+  })
+}
+
 const menus = computed(() => {
-  const role = session.value?.role
   const scopeType = session.value?.scopeType || 'tenant'
   const hideHeadquartersEntries = scopeType !== 'platform' || isPlatformManagingTenant.value
   return allMenus
-    .filter((item) => {
-      if (item.platformOnly && hideHeadquartersEntries) {
-        return false
-      }
-      return !item.roles || adminSessionRoleAllowed(role, item.roles, {
-        inheritBossAsSuperAdmin: !item.strictSuperAdminOnly,
-      })
-    })
+    .filter(item => isMenuEntryVisible(item, hideHeadquartersEntries))
     .map((item) => {
-      if (!item.children) return item
+      if (!item.children)
+        return item
       return {
         ...item,
-        children: item.children.filter((child) => {
-          if (!child.roles) return true
-          return adminSessionRoleAllowed(role, child.roles, {
-            inheritBossAsSuperAdmin: !item.strictSuperAdminOnly,
-          })
-        }),
+        children: item.children.filter(child => isMenuChildVisible(child, item, hideHeadquartersEntries)),
       }
     })
+    .filter(item => !item.children || item.children.length > 0)
 })
 
 /** 进入订单相关路由时展开子菜单；离开订单模块时重建菜单避免 default-openeds 不响应的问题 */
@@ -260,12 +276,22 @@ watch(isLoginPage, (login) => {
 })
 
 onMounted(() => {
-  if (isLoginPage.value || !session.value || String(session.value.name || '').trim()) {
+  if (isLoginPage.value || !session.value) {
     return
   }
-  void syncAdminSessionDisplayName().then((updated) => {
-    if (updated) {
-      session.value = getAdminSession()
+  void syncAdminSessionProfile().then((updated) => {
+    if (!updated) {
+      return
+    }
+    session.value = getAdminSession()
+    const sess = session.value
+    const permissionKey = String(route.meta.permissionKey || permissionKeyForPath(route.path) || '').trim()
+    if (
+      permissionKey
+      && sess?.permissions?.menus?.length
+      && !adminHasMenuView(sess, permissionKey)
+    ) {
+      void router.replace(adminHomeRoute(sess))
     }
   })
 })
@@ -274,8 +300,10 @@ const csSidebarBadgeEnabled = computed(() => {
   if (isLoginPage.value) {
     return false
   }
-  const r = session.value?.role
-  return isSuperAdminRole(r) || r === 'reviewer'
+  const sess = session.value
+  if (!sess)
+    return false
+  return adminCanAccessMenuPath(sess, '/cs-messages')
 })
 
 /** 订单侧栏角标：登录即可轮询，不按角色开关（与菜单权限分离） */

@@ -5,6 +5,7 @@ import { computed, onUnmounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { withMallTenantHeaders } from '../composables/useAdminApi'
 import { adminSessionRevision, getAdminSession, isSuperAdminRole } from '../composables/useAdminAuth'
+import { useAdminPagePermission } from '../composables/useAdminPagePermission'
 import TrafficChannelNameTag from '../components/TrafficChannelNameTag.vue'
 import UserRegistrationInfoScroll from '../components/UserRegistrationInfoScroll.vue'
 import UserRiskDetailDialog, {
@@ -176,17 +177,18 @@ function validateCreateUserForm(): boolean {
 
 const route = useRoute()
 
-const canManageUsers = computed(() => {
-  void adminSessionRevision.value
-  return isSuperAdminRole(getAdminSession()?.role)
-})
+const {
+  canCreate: canCreateUser,
+  canUpdate: canUpdateUser,
+  canDelete: canDeleteUser,
+  canExport: canExportUsers,
+} = useAdminPagePermission(undefined, () => isSuperAdminRole(getAdminSession()?.role))
+const canEditUsers = computed(() => canUpdateUser.value)
 
 /** 下单用户页：仅展示订单数大于 0 的用户 */
 const isOrderingUsersView = computed(() => route.path === '/users/ordering')
 /** 未下单用户页：仅展示已注册且订单数为 0 的用户 */
 const isNoOrderUsersView = computed(() => route.path === '/users/no-order')
-/** 注册用户 / 未下单用户：展示注册时间、支持添加用户 */
-const isRegisteredLikeView = computed(() => !isOrderingUsersView.value)
 /** 仅「注册用户」页提供渠道导出 */
 const isRegisteredUsersPage = computed(() => route.name === 'users')
 
@@ -364,7 +366,7 @@ function parseExportFilename(contentDisposition: string | null): string {
 }
 
 function openExportDialog() {
-  if (!canManageUsers.value || !isRegisteredUsersPage.value) {
+  if (!canExportUsers.value || !isRegisteredUsersPage.value) {
     return
   }
   exportChannelFilter.value = REGISTER_CHANNEL_FILTER_ALL
@@ -391,7 +393,7 @@ function exportChannelLabel(ch: string): string {
 }
 
 async function exportRegisteredUsers() {
-  if (!canManageUsers.value || !isRegisteredUsersPage.value) {
+  if (!canExportUsers.value || !isRegisteredUsersPage.value) {
     return
   }
   const ch = exportChannelFilter.value || REGISTER_CHANNEL_FILTER_ALL
@@ -538,7 +540,8 @@ function closePreview() {
 }
 
 function startEdit(user: ListedUser) {
-  if (!canManageUsers.value) return
+  if (!canEditUsers.value)
+    return
   previewUser.value = user
   editingUserId.value = user.id
   editForm.name = user.name
@@ -550,7 +553,8 @@ function startEdit(user: ListedUser) {
 }
 
 function openCreateDialog() {
-  if (!canManageUsers.value) return
+  if (!canCreateUser.value || !isRegisteredUsersPage.value)
+    return
   clearCreateFormErrors()
   createDialogVisible.value = true
   createForm.name = ''
@@ -568,7 +572,8 @@ function closeCreateDialog() {
 }
 
 async function createUser() {
-  if (!canManageUsers.value) return
+  if (!canCreateUser.value || !isRegisteredUsersPage.value)
+    return
   if (creating.value) {
     return
   }
@@ -611,7 +616,8 @@ async function createUser() {
 }
 
 async function saveEdit() {
-  if (!canManageUsers.value) return
+  if (!canEditUsers.value)
+    return
   if (!previewUser.value || editingUserId.value !== previewUser.value.id) {
     return
   }
@@ -673,7 +679,8 @@ function cancelDelete() {
 }
 
 async function confirmDelete(user: ListedUser) {
-  if (!canManageUsers.value) return
+  if (!canDeleteUser.value)
+    return
   if (deletingId.value) {
     return
   }
@@ -761,7 +768,8 @@ function getStatusClass(status: DisplayCreditStatus | UserItem['creditStatus']) 
 }
 
 function openQuotaDialog(user: ListedUser) {
-  if (!canManageUsers.value) return
+  if (!canEditUsers.value)
+    return
   quotaTarget.value = user
   quotaInput.value = `${user.quota}`
   quotaDialogVisible.value = true
@@ -782,7 +790,8 @@ function resetQuotaDialogState() {
 }
 
 async function saveQuota() {
-  if (!canManageUsers.value || !quotaTarget.value || quotaSaving.value) return
+  if (!canEditUsers.value || !quotaTarget.value || quotaSaving.value)
+    return
   const n = Number(String(quotaInput.value).trim())
   if (!Number.isFinite(n) || n < 0) {
     ElMessage.warning('请输入大于等于 0 的有效数字额度')
@@ -815,7 +824,8 @@ async function saveQuota() {
 }
 
 function openRemarkDialog(user: ListedUser) {
-  if (!canManageUsers.value) return
+  if (!canEditUsers.value)
+    return
   remarkTarget.value = user
   remarkDraft.value = typeof user.adminRemark === 'string' ? user.adminRemark : ''
   remarkDialogVisible.value = true
@@ -830,7 +840,8 @@ function closeRemarkDialog(opts?: { force?: boolean }) {
 }
 
 async function saveRemark() {
-  if (!canManageUsers.value || !remarkTarget.value || remarkSaving.value) return
+  if (!canEditUsers.value || !remarkTarget.value || remarkSaving.value)
+    return
   const id = remarkTarget.value.id
   remarkSaving.value = true
   try {
@@ -858,7 +869,8 @@ async function saveRemark() {
 }
 
 async function toggleBlacklist(user: ListedUser) {
-  if (!canManageUsers.value || blacklistBusyId.value) return
+  if (!canEditUsers.value || blacklistBusyId.value)
+    return
   blacklistBusyId.value = user.id
   const next = !user.orderBlacklisted
   try {
@@ -936,7 +948,7 @@ async function toggleBlacklist(user: ListedUser) {
         刷新
       </button>
       <button
-        v-if="canManageUsers && isRegisteredLikeView"
+        v-if="canCreateUser && isRegisteredUsersPage"
         class="btn btn-primary"
         type="button"
         @click="openCreateDialog"
@@ -944,7 +956,7 @@ async function toggleBlacklist(user: ListedUser) {
         添加用户
       </button>
       <button
-        v-if="canManageUsers && isRegisteredUsersPage"
+        v-if="canExportUsers && isRegisteredUsersPage"
         class="btn btn-export"
         type="button"
         :disabled="exporting || loading"
@@ -998,7 +1010,7 @@ async function toggleBlacklist(user: ListedUser) {
           </td>
           <td class="quota-cell">
             <button
-              v-if="canManageUsers"
+              v-if="canUpdateUser"
               type="button"
               class="quota-trigger"
               @click="openQuotaDialog(item)"
@@ -1013,7 +1025,7 @@ async function toggleBlacklist(user: ListedUser) {
           <td>{{ item.orderCount }}</td>
           <td class="td-remark">
             <button
-              v-if="canManageUsers"
+              v-if="canUpdateUser"
               type="button"
               class="remark-cell remark-cell--clickable"
               :title="item.adminRemark?.trim() ? '点击编辑备注' : '点击添加备注'"
@@ -1067,7 +1079,7 @@ async function toggleBlacklist(user: ListedUser) {
                 查看
               </button>
               <button
-                v-if="canManageUsers"
+                v-if="canUpdateUser"
                 class="btn btn-primary"
                 type="button"
                 @click="startEdit(item)"
@@ -1075,7 +1087,7 @@ async function toggleBlacklist(user: ListedUser) {
                 修改
               </button>
               <button
-                v-if="canManageUsers"
+                v-if="canUpdateUser"
                 type="button"
                 class="btn"
                 :class="item.orderBlacklisted ? 'btn-success' : 'btn-danger'"
@@ -1091,7 +1103,7 @@ async function toggleBlacklist(user: ListedUser) {
                 }}
               </button>
               <div
-                v-if="canManageUsers"
+                v-if="canDeleteUser"
                 class="delete-wrap"
               >
                 <button
@@ -1157,7 +1169,7 @@ async function toggleBlacklist(user: ListedUser) {
 
   <Teleport to="body">
     <div
-      v-if="createDialogVisible && canManageUsers"
+      v-if="createDialogVisible && canCreateUser && isRegisteredUsersPage"
       class="modal-mask"
       @click.self="closeCreateDialog"
     >
@@ -1261,7 +1273,7 @@ async function toggleBlacklist(user: ListedUser) {
 
   <Teleport to="body">
     <div
-      v-if="quotaDialogVisible && quotaTarget && canManageUsers"
+      v-if="quotaDialogVisible && quotaTarget && canEditUsers"
       class="modal-mask"
       @click.self="closeQuotaDialog"
     >
@@ -1307,7 +1319,7 @@ async function toggleBlacklist(user: ListedUser) {
 
   <Teleport to="body">
     <div
-      v-if="remarkDialogVisible && remarkTarget && canManageUsers"
+      v-if="remarkDialogVisible && remarkTarget && canEditUsers"
       class="modal-mask"
       @click.self="() => closeRemarkDialog()"
     >
@@ -1354,7 +1366,7 @@ async function toggleBlacklist(user: ListedUser) {
 
   <Teleport to="body">
     <div
-      v-if="exportDialogVisible && canManageUsers"
+      v-if="exportDialogVisible && canExportUsers"
       class="modal-mask"
       @click.self="closeExportDialog"
     >
@@ -1480,7 +1492,7 @@ async function toggleBlacklist(user: ListedUser) {
 
       <div class="user-preview-scroll">
         <section
-          v-if="editingUserId === previewUser.id && canManageUsers"
+          v-if="editingUserId === previewUser.id && canEditUsers"
           class="user-preview-block"
         >
           <h4 class="user-preview-block__title">
@@ -1559,11 +1571,11 @@ async function toggleBlacklist(user: ListedUser) {
         </section>
 
         <UserRegistrationInfoScroll
-          v-if="!(editingUserId === previewUser.id && canManageUsers)"
+          v-if="!(editingUserId === previewUser.id && canEditUsers)"
           embedded-in-parent-scroll
           :user="previewUser"
           :snapshot="previewUser.riskControlSnapshot ?? null"
-          :can-manage-users="canManageUsers"
+          :can-manage-users="canEditUsers"
         />
         <UserRegistrationInfoScroll
           v-else
@@ -1571,13 +1583,13 @@ async function toggleBlacklist(user: ListedUser) {
           embedded-in-parent-scroll
           :user="previewUser"
           :snapshot="previewUser.riskControlSnapshot ?? null"
-          :can-manage-users="canManageUsers"
+          :can-manage-users="canEditUsers"
         />
       </div>
 
       <div class="user-preview-footer">
         <button
-          v-if="editingUserId === previewUser.id && canManageUsers"
+          v-if="editingUserId === previewUser.id && canEditUsers"
           class="btn btn-primary"
           type="button"
           @click="saveEdit"

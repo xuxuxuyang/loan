@@ -4,10 +4,24 @@ import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { adminRoleDisplayLabel, adminSessionRevision, getAdminSession, isPlatformBootstrapUser, shouldUseHeadquartersPlatformApi } from '../composables/useAdminAuth'
 import { withAdminAuthHeaders, withMallTenantHeaders } from '../composables/useAdminApi'
+import { useAdminPagePermission } from '../composables/useAdminPagePermission'
 import { donePageProgress, startPageProgress } from '../utils/progress'
 
 type AccountRole = 'super_admin' | 'boss' | 'reviewer' | 'collector'
 type AccountStatus = 'active' | 'disabled'
+type PermissionAction = string
+
+interface AdminPermissions {
+  menus: string[]
+  actions: Record<string, PermissionAction[]>
+}
+
+interface PermissionTreeNode {
+  key: string
+  label: string
+  actions?: PermissionAction[]
+  children?: PermissionTreeNode[]
+}
 
 interface AdminAccountItem {
   id: string
@@ -23,6 +37,7 @@ interface AdminAccountItem {
   scopeTenantIds?: string[]
   sourceTenantId?: string
   sourceTenantName?: string
+  permissions?: AdminPermissions
   createdAt: string
   updatedAt: string
 }
@@ -44,27 +59,76 @@ const passwordSubmitting = ref(false)
 const passwordTarget = ref<AdminAccountItem | null>(null)
 const roleSubmitting = ref(false)
 const roleTarget = ref<AdminAccountItem | null>(null)
+const permissionSubmitting = ref(false)
+const permissionTarget = ref<AdminAccountItem | null>(null)
+const showPermissionModal = ref(false)
+const permissionTreeRef = ref<any>(null)
+const createPermissionTreeRef = ref<any>(null)
+const syncingCreatePermissionTree = ref(false)
+const permissionTreeVersion = ref(0)
+const permissionTree = ref<PermissionTreeNode[]>([])
+const permissionActions = ref<PermissionAction[]>(['view'])
+const permissionActionLabels = ref<Record<PermissionAction, string>>({
+  view: '查看',
+  reply: '回复',
+  review: '审核',
+  issueCard: '发卡包',
+  markPaid: '标记回款',
+  export: '导出',
+  create: '新增',
+  update: '编辑',
+  delete: '删除',
+  permission: '分配权限',
+  switchTenant: '切换子系统',
+})
+const permissionRoleDefaults = ref<Partial<Record<Exclude<AccountRole, 'super_admin'>, AdminPermissions>>>({})
+const permissionForm = reactive<AdminPermissions>({
+  menus: [],
+  actions: {},
+})
+const createPermissionForm = reactive<AdminPermissions>({
+  menus: [],
+  actions: {},
+})
 const session = computed(() => {
   void route.fullPath
   void adminSessionRevision.value
   return getAdminSession()
 })
+const {
+  canCreate: canCreateAccount,
+  canUpdate: canUpdateAccount,
+  canDelete: canDeleteAccount,
+  canPermission: canSetAccountPermission,
+} = useAdminPagePermission('accounts')
+const showAccountRowActions = computed(
+  () => canUpdateAccount.value || canDeleteAccount.value || canSetAccountPermission.value,
+)
 const isPlatformSession = computed(() => session.value?.scopeType === 'platform')
 /** 使用 /platform/accounts（core）；子系统工作区下同纯子系统，走 /admin/accounts */
 const usePlatformAccountsApi = computed(() => shouldUseHeadquartersPlatformApi(session.value))
+const createRoleOptions = computed(() => {
+  const options: Array<{ label: string, value: Exclude<AccountRole, 'super_admin'> }> = [
+    { label: '审核员', value: 'reviewer' },
+    { label: '催收员', value: 'collector' },
+  ]
+  if (usePlatformAccountsApi.value)
+    options.push({ label: '老板', value: 'boss' })
+  return options
+})
 const sessionUsername = computed(() => String(session.value?.username || '').trim())
 /** 仅超级管理员可看「超级管理员」折叠分组；老板/员工等均不展示 */
 const viewerMaySeeSuperAdminAccountsSection = computed(
   () => session.value?.role === 'super_admin',
 )
-const tableColumnCount = computed(() => 7)
+const tableColumnCount = computed(() => (showAccountRowActions.value ? 7 : 6))
 
 const createForm = reactive({
   username: '',
   name: '',
   phone: '',
-  password: '123456',
-  role: 'reviewer' as Exclude<AccountRole, 'super_admin'>,
+  password: '',
+  role: '' as '' | Exclude<AccountRole, 'super_admin'>,
 })
 
 const createFormErrors = reactive({
@@ -315,10 +379,15 @@ function openCreateModal() {
   createForm.username = ''
   createForm.name = ''
   createForm.phone = ''
-  createForm.password = '123456'
-  createForm.role = 'reviewer'
+  createForm.password = ''
+  createForm.role = ''
+  createPermissionForm.menus = []
+  createPermissionForm.actions = {}
   clearCreateFormErrors()
   errorMessage.value = ''
+  void fetchPermissionCatalog().catch((error) => {
+    ElMessage.error(error instanceof Error ? error.message : '加载权限目录失败')
+  })
 }
 
 function closeCreateModal() {
@@ -365,9 +434,23 @@ function closeRoleModal() {
 
 async function createAccount() {
   if (submitting.value) return
-  submitting.value = true
   clearCreateFormErrors()
+  if (!createForm.role) {
+    createFormErrors.general = '请选择角色'
+    return
+  }
+  const password = createForm.password.trim()
+  if (!password) {
+    createFormErrors.password = '请输入初始密码'
+    return
+  }
+  if (password.length < 4) {
+    createFormErrors.password = '初始密码至少 4 位'
+    return
+  }
+  submitting.value = true
   try {
+    const createPermissions = buildCreatePermissionsPayload()
     if (usePlatformAccountsApi.value) {
       const response = await fetch(`${MALL_API_BASE}/platform/accounts`, {
         method: 'POST',
@@ -380,6 +463,7 @@ async function createAccount() {
           role: createForm.role,
           scopeType: 'platform',
           scopeTenantIds: [],
+          ...(createPermissions ? { permissions: createPermissions } : {}),
         }),
       })
       const payload = await response.json() as { msg?: string, success?: boolean, data?: AdminAccountItem }
@@ -401,6 +485,7 @@ async function createAccount() {
           password: createForm.password.trim(),
           role: createForm.role,
           scopeType: 'tenant',
+          ...(createPermissions ? { permissions: createPermissions } : {}),
           ...(tenantId ? { tenantId } : {}),
         }),
       })
@@ -447,6 +532,283 @@ async function updateAccount(id: string, body: Record<string, unknown>): Promise
       throw new Error(payload.msg || `更新账号失败: ${response.status}`)
     }
     return payload.data ?? null
+  }
+}
+
+function flattenPermissionTree(nodes: PermissionTreeNode[]) {
+  const out: PermissionTreeNode[] = []
+  const walk = (list: PermissionTreeNode[]) => {
+    list.forEach((item) => {
+      out.push(item)
+      if (item.children?.length)
+        walk(item.children)
+    })
+  }
+  walk(nodes)
+  return out
+}
+
+const flatPermissionNodes = computed(() => flattenPermissionTree(permissionTree.value))
+
+function permissionNodeByKey(key: string) {
+  return flatPermissionNodes.value.find(item => item.key === key)
+}
+
+function actionsForPermissionKey(key: string) {
+  const nodeActions = permissionNodeByKey(key)?.actions
+  const allowed = Array.isArray(nodeActions) && nodeActions.length ? nodeActions : ['view']
+  return allowed.filter(action => permissionActions.value.includes(action))
+}
+
+function treeCheckedKeysForMenus(menus: string[]) {
+  return menus.filter((key) => {
+    const node = permissionNodeByKey(key)
+    return node && !node.children?.length
+  })
+}
+
+function setCreatePermissionTreeCheckedKeys() {
+  createPermissionTreeRef.value?.setCheckedKeys(treeCheckedKeysForMenus(createPermissionForm.menus), false)
+}
+
+function setPermissionTreeCheckedKeys() {
+  permissionTreeRef.value?.setCheckedKeys(treeCheckedKeysForMenus(permissionForm.menus), false)
+}
+
+const selectedPermissionNodes = computed(() => {
+  const selected = new Set(permissionForm.menus)
+  return flatPermissionNodes.value.filter(item => selected.has(item.key))
+})
+
+const selectedCreatePermissionNodes = computed(() => {
+  const selected = new Set(createPermissionForm.menus)
+  return flatPermissionNodes.value.filter(item => selected.has(item.key))
+})
+
+async function fetchPermissionCatalog() {
+  if (permissionTree.value.length) return
+  const response = await fetch(`${MALL_API_BASE}/admin/permissions/catalog`, {
+    method: 'GET',
+    headers: usePlatformAccountsApi.value
+      ? withAdminAuthHeaders({ 'x-workspace-type': 'core' })
+      : withMallTenantHeaders(),
+  })
+  const payload = await response.json() as {
+    success?: boolean
+    msg?: string
+    data?: {
+      tree?: PermissionTreeNode[]
+      actions?: PermissionAction[]
+      actionLabels?: Record<string, string>
+      roleDefaults?: Partial<Record<Exclude<AccountRole, 'super_admin'>, AdminPermissions>>
+    }
+  }
+  if (!response.ok || payload.success === false) {
+    throw new Error(payload.msg || `加载权限目录失败 (${response.status})`)
+  }
+  permissionTree.value = Array.isArray(payload.data?.tree) ? payload.data.tree : []
+  const actions = Array.isArray(payload.data?.actions) ? payload.data.actions : []
+  permissionActions.value = actions.map(action => String(action || '').trim()).filter(Boolean)
+  if (!permissionActions.value.includes('view'))
+    permissionActions.value.unshift('view')
+  permissionActionLabels.value = {
+    ...permissionActionLabels.value,
+    ...(payload.data?.actionLabels || {}),
+  }
+  permissionRoleDefaults.value = payload.data?.roleDefaults || {}
+}
+
+function applyCreateRoleDefaultPermissions(role: Exclude<AccountRole, 'super_admin'>) {
+  const defaults = permissionRoleDefaults.value[role] || { menus: [], actions: {} }
+  createPermissionForm.menus = [...(defaults.menus || [])]
+  createPermissionForm.actions = {}
+  Object.entries(defaults.actions || {}).forEach(([key, list]) => {
+    const allowed = actionsForPermissionKey(key)
+    const next = Array.isArray(list) ? list.filter(action => allowed.includes(action)) : []
+    createPermissionForm.actions[key] = next.length ? next : ['view']
+  })
+  ensureActionsForSelectedMenus(createPermissionForm.menus, createPermissionForm.actions)
+  void nextTick(() => {
+    if (!createPermissionTreeRef.value)
+      return
+    syncingCreatePermissionTree.value = true
+    setCreatePermissionTreeCheckedKeys()
+    window.setTimeout(() => {
+      syncingCreatePermissionTree.value = false
+    }, 0)
+  })
+}
+
+function selectCreateRole(role: Exclude<AccountRole, 'super_admin'>) {
+  createFormErrors.general = ''
+  if (createForm.role !== role)
+    createForm.role = role
+  applyCreateRoleDefaultPermissions(role)
+}
+
+function resetPermissionForm(item: AdminAccountItem) {
+  const permissions = item.permissions || { menus: [], actions: {} }
+  permissionForm.menus = [...(permissions.menus || [])]
+  permissionForm.actions = {}
+  Object.entries(permissions.actions || {}).forEach(([key, list]) => {
+    permissionForm.actions[key] = Array.isArray(list)
+      ? list.filter(action => actionsForPermissionKey(key).includes(action))
+      : []
+  })
+  permissionTreeVersion.value += 1
+}
+
+async function openPermissionModal(item: AdminAccountItem) {
+  if (!['super_admin', 'boss'].includes(String(session.value?.role || ''))) {
+    ElMessage.warning('仅系统管理员和老板可以编辑权限')
+    return
+  }
+  try {
+    await fetchPermissionCatalog()
+    permissionTarget.value = item
+    resetPermissionForm(item)
+    errorMessage.value = ''
+    showPermissionModal.value = true
+    void nextTick(setPermissionTreeCheckedKeys)
+  }
+  catch (error) {
+    const msg = error instanceof Error ? error.message : '加载权限目录失败'
+    errorMessage.value = msg
+    ElMessage.error(msg)
+  }
+}
+
+function closePermissionModal() {
+  if (permissionSubmitting.value) return
+  showPermissionModal.value = false
+  permissionTarget.value = null
+}
+
+function ensureActionsForSelectedMenus(
+  menus: string[],
+  actions: Record<string, PermissionAction[]>,
+) {
+  menus.forEach((key) => {
+    if (!actions[key]?.length)
+      actions[key] = ['view']
+  })
+}
+
+function syncPermissionMenusFromTree() {
+  const keys = permissionTreeRef.value?.getCheckedKeys?.() || []
+  const halfKeys = permissionTreeRef.value?.getHalfCheckedKeys?.() || []
+  permissionForm.menus = [...new Set([...keys, ...halfKeys].map((key: unknown) => String(key || '').trim()).filter(Boolean))]
+  const selected = new Set(permissionForm.menus)
+  Object.keys(permissionForm.actions).forEach((key) => {
+    if (!selected.has(key))
+      delete permissionForm.actions[key]
+  })
+  ensureActionsForSelectedMenus(permissionForm.menus, permissionForm.actions)
+}
+
+function onPermissionTreeCheck() {
+  syncPermissionMenusFromTree()
+}
+
+function syncCreatePermissionMenusFromTree() {
+  const keys = createPermissionTreeRef.value?.getCheckedKeys?.() || []
+  const halfKeys = createPermissionTreeRef.value?.getHalfCheckedKeys?.() || []
+  createPermissionForm.menus = [...new Set([...keys, ...halfKeys].map((key: unknown) => String(key || '').trim()).filter(Boolean))]
+  const selected = new Set(createPermissionForm.menus)
+  Object.keys(createPermissionForm.actions).forEach((key) => {
+    if (!selected.has(key))
+      delete createPermissionForm.actions[key]
+  })
+  ensureActionsForSelectedMenus(createPermissionForm.menus, createPermissionForm.actions)
+}
+
+function onCreatePermissionTreeCheck() {
+  if (syncingCreatePermissionTree.value)
+    return
+  syncCreatePermissionMenusFromTree()
+}
+
+function getPermissionActionList(key: string) {
+  const allowed = actionsForPermissionKey(key)
+  const current = permissionForm.actions[key]?.filter(action => allowed.includes(action)) || []
+  return current.length ? current : ['view']
+}
+
+function getCreatePermissionActionList(key: string) {
+  const allowed = actionsForPermissionKey(key)
+  const current = createPermissionForm.actions[key]?.filter(action => allowed.includes(action)) || []
+  return current.length ? current : ['view']
+}
+
+function setPermissionActions(key: string, value: unknown) {
+  const list = Array.isArray(value) ? value : []
+  const allowed = actionsForPermissionKey(key)
+  const next = list
+    .map(item => String(item || '') as PermissionAction)
+    .filter(action => allowed.includes(action))
+  permissionForm.actions[key] = next.length ? next : ['view']
+}
+
+function setCreatePermissionActions(key: string, value: unknown) {
+  const list = Array.isArray(value) ? value : []
+  const allowed = actionsForPermissionKey(key)
+  const next = list
+    .map(item => String(item || '') as PermissionAction)
+    .filter(action => allowed.includes(action))
+  createPermissionForm.actions[key] = next.length ? next : ['view']
+}
+
+function buildCreatePermissionsPayload() {
+  if (!canSetAccountPermission.value) {
+    return undefined
+  }
+  syncCreatePermissionMenusFromTree()
+  const actions: Record<string, PermissionAction[]> = {}
+  createPermissionForm.menus.forEach((key) => {
+    const allowed = actionsForPermissionKey(key)
+    const list = createPermissionForm.actions[key] || ['view']
+    actions[key] = [...new Set(list.filter(action => allowed.includes(action)))]
+    if (!actions[key].length)
+      actions[key] = ['view']
+  })
+  return {
+    menus: createPermissionForm.menus,
+    actions,
+  }
+}
+
+async function submitPermissionChange() {
+  if (!permissionTarget.value || permissionSubmitting.value) return
+  syncPermissionMenusFromTree()
+  permissionSubmitting.value = true
+  errorMessage.value = ''
+  try {
+    const actions: Record<string, PermissionAction[]> = {}
+    permissionForm.menus.forEach((key) => {
+      const allowed = actionsForPermissionKey(key)
+      const list = permissionForm.actions[key] || ['view']
+      actions[key] = [...new Set(list.filter(action => allowed.includes(action)))]
+      if (!actions[key].length)
+        actions[key] = ['view']
+    })
+    const next = await updateAccount(permissionTarget.value.id, {
+      permissions: {
+        menus: permissionForm.menus,
+        actions,
+      },
+    })
+    if (next)
+      applyAdminAccountUpsert(next)
+    ElMessage.success(`账号 ${permissionTarget.value.username} 权限已更新`)
+    closePermissionModal()
+  }
+  catch (error) {
+    const msg = error instanceof Error ? error.message : '更新账号权限失败'
+    errorMessage.value = msg
+    ElMessage.error(msg)
+  }
+  finally {
+    permissionSubmitting.value = false
   }
 }
 
@@ -629,6 +991,7 @@ watch(
         刷新
       </button>
       <button
+        v-if="canCreateAccount"
         class="btn btn-primary"
         type="button"
         @click="openCreateModal"
@@ -653,7 +1016,9 @@ watch(
           <th>角色</th>
           <th>状态</th>
           <th>更新时间</th>
-          <th>操作</th>
+          <th v-if="showAccountRowActions">
+            操作
+          </th>
         </tr>
       </thead>
       <tbody>
@@ -714,9 +1079,10 @@ watch(
               </span>
             </td>
             <td>{{ formatDateTime(row.item.updatedAt) }}</td>
-            <td>
+            <td v-if="showAccountRowActions">
               <div class="actions">
                 <button
+                  v-if="canUpdateAccount"
                   class="btn btn-warning"
                   type="button"
                   :disabled="isStatusToggleLocked(row.item) || Boolean(statusTogglingId) || Boolean(deletingId)"
@@ -729,6 +1095,7 @@ watch(
                   }}
                 </button>
                 <button
+                  v-if="canUpdateAccount"
                   class="btn btn-role-edit"
                   type="button"
                   :disabled="isRoleEditLocked(row.item)"
@@ -737,13 +1104,25 @@ watch(
                   修改角色
                 </button>
                 <button
+                  v-if="canSetAccountPermission"
+                  class="btn btn-permission-edit"
+                  type="button"
+                  @click="openPermissionModal(row.item)"
+                >
+                  权限设置
+                </button>
+                <button
+                  v-if="canUpdateAccount"
                   class="btn btn-primary"
                   type="button"
                   @click="openPasswordModal(row.item)"
                 >
                   修改密码
                 </button>
-                <div class="delete-wrap">
+                <div
+                  v-if="canDeleteAccount"
+                  class="delete-wrap"
+                >
                   <button
                     class="btn btn-danger"
                     type="button"
@@ -798,7 +1177,7 @@ watch(
     class="modal-mask"
     @click.self="closeCreateModal"
   >
-    <div class="modal-panel">
+    <div class="modal-panel create-modal-panel">
       <div class="modal-header">
         <h3>新增账号</h3>
         <button
@@ -860,7 +1239,9 @@ watch(
             class="form-input"
             :class="{ 'is-error': !!createFormErrors.password }"
             type="password"
+            placeholder="请输入初始密码"
             show-password
+            autocomplete="new-password"
             @update:model-value="createFormErrors.password = ''"
           />
           <span
@@ -868,22 +1249,90 @@ watch(
             class="form-field-error"
           >{{ createFormErrors.password }}</span>
         </label>
-        <label class="full">
+        <label class="full create-role-field">
           角色
-          <el-select
-            v-model="createForm.role"
-            class="form-select"
-            @change="createFormErrors.general = ''"
-          >
-            <el-option label="审核员" value="reviewer" />
-            <el-option label="催收员" value="collector" />
-            <el-option
-              v-if="usePlatformAccountsApi"
-              label="老板"
-              value="boss"
-            />
-          </el-select>
+          <div class="create-role-options">
+            <button
+              v-for="option in createRoleOptions"
+              :key="option.value"
+              type="button"
+              class="create-role-option"
+              :class="[
+                `create-role-option--${option.value}`,
+                { 'is-active': createForm.role === option.value },
+              ]"
+              @click="selectCreateRole(option.value)"
+            >
+              {{ option.label }}
+            </button>
+          </div>
         </label>
+        <div class="create-permission-block full">
+          <div class="create-permission-block__head">
+            <strong>权限设置</strong>
+            <span v-if="canSetAccountPermission">创建账号时直接分配菜单查看和数据操作权限</span>
+            <span v-else>无「分配权限」能力时将使用该角色的系统默认权限</span>
+          </div>
+          <div
+            v-if="!canSetAccountPermission"
+            class="permission-empty create-permission-block__placeholder"
+          >
+            创建后将按所选角色自动套用默认权限；如需自定义权限，请使用具备「分配权限」能力的账号。
+          </div>
+          <div
+            v-else-if="!createForm.role"
+            class="permission-empty create-permission-block__placeholder"
+          >
+            请先选择角色，系统将加载该角色的默认权限，可再按需调整。
+          </div>
+          <div
+            v-else
+            class="permission-editor permission-editor--compact"
+          >
+            <div class="permission-tree-panel">
+              <h4>菜单权限</h4>
+              <el-tree
+                ref="createPermissionTreeRef"
+                class="permission-tree"
+                node-key="key"
+                show-checkbox
+                default-expand-all
+                :default-checked-keys="treeCheckedKeysForMenus(createPermissionForm.menus)"
+                :data="permissionTree"
+                :props="{ label: 'label', children: 'children' }"
+                @check="onCreatePermissionTreeCheck"
+              />
+            </div>
+            <div class="permission-actions-panel">
+              <h4>数据权限</h4>
+              <div
+                v-if="selectedCreatePermissionNodes.length === 0"
+                class="permission-empty"
+              >
+                可按需勾选菜单权限。
+              </div>
+              <div
+                v-for="node in selectedCreatePermissionNodes"
+                :key="node.key"
+                class="permission-action-row"
+              >
+                <span class="permission-action-row__label">{{ node.label }}</span>
+                <el-checkbox-group
+                  :model-value="getCreatePermissionActionList(node.key)"
+                  @update:model-value="setCreatePermissionActions(node.key, $event)"
+                >
+                  <el-checkbox
+                    v-for="action in actionsForPermissionKey(node.key)"
+                    :key="action"
+                    :value="action"
+                  >
+                    {{ permissionActionLabels[action] }}
+                  </el-checkbox>
+                </el-checkbox-group>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
       <div class="actions actions-right">
         <button
@@ -941,6 +1390,84 @@ watch(
           @click="submitRoleChange"
         >
           {{ roleSubmitting ? '提交中...' : '确认修改' }}
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <div
+    v-if="showPermissionModal && permissionTarget"
+    class="modal-mask"
+    @click.self="closePermissionModal"
+  >
+    <div class="modal-panel permission-modal">
+      <div class="modal-header">
+        <h3>权限管理 - {{ permissionTarget.username }}</h3>
+        <button
+          class="btn btn-secondary"
+          type="button"
+          :disabled="permissionSubmitting"
+          @click="closePermissionModal"
+        >
+          关闭
+        </button>
+      </div>
+      <p class="permission-tips">
+        左侧勾选菜单/子菜单查看权限，右侧配置对应数据操作权限。保存只更新当前账号权限配置，不会修改业务数据。
+      </p>
+      <div class="permission-editor">
+        <div class="permission-tree-panel">
+          <h4>菜单权限</h4>
+          <el-tree
+            :key="`edit-perm-${permissionTarget.id}-${permissionTreeVersion}`"
+            ref="permissionTreeRef"
+            class="permission-tree"
+            node-key="key"
+            show-checkbox
+            default-expand-all
+            :default-checked-keys="treeCheckedKeysForMenus(permissionForm.menus)"
+            :data="permissionTree"
+            :props="{ label: 'label', children: 'children' }"
+            @check="onPermissionTreeCheck"
+          />
+        </div>
+        <div class="permission-actions-panel">
+          <h4>数据权限</h4>
+          <div
+            v-if="selectedPermissionNodes.length === 0"
+            class="permission-empty"
+          >
+            请先在左侧选择菜单。
+          </div>
+          <div
+            v-for="node in selectedPermissionNodes"
+            :key="node.key"
+            class="permission-action-row"
+          >
+            <span class="permission-action-row__label">{{ node.label }}</span>
+            <el-checkbox-group
+              :model-value="getPermissionActionList(node.key)"
+              @update:model-value="setPermissionActions(node.key, $event)"
+            >
+              <el-checkbox
+                v-for="action in actionsForPermissionKey(node.key)"
+                :key="action"
+                :value="action"
+              >
+                {{ permissionActionLabels[action] }}
+              </el-checkbox>
+            </el-checkbox-group>
+          </div>
+        </div>
+      </div>
+      <div class="actions actions-right">
+        <button
+          class="btn btn-primary"
+          type="button"
+          :disabled="permissionSubmitting"
+          @click="submitPermissionChange"
+        >
+          {{ permissionSubmitting ? '保存中...' : '保存权限' }}
         </button>
       </div>
     </div>
@@ -1028,6 +1555,12 @@ watch(
 .btn-role-edit {
   border-color: #7c3aed;
   background: #7c3aed;
+  color: #fff;
+}
+
+.btn-permission-edit {
+  border-color: #0f766e;
+  background: #0f766e;
   color: #fff;
 }
 
@@ -1333,12 +1866,217 @@ watch(
   padding: 16px;
 }
 
+.create-modal-panel {
+  width: min(920px, 94vw);
+  max-height: 88vh;
+  overflow: auto;
+}
+
 .password-modal {
   width: 520px;
 }
 
 .role-modal {
   width: 420px;
+}
+
+.permission-modal {
+  width: min(920px, 94vw);
+}
+
+.permission-tips {
+  margin: 0 0 12px;
+  border-radius: 10px;
+  background: #fff7ed;
+  padding: 10px 12px;
+  color: #9a3412;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.permission-editor {
+  display: grid;
+  grid-template-columns: minmax(220px, 300px) 1fr;
+  gap: 14px;
+  min-height: 420px;
+}
+
+.permission-editor--compact {
+  min-height: 300px;
+}
+
+.create-role-field {
+  gap: 8px;
+}
+
+.create-role-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  width: 100%;
+}
+
+.create-role-option {
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  padding: 8px 18px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  background: #fff;
+  color: #6b7280;
+  transition: background 0.15s, border-color 0.15s, color 0.15s, box-shadow 0.15s;
+}
+
+.create-role-option:hover:not(.is-active) {
+  border-color: #9ca3af;
+  background: #f9fafb;
+  color: #374151;
+}
+
+.create-role-option--reviewer.is-active {
+  border-color: #1d4ed8;
+  background: #1d4ed8;
+  color: #fff;
+}
+
+.create-role-option--collector.is-active {
+  border-color: #5b21b6;
+  background: #5b21b6;
+  color: #fff;
+}
+
+.create-role-option--boss.is-active {
+  border-color: rgba(146, 64, 14, 0.65);
+  background: linear-gradient(
+    110deg,
+    #fde047 0%,
+    #fbbf24 22%,
+    #f59e0b 45%,
+    #fcd34d 68%,
+    #fde68a 88%,
+    #fde047 100%
+  );
+  color: #422006;
+  box-shadow:
+    0 0 0 1px rgba(146, 64, 14, 0.35),
+    0 0 10px rgba(251, 191, 36, 0.35);
+}
+
+.create-permission-block {
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  background: #fffaf3;
+  padding: 12px;
+}
+
+.create-permission-block__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.create-permission-block__head strong {
+  color: #374151;
+  font-size: 14px;
+}
+
+.create-permission-block__head span {
+  color: #b45309;
+  font-size: 12px;
+}
+
+.permission-tree-panel,
+.permission-actions-panel {
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  background: #f8fafc;
+  padding: 12px;
+  overflow: auto;
+}
+
+.permission-tree-panel h4,
+.permission-actions-panel h4 {
+  margin: 0 0 10px;
+  color: #374151;
+  font-size: 14px;
+}
+
+.permission-tree {
+  background: transparent;
+}
+
+.permission-empty {
+  display: grid;
+  min-height: 120px;
+  place-items: center;
+  border: 1px dashed #cbd5e1;
+  border-radius: 10px;
+  color: #94a3b8;
+  font-size: 13px;
+}
+
+.permission-action-row {
+  display: grid;
+  grid-template-columns: 132px minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  border-bottom: 1px solid #e5e7eb;
+  padding: 10px 0;
+}
+
+.permission-action-row:first-of-type {
+  padding-top: 0;
+}
+
+.permission-action-row:last-child {
+  border-bottom: 0;
+}
+
+.permission-action-row__label {
+  color: #334155;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.permission-action-row :deep(.el-checkbox-group) {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.permission-action-row :deep(.el-checkbox) {
+  height: 28px;
+  margin-right: 0;
+  border: 1px solid #dbe4ef;
+  border-radius: 999px;
+  background: #fff;
+  padding: 0 10px;
+  transition: all 0.16s ease;
+}
+
+.permission-action-row :deep(.el-checkbox.is-checked) {
+  border-color: #2563eb;
+  background: #eff6ff;
+}
+
+.permission-action-row :deep(.el-checkbox__label) {
+  color: #475569;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.permission-action-row :deep(.el-checkbox.is-checked .el-checkbox__label) {
+  color: #1d4ed8;
+  font-weight: 700;
+}
+
+@media (max-width: 760px) {
+  .permission-editor {
+    grid-template-columns: 1fr;
+  }
 }
 
 .modal-header {
@@ -1358,7 +2096,7 @@ watch(
   gap: 10px;
 }
 
-.form-grid label {
+.form-grid > label {
   display: grid;
   gap: 6px;
   font-size: 14px;
