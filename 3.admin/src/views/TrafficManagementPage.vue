@@ -25,7 +25,7 @@ interface TrafficChannelRow {
   }
 }
 
-/** 与 GET /admin/traffic-channels/portal-stats、admin-liuliang 数据表同口径 */
+/** 与 GET /admin/traffic-channels/portal-stats、admin-liuliang 数据表同口径（渠道注册用户仅计首单） */
 interface TrafficPortalStatsRow {
   id: string
   code: string
@@ -41,6 +41,17 @@ interface TrafficPortalStatsRow {
   overdueRate: number | null
   registrationConversionRate: number | null
   applicationConversionRate: number | null
+}
+
+/** 全平台老客户复购汇总（与上方渠道引流首单分开） */
+interface OldCustomerSummary {
+  userCount: number
+  orderCount: number
+  approvedCount: number
+  overdueCount: number
+  approvedAmount: number
+  approvalRate: number | null
+  overdueRate: number | null
 }
 
 /** 列表行 = 渠道基础信息 + 引流统计 */
@@ -128,6 +139,7 @@ const deleting = ref(false)
 const errorMessage = ref('')
 
 const statsRows = ref<TrafficPortalStatsRow[]>([])
+const oldCustomerSummary = ref<OldCustomerSummary | null>(null)
 const statsLoading = ref(false)
 const statsErrorMessage = ref('')
 /** 仅展示至少有一笔「通过」（发卡包）订单的流量商 */
@@ -157,15 +169,15 @@ function mergedRowClassName({ row }: { row: TrafficMergedRow }) {
   return row.disabled ? 'traffic-quality-row--muted' : ''
 }
 
-/** 与 api buildTrafficPartnerPortalStatsRow 口径一致 */
+/** 与 api buildTrafficPartnerPortalStatsRow 口径一致（渠道注册用户仅计首单） */
 const TRAFFIC_PORTAL_STAT_HEADER_TIPS = {
   clickCount:
     '用户打开带本渠道参数（?channel=标识）的商城推广页时累计 +1；渠道已停用则不再累计。',
   registerCount: '注册时「渠道标识」等于本流量商的用户总数。',
-  applicationCount: '上述注册用户中，至少存在 1 笔商城订单的用户数（含待审核订单）。',
-  approvedCount: '上述用户订单中，状态非「待审核」且已发放卡包的订单笔数。',
+  applicationCount: '上述注册用户中，存在首单（按下单时间最早一笔）的用户数（含待审核首单）。',
+  approvedCount: '上述注册用户的首单中，状态非「待审核」且已发放卡包的用户数（每人最多计 1）。',
   overdueCount:
-    '通过订单中的分期订单里，存在已到期且未还清期次的订单笔数（按统计当日计算）。',
+    '上述注册用户首单中，已通过且为分期订单、存在已到期未还清期次的用户数（每人最多计 1）。',
   registerRate: '注册数 ÷ 点击数 × 100，保留两位小数；点击数为 0 时显示 —。',
   applicationRate: '申请数 ÷ 注册数 × 100，保留两位小数；注册数为 0 时显示 —。',
   approvalRate: '通过数 ÷ 申请数 × 100，保留两位小数；申请数为 0 时显示 —。',
@@ -174,11 +186,27 @@ const TRAFFIC_PORTAL_STAT_HEADER_TIPS = {
   applicationConversionRate: '通过数 ÷ 申请数 × 100，保留两位小数；申请数为 0 时显示 —。',
 } as const
 
+const OLD_CUSTOMER_SUMMARY_TIPS = {
+  userCount: '全平台下单时判定为老客户的去重用户数（与订单管理「新老客户」口径一致：上一笔订单已发卡包且已全部还清）。',
+  orderCount: '上述老客户的复购订单总笔数（不含首单，与上方渠道引流数据分开）。',
+  approvedCount: '老客户复购订单中，状态非「待审核」且已发放卡包的笔数。',
+  overdueCount: '老客户复购已通过订单中，分期且存在已到期未还清期次的笔数。',
+  approvedAmount: '老客户复购已通过订单的成交金额合计。',
+  approvalRate: '通过数 ÷ 下单数 × 100，保留两位小数。',
+  overdueRate: '逾期数 ÷ 通过数 × 100，保留两位小数。',
+} as const
+
 /** 比率展示为两位小数并带 % */
 function formatRate(value: number | null | undefined) {
   if (value == null || Number.isNaN(Number(value)))
     return '—'
   return `${Number(value).toFixed(2)}%`
+}
+
+function formatAmount(value: number | null | undefined) {
+  if (value == null || Number.isNaN(Number(value)))
+    return '—'
+  return Number(value).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 }
 
 const remarkDialogVisible = ref(false)
@@ -307,6 +335,7 @@ async function fetchTrafficOverview() {
       data?: {
         channels?: TrafficChannelRow[]
         portalStats?: TrafficPortalStatsRow[]
+        oldCustomerSummary?: OldCustomerSummary
       }
     }
     if (!response.ok || payload.success === false) {
@@ -319,12 +348,14 @@ async function fetchTrafficOverview() {
     const data = payload.data
     rows.value = Array.isArray(data?.channels) ? data.channels : []
     statsRows.value = Array.isArray(data?.portalStats) ? data.portalStats : []
+    oldCustomerSummary.value = data?.oldCustomerSummary ?? null
   }
   catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '加载失败'
     statsErrorMessage.value = errorMessage.value
     rows.value = []
     statsRows.value = []
+    oldCustomerSummary.value = null
     ElMessage.error(errorMessage.value)
   }
   finally {
@@ -744,6 +775,7 @@ onMounted(() => {
         <template v-if="whitelistStatsPositive && rows.length !== displayMergedRows.length">
           （已过滤 {{ rows.length - displayMergedRows.length }} 家通过数为 0）
         </template>
+        · 引流转化仅统计各渠道注册用户的<strong>首单</strong>，复购计入下方老客户汇总
       </p>
 
       <div class="traffic-table-wrap">
@@ -1262,6 +1294,148 @@ onMounted(() => {
         </el-table-column>
       </el-table>
       </div>
+    </el-card>
+
+    <el-card
+      v-loading="statsLoading"
+      class="traffic-table-card traffic-old-customer-card"
+      shadow="hover"
+    >
+      <template #header>
+        <div class="traffic-table-card-header traffic-unified-card-header">
+          <div class="traffic-unified-card-header__title">
+            <span class="traffic-table-card-title">老客户汇总</span>
+            <el-tag
+              type="warning"
+              effect="plain"
+              size="small"
+            >
+              全平台 · 与引流首单分开
+            </el-tag>
+          </div>
+        </div>
+      </template>
+
+      <p class="traffic-old-customer-intro">
+        统计全平台<strong>老客户复购</strong>数据（下单时上一笔订单已发卡包且已全部还清）。
+        不含各渠道注册用户的首单，首单转化见上方流量商表格。
+      </p>
+
+      <div
+        v-if="oldCustomerSummary"
+        class="traffic-old-customer-kpis"
+      >
+        <div class="traffic-old-customer-kpi">
+          <span class="traffic-old-customer-kpi__label">
+            复购人数
+            <el-tooltip
+              :content="OLD_CUSTOMER_SUMMARY_TIPS.userCount"
+              placement="top"
+              :show-after="300"
+            >
+              <el-icon class="traffic-col-header__tip" aria-label="复购人数计算规则">
+                <QuestionFilled />
+              </el-icon>
+            </el-tooltip>
+          </span>
+          <strong class="traffic-old-customer-kpi__value">{{ oldCustomerSummary.userCount }}</strong>
+        </div>
+        <div class="traffic-old-customer-kpi">
+          <span class="traffic-old-customer-kpi__label">
+            下单数
+            <el-tooltip
+              :content="OLD_CUSTOMER_SUMMARY_TIPS.orderCount"
+              placement="top"
+              :show-after="300"
+            >
+              <el-icon class="traffic-col-header__tip" aria-label="下单数计算规则">
+                <QuestionFilled />
+              </el-icon>
+            </el-tooltip>
+          </span>
+          <strong class="traffic-old-customer-kpi__value">{{ oldCustomerSummary.orderCount }}</strong>
+        </div>
+        <div class="traffic-old-customer-kpi">
+          <span class="traffic-old-customer-kpi__label">
+            通过数
+            <el-tooltip
+              :content="OLD_CUSTOMER_SUMMARY_TIPS.approvedCount"
+              placement="top"
+              :show-after="300"
+            >
+              <el-icon class="traffic-col-header__tip" aria-label="通过数计算规则">
+                <QuestionFilled />
+              </el-icon>
+            </el-tooltip>
+          </span>
+          <strong class="traffic-old-customer-kpi__value traffic-old-customer-kpi__value--primary">{{ oldCustomerSummary.approvedCount }}</strong>
+        </div>
+        <div class="traffic-old-customer-kpi">
+          <span class="traffic-old-customer-kpi__label">
+            逾期数
+            <el-tooltip
+              :content="OLD_CUSTOMER_SUMMARY_TIPS.overdueCount"
+              placement="top"
+              :show-after="300"
+            >
+              <el-icon class="traffic-col-header__tip" aria-label="逾期数计算规则">
+                <QuestionFilled />
+              </el-icon>
+            </el-tooltip>
+          </span>
+          <strong class="traffic-old-customer-kpi__value">{{ oldCustomerSummary.overdueCount }}</strong>
+        </div>
+        <div class="traffic-old-customer-kpi">
+          <span class="traffic-old-customer-kpi__label">
+            成交金额
+            <el-tooltip
+              :content="OLD_CUSTOMER_SUMMARY_TIPS.approvedAmount"
+              placement="top"
+              :show-after="300"
+            >
+              <el-icon class="traffic-col-header__tip" aria-label="成交金额计算规则">
+                <QuestionFilled />
+              </el-icon>
+            </el-tooltip>
+          </span>
+          <strong class="traffic-old-customer-kpi__value">{{ formatAmount(oldCustomerSummary.approvedAmount) }}</strong>
+        </div>
+        <div class="traffic-old-customer-kpi">
+          <span class="traffic-old-customer-kpi__label">
+            通过率
+            <el-tooltip
+              :content="OLD_CUSTOMER_SUMMARY_TIPS.approvalRate"
+              placement="top"
+              :show-after="300"
+            >
+              <el-icon class="traffic-col-header__tip" aria-label="通过率计算规则">
+                <QuestionFilled />
+              </el-icon>
+            </el-tooltip>
+          </span>
+          <strong class="traffic-old-customer-kpi__value">{{ formatRate(oldCustomerSummary.approvalRate) }}</strong>
+        </div>
+        <div class="traffic-old-customer-kpi">
+          <span class="traffic-old-customer-kpi__label">
+            逾期率
+            <el-tooltip
+              :content="OLD_CUSTOMER_SUMMARY_TIPS.overdueRate"
+              placement="top"
+              :show-after="300"
+            >
+              <el-icon class="traffic-col-header__tip" aria-label="逾期率计算规则">
+                <QuestionFilled />
+              </el-icon>
+            </el-tooltip>
+          </span>
+          <strong class="traffic-old-customer-kpi__value">{{ formatRate(oldCustomerSummary.overdueRate) }}</strong>
+        </div>
+      </div>
+      <el-empty
+        v-else-if="!statsLoading"
+        description="暂无老客户复购数据"
+        :image-size="72"
+      />
     </el-card>
 
     <el-dialog
@@ -1895,5 +2069,50 @@ onMounted(() => {
 
 .traffic-unified-table :deep(.traffic-quality-row--muted) {
   opacity: 0.78;
+}
+
+.traffic-old-customer-card {
+  margin-top: 16px;
+}
+
+.traffic-old-customer-intro {
+  margin: 0 0 16px;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--el-text-color-secondary);
+}
+
+.traffic-old-customer-kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 12px;
+}
+
+.traffic-old-customer-kpi {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: var(--el-fill-color-lighter);
+  border: 1px solid var(--el-border-color-lighter);
+}
+
+.traffic-old-customer-kpi__label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+
+.traffic-old-customer-kpi__value {
+  font-size: 22px;
+  line-height: 1.2;
+  color: var(--el-text-color-primary);
+}
+
+.traffic-old-customer-kpi__value--primary {
+  color: var(--el-color-primary);
 }
 </style>

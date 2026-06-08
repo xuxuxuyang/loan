@@ -294,6 +294,18 @@ function orderCreatedAtMs(order) {
   return Number.isNaN(ms) ? 0 : ms
 }
 
+function sortOrdersByCreatedAtAsc(orders) {
+  return (Array.isArray(orders) ? orders : [])
+    .slice()
+    .sort((a, b) => orderCreatedAtMs(a) - orderCreatedAtMs(b))
+}
+
+/** 渠道引流统计：每位注册用户仅计最早一笔订单 */
+function pickUserFirstOrder(orders) {
+  const sorted = sortOrdersByCreatedAtAsc(orders)
+  return sorted[0] || null
+}
+
 function isInstallmentOrderFullyRepaid(order) {
   ensureOrderInstallmentPlan(order)
   const plan = Array.isArray(order?.installmentPlan) ? order.installmentPlan : []
@@ -6463,21 +6475,24 @@ function buildTrafficChannelQualityRows(db) {
     let overdueInstallmentOrderCount = 0
     const orderCountByUserId = new Map()
     for (const u of users) {
-      const list = ordersForRegisteredMallUserIndexed(db, u, ordersByUserId).filter(isTrafficQualityIssuedOrder)
-      for (const order of list) {
-        issuedOrderCount += 1
-        issuedOrderAmount += Number(order.totalAmount || 0)
-        const uid = String(u.id || '')
-        orderCountByUserId.set(uid, (orderCountByUserId.get(uid) || 0) + 1)
-        if (order.payType === 'installment') {
-          installmentIssuedOrderCount += 1
-          if (trafficInstallmentOrderHasUnpaidOverdue(order, todayKey)) {
-            overdueInstallmentOrderCount += 1
-          }
+      const allOrders = ordersForRegisteredMallUserIndexed(db, u, ordersByUserId)
+      const issuedList = allOrders.filter(isTrafficQualityIssuedOrder)
+      const uid = String(u.id || '')
+      orderCountByUserId.set(uid, issuedList.length)
+      const firstIssued = pickUserFirstOrder(issuedList)
+      if (!firstIssued) {
+        continue
+      }
+      issuedOrderCount += 1
+      issuedOrderAmount += Number(firstIssued.totalAmount || 0)
+      if (firstIssued.payType === 'installment') {
+        installmentIssuedOrderCount += 1
+        if (trafficInstallmentOrderHasUnpaidOverdue(firstIssued, todayKey)) {
+          overdueInstallmentOrderCount += 1
         }
-        else if (order.payType === 'full') {
-          fullPaymentIssuedOrderCount += 1
-        }
+      }
+      else if (firstIssued.payType === 'full') {
+        fullPaymentIssuedOrderCount += 1
       }
     }
     issuedOrderAmount = Number(issuedOrderAmount.toFixed(2))
@@ -6551,9 +6566,11 @@ router.get('/admin/traffic-channels/overview', async (ctx) => {
   }
   const payload = withAdminReadCache(ctx, 'traffic-overview', () => {
     const db = readDb()
+    const todayKey = normalizeInstallmentDueDateKey(formatDate(new Date().toISOString()))
     return {
       channels: listAdminTrafficChannelsForPage(db),
       portalStats: buildTrafficChannelPortalStatsRows(db),
+      oldCustomerSummary: buildOldCustomerTrafficSummary(db, todayKey),
     }
   })
   ctx.body = success(payload)
@@ -6925,7 +6942,7 @@ function resolveTrafficPartnerFromAuthHeader(ctx) {
   return partner
 }
 
-/** 流量商门户：与截图口径一致（注册率=注册/点击，申请率=申请用户/注册，通过率=发卡包订单/申请用户，逾期率=逾期订单/通过订单，注册转化率=通过订单/注册，申请转化率=申请用户/通过订单） */
+/** 流量商门户：渠道注册用户仅计首单（注册率=注册/点击，申请率=首单申请用户/注册，通过率=首单通过用户/申请用户，逾期率=首单逾期/首单通过，注册转化率=首单通过/注册） */
 function buildTrafficPartnerPortalStatsRow(db, ch, todayKey, ordersByUserId = null) {
   const code = String(ch.code || '')
   const clickCount = Math.max(0, Number(ch.clickCount) || 0)
@@ -6938,20 +6955,20 @@ function buildTrafficPartnerPortalStatsRow(db, ch, todayKey, ordersByUserId = nu
   let overdueCount = 0
   for (const u of users) {
     const orders = ordersForRegisteredMallUserIndexed(db, u, ordersByUserId)
-    if (orders.length > 0) {
-      applicationCount += 1
+    const firstOrder = pickUserFirstOrder(orders)
+    if (!firstOrder) {
+      continue
     }
-    for (const order of orders) {
-      if (!isTrafficQualityIssuedOrder(order)) {
-        continue
-      }
-      approvedCount += 1
-      if (
-        order.payType === 'installment'
-        && trafficInstallmentOrderHasUnpaidOverdue(order, todayKey)
-      ) {
-        overdueCount += 1
-      }
+    applicationCount += 1
+    if (!isTrafficQualityIssuedOrder(firstOrder)) {
+      continue
+    }
+    approvedCount += 1
+    if (
+      firstOrder.payType === 'installment'
+      && trafficInstallmentOrderHasUnpaidOverdue(firstOrder, todayKey)
+    ) {
+      overdueCount += 1
     }
   }
   const pct = (num, den) => (den > 0 ? Number(((num / den) * 100).toFixed(2)) : null)
@@ -6970,6 +6987,51 @@ function buildTrafficPartnerPortalStatsRow(db, ch, todayKey, ordersByUserId = nu
     overdueRate: pct(overdueCount, approvedCount),
     registrationConversionRate: pct(approvedCount, registerCount),
     applicationConversionRate: pct(approvedCount, applicationCount),
+  }
+}
+
+/**
+ * 全平台老客户复购汇总（与渠道引流首单分开）。
+ * 老客户口径与订单管理「新老客户」一致：下单时上一笔订单已发卡包且已全部还清。
+ */
+function buildOldCustomerTrafficSummary(db, todayKey) {
+  const userOrdersCache = new Map()
+  const repeatUserIds = new Set()
+  let orderCount = 0
+  let approvedCount = 0
+  let overdueCount = 0
+  let approvedAmount = 0
+  for (const order of db.orders || []) {
+    if (!order || !isOldCustomerAtOrder(db, order, userOrdersCache)) {
+      continue
+    }
+    orderCount += 1
+    const buyer = resolveMallBuyerFromOrder(db, order)
+    if (buyer) {
+      repeatUserIds.add(String(buyer.id || '').trim())
+    }
+    if (!isTrafficQualityIssuedOrder(order)) {
+      continue
+    }
+    approvedCount += 1
+    approvedAmount += Number(order.totalAmount || 0)
+    if (
+      order.payType === 'installment'
+      && trafficInstallmentOrderHasUnpaidOverdue(order, todayKey)
+    ) {
+      overdueCount += 1
+    }
+  }
+  const pct = (num, den) => (den > 0 ? Number(((num / den) * 100).toFixed(2)) : null)
+  const userCount = repeatUserIds.size
+  return {
+    userCount,
+    orderCount,
+    approvedCount,
+    overdueCount,
+    approvedAmount: Number(approvedAmount.toFixed(2)),
+    approvalRate: pct(approvedCount, orderCount),
+    overdueRate: pct(overdueCount, approvedCount),
   }
 }
 

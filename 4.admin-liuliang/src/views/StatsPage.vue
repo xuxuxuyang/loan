@@ -37,19 +37,19 @@ const tableHeaderCellStyle = {
   fontWeight: 600 as const,
 }
 
-/** 与 admin TrafficManagementPage / api buildTrafficPartnerPortalStatsRow 同口径 */
+/** 与 admin TrafficManagementPage / api buildTrafficPartnerPortalStatsRow 同口径（渠道注册用户仅计首单） */
 const STAT_HEADER_TIPS = {
   clickCount: '推广链接的点击数',
-  registerCount: '推广链接的点击数中，注册的用户数',
-  applicationCount: '推广链接的点击数中，申请的用户数',
-  approvedCount: '推广链接的点击数中，通过的用户数',
-  overdueCount: '推广链接的点击数中，逾期的用户数',
+  registerCount: '通过本渠道注册的用户总数',
+  applicationCount: '上述注册用户中，存在首单（最早一笔订单）的用户数',
+  approvedCount: '上述注册用户首单已通过（已发放卡包）的用户数，每人最多计 1',
+  overdueCount: '上述注册用户首单已通过且分期逾期的用户数，每人最多计 1',
   registerRate: '注册率 = 注册用户数 / 点击数',
-  applicationRate: '申请率 = 申请用户数 / 注册用户数',
-  approvalRate: '通过率 = 通过用户数 / 申请用户数',
-  overdueRate: '逾期率 = 逾期用户数 / 通过用户数',
-  registrationConversionRate: '注册转化率 = 通过用户数 / 注册用户数',
-  applicationConversionRate: '申请转化率 = 通过用户数 / 申请用户数',
+  applicationRate: '申请率 = 首单申请用户数 / 注册用户数',
+  approvalRate: '通过率 = 首单通过用户数 / 首单申请用户数',
+  overdueRate: '逾期率 = 首单逾期用户数 / 首单通过用户数',
+  registrationConversionRate: '注册转化率 = 首单通过用户数 / 注册用户数',
+  applicationConversionRate: '申请转化率 = 首单通过用户数 / 首单申请用户数',
 } as const
 
 const summary = computed(() => {
