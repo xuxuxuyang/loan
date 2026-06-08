@@ -3,7 +3,7 @@ import { computed, nextTick, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { adminRoleDisplayLabel, adminSessionRevision, getAdminSession, isPlatformBootstrapUser, shouldUseHeadquartersPlatformApi } from '../composables/useAdminAuth'
-import { withAdminAuthHeaders, withMallTenantHeaders } from '../composables/useAdminApi'
+import { apiErrorMessage, withAdminAuthHeaders, withMallTenantHeaders } from '../composables/useAdminApi'
 import { useAdminPagePermission } from '../composables/useAdminPagePermission'
 import { donePageProgress, startPageProgress } from '../utils/progress'
 
@@ -73,6 +73,7 @@ const permissionActionLabels = ref<Record<PermissionAction, string>>({
   reply: '回复',
   review: '审核',
   issueCard: '发卡包',
+  fillTracking: '填写单号',
   markPaid: '标记回款',
   export: '导出',
   create: '新增',
@@ -81,6 +82,109 @@ const permissionActionLabels = ref<Record<PermissionAction, string>>({
   permission: '分配权限',
   switchTenant: '切换子系统',
 })
+const contextualPermissionActionLabels: Record<string, Record<string, string>> = {
+  'cs.messages': { view: '查看客服会话', reply: '回复客服会话' },
+  'orders.review': { view: '查看未审核订单', review: '审核订单', delete: '删除未审核订单' },
+  'orders.approved': {
+    view: '查看已审核订单',
+    update: '编辑订单信息',
+    updateStatus: '修改订单状态',
+    fillTracking: '填写快递单号',
+    updateContract: '修改合同签署状态',
+    issueCard: '修改卡包发放状态',
+    delete: '删除已审核订单',
+  },
+  'orders.cardData': {
+    view: '查看订单数据',
+    fillTracking: '填写快递单号',
+    issueCard: '修改卡包发放状态',
+    markPaid: '标记还款',
+    delayRepayment: '延期还款',
+    settleAmount: '修改协商结清金额',
+    negotiateRepayment: '登记协商还款',
+    revokePaid: '撤销还款标记',
+  },
+  'orders.receivable.today': { view: '查看今日待收' },
+  'orders.receivable.tomorrow': { view: '查看明日待收' },
+  'users.registered': {
+    view: '查看注册用户',
+    create: '新增注册用户',
+    update: '编辑用户资料',
+    setQuota: '调整授信额度',
+    remark: '编辑用户备注',
+    blacklist: '修改下单黑名单',
+    riskCheck: '执行风控核查',
+    resetPassword: '重置商城密码',
+    delete: '删除注册用户',
+    export: '导出注册用户',
+  },
+  'users.noOrder': {
+    view: '查看未下单用户',
+    update: '编辑用户资料',
+    setQuota: '调整授信额度',
+    remark: '编辑用户备注',
+    blacklist: '修改下单黑名单',
+    riskCheck: '执行风控核查',
+    resetPassword: '重置商城密码',
+    delete: '删除未下单用户',
+  },
+  'users.ordering': {
+    view: '查看下单用户',
+    update: '编辑用户资料',
+    setQuota: '调整授信额度',
+    remark: '编辑用户备注',
+    blacklist: '修改下单黑名单',
+    riskCheck: '执行风控核查',
+    resetPassword: '重置商城密码',
+    delete: '删除下单用户',
+  },
+  'products.installment': {
+    view: '查看先享后付产品',
+    create: '新增先享后付产品',
+    update: '编辑先享后付产品',
+    toggleOnSale: '修改上下架状态',
+    uploadImage: '上传产品图片',
+    delete: '删除先享后付产品',
+  },
+  'products.mall': {
+    view: '查看商城产品',
+    create: '新增商城产品',
+    update: '编辑商城产品',
+    toggleOnSale: '修改上下架状态',
+    uploadImage: '上传产品图片',
+    delete: '删除商城产品',
+  },
+  accounts: {
+    view: '查看账号列表',
+    create: '新增后台账号',
+    update: '编辑账号资料',
+    toggleStatus: '启停账号',
+    changeRole: '修改账号角色',
+    resetPassword: '重置账号密码',
+    delete: '删除后台账号',
+    permission: '分配账号权限',
+  },
+  traffic: {
+    view: '查看流量渠道',
+    create: '新增流量渠道',
+    update: '编辑流量基础信息',
+    toggleStatus: '启停流量渠道',
+    remark: '编辑渠道备注',
+    editChannel: '编辑流量渠道',
+    bindPortalAccount: '绑定数据后台账号',
+    delete: '删除流量渠道',
+  },
+  dashboard: { view: '查看财务报表' },
+  'tenants.system': {
+    view: '查看子系统列表',
+    create: '新增子系统',
+    update: '编辑子系统账号',
+    delete: '删除空子系统',
+    purgeTenantData: '清空并删除子系统',
+    switchTenant: '切换子系统工作区',
+  },
+  'tenants.mallUsersData': { view: '查看子系统数据' },
+}
 const permissionRoleDefaults = ref<Partial<Record<Exclude<AccountRole, 'super_admin'>, AdminPermissions>>>({})
 const permissionForm = reactive<AdminPermissions>({
   menus: [],
@@ -98,11 +202,14 @@ const session = computed(() => {
 const {
   canCreate: canCreateAccount,
   canUpdate: canUpdateAccount,
+  canToggleStatus,
+  canChangeRole,
+  canResetPassword,
   canDelete: canDeleteAccount,
   canPermission: canSetAccountPermission,
 } = useAdminPagePermission('accounts')
 const showAccountRowActions = computed(
-  () => canUpdateAccount.value || canDeleteAccount.value || canSetAccountPermission.value,
+  () => canUpdateAccount.value || canToggleStatus.value || canChangeRole.value || canResetPassword.value || canDeleteAccount.value || canSetAccountPermission.value,
 )
 const isPlatformSession = computed(() => session.value?.scopeType === 'platform')
 /** 使用 /platform/accounts（core）；子系统工作区下同纯子系统，走 /admin/accounts */
@@ -327,7 +434,7 @@ async function fetchAccounts() {
         data?: AdminAccountItem[]
       }
       if (!response.ok || payload.success === false) {
-        const msg = payload.msg || `加载账号失败 (${response.status})`
+        const msg = apiErrorMessage(payload, '加载账号失败')
         if (response.status === 401 || response.status === 403) {
           throw new Error(`${msg} — 请退出后重新登录`)
         }
@@ -346,7 +453,7 @@ async function fetchAccounts() {
         data?: AdminAccountItem[]
       }
       if (!response.ok || payload.success === false) {
-        throw new Error(payload.msg || `加载账号失败 (${response.status})`)
+        throw new Error(apiErrorMessage(payload, '加载账号失败'))
       }
       accounts.value = Array.isArray(payload.data) ? payload.data : []
     }
@@ -375,6 +482,8 @@ function removeAdminAccountLocal(id: string) {
 }
 
 function openCreateModal() {
+  if (!canCreateAccount.value)
+    return
   showCreate.value = true
   createForm.username = ''
   createForm.name = ''
@@ -397,6 +506,8 @@ function closeCreateModal() {
 }
 
 function openPasswordModal(item: AdminAccountItem) {
+  if (!canResetPassword.value)
+    return
   passwordTarget.value = item
   passwordForm.password = ''
   passwordForm.confirmPassword = ''
@@ -416,6 +527,8 @@ function closePasswordModal() {
 }
 
 function openRoleModal(item: AdminAccountItem) {
+  if (!canChangeRole.value)
+    return
   if (!isPlatformSession.value && item.role === 'boss') {
     ElMessage.warning('不可修改老板账号角色')
     return
@@ -433,6 +546,8 @@ function closeRoleModal() {
 }
 
 async function createAccount() {
+  if (!canCreateAccount.value)
+    return
   if (submitting.value) return
   clearCreateFormErrors()
   if (!createForm.role) {
@@ -468,7 +583,7 @@ async function createAccount() {
       })
       const payload = await response.json() as { msg?: string, success?: boolean, data?: AdminAccountItem }
       if (!response.ok || payload.success === false) {
-        throw new Error(payload.msg || `创建账号失败: ${response.status}`)
+        throw new Error(apiErrorMessage(payload, '创建账号失败'))
       }
       if (payload.data)
         applyAdminAccountUpsert(payload.data)
@@ -491,7 +606,7 @@ async function createAccount() {
       })
       const payload = await response.json() as { msg?: string, success?: boolean, data?: AdminAccountItem }
       if (!response.ok || payload.success === false) {
-        throw new Error(payload.msg || `创建账号失败: ${response.status}`)
+        throw new Error(apiErrorMessage(payload, '创建账号失败'))
       }
       if (payload.data)
         applyAdminAccountUpsert(payload.data)
@@ -517,7 +632,7 @@ async function updateAccount(id: string, body: Record<string, unknown>): Promise
     })
     const payload = await response.json() as { msg?: string, success?: boolean, data?: AdminAccountItem }
     if (!response.ok || payload.success === false) {
-      throw new Error(payload.msg || `更新账号失败: ${response.status}`)
+      throw new Error(apiErrorMessage(payload, '更新账号失败'))
     }
     return payload.data ?? null
   }
@@ -529,7 +644,7 @@ async function updateAccount(id: string, body: Record<string, unknown>): Promise
     })
     const payload = await response.json() as { msg?: string, success?: boolean, data?: AdminAccountItem }
     if (!response.ok || payload.success === false) {
-      throw new Error(payload.msg || `更新账号失败: ${response.status}`)
+      throw new Error(apiErrorMessage(payload, '更新账号失败'))
     }
     return payload.data ?? null
   }
@@ -558,6 +673,12 @@ function actionsForPermissionKey(key: string) {
   const nodeActions = permissionNodeByKey(key)?.actions
   const allowed = Array.isArray(nodeActions) && nodeActions.length ? nodeActions : ['view']
   return allowed.filter(action => permissionActions.value.includes(action))
+}
+
+function permissionActionLabel(key: string, action: PermissionAction) {
+  return contextualPermissionActionLabels[key]?.[action]
+    || permissionActionLabels.value[action]
+    || action
 }
 
 function treeCheckedKeysForMenus(menus: string[]) {
@@ -604,7 +725,7 @@ async function fetchPermissionCatalog() {
     }
   }
   if (!response.ok || payload.success === false) {
-    throw new Error(payload.msg || `加载权限目录失败 (${response.status})`)
+    throw new Error(apiErrorMessage(payload, '加载权限目录失败'))
   }
   permissionTree.value = Array.isArray(payload.data?.tree) ? payload.data.tree : []
   const actions = Array.isArray(payload.data?.actions) ? payload.data.actions : []
@@ -813,6 +934,8 @@ async function submitPermissionChange() {
 }
 
 async function switchStatus(item: AdminAccountItem) {
+  if (!canToggleStatus.value)
+    return
   if (statusTogglingId.value || deletingId.value || isStatusToggleLocked(item)) return
   statusTogglingId.value = item.id
   try {
@@ -834,6 +957,8 @@ async function switchStatus(item: AdminAccountItem) {
 }
 
 async function submitRoleChange() {
+  if (!canChangeRole.value)
+    return
   if (!roleTarget.value || roleSubmitting.value) return
   if (roleForm.role === roleTarget.value.role) {
     closeRoleModal()
@@ -867,6 +992,8 @@ async function submitRoleChange() {
 }
 
 async function submitPasswordChange() {
+  if (!canResetPassword.value)
+    return
   if (!passwordTarget.value || passwordSubmitting.value) return
   const password = passwordForm.password.trim()
   const confirmPassword = passwordForm.confirmPassword.trim()
@@ -918,7 +1045,7 @@ async function removeAccount(item: AdminAccountItem) {
     })
     const payload = await response.json() as { msg?: string, success?: boolean }
     if (!response.ok || payload.success === false) {
-      throw new Error(payload.msg || `删除账号失败: ${response.status}`)
+      throw new Error(apiErrorMessage(payload, '删除账号失败'))
     }
     pendingDeleteId.value = ''
     ElMessage.success('账号删除成功')
@@ -1082,7 +1209,7 @@ watch(
             <td v-if="showAccountRowActions">
               <div class="actions">
                 <button
-                  v-if="canUpdateAccount"
+                  v-if="canToggleStatus"
                   class="btn btn-warning"
                   type="button"
                   :disabled="isStatusToggleLocked(row.item) || Boolean(statusTogglingId) || Boolean(deletingId)"
@@ -1095,7 +1222,7 @@ watch(
                   }}
                 </button>
                 <button
-                  v-if="canUpdateAccount"
+                  v-if="canChangeRole"
                   class="btn btn-role-edit"
                   type="button"
                   :disabled="isRoleEditLocked(row.item)"
@@ -1112,7 +1239,7 @@ watch(
                   权限设置
                 </button>
                 <button
-                  v-if="canUpdateAccount"
+                  v-if="canResetPassword"
                   class="btn btn-primary"
                   type="button"
                   @click="openPasswordModal(row.item)"
@@ -1326,7 +1453,7 @@ watch(
                     :key="action"
                     :value="action"
                   >
-                    {{ permissionActionLabels[action] }}
+                    {{ permissionActionLabel(node.key, action) }}
                   </el-checkbox>
                 </el-checkbox-group>
               </div>
@@ -1454,7 +1581,7 @@ watch(
                 :key="action"
                 :value="action"
               >
-                {{ permissionActionLabels[action] }}
+                {{ permissionActionLabel(node.key, action) }}
               </el-checkbox>
             </el-checkbox-group>
           </div>
@@ -1882,9 +2009,14 @@ watch(
 
 .permission-modal {
   width: min(920px, 94vw);
+  max-height: calc(100vh - 48px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 .permission-tips {
+  flex: 0 0 auto;
   margin: 0 0 12px;
   border-radius: 10px;
   background: #fff7ed;
@@ -1903,6 +2035,20 @@ watch(
 
 .permission-editor--compact {
   min-height: 300px;
+}
+
+.permission-modal .permission-editor {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.permission-modal .actions {
+  flex: 0 0 auto;
+  padding-top: 12px;
+  margin-top: 0;
+  border-top: 1px solid #eef2f7;
+  background: #fff;
 }
 
 .create-role-field {
@@ -1995,6 +2141,12 @@ watch(
   background: #f8fafc;
   padding: 12px;
   overflow: auto;
+}
+
+.permission-modal .permission-tree-panel,
+.permission-modal .permission-actions-panel {
+  min-height: 0;
+  max-height: 100%;
 }
 
 .permission-tree-panel h4,

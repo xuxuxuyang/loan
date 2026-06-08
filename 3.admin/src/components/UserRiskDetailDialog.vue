@@ -2,7 +2,7 @@
 import { CircleCheck, CircleClose, DataAnalysis, Minus } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { computed, ref, watch } from 'vue'
-import { withMallTenantHeaders } from '../composables/useAdminApi'
+import { apiErrorMessage, withMallTenantHeaders } from '../composables/useAdminApi'
 import { getAdminSession, isSuperAdminRole } from '../composables/useAdminAuth'
 import UserRegistrationInfoScroll, { type OrderShippingSnapshot } from './UserRegistrationInfoScroll.vue'
 import {
@@ -438,7 +438,7 @@ async function loadUserRiskDialogById(userId: string) {
       data?: { user?: ApiUserItem, riskView?: ApiRiskView }
     }
     if (!response.ok) {
-      throw new Error(payload.msg || `加载失败: ${response.status}`)
+      throw new Error(apiErrorMessage(payload, '加载失败'))
     }
     const rv = payload.data?.riskView
     const apiUser = payload.data?.user
@@ -492,7 +492,7 @@ async function fetchRiskSlotSnapshot(
     data?: { row?: RiskProductRow, user?: ApiUserItem, snapshot?: UserRiskSnapshot }
   }
   if (!response.ok) {
-    throw new Error(payload.msg || `请求失败: ${response.status}`)
+    throw new Error(apiErrorMessage(payload, '请求失败'))
   }
   const newRow = payload.data?.row
   const snap = payload.data?.snapshot

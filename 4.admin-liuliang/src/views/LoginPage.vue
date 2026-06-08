@@ -43,7 +43,7 @@ async function handleSubmit() {
       result = { msg: rawText || '登录失败，请检查接口地址' }
     }
     if (!response.ok || !result?.data?.token) {
-      throw new Error(result?.msg || `登录失败: ${response.status}`)
+      throw new Error(result?.msg || '登录失败')
     }
     setTrafficPartnerSession({
       token: result.data.token,

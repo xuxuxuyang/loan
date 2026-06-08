@@ -24,10 +24,10 @@ export async function trafficPartnerFetch(path: string, init: RequestInit = {}) 
     result = JSON.parse(rawText)
   }
   catch {
-    result = { msg: rawText || `请求失败: ${response.status}` }
+    result = { msg: rawText || '请求失败' }
   }
   if (!response.ok || result.success === false) {
-    throw new Error(result.msg || `请求失败: ${response.status}`)
+    throw new Error(result.msg || '请求失败')
   }
   return result
 }

@@ -306,12 +306,16 @@ const csSidebarBadgeEnabled = computed(() => {
   return adminCanAccessMenuPath(sess, '/cs-messages')
 })
 
-/** 订单侧栏角标：登录即可轮询，不按角色开关（与菜单权限分离） */
+/** 订单侧栏角标：仅具备订单子菜单查看权限时轮询，避免越权读取订单统计。 */
 const ordersSidebarBadgeEnabled = computed(() => {
   if (isLoginPage.value) {
     return false
   }
-  return Boolean(session.value?.token)
+  const sess = session.value
+  if (!sess)
+    return false
+  return adminCanAccessMenuPath(sess, '/orders/review')
+    || adminCanAccessMenuPath(sess, '/orders')
 })
 
 /** 订单管理主菜单角标 = 未审核订单 + 已审核订单（与子项角标口径一致） */

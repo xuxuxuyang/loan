@@ -128,3 +128,31 @@ export function withMallTenantHeaders(extra: Record<string, string> = {}) {
     ...extra,
   })
 }
+
+export function apiErrorMessage(payload: unknown, fallback = '请求失败') {
+  if (payload && typeof payload === 'object') {
+    const msg = String((payload as { msg?: unknown }).msg || '').trim()
+    if (msg)
+      return msg
+  }
+  if (typeof payload === 'string') {
+    const msg = payload.trim()
+    if (msg)
+      return msg
+  }
+  return fallback
+}
+
+export async function readApiErrorMessage(response: Response, fallback = '请求失败') {
+  try {
+    const contentType = response.headers.get('content-type') || ''
+    if (contentType.includes('application/json')) {
+      return apiErrorMessage(await response.clone().json(), fallback)
+    }
+    const text = (await response.clone().text()).trim()
+    return text || fallback
+  }
+  catch {
+    return fallback
+  }
+}

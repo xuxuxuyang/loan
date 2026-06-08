@@ -12,29 +12,34 @@ const {
   hasAdminUsersListViewPermission,
   hasAdminUsersPermissionOnAny,
   hasAdminMarkPaidPermission,
+  hasAdminShipmentTrackingPermission,
   hasAdminOrderDeletePermission,
   canGrantAdminPermissions,
   resetAdminPermissionsForRole,
   canManageRolePermissions,
+  adminOrderPermissionKeyForListScope,
+  adminProductPermissionKeyForSalesMode,
+  adminReceivablePermissionKeyForDueDate,
+  hasAdminPermissionCompat,
 } = require('../src/adminPermissions')
 
 /** 与 3.admin 各页面按钮/表单能力一一对应；变更页面功能时须同步更新 */
 const PAGE_PERMISSION_SPEC = {
   'cs.messages': ['view', 'reply'],
   'orders.review': ['view', 'review', 'delete'],
-  'orders.approved': ['view', 'update', 'delete', 'issueCard'],
-  'orders.cardData': ['view', 'issueCard', 'markPaid'],
+  'orders.approved': ['view', 'update', 'updateStatus', 'fillTracking', 'updateContract', 'issueCard', 'delete'],
+  'orders.cardData': ['view', 'fillTracking', 'issueCard', 'markPaid', 'delayRepayment', 'settleAmount', 'negotiateRepayment', 'revokePaid'],
   'orders.receivable.today': ['view'],
   'orders.receivable.tomorrow': ['view'],
-  'users.registered': ['view', 'create', 'update', 'delete', 'export'],
-  'users.noOrder': ['view', 'update', 'delete'],
-  'users.ordering': ['view', 'update', 'delete'],
-  'products.installment': ['view', 'create', 'update', 'delete'],
-  'products.mall': ['view', 'create', 'update', 'delete'],
-  accounts: ['view', 'create', 'update', 'delete', 'permission'],
-  traffic: ['view', 'create', 'update', 'delete'],
+  'users.registered': ['view', 'create', 'update', 'setQuota', 'remark', 'blacklist', 'riskCheck', 'resetPassword', 'delete', 'export'],
+  'users.noOrder': ['view', 'update', 'setQuota', 'remark', 'blacklist', 'riskCheck', 'resetPassword', 'delete'],
+  'users.ordering': ['view', 'update', 'setQuota', 'remark', 'blacklist', 'riskCheck', 'resetPassword', 'delete'],
+  'products.installment': ['view', 'create', 'update', 'toggleOnSale', 'uploadImage', 'delete'],
+  'products.mall': ['view', 'create', 'update', 'toggleOnSale', 'uploadImage', 'delete'],
+  accounts: ['view', 'create', 'update', 'toggleStatus', 'changeRole', 'resetPassword', 'delete', 'permission'],
+  traffic: ['view', 'create', 'update', 'toggleStatus', 'remark', 'editChannel', 'bindPortalAccount', 'delete'],
   dashboard: ['view'],
-  'tenants.system': ['view', 'create', 'update', 'delete', 'switchTenant'],
+  'tenants.system': ['view', 'create', 'update', 'delete', 'purgeTenantData', 'switchTenant'],
   'tenants.mallUsersData': ['view'],
 }
 
@@ -103,6 +108,40 @@ assert.equal(hasAdminPermission({ role: 'boss', permissions: {
   menus: ['orders', 'orders.approved'],
   actions: { 'orders.approved': ['view', 'issueCard'] },
 } }, 'orders.approved', 'issueCard'), true)
+assert.equal(hasAdminPermission({ role: 'boss', permissions: {
+  menus: ['orders', 'orders.cardData'],
+  actions: { 'orders.cardData': ['view', 'fillTracking'] },
+} }, 'orders.cardData', 'fillTracking'), true)
+assert.equal(hasAdminPermissionCompat({ role: 'boss', permissions: {
+  menus: ['orders', 'orders.approved'],
+  actions: { 'orders.approved': ['view', 'update'] },
+} }, 'orders.approved', 'updateStatus', 'update'), true)
+assert.equal(adminOrderPermissionKeyForListScope('pending'), 'orders.review')
+assert.equal(adminOrderPermissionKeyForListScope('card-data'), 'orders.cardData')
+assert.equal(adminOrderPermissionKeyForListScope(''), 'orders.approved')
+assert.equal(adminProductPermissionKeyForSalesMode('installment'), 'products.installment')
+assert.equal(adminProductPermissionKeyForSalesMode('mall'), 'products.mall')
+assert.equal(adminReceivablePermissionKeyForDueDate('2099-01-02', '2099-01-01'), 'orders.receivable.tomorrow')
+assert.equal(adminReceivablePermissionKeyForDueDate('2099-01-03', '2099-01-01'), 'orders.receivable.today')
+assert.equal(hasAdminShipmentTrackingPermission({ role: 'boss', permissions: {
+  menus: ['orders', 'orders.cardData'],
+  actions: { 'orders.cardData': ['view', 'fillTracking'] },
+} }), true)
+assert.equal(hasAdminShipmentTrackingPermission({ role: 'reviewer', permissions: {
+  menus: ['orders', 'orders.approved'],
+  actions: { 'orders.approved': ['view', 'update'] },
+} }), false)
+assert.equal(hasAdminShipmentTrackingPermission({ role: 'reviewer', permissions: {
+  menus: ['orders', 'orders.approved'],
+  actions: { 'orders.approved': ['view', 'fillTracking'] },
+} }), true)
+assert.equal(hasAdminPermission({ role: 'collector', permissions: {
+  menus: ['orders', 'orders.cardData'],
+  actions: { 'orders.cardData': ['view', 'markPaid'] },
+} }, 'orders.cardData', 'fillTracking'), false)
+assert.equal(ADMIN_PERMISSION_ACTION_LABELS.fillTracking, '填写单号')
+assert.equal(ADMIN_PERMISSION_ACTION_LABELS.updateStatus, '修改订单状态')
+assert.equal(ADMIN_PERMISSION_ACTION_LABELS.updateContract, '修改合同签署状态')
 
 assert.equal(normalizeAdminUsersListView('no-order'), 'no-order')
 assert.equal(adminUsersPermissionKeyForView('ordering'), 'users.ordering')

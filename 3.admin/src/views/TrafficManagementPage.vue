@@ -3,7 +3,7 @@ import { CirclePlus, CopyDocument, Delete, EditPen, Loading, QuestionFilled } fr
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import TrafficChannelNameTag from '../components/TrafficChannelNameTag.vue'
-import { withMallTenantHeaders } from '../composables/useAdminApi'
+import { apiErrorMessage, withMallTenantHeaders } from '../composables/useAdminApi'
 import { getAdminSession, isSuperAdminRole } from '../composables/useAdminAuth'
 import { useAdminPagePermission } from '../composables/useAdminPagePermission'
 import { donePageProgress, startPageProgress } from '../utils/progress'
@@ -109,10 +109,13 @@ const tableHeaderCellStyle = {
 
 const {
   canCreate: canCreateTraffic,
-  canUpdate: canUpdateTraffic,
+  canToggleStatus,
+  canRemark,
+  canEditChannel,
+  canBindPortalAccount,
   canDelete: canDeleteTraffic,
 } = useAdminPagePermission('traffic', () => isSuperAdminRole(getAdminSession()?.role))
-const showTrafficRowActions = computed(() => canUpdateTraffic.value || canDeleteTraffic.value)
+const showTrafficRowActions = computed(() => canEditChannel.value || canBindPortalAccount.value || canToggleStatus.value || canRemark.value || canDeleteTraffic.value)
 
 const loading = ref(false)
 const rows = ref<TrafficChannelRow[]>([])
@@ -307,7 +310,7 @@ async function fetchTrafficOverview() {
       }
     }
     if (!response.ok || payload.success === false) {
-      const msg = payload.msg || `加载失败 (${response.status})`
+      const msg = apiErrorMessage(payload, '加载失败')
       if (response.status === 401 || response.status === 403) {
         throw new Error(`${msg} — 请重新登录`)
       }
@@ -362,6 +365,8 @@ function closeCreate() {
 }
 
 function openEdit(row: TrafficChannelRow) {
+  if (!canEditChannel.value && !canBindPortalAccount.value)
+    return
   showEdit.value = true
   editForm.id = row.id
   editForm.name = row.name
@@ -390,7 +395,7 @@ async function submitCreate() {
     ElMessage.warning('请填写流量商标识与名称')
     return
   }
-  if (createForm.createPortalAccount) {
+  if (canBindPortalAccount.value && createForm.createPortalAccount) {
     const portalUsername = createForm.portalUsername.trim()
     const portalPassword = createForm.portalPassword.trim()
     if (!portalUsername) {
@@ -413,9 +418,10 @@ async function submitCreate() {
         name,
         remark: createForm.remark.trim(),
         disabled: createForm.disabled,
-        createPortalAccount: createForm.createPortalAccount,
-        portalUsername: createForm.portalUsername.trim(),
-        portalPassword: createForm.portalPassword.trim(),
+        createPortalAccount: canBindPortalAccount.value && createForm.createPortalAccount,
+        ...(canBindPortalAccount.value
+          ? { portalUsername: createForm.portalUsername.trim(), portalPassword: createForm.portalPassword.trim() }
+          : {}),
       }),
     })
     const payload = await response.json() as {
@@ -424,7 +430,7 @@ async function submitCreate() {
       data?: TrafficChannelRow & { portalAccount?: { username: string, merged?: boolean } }
     }
     if (!response.ok || payload.success === false) {
-      throw new Error(payload.msg || `创建失败: ${response.status}`)
+      throw new Error(apiErrorMessage(payload, '创建失败'))
     }
     const portal = payload.data?.portalAccount
     if (portal?.username) {
@@ -452,10 +458,12 @@ async function submitCreate() {
 }
 
 async function submitEdit() {
+  if (!canEditChannel.value && !canBindPortalAccount.value)
+    return
   if (submitting.value)
     return
   const name = editForm.name.trim()
-  if (!name) {
+  if (canEditChannel.value && !name) {
     ElMessage.warning('请填写名称')
     return
   }
@@ -468,16 +476,22 @@ async function submitEdit() {
   submitting.value = true
   errorMessage.value = ''
   try {
-    const body: Record<string, string> = {
-      name,
-      remark: editForm.remark.trim(),
+    const body: Record<string, string> = {}
+    if (canEditChannel.value) {
+      body.name = name
+      body.remark = editForm.remark.trim()
     }
     const baseline = editPortalBaseline.value
     const portalChanged = portalUsername !== baseline.username
       || portalPassword !== baseline.password
-    if (portalChanged && portalUsername) {
+    if (canBindPortalAccount.value && portalChanged && portalUsername) {
       body.portalUsername = portalUsername
       body.portalPassword = portalPassword
+    }
+    if (!Object.keys(body).length) {
+      ElMessage.info('没有可保存的修改')
+      submitting.value = false
+      return
     }
     const response = await fetch(`${MALL_API_BASE}/admin/traffic-channels/${encodeURIComponent(editForm.id)}`, {
       method: 'PATCH',
@@ -486,7 +500,7 @@ async function submitEdit() {
     })
     const payload = await response.json() as { msg?: string; success?: boolean; data?: TrafficChannelRow }
     if (!response.ok || payload.success === false) {
-      throw new Error(payload.msg || `保存失败: ${response.status}`)
+      throw new Error(apiErrorMessage(payload, '保存失败'))
     }
     ElMessage.success('已保存')
     showEdit.value = false
@@ -504,6 +518,8 @@ async function submitEdit() {
 }
 
 async function toggleChannelDisabled(row: TrafficChannelRow) {
+  if (!canToggleStatus.value)
+    return
   if (statusBusyId.value === row.id)
     return
   const nextDisabled = !row.disabled
@@ -516,7 +532,7 @@ async function toggleChannelDisabled(row: TrafficChannelRow) {
     })
     const payload = await response.json() as { msg?: string; data?: TrafficChannelRow }
     if (!response.ok) {
-      throw new Error(payload.msg || `操作失败: ${response.status}`)
+      throw new Error(apiErrorMessage(payload, '操作失败'))
     }
     if (payload.data)
       applyTrafficChannelPatchRow(payload.data)
@@ -544,6 +560,8 @@ function closeDelete(opts?: { force?: boolean }) {
 }
 
 function openRemarkDialog(row: TrafficChannelRow) {
+  if (!canRemark.value)
+    return
   remarkTarget.value = row
   remarkDraft.value = typeof row.remark === 'string' ? row.remark : ''
   remarkDialogVisible.value = true
@@ -570,6 +588,8 @@ function remarkDialogBeforeClose(done: () => void) {
 }
 
 async function saveChannelRemark() {
+  if (!canRemark.value)
+    return
   if (!remarkTarget.value || remarkSaving.value)
     return
   const row = remarkTarget.value
@@ -582,7 +602,7 @@ async function saveChannelRemark() {
     })
     const payload = await response.json() as { msg?: string; success?: boolean; data?: TrafficChannelRow }
     if (!response.ok || payload.success === false) {
-      throw new Error(payload.msg || `保存备注失败: ${response.status}`)
+      throw new Error(apiErrorMessage(payload, '保存备注失败'))
     }
     ElMessage.success('备注已保存')
     resetRemarkDialog()
@@ -609,7 +629,7 @@ async function doDelete() {
     })
     const payload = await response.json() as { msg?: string; success?: boolean }
     if (!response.ok || payload.success === false) {
-      throw new Error(payload.msg || `删除失败: ${response.status}`)
+      throw new Error(apiErrorMessage(payload, '删除失败'))
     }
     ElMessage.success('已删除')
     closeDelete({ force: true })
@@ -791,7 +811,7 @@ onMounted(() => {
         >
           <template #default="{ row }">
             <el-button
-              v-if="canUpdateTraffic"
+              v-if="canRemark"
               type="primary"
               link
               class="remark-table-trigger"
@@ -833,7 +853,7 @@ onMounted(() => {
         >
           <template #default="{ row }">
             <el-tooltip
-              v-if="canUpdateTraffic"
+              v-if="canToggleStatus"
               :content="row.disabled ? '点击启用' : '点击停用'"
               placement="top"
               :show-after="400"
@@ -1216,14 +1236,14 @@ onMounted(() => {
               spacer="|"
             >
               <el-button
-                v-if="canUpdateTraffic"
+                v-if="canEditChannel || canBindPortalAccount"
                 type="primary"
                 link
                 size="small"
                 :icon="EditPen"
                 @click="openEdit(row)"
               >
-                编辑
+                {{ canEditChannel ? '编辑' : '绑定账号' }}
               </el-button>
               <el-button
                 v-if="canDeleteTraffic"
@@ -1302,7 +1322,7 @@ onMounted(() => {
         <el-form-item label="开通登录账号">
           <el-switch v-model="createForm.createPortalAccount" />
         </el-form-item>
-        <template v-if="createForm.createPortalAccount">
+        <template v-if="canBindPortalAccount && createForm.createPortalAccount">
           <el-form-item
             label="登录账号"
             required
@@ -1372,6 +1392,7 @@ onMounted(() => {
         >
           <el-input
             v-model="editForm.name"
+            :disabled="!canEditChannel"
             clearable
           />
         </el-form-item>
@@ -1379,6 +1400,7 @@ onMounted(() => {
           <el-input
             v-model="editForm.remark"
             type="textarea"
+            :disabled="!canEditChannel"
             :rows="3"
             placeholder="选填"
             maxlength="200"
@@ -1388,6 +1410,7 @@ onMounted(() => {
         <el-form-item label="登录账号">
           <el-input
             v-model="editForm.portalUsername"
+            :disabled="!canBindPortalAccount"
             placeholder="数据后台登录账号，未开通可留空"
             maxlength="40"
             clearable
@@ -1396,6 +1419,7 @@ onMounted(() => {
         <el-form-item label="登录密码">
           <el-input
             v-model="editForm.portalPassword"
+            :disabled="!canBindPortalAccount"
             placeholder="至少 6 位，明文显示"
             maxlength="64"
             autocomplete="off"

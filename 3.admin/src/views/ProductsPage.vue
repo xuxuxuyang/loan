@@ -2,7 +2,7 @@
 import type { UploadProps } from 'element-plus'
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { withMallTenantHeaders } from '../composables/useAdminApi'
+import { apiErrorMessage, readApiErrorMessage, withMallTenantHeaders } from '../composables/useAdminApi'
 import { getAdminSession, isSuperAdminRole } from '../composables/useAdminAuth'
 import { useAdminPagePermission } from '../composables/useAdminPagePermission'
 import { donePageProgress, startPageProgress } from '../utils/progress'
@@ -105,9 +105,11 @@ const salesMode = computed<SalesMode>(() =>
 const {
   canCreate: canCreateProduct,
   canUpdate: canUpdateProduct,
+  canToggleOnSale,
+  canUploadImage,
   canDelete: canDeleteProduct,
 } = useAdminPagePermission(undefined, () => isSuperAdminRole(getAdminSession()?.role))
-const showProductRowActions = computed(() => canUpdateProduct.value || canDeleteProduct.value)
+const showProductRowActions = computed(() => canUpdateProduct.value || canToggleOnSale.value || canDeleteProduct.value)
 
 const products = ref<ProductItem[]>([])
 const loading = ref(false)
@@ -171,6 +173,8 @@ async function compressProductImageFileToDataUrl(file: File): Promise<string> {
 }
 
 async function processProductCoverFile(file: File): Promise<string> {
+  if (!canUploadImage.value)
+    throw new Error('当前账号无权限上传商品图片')
   try {
     const dataUrl = await compressProductImageFileToDataUrl(file)
     const blob = dataUrlToBlob(dataUrl)
@@ -179,6 +183,7 @@ async function processProductCoverFile(file: File): Promise<string> {
     fd.append('image', uploadFile)
     fd.append('biz', 'product')
     fd.append('scene', 'cover')
+    fd.append('salesMode', salesMode.value)
     const response = await fetch(`${MALL_API_BASE}/uploads/public-image`, {
       method: 'POST',
       headers: withMallTenantHeaders(),
@@ -186,7 +191,7 @@ async function processProductCoverFile(file: File): Promise<string> {
     })
     const payload = await response.json() as { success?: boolean, msg?: string, data?: { url?: string } }
     if (!response.ok || payload.success === false) {
-      throw new Error(payload.msg || `图片上传失败: ${response.status}`)
+      throw new Error(apiErrorMessage(payload, '图片上传失败'))
     }
     const url = String(payload.data?.url || '').trim()
     if (!url) {
@@ -216,6 +221,8 @@ function dataUrlToBlob(dataUrl: string): Blob {
 }
 
 const onProductCoverChange: UploadProps['onChange'] = async (uploadFile) => {
+  if (!canUploadImage.value)
+    return
   const raw = uploadFile.raw
   if (!raw) {
     return
@@ -234,6 +241,8 @@ const onProductCoverChange: UploadProps['onChange'] = async (uploadFile) => {
 }
 
 const onDetailImagesChange: UploadProps['onChange'] = async (uploadFile) => {
+  if (!canUploadImage.value)
+    return
   const raw = uploadFile.raw
   if (!raw) {
     return
@@ -251,6 +260,7 @@ const onDetailImagesChange: UploadProps['onChange'] = async (uploadFile) => {
     fd.append('image', uploadFile)
     fd.append('biz', 'product')
     fd.append('scene', 'detail')
+    fd.append('salesMode', salesMode.value)
     const response = await fetch(`${MALL_API_BASE}/uploads/public-image`, {
       method: 'POST',
       headers: withMallTenantHeaders(),
@@ -258,7 +268,7 @@ const onDetailImagesChange: UploadProps['onChange'] = async (uploadFile) => {
     })
     const payload = await response.json() as { success?: boolean, msg?: string, data?: { url?: string } }
     if (!response.ok || payload.success === false) {
-      throw new Error(payload.msg || `详情图上传失败: ${response.status}`)
+      throw new Error(apiErrorMessage(payload, '详情图上传失败'))
     }
     const url = String(payload.data?.url || '').trim()
     if (!url) {
@@ -571,6 +581,8 @@ function openCreate() {
 }
 
 function openEdit(item: ProductItem) {
+  if (!canUpdateProduct.value)
+    return
   clearProductFieldErrors()
   editingId.value = item.id
   form.name = item.name
@@ -694,7 +706,7 @@ async function fetchProducts() {
       headers: withMallTenantHeaders(),
     })
     if (!response.ok) {
-      throw new Error(`请求商品失败: ${response.status}`)
+      throw new Error(await readApiErrorMessage(response, '请求商品失败'))
     }
     const payload = await response.json() as ProductListPayload
     products.value = Array.isArray(payload.data) ? payload.data.map(normalizeProduct) : []
@@ -731,7 +743,7 @@ async function submitForm() {
     if (!response.ok || payload.success === false) {
       const msg = typeof payload.msg === 'string' && payload.msg.trim()
         ? payload.msg
-        : `保存商品失败: ${response.status}`
+        : '保存商品失败'
       throw new Error(msg)
     }
     if (payload.data)
@@ -749,6 +761,8 @@ async function submitForm() {
 }
 
 async function toggleOnSale(item: ProductItem) {
+  if (!canToggleOnSale.value)
+    return
   if (onSalePatchingId.value !== null || deletingId.value === item.id) return
   onSalePatchingId.value = item.id
   const nextOnSale = !item.onSale
@@ -760,7 +774,7 @@ async function toggleOnSale(item: ProductItem) {
     })
     const payload = await response.json().catch(() => ({})) as { success?: boolean, msg?: string, data?: Partial<ProductItem> }
     if (!response.ok || payload.success === false) {
-      throw new Error(payload.msg || `更新上架状态失败: ${response.status}`)
+      throw new Error(apiErrorMessage(payload, '更新上架状态失败'))
     }
     if (payload.data)
       upsertProductFromApiRow(payload.data)
@@ -810,7 +824,7 @@ async function removeProduct(item: ProductItem) {
     })
     const delPayload = await response.json().catch(() => ({})) as { success?: boolean, msg?: string }
     if (!response.ok || delPayload.success === false) {
-      throw new Error(delPayload.msg || `删除商品失败: ${response.status}`)
+      throw new Error(apiErrorMessage(delPayload, '删除商品失败'))
     }
     pendingDeleteId.value = null
     products.value = products.value.filter(p => p.id !== item.id)
@@ -987,7 +1001,7 @@ watch(salesMode, () => {
                 编辑
               </button>
               <button
-                v-if="canUpdateProduct"
+                v-if="canToggleOnSale"
                 class="btn btn-warning"
                 type="button"
                 :disabled="onSalePatchingId !== null || deletingId === item.id"
@@ -1253,7 +1267,7 @@ watch(salesMode, () => {
               :auto-upload="false"
               accept="image/jpeg,image/png,image/webp,image/gif"
               :show-file-list="false"
-              :disabled="imageCompressing"
+              :disabled="imageCompressing || !canUploadImage"
               @change="onProductCoverChange"
             >
               <el-button
@@ -1265,7 +1279,7 @@ watch(salesMode, () => {
               </el-button>
             </el-upload>
             <button
-              v-if="form.image"
+              v-if="form.image && canUploadImage"
               type="button"
               class="btn btn-ghost cover-remove"
               :disabled="imageCompressing"
@@ -1300,14 +1314,14 @@ watch(salesMode, () => {
               accept="image/jpeg,image/png,image/webp,image/gif"
               :show-file-list="false"
               multiple
-              :disabled="detailImageCompressing || form.detailImages.length >= PRODUCT_DETAIL_IMAGE_MAX"
+              :disabled="detailImageCompressing || form.detailImages.length >= PRODUCT_DETAIL_IMAGE_MAX || !canUploadImage"
               @change="onDetailImagesChange"
             >
               <el-button
                 type="primary"
                 plain
                 :loading="detailImageCompressing"
-                :disabled="form.detailImages.length >= PRODUCT_DETAIL_IMAGE_MAX"
+                :disabled="form.detailImages.length >= PRODUCT_DETAIL_IMAGE_MAX || !canUploadImage"
               >
                 {{ detailImageCompressing ? '处理中…' : '添加详情图' }}
               </el-button>
@@ -1331,6 +1345,7 @@ watch(salesMode, () => {
               <button
                 type="button"
                 class="btn btn-ghost detail-preview-remove"
+                v-if="canUploadImage"
                 @click="removeDetailImage(idx)"
               >
                 移除

@@ -3,7 +3,7 @@ import { onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import LoginCard from '../components/auth/LoginCard.vue'
 import LoginWelcomeCelebration from '../components/auth/LoginWelcomeCelebration.vue'
-import { syncAdminSessionProfile } from '../composables/useAdminApi'
+import { apiErrorMessage, syncAdminSessionProfile } from '../composables/useAdminApi'
 import {
   adminCanAccessMenuPath,
   resolveAdminHomeRoute,
@@ -100,7 +100,7 @@ async function handleLogin(payload: { username: string, password: string }) {
       result = { msg: rawText || '登录失败，请检查接口地址' }
     }
     if (!response.ok || !result?.data?.token) {
-      throw new Error(result?.msg || `登录失败: ${response.status}`)
+      throw new Error(apiErrorMessage(result, '登录失败'))
     }
 
     const role = (result.data.adminRole || 'super_admin') as AdminRole

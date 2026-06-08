@@ -6,7 +6,7 @@ import type { InstallmentItem, InstallmentNegotiationRecord, OrderItem } from '.
 import { getAdminSession, isSuperAdminRole } from '../composables/useAdminAuth'
 import { adminHasConfiguredPermissions } from '../composables/useAdminPermissions'
 import { useAdminPagePermission } from '../composables/useAdminPagePermission'
-import { withMallTenantHeaders } from '../composables/useAdminApi'
+import { apiErrorMessage, readApiErrorMessage, withMallTenantHeaders } from '../composables/useAdminApi'
 import { useOrdersStore } from '../stores/useOrdersStore'
 import type { UserItem } from '../components/UserRiskDetailDialog.vue'
 import type { OrderShippingSnapshot } from '../components/UserRegistrationInfoScroll.vue'
@@ -61,17 +61,24 @@ const riskContextOrderShipping = ref<OrderShippingSnapshot | undefined>(undefine
 const resolvingRiskUserOrderId = ref<string | null>(null)
 const { orders, recalculateOrderFields, fetchOrders, fetchOrderById, updateInstallmentPaid, updateInstallmentDueDate, updateInstallmentSettleAmount, updateInstallmentNegotiate, updateInstallmentNegotiationHistoryPaid, updateOrderStatus, updateOrderShipment, updateOrderCardPackage, updateOrderCardPackageContract, deleteOrder } = useOrdersStore()
 const {
-  canUpdate: canUpdateOrder,
+  canUpdateStatus,
+  canUpdateContract,
   canIssueCard,
+  canFillTracking,
   canDelete: canDeleteOrder,
   canMarkPaid,
+  canDelayRepayment,
+  canSettleAmount,
+  canNegotiateRepayment,
+  canRevokePaid,
 } = useAdminPagePermission(undefined, () => isSuperAdminRole(getAdminSession()?.role))
-const canOperateOrders = computed(() => canUpdateOrder.value || canIssueCard.value)
+const canOperateOrders = computed(() => canUpdateStatus.value || canUpdateContract.value || canIssueCard.value)
 const canShowApprovedRowActions = computed(() => !isCardPackageDataPage.value && (canOperateOrders.value || canDeleteOrder.value))
-/** 填写/修改快递单号须具备「编辑」权限；未配置权限时审核员仍可改（旧逻辑） */
+/** 快递单号必须具备「填写单号」权限；未配置权限时审核员保留旧逻辑。 */
 const canEditTrackingNumber = computed(() => {
-  if (canUpdateOrder.value)
+  if (canFillTracking.value) {
     return true
+  }
   const session = getAdminSession()
   if (session && !adminHasConfiguredPermissions(session))
     return session.role === 'reviewer'
@@ -80,7 +87,10 @@ const canEditTrackingNumber = computed(() => {
 /** 卡包发放：已审核订单页发卡包，订单数据页可维护发放状态 */
 const canManageCardPackage = computed(() => canIssueCard.value)
 /** 标记回款操作仅在「订单数据」页 */
-const canManageRepayment = computed(() => isCardPackageDataPage.value && canMarkPaid.value)
+const canManageRepayment = computed(() =>
+  isCardPackageDataPage.value
+  && (canMarkPaid.value || canDelayRepayment.value || canSettleAmount.value || canNegotiateRepayment.value || canRevokePaid.value),
+)
 
 function normalizePhone(raw: string): string {
   return String(raw || '').replace(/\D/g, '')
@@ -115,7 +125,7 @@ async function openUserRiskFromOrder(order: OrderItem) {
         headers: withMallTenantHeaders(),
       })
       if (!response.ok) {
-        throw new Error(`查询用户失败: ${response.status}`)
+        throw new Error(await readApiErrorMessage(response, '查询用户失败'))
       }
       const payload = await response.json() as { data?: { user?: { id?: string } } | null }
       const id = payload.data?.user && typeof payload.data.user.id === 'string' ? payload.data.user.id.trim() : ''
@@ -143,7 +153,7 @@ async function openUserRiskFromOrder(order: OrderItem) {
       headers: withMallTenantHeaders(),
     })
     if (!response.ok) {
-      throw new Error(`查询用户失败: ${response.status}`)
+      throw new Error(await readApiErrorMessage(response, '查询用户失败'))
     }
     const payload = await response.json() as { data?: { id?: string } | null }
     const user = payload.data
@@ -503,7 +513,7 @@ async function openPlan(order: OrderItem) {
 }
 
 async function toggleNegotiationHistoryPaid(order: OrderItem, plan: InstallmentItem, historyIndex: number, paid: boolean) {
-  if (!canManageRepayment.value) {
+  if ((paid && !canMarkPaid.value) || (!paid && !canRevokePaid.value)) {
     return
   }
   if (deferDueSavingKey.value || negotiateSavingKey.value || negotiationHistorySavingKey.value || settleAmountSavingKey.value) {
@@ -554,12 +564,12 @@ function closePlan() {
 }
 
 async function toggleRepay(order: OrderItem, period: InstallmentItem) {
-  if (!canManageRepayment.value)
+  const nextPaid = !period.paid
+  if ((nextPaid && !canMarkPaid.value) || (!nextPaid && !canRevokePaid.value))
     return
   if (deferDueSavingKey.value || negotiateSavingKey.value || negotiationHistorySavingKey.value || settleAmountSavingKey.value) {
     return
   }
-  const nextPaid = !period.paid
   if (nextPaid && !order.cardPackageIssued) {
     ElMessage.warning('卡包未发放')
     return
@@ -710,7 +720,7 @@ function orderStatusOptionTitle(order: OrderItem, opt: (typeof ORDER_STATUS_EDIT
 }
 
 async function handleOrderStatusCommand(order: OrderItem, label: string) {
-  if (!canUpdateOrder.value) {
+  if (!canUpdateStatus.value) {
     return
   }
   if (order.cardPackageIssued) {
@@ -753,7 +763,7 @@ async function handleOrderStatusCommand(order: OrderItem, label: string) {
 }
 
 async function rollbackToReview(order: OrderItem) {
-  if (!canUpdateOrder.value)
+  if (!canUpdateStatus.value)
     return
   if (order.cardPackageIssued) {
     ElMessage.warning('卡包已发放时不可打回审核，请先改为未发放')
@@ -863,7 +873,7 @@ async function fetchCardPackageContractFlow(orderId: string, phone: string) {
     data?: { getContract?: Record<string, unknown> }
   }
   if (!response.ok || payload.success === false) {
-    throw new Error(payload.msg || `加载合同失败: ${response.status}`)
+    throw new Error(apiErrorMessage(payload, '加载合同失败'))
   }
   if (!payload.data) {
     throw new Error('合同数据为空')
@@ -996,7 +1006,7 @@ function handleCardPackageContractCmd(order: OrderItem, cmd: string) {
 }
 
 async function applyCardPackageContract(order: OrderItem, nextSigned: boolean) {
-  if (!canUpdateOrder.value || !orderHasCardPackageContract(order)) {
+  if (!canUpdateContract.value || !orderHasCardPackageContract(order)) {
     return
   }
   if (cardPackageContractSavingId.value) {
@@ -1023,7 +1033,7 @@ async function applyCardPackageContract(order: OrderItem, nextSigned: boolean) {
 }
 
 async function deferRepaymentDue(order: OrderItem, plan: InstallmentItem) {
-  if (!canManageRepayment.value || plan.paid) {
+  if (!canDelayRepayment.value || plan.paid) {
     return
   }
   if (!order.cardPackageIssued) {
@@ -1079,7 +1089,7 @@ async function deferRepaymentDue(order: OrderItem, plan: InstallmentItem) {
 }
 
 function openNegotiateRepayDialog(order: OrderItem, plan: InstallmentItem) {
-  if (!canManageRepayment.value || plan.paid) {
+  if (!canNegotiateRepayment.value || plan.paid) {
     return
   }
   if (!order.cardPackageIssued) {
@@ -1110,7 +1120,7 @@ function onNegotiateRepayDialogClosed() {
 async function confirmNegotiateRepay() {
   const order = negotiateDialogOrder.value
   const plan = negotiateDialogPlan.value
-  if (!order || !plan || !canManageRepayment.value) {
+  if (!order || !plan || !canNegotiateRepayment.value) {
     return
   }
   if (negotiationHistorySavingKey.value || settleAmountSavingKey.value) {
@@ -1175,7 +1185,7 @@ async function confirmNegotiateRepay() {
 }
 
 async function promptSettleRepayAmount(order: OrderItem, plan: InstallmentItem) {
-  if (!canManageRepayment.value || plan.paid) {
+  if (!canSettleAmount.value || plan.paid) {
     return
   }
   if (!order.cardPackageIssued) {
@@ -1463,7 +1473,7 @@ watch(
           <td>¥ {{ item.totalAmount }}</td>
           <td class="td-order-status">
             <el-dropdown
-              v-if="!isCardPackageDataPage && canUpdateOrder && !item.cardPackageIssued"
+              v-if="!isCardPackageDataPage && canUpdateStatus && !item.cardPackageIssued"
               trigger="click"
               :disabled="changingStatusOrderId === item.id"
               @command="(cmd: string) => handleOrderStatusCommand(item, cmd)"
@@ -1494,7 +1504,7 @@ watch(
               </template>
             </el-dropdown>
             <el-tag
-              v-else-if="!isCardPackageDataPage && canUpdateOrder && item.cardPackageIssued"
+              v-else-if="!isCardPackageDataPage && canUpdateStatus && item.cardPackageIssued"
               :type="orderStatusTagType(displayOrderStatus(item))"
               effect="light"
               round
@@ -1516,7 +1526,7 @@ watch(
             </el-tag>
           </td>
           <td class="td-tracking">
-            <template v-if="!isCardPackageDataPage && canEditTrackingNumber && showTrackingEditor(item)">
+            <template v-if="canEditTrackingNumber && showTrackingEditor(item)">
               <button
                 type="button"
                 class="tracking-display-btn"
@@ -1533,7 +1543,7 @@ watch(
           </td>
           <td class="td-card-contract">
             <template v-if="orderHasCardPackageContract(item)">
-              <template v-if="!isCardPackageDataPage && canUpdateOrder">
+              <template v-if="!isCardPackageDataPage && canUpdateContract">
                 <div
                   v-if="item.cardPackageContractSigned"
                   class="card-contract-cell"
@@ -1787,7 +1797,7 @@ watch(
               </button>
               <template v-if="canShowApprovedRowActions">
                 <button
-                  v-if="canUpdateOrder && displayOrderStatus(item) !== '已完成' && !item.cardPackageIssued"
+                  v-if="canUpdateStatus && displayOrderStatus(item) !== '已完成' && !item.cardPackageIssued"
                   class="btn btn-warning"
                   type="button"
                   :disabled="changingStatusOrderId === item.id || displayOrderStatus(item) === '待审核'"
@@ -1918,7 +1928,7 @@ watch(
             </td>
             <td v-if="canManageRepayment">
               <div class="plan-modal-actions">
-                <template v-if="plan.paid">
+                <template v-if="plan.paid && canRevokePaid">
                   <button
                     class="btn btn-warning"
                     type="button"
@@ -1929,7 +1939,7 @@ watch(
                   </button>
                 </template>
                 <el-tooltip
-                  v-else
+                  v-else-if="canMarkPaid"
                   content="卡包未发放"
                   placement="top"
                   :disabled="selectedOrder.cardPackageIssued"
@@ -1946,7 +1956,7 @@ watch(
                   </span>
                 </el-tooltip>
                 <el-tooltip
-                  v-if="!plan.paid"
+                  v-if="!plan.paid && canDelayRepayment"
                   :content="deferRepaymentTooltip(plan)"
                   placement="top"
                   :disabled="deferRepaymentTooltip(plan) === ''"
@@ -1963,7 +1973,7 @@ watch(
                   </span>
                 </el-tooltip>
                 <el-tooltip
-                  v-if="!plan.paid"
+                  v-if="!plan.paid && canNegotiateRepayment"
                   :content="!selectedOrder.cardPackageIssued ? '卡包未发放' : (plan.negotiationPayPending ? '待用户在前台完成协商支付' : '')"
                   placement="top"
                   :disabled="selectedOrder.cardPackageIssued && !plan.negotiationPayPending"
@@ -1980,7 +1990,7 @@ watch(
                   </span>
                 </el-tooltip>
                 <el-tooltip
-                  v-if="!plan.paid"
+                  v-if="!plan.paid && canSettleAmount"
                   :content="settleAmountTooltip(plan)"
                   placement="top"
                   :disabled="settleAmountTooltip(plan) === ''"
@@ -2100,7 +2110,7 @@ watch(
                     >
                       <div class="table--negotiation-records__actions-inner">
                         <button
-                          v-if="negotiationRowCanMarkPaid(plan, row, idx)"
+                          v-if="canMarkPaid && negotiationRowCanMarkPaid(plan, row, idx)"
                           class="btn btn-success"
                           type="button"
                           :disabled="!selectedOrder.cardPackageIssued || !!deferDueSavingKey || !!negotiateSavingKey || !!negotiationHistorySavingKey || !!settleAmountSavingKey"
@@ -2109,7 +2119,7 @@ watch(
                           {{ negotiationHistorySavingKey === `${selectedOrder.id}-${plan.period}-${idx}` ? '处理中…' : '标记已还' }}
                         </button>
                         <button
-                          v-if="negotiationRowCanMarkUnpaid(plan, row, idx)"
+                          v-if="canRevokePaid && negotiationRowCanMarkUnpaid(plan, row, idx)"
                           class="btn btn-warning"
                           type="button"
                           :disabled="!selectedOrder.cardPackageIssued || !!deferDueSavingKey || !!negotiateSavingKey || !!negotiationHistorySavingKey || !!settleAmountSavingKey"

@@ -2,7 +2,7 @@
 import { computed, defineAsyncComponent, onMounted, onUnmounted, ref } from 'vue'
 import { ChatDotRound } from '@element-plus/icons-vue'
 import { csMenuHasUnread } from '../composables/useAdminCsUnreadBadge'
-import { withMallTenantHeaders } from '../composables/useAdminApi'
+import { apiErrorMessage, withMallTenantHeaders } from '../composables/useAdminApi'
 import { getAdminSession, isSuperAdminRole } from '../composables/useAdminAuth'
 import { useAdminPagePermission } from '../composables/useAdminPagePermission'
 
@@ -284,7 +284,7 @@ async function fetchSessions(options?: { silent?: boolean }) {
       data?: SessionRow[] | { list?: SessionRow[] }
     }
     if (!response.ok || payload.success === false) {
-      throw new Error(payload.msg || `加载失败 (${response.status})`)
+      throw new Error(apiErrorMessage(payload, '加载失败'))
     }
     const list = Array.isArray(payload.data)
       ? payload.data
@@ -345,7 +345,7 @@ async function fetchDetail(id: string, options?: { markRead?: boolean, silent?: 
       data?: { displayName?: string, online?: boolean, messages?: ChatMessage[] }
     }
     if (!response.ok || payload.success === false) {
-      throw new Error(payload.msg || `加载会话失败 (${response.status})`)
+      throw new Error(apiErrorMessage(payload, '加载会话失败'))
     }
     if (gen !== detailFetchGen || activeId.value !== sessionId) {
       return

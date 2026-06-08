@@ -2,7 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { Refresh } from '@element-plus/icons-vue'
 import { useRoute } from 'vue-router'
-import { withMallTenantHeaders } from '../composables/useAdminApi'
+import { apiErrorMessage, withMallTenantHeaders } from '../composables/useAdminApi'
 
 interface PendingReceivableRow {
   orderId: string
@@ -149,10 +149,10 @@ async function load() {
       payload = JSON.parse(text) as typeof payload
     }
     catch {
-      throw new Error(text.slice(0, 120) || `响应非 JSON: ${res.status}`)
+      throw new Error(text.slice(0, 120) || '接口返回格式异常')
     }
     if (!res.ok || !payload.success) {
-      throw new Error(payload.msg || `请求失败: ${res.status}`)
+      throw new Error(apiErrorMessage(payload, '请求失败'))
     }
     const list = Array.isArray(payload.data?.rows) ? payload.data!.rows! : []
     rows.value = list

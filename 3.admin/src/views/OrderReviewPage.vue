@@ -7,7 +7,7 @@ import { adminSessionRevision, getAdminSession, isSuperAdminRole } from '../comp
 import { adminHasConfiguredPermissions } from '../composables/useAdminPermissions'
 import { useAdminPagePermission } from '../composables/useAdminPagePermission'
 import { useOrdersStore } from '../stores/useOrdersStore'
-import { withMallTenantHeaders } from '../composables/useAdminApi'
+import { readApiErrorMessage, withMallTenantHeaders } from '../composables/useAdminApi'
 import UserRiskDetailDialog, { type UserItem } from '../components/UserRiskDetailDialog.vue'
 import { refreshOrdersMenuPendingReview } from '../composables/useAdminOrderReviewBadge'
 import { donePageProgress, startPageProgress } from '../utils/progress'
@@ -412,7 +412,7 @@ async function openRiskDetail(order: OrderItem, entry: 'user' | 'risk') {
         headers: withMallTenantHeaders(),
       })
       if (!response.ok) {
-        throw new Error(`查询用户失败: ${response.status}`)
+        throw new Error(await readApiErrorMessage(response, '查询用户失败'))
       }
       const payload = await response.json() as { data?: { user?: { id?: string } } | null }
       const id = payload.data?.user && typeof payload.data.user.id === 'string' ? payload.data.user.id.trim() : ''
@@ -435,7 +435,7 @@ async function openRiskDetail(order: OrderItem, entry: 'user' | 'risk') {
       headers: withMallTenantHeaders(),
     })
     if (!response.ok) {
-      throw new Error(`查询用户失败: ${response.status}`)
+      throw new Error(await readApiErrorMessage(response, '查询用户失败'))
     }
     const payload = await response.json() as { data?: { id?: string } | null }
     const user = payload.data

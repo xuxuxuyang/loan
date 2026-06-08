@@ -2,7 +2,7 @@
 import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { withAdminAuthHeaders, withMallTenantHeaders } from '../composables/useAdminApi'
+import { apiErrorMessage, withAdminAuthHeaders, withMallTenantHeaders } from '../composables/useAdminApi'
 import { getAdminSession, isSuperAdminRole } from '../composables/useAdminAuth'
 import { useAdminPagePermission } from '../composables/useAdminPagePermission'
 import { useTenantScope } from '../composables/useTenantScope'
@@ -63,6 +63,7 @@ const {
   canCreate: canCreateTenant,
   canUpdate: canUpdateTenant,
   canDelete: canDeleteTenant,
+  canPurgeTenantData,
   canSwitchTenant,
 } = useAdminPagePermission('tenants.system', () => isSuperAdminRole(getAdminSession()?.role))
 const showTenantListActions = computed(
@@ -441,7 +442,7 @@ async function fetchTenants() {
       data?: TenantSummary[]
     }
     if (!response.ok || payload.success === false) {
-      throw new Error(payload.msg || `加载子系统列表失败 (${response.status})`)
+      throw new Error(apiErrorMessage(payload, '加载子系统列表失败'))
     }
     tenants.value = Array.isArray(payload.data) ? payload.data : []
   }
@@ -465,11 +466,13 @@ async function deleteTenantApi(tenantId: string, wipeAll: boolean): Promise<{ ok
   )
   const payload = await response.json() as { success?: boolean, msg?: string }
   const ok = Boolean(response.ok && payload.success !== false)
-  const msg = String(payload.msg || (ok ? '' : `删除失败 (${response.status})`))
+  const msg = String(apiErrorMessage(payload, ok ? '' : '删除失败'))
   return { ok, status: response.status, msg }
 }
 
 async function deleteTenantSystem(rawTenantId: string) {
+  if (!canDeleteTenant.value)
+    return
   const tenantId = normalizeTenantInput(rawTenantId)
   if (!tenantId) {
     ElMessage.error('子系统ID无效')
@@ -508,6 +511,12 @@ async function deleteTenantSystem(rawTenantId: string) {
       return
     }
     if (first.status === 409 && first.msg.includes('已存在数据')) {
+      if (!canPurgeTenantData.value) {
+        errorBannerTitle.value = '删除被拒绝'
+        errorMessage.value = first.msg
+        ElMessage.warning(first.msg)
+        return
+      }
       try {
         await ElMessageBox.confirm(
           `子系统「${tenantId}」仍有商品、订单、用户或后台账号，无法按「空库」规则删除。\n\n下一步将永久删除该子系统在 Mongo / 本地 JSON 中的全部业务数据，并从总部登记中移除，操作不可恢复。确认继续？`,
@@ -601,7 +610,7 @@ async function fetchTenantAccounts() {
       data?: TenantAdminAccount[]
     }
     if (!response.ok || payload.success === false) {
-      throw new Error(payload.msg || `加载子系统账号失败 (${response.status})`)
+      throw new Error(apiErrorMessage(payload, '加载子系统账号失败'))
     }
     tenantAccounts.value = Array.isArray(payload.data) ? payload.data : []
     errorMessage.value = ''
@@ -649,6 +658,8 @@ function normalizeRoleValue(item: TenantAdminAccount): 'boss' | 'reviewer' | 'co
 }
 
 function openEditTenantBossAccount(tenantId = '') {
+  if (!canUpdateTenant.value)
+    return
   const normalizedTenantId = normalizeTenantInput(tenantId || selectedTenantId.value)
   const bossAccount = resolveTenantBossAccount(normalizedTenantId)
   if (!bossAccount) {
@@ -671,6 +682,8 @@ function openEditTenantBossAccount(tenantId = '') {
 }
 
 function openCreateTenantWithBossModal() {
+  if (!canCreateTenant.value)
+    return
   newTenantIdError.value = ''
   const tenantId = normalizeTenantInput(newTenantId.value)
   if (!tenantId) {
@@ -707,6 +720,8 @@ function closeCreateTenantAccount() {
 }
 
 function openRoleDialog(item: TenantAdminAccount) {
+  if (!canUpdateTenant.value)
+    return
   roleTarget.value = item
   roleForm.value.role = normalizeRoleValue(item)
   showRoleModal.value = true
@@ -719,6 +734,8 @@ function closeRoleDialog() {
 }
 
 function openPasswordDialog(item: TenantAdminAccount) {
+  if (!canUpdateTenant.value)
+    return
   passwordTarget.value = item
   passwordForm.value.password = ''
   passwordForm.value.confirmPassword = ''
@@ -745,7 +762,7 @@ async function onboardTenantWithBoss(tenantId: string) {
   })
   const payload = await response.json() as { success?: boolean, msg?: string, data?: { bossAccount?: Partial<TenantAdminAccount> } }
   if (!response.ok || payload.success === false) {
-    throw new Error(payload.msg || `新建子系统失败 (${response.status})`)
+    throw new Error(apiErrorMessage(payload, '新建子系统失败'))
   }
   const account = payload.data?.bossAccount || {}
   return {
@@ -784,7 +801,7 @@ async function createBossAccount(tenantId: string) {
   })
   const payload = await response.json() as { success?: boolean, msg?: string, data?: Partial<TenantAdminAccount> }
   if (!response.ok || payload.success === false) {
-    throw new Error(payload.msg || `新增子系统账号失败 (${response.status})`)
+    throw new Error(apiErrorMessage(payload, '新增子系统账号失败'))
   }
   const data = payload.data || {}
   return {
@@ -830,6 +847,10 @@ function upsertTenantAccountLocal(account: TenantAdminAccount) {
 }
 
 async function createTenantAccount() {
+  if (!canCreateTenant.value && createAccountMode.value !== 'edit')
+    return
+  if (!canUpdateTenant.value && createAccountMode.value === 'edit')
+    return
   if (creatingTenantAccount.value) return
   const tenantId = normalizeTenantInput(createAccountForm.value.tenantId)
   if (!tenantId) {
@@ -906,7 +927,7 @@ async function updateTenantAccount(item: TenantAdminAccount, body: Record<string
   })
   const payload = await response.json() as { success?: boolean, msg?: string, data?: TenantAdminAccount }
   if (!response.ok || payload.success === false) {
-    throw new Error(payload.msg || `更新子系统账号失败 (${response.status})`)
+    throw new Error(apiErrorMessage(payload, '更新子系统账号失败'))
   }
   const patch = payload.data
   if (patch && patch.id) {
@@ -915,6 +936,8 @@ async function updateTenantAccount(item: TenantAdminAccount, body: Record<string
 }
 
 async function submitRoleChange() {
+  if (!canUpdateTenant.value)
+    return
   if (!roleTarget.value || updatingRole.value) return
   updatingRole.value = true
   errorMessage.value = ''
@@ -934,6 +957,8 @@ async function submitRoleChange() {
 }
 
 async function submitPasswordChange() {
+  if (!canUpdateTenant.value)
+    return
   if (!passwordTarget.value || updatingPassword.value) return
   const password = passwordForm.value.password.trim()
   const confirmPassword = passwordForm.value.confirmPassword.trim()
@@ -965,6 +990,8 @@ async function submitPasswordChange() {
 }
 
 async function toggleAccountStatus(item: TenantAdminAccount) {
+  if (!canUpdateTenant.value)
+    return
   if (updatingStatusId.value) return
   updatingStatusId.value = item.id
   const nextStatus = item.status === 'active' ? 'disabled' : 'active'
@@ -982,6 +1009,8 @@ async function toggleAccountStatus(item: TenantAdminAccount) {
 }
 
 async function removeTenantAccount(item: TenantAdminAccount) {
+  if (!canDeleteTenant.value)
+    return
   if (deletingAccountId.value) return
   const tenantId = resolveAccountTenantId(item)
   if (!tenantId) {
@@ -997,7 +1026,7 @@ async function removeTenantAccount(item: TenantAdminAccount) {
     })
     const payload = await response.json() as { success?: boolean, msg?: string }
     if (!response.ok || payload.success === false) {
-      throw new Error(payload.msg || `删除子系统账号失败 (${response.status})`)
+      throw new Error(apiErrorMessage(payload, '删除子系统账号失败'))
     }
     ElMessage.success('子系统账号已删除')
     pendingDeleteAccountId.value = null
@@ -1013,6 +1042,8 @@ async function removeTenantAccount(item: TenantAdminAccount) {
 }
 
 function jumpToTenant(rawTenantId: string) {
+  if (!canSwitchTenant.value)
+    return
   if (!isPlatform.value) {
     ElMessage.warning('仅平台管理员可使用此功能')
     return

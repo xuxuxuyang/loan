@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { withAdminAuthHeaders } from '../composables/useAdminApi'
+import { apiErrorMessage, withAdminAuthHeaders } from '../composables/useAdminApi'
 
 interface TenantSummary {
   tenantId: string
@@ -88,7 +88,7 @@ async function fetchTenants() {
       data?: TenantSummary[]
     }
     if (!response.ok || payload.success === false) {
-      throw new Error(payload.msg || `加载子系统列表失败 (${response.status})`)
+      throw new Error(apiErrorMessage(payload, '加载子系统列表失败'))
     }
     tenants.value = Array.isArray(payload.data) ? payload.data : []
   }
@@ -129,7 +129,7 @@ async function fetchMallUsers() {
       data?: MallUserAggRow[]
     }
     if (!response.ok || payload.success === false) {
-      throw new Error(payload.msg || `加载用户数据失败 (${response.status})`)
+      throw new Error(apiErrorMessage(payload, '加载用户数据失败'))
     }
     const list = Array.isArray(payload.data) ? payload.data : []
     rows.value = list.map((item) => ({

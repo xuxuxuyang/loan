@@ -1,5 +1,5 @@
 import { ref } from 'vue'
-import { withMallTenantHeaders } from '../composables/useAdminApi'
+import { apiErrorMessage, readApiErrorMessage, withMallTenantHeaders } from '../composables/useAdminApi'
 
 export interface InstallmentNegotiationRecord {
   negotiatedAmount: number
@@ -476,7 +476,7 @@ async function fetchOrders(params: OrderFilterParams = {}): Promise<number> {
     headers: withMallTenantHeaders(),
   })
   if (!response.ok) {
-    throw new Error(`请求订单失败: ${response.status}`)
+    throw new Error(await readApiErrorMessage(response, '请求订单失败'))
   }
   const payload = await response.json() as {
     success?: boolean
@@ -507,7 +507,7 @@ async function fetchOrderById(orderId: string): Promise<OrderItem> {
   })
   const payload = await response.json().catch(() => ({})) as { success?: boolean, data?: MallOrderPayload, msg?: string }
   if (!response.ok) {
-    throw new Error(payload.msg || `请求订单失败: ${response.status}`)
+    throw new Error(apiErrorMessage(payload, '请求订单失败'))
   }
   if (!payload.data) {
     throw new Error(payload.msg || '订单数据为空')
@@ -525,7 +525,7 @@ async function updateInstallmentDueDate(orderId: string, period: number, addDays
   })
   if (!response.ok) {
     const payload = await response.json().catch(() => ({})) as { msg?: string }
-    throw new Error(payload.msg || `延期还款日失败: ${response.status}`)
+    throw new Error(apiErrorMessage(payload, '延期还款日失败'))
   }
   const payload = await response.json() as { success?: boolean, data?: MallOrderPayload }
   if (!payload.data) {
@@ -543,7 +543,7 @@ async function updateInstallmentSettleAmount(orderId: string, period: number, am
   })
   if (!response.ok) {
     const payload = await response.json().catch(() => ({})) as { msg?: string }
-    throw new Error(payload.msg || `修改应还金额失败: ${response.status}`)
+    throw new Error(apiErrorMessage(payload, '修改应还金额失败'))
   }
   const payload = await response.json() as { success?: boolean, data?: MallOrderPayload }
   if (!payload.data) {
@@ -565,7 +565,7 @@ async function updateInstallmentNegotiate(
   })
   if (!response.ok) {
     const payload = await response.json().catch(() => ({})) as { msg?: string }
-    throw new Error(payload.msg || `协商还款失败: ${response.status}`)
+    throw new Error(apiErrorMessage(payload, '协商还款失败'))
   }
   const payload = await response.json() as { success?: boolean, data?: MallOrderPayload }
   if (!payload.data) {
@@ -583,7 +583,7 @@ async function updateInstallmentNegotiationHistoryPaid(orderId: string, period: 
   })
   if (!response.ok) {
     const payload = await response.json().catch(() => ({})) as { msg?: string }
-    throw new Error(payload.msg || `更新协商还款状态失败: ${response.status}`)
+    throw new Error(apiErrorMessage(payload, '更新协商还款状态失败'))
   }
   const payload = await response.json() as { success?: boolean, data?: MallOrderPayload }
   if (!payload.data) {
@@ -600,7 +600,7 @@ async function updateInstallmentPaid(orderId: string, period: number, paid: bool
     body: JSON.stringify({ paid }),
   })
   if (!response.ok) {
-    throw new Error(`更新先享后付状态失败: ${response.status}`)
+    throw new Error(await readApiErrorMessage(response, '更新先享后付状态失败'))
   }
   const payload = await response.json() as { success?: boolean, data?: MallOrderPayload }
   if (!payload.data) {
@@ -618,7 +618,7 @@ async function updateOrderCardPackage(orderId: string, cardPackageIssued: boolea
   })
   if (!response.ok) {
     const payload = await response.json().catch(() => ({})) as { msg?: string }
-    throw new Error(payload.msg || `更新卡包发放状态失败: ${response.status}`)
+    throw new Error(apiErrorMessage(payload, '更新卡包发放状态失败'))
   }
   const payload = await response.json() as { success?: boolean, data?: MallOrderPayload }
   if (!payload.data) {
@@ -636,7 +636,7 @@ async function updateOrderCardPackageContract(orderId: string, signed: boolean) 
   })
   if (!response.ok) {
     const payload = await response.json().catch(() => ({})) as { msg?: string }
-    throw new Error(payload.msg || `更新合同签署状态失败: ${response.status}`)
+    throw new Error(apiErrorMessage(payload, '更新合同签署状态失败'))
   }
   const payload = await response.json() as { success?: boolean, data?: MallOrderPayload }
   if (!payload.data) {
@@ -653,7 +653,7 @@ async function updateOrderShipment(orderId: string, trackingNumber: string) {
     body: JSON.stringify({ trackingNumber }),
   })
   if (!response.ok) {
-    throw new Error(`登记快递单号失败: ${response.status}`)
+    throw new Error(await readApiErrorMessage(response, '登记快递单号失败'))
   }
   const payload = await response.json() as { success?: boolean, data?: MallOrderPayload }
   if (!payload.data) {
@@ -670,7 +670,7 @@ async function updateOrderStatus(orderId: string, status: MallOrderPayload['stat
     body: JSON.stringify({ status }),
   })
   if (!response.ok) {
-    throw new Error(`更新订单状态失败: ${response.status}`)
+    throw new Error(await readApiErrorMessage(response, '更新订单状态失败'))
   }
   const payload = await response.json() as { success?: boolean, data?: MallOrderPayload }
   if (!payload.data) {
@@ -692,7 +692,7 @@ async function rejectOrderReview(orderId: string, riskReason?: string) {
   })
   if (!response.ok) {
     const payload = await response.json().catch(() => ({})) as { msg?: string }
-    throw new Error(payload.msg || `审核不通过失败: ${response.status}`)
+    throw new Error(apiErrorMessage(payload, '审核不通过失败'))
   }
   const payload = await response.json() as { success?: boolean, data?: MallOrderPayload }
   if (!payload.data) {
@@ -708,7 +708,7 @@ async function fetchOrderRiskDetail(orderId: string): Promise<OrderRiskDetail> {
     headers: withMallTenantHeaders(),
   })
   if (!response.ok) {
-    throw new Error(`获取风控详情失败: ${response.status}`)
+    throw new Error(await readApiErrorMessage(response, '获取风控详情失败'))
   }
   const payload = await response.json() as { success?: boolean, data?: RiskDetailPayload }
   if (!payload.data) {
@@ -768,7 +768,7 @@ async function deleteOrder(orderId: string) {
   })
   if (!response.ok) {
     const payload = await response.json().catch(() => ({})) as { msg?: string }
-    throw new Error(payload.msg || `删除订单失败: ${response.status}`)
+    throw new Error(apiErrorMessage(payload, '删除订单失败'))
   }
   orders.value = orders.value.filter(item => item.id !== orderId)
 }

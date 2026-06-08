@@ -3,7 +3,7 @@ import { CirclePlus, EditPen } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { computed, onUnmounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import { withMallTenantHeaders } from '../composables/useAdminApi'
+import { apiErrorMessage, readApiErrorMessage, withMallTenantHeaders } from '../composables/useAdminApi'
 import { adminSessionRevision, getAdminSession, isSuperAdminRole } from '../composables/useAdminAuth'
 import { useAdminPagePermission } from '../composables/useAdminPagePermission'
 import TrafficChannelNameTag from '../components/TrafficChannelNameTag.vue'
@@ -180,10 +180,15 @@ const route = useRoute()
 const {
   canCreate: canCreateUser,
   canUpdate: canUpdateUser,
+  canSetQuota,
+  canRemark,
+  canBlacklist,
+  canRiskCheck,
+  canResetPassword,
   canDelete: canDeleteUser,
   canExport: canExportUsers,
 } = useAdminPagePermission(undefined, () => isSuperAdminRole(getAdminSession()?.role))
-const canEditUsers = computed(() => canUpdateUser.value)
+const canEditUsers = computed(() => canUpdateUser.value || canResetPassword.value)
 
 /** 下单用户页：仅展示订单数大于 0 的用户 */
 const isOrderingUsersView = computed(() => route.path === '/users/ordering')
@@ -413,7 +418,7 @@ async function exportRegisteredUsers() {
       headers: withMallTenantHeaders(),
     })
     if (!response.ok) {
-      let msg = `导出失败: ${response.status}`
+      let msg = '导出失败'
       try {
         const err = await response.json() as { msg?: string }
         if (err.msg) {
@@ -478,7 +483,7 @@ async function fetchUsers() {
         headers: withMallTenantHeaders(),
       })
       if (!response.ok) {
-        throw new Error(`请求用户失败: ${response.status}`)
+        throw new Error(await readApiErrorMessage(response, '请求用户失败'))
       }
       const payload = await response.json() as {
         data?: ApiUserItem[] | {
@@ -540,7 +545,7 @@ function closePreview() {
 }
 
 function startEdit(user: ListedUser) {
-  if (!canEditUsers.value)
+  if (!canSetQuota.value)
     return
   previewUser.value = user
   editingUserId.value = user.id
@@ -597,7 +602,7 @@ async function createUser() {
     })
     const payload = await response.json() as { success?: boolean, msg?: string, data?: ApiUserItem }
     if (!response.ok || payload.success === false) {
-      throw new Error(payload.msg || `新增用户失败: ${response.status}`)
+      throw new Error(apiErrorMessage(payload, '新增用户失败'))
     }
     if (payload.data) {
       currentPage.value = 1
@@ -621,16 +626,16 @@ async function saveEdit() {
   if (!previewUser.value || editingUserId.value !== previewUser.value.id) {
     return
   }
-  if (!editForm.name.trim() || !/^1\d{10}$/.test(editForm.phone.trim())) {
+  if (canUpdateUser.value && (!editForm.name.trim() || !/^1\d{10}$/.test(editForm.phone.trim()))) {
     return
   }
-  const pwd = editForm.newPassword.trim()
+  const pwd = canResetPassword.value ? editForm.newPassword.trim() : ''
   if (pwd.length > 0 && pwd.length < 6) {
     ElMessage.warning('登录密码至少 6 位，或留空保持原密码')
     return
   }
   const idRaw = editForm.idNumber.trim().toUpperCase()
-  if (idRaw.length > 0 && !CN_ID_CARD_RE.test(idRaw)) {
+  if (canUpdateUser.value && idRaw.length > 0 && !CN_ID_CARD_RE.test(idRaw)) {
     ElMessage.warning('身份证号码需为 18 位合法格式，或留空可清空档案中的号码')
     return
   }
@@ -645,15 +650,15 @@ async function saveEdit() {
       method: 'PATCH',
       headers: withMallTenantHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({
-        name: editForm.name.trim(),
-        phone: editForm.phone.trim(),
-        idNumber: idRaw,
+        ...(canUpdateUser.value
+          ? { name: editForm.name.trim(), phone: editForm.phone.trim(), idNumber: idRaw }
+          : {}),
         ...(pwd.length >= 6 && pwd !== editPasswordBaseline.value ? { newPassword: pwd } : {}),
       }),
     })
     const payload = await response.json() as { success?: boolean, msg?: string, data?: ApiUserItem }
     if (!response.ok || payload.success === false) {
-      throw new Error(payload.msg || `更新用户失败: ${response.status}`)
+      throw new Error(apiErrorMessage(payload, '更新用户失败'))
     }
     if (payload.data)
       upsertUserFromApiRow(payload.data)
@@ -692,7 +697,7 @@ async function confirmDelete(user: ListedUser) {
     })
     const delPayload = await response.json() as { success?: boolean, msg?: string }
     if (!response.ok || delPayload.success === false) {
-      throw new Error(delPayload.msg || `删除用户失败: ${response.status}`)
+      throw new Error(apiErrorMessage(delPayload, '删除用户失败'))
     }
     if (previewUser.value?.id === user.id) {
       closePreview()
@@ -790,7 +795,7 @@ function resetQuotaDialogState() {
 }
 
 async function saveQuota() {
-  if (!canEditUsers.value || !quotaTarget.value || quotaSaving.value)
+  if (!canSetQuota.value || !quotaTarget.value || quotaSaving.value)
     return
   const n = Number(String(quotaInput.value).trim())
   if (!Number.isFinite(n) || n < 0) {
@@ -807,7 +812,7 @@ async function saveQuota() {
     })
     const payload = await response.json() as { success?: boolean, msg?: string, data?: ApiUserItem }
     if (!response.ok || payload.success === false) {
-      throw new Error(payload.msg || `更新额度失败: ${response.status}`)
+      throw new Error(apiErrorMessage(payload, '更新额度失败'))
     }
     if (payload.data)
       upsertUserFromApiRow(payload.data)
@@ -824,7 +829,7 @@ async function saveQuota() {
 }
 
 function openRemarkDialog(user: ListedUser) {
-  if (!canEditUsers.value)
+  if (!canRemark.value)
     return
   remarkTarget.value = user
   remarkDraft.value = typeof user.adminRemark === 'string' ? user.adminRemark : ''
@@ -840,7 +845,7 @@ function closeRemarkDialog(opts?: { force?: boolean }) {
 }
 
 async function saveRemark() {
-  if (!canEditUsers.value || !remarkTarget.value || remarkSaving.value)
+  if (!canRemark.value || !remarkTarget.value || remarkSaving.value)
     return
   const id = remarkTarget.value.id
   remarkSaving.value = true
@@ -852,7 +857,7 @@ async function saveRemark() {
     })
     const payload = await response.json() as { success?: boolean, msg?: string, data?: ApiUserItem }
     if (!response.ok || payload.success === false) {
-      throw new Error(payload.msg || `保存备注失败: ${response.status}`)
+      throw new Error(apiErrorMessage(payload, '保存备注失败'))
     }
     if (payload.data)
       upsertUserFromApiRow(payload.data)
@@ -869,7 +874,7 @@ async function saveRemark() {
 }
 
 async function toggleBlacklist(user: ListedUser) {
-  if (!canEditUsers.value || blacklistBusyId.value)
+  if (!canBlacklist.value || blacklistBusyId.value)
     return
   blacklistBusyId.value = user.id
   const next = !user.orderBlacklisted
@@ -881,7 +886,7 @@ async function toggleBlacklist(user: ListedUser) {
     })
     const payload = await response.json() as { success?: boolean, msg?: string, data?: ApiUserItem }
     if (!response.ok || payload.success === false) {
-      throw new Error(payload.msg || `操作失败: ${response.status}`)
+      throw new Error(apiErrorMessage(payload, '操作失败'))
     }
     if (payload.data)
       upsertUserFromApiRow(payload.data)
@@ -1010,7 +1015,7 @@ async function toggleBlacklist(user: ListedUser) {
           </td>
           <td class="quota-cell">
             <button
-              v-if="canUpdateUser"
+              v-if="canSetQuota"
               type="button"
               class="quota-trigger"
               @click="openQuotaDialog(item)"
@@ -1025,7 +1030,7 @@ async function toggleBlacklist(user: ListedUser) {
           <td>{{ item.orderCount }}</td>
           <td class="td-remark">
             <button
-              v-if="canUpdateUser"
+              v-if="canRemark"
               type="button"
               class="remark-cell remark-cell--clickable"
               :title="item.adminRemark?.trim() ? '点击编辑备注' : '点击添加备注'"
@@ -1079,7 +1084,7 @@ async function toggleBlacklist(user: ListedUser) {
                 查看
               </button>
               <button
-                v-if="canUpdateUser"
+                v-if="canEditUsers"
                 class="btn btn-primary"
                 type="button"
                 @click="startEdit(item)"
@@ -1087,7 +1092,7 @@ async function toggleBlacklist(user: ListedUser) {
                 修改
               </button>
               <button
-                v-if="canUpdateUser"
+                v-if="canBlacklist"
                 type="button"
                 class="btn"
                 :class="item.orderBlacklisted ? 'btn-success' : 'btn-danger'"
@@ -1273,7 +1278,7 @@ async function toggleBlacklist(user: ListedUser) {
 
   <Teleport to="body">
     <div
-      v-if="quotaDialogVisible && quotaTarget && canEditUsers"
+      v-if="quotaDialogVisible && quotaTarget && canSetQuota"
       class="modal-mask"
       @click.self="closeQuotaDialog"
     >
@@ -1319,7 +1324,7 @@ async function toggleBlacklist(user: ListedUser) {
 
   <Teleport to="body">
     <div
-      v-if="remarkDialogVisible && remarkTarget && canEditUsers"
+      v-if="remarkDialogVisible && remarkTarget && canRemark"
       class="modal-mask"
       @click.self="() => closeRemarkDialog()"
     >
@@ -1509,6 +1514,7 @@ async function toggleBlacklist(user: ListedUser) {
                 v-model="editForm.name"
                 class="form-input"
                 clearable
+                :disabled="!canUpdateUser"
               />
             </label>
             <label class="user-preview-field">
@@ -1517,15 +1523,20 @@ async function toggleBlacklist(user: ListedUser) {
                 v-model="editForm.phone"
                 class="form-input"
                 clearable
+                :disabled="!canUpdateUser"
               />
             </label>
-            <label class="user-preview-field user-preview-field--full">
+            <label
+              v-if="canResetPassword"
+              class="user-preview-field user-preview-field--full"
+            >
               <span class="user-preview-field__label">身份证号码</span>
               <el-input
                 v-model="editForm.idNumber"
                 class="form-input user-preview-id-number-input"
                 maxlength="18"
                 clearable
+                :disabled="!canUpdateUser"
                 placeholder="18 位大陆身份证号，留空可清空档案中的号码"
               />
             </label>
@@ -1575,7 +1586,7 @@ async function toggleBlacklist(user: ListedUser) {
           embedded-in-parent-scroll
           :user="previewUser"
           :snapshot="previewUser.riskControlSnapshot ?? null"
-          :can-manage-users="canEditUsers"
+          :can-manage-users="canRiskCheck"
         />
         <UserRegistrationInfoScroll
           v-else
@@ -1583,7 +1594,7 @@ async function toggleBlacklist(user: ListedUser) {
           embedded-in-parent-scroll
           :user="previewUser"
           :snapshot="previewUser.riskControlSnapshot ?? null"
-          :can-manage-users="canEditUsers"
+          :can-manage-users="canRiskCheck"
         />
       </div>
 

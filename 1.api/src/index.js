@@ -46,12 +46,17 @@ const {
   effectiveAdminPermissions,
   resetAdminPermissionsForRole,
   hasAdminPermission,
+  hasAdminPermissionCompat,
   hasAdminPermissionOnAny,
+  adminOrderPermissionKeyForListScope,
+  adminProductPermissionKeyForSalesMode,
+  adminReceivablePermissionKeyForDueDate,
   normalizeAdminUsersListView,
   adminUsersPermissionKeyForView,
   hasAdminUsersListViewPermission,
   hasAdminUsersPermissionOnAny,
   hasAdminMarkPaidPermission,
+  hasAdminShipmentTrackingPermission,
   hasAdminOrderDeletePermission,
   canGrantAdminPermissions,
   canManageRolePermissions,
@@ -1389,11 +1394,190 @@ async function requireAdminPermissionOnAny(ctx, permissionKeys, permissionAction
   return role
 }
 
-async function requireAdminMarkPaidPermission(ctx, actionLabel) {
+async function requireAdminPermissionCompat(ctx, allowedRoles, actionLabel, options = {}) {
+  const permissionKey = String(options.permissionKey || '').trim()
+  const permissionAction = String(options.permissionAction || 'view').trim() || 'view'
+  const legacyAction = String(options.legacyAction || '').trim()
+  if (!legacyAction || !permissionKey) {
+    return requireAdminPermission(ctx, allowedRoles, actionLabel, options)
+  }
+  const role = await resolveAdminRole(ctx)
+  if (!role) {
+    fail(ctx, `未提供后台角色信息，无法执行${actionLabel}`, 401)
+    return ''
+  }
+  const account = await resolveAdminAccount(ctx)
+  if (!account) {
+    fail(ctx, '未识别到有效后台账号，请重新登录', 401)
+    return ''
+  }
+  if (!ADMIN_ROLE_SET.has(role) || !hasAdminPermissionCompat(account, permissionKey, permissionAction, legacyAction)) {
+    fail(ctx, `当前账号无权限执行${actionLabel}`, 403)
+    return ''
+  }
+  if (account.scopeType === 'platform' && !(await resolveEffectiveTenantId(ctx))) {
+    return ''
+  }
+  if (!(await resolveEffectiveTenantId(ctx))) {
+    return ''
+  }
+  if (!(await enforcePlatformReadonlyForTenantWrite(ctx, actionLabel))) {
+    return ''
+  }
+  return role
+}
+
+async function requireAdminMarkPaidPermission(ctx, actionLabel, permissionAction = 'markPaid') {
   return requireAdminPermission(ctx, [], actionLabel, {
     permissionKey: 'orders.cardData',
-    permissionAction: 'markPaid',
+    permissionAction,
   })
+}
+
+function uniqueActions(actions) {
+  return [...new Set(actions.map(action => String(action || '').trim()).filter(Boolean))]
+}
+
+function adminAccountPatchPermissionActions(payload) {
+  const actions = []
+  const body = payload && typeof payload === 'object' ? payload : {}
+  const updateFields = ['username', 'phone', 'name', 'scopeType', 'tenantId', 'scopeTenantIds']
+  if (updateFields.some(field => Object.prototype.hasOwnProperty.call(body, field))) actions.push('update')
+  if (Object.prototype.hasOwnProperty.call(body, 'status')) actions.push('toggleStatus')
+  if (Object.prototype.hasOwnProperty.call(body, 'role')) actions.push('changeRole')
+  if (Object.prototype.hasOwnProperty.call(body, 'password')) actions.push('resetPassword')
+  if (Object.prototype.hasOwnProperty.call(body, 'permissions')) actions.push('permission')
+  return uniqueActions(actions.length ? actions : ['update'])
+}
+
+async function requireAdminAccountPatchPermissions(ctx, payload, actionLabel = '修改后台账号') {
+  const role = await resolveAdminRole(ctx)
+  if (!role) {
+    fail(ctx, `未提供后台角色信息，无法执行${actionLabel}`, 401)
+    return ''
+  }
+  const account = await resolveAdminAccount(ctx)
+  if (!account) {
+    fail(ctx, '未识别到有效后台账号，请重新登录', 401)
+    return ''
+  }
+  if (!ADMIN_ROLE_SET.has(role)) {
+    fail(ctx, `当前角色【${getRoleLabel(role)}】无权限执行${actionLabel}`, 403)
+    return ''
+  }
+  const actions = adminAccountPatchPermissionActions(payload)
+  for (const action of actions) {
+    const allowed = hasAdminPermission(account, 'accounts', action)
+      || (action !== 'permission' && hasAdminPermission(account, 'tenants.system', 'update'))
+    if (!allowed) {
+      fail(ctx, `当前账号无权限执行${actionLabel}`, 403)
+      return ''
+    }
+  }
+  if (account.scopeType === 'platform') {
+    if (!(await resolveEffectiveTenantId(ctx))) {
+      return ''
+    }
+    if (!(await enforcePlatformReadonlyForTenantWrite(ctx, actionLabel))) {
+      return ''
+    }
+    return role || ADMIN_ROLES.SUPER
+  }
+  if (!(await resolveEffectiveTenantId(ctx))) {
+    return ''
+  }
+  if (!(await enforcePlatformReadonlyForTenantWrite(ctx, actionLabel))) {
+    return ''
+  }
+  return actions[0] || 'update'
+}
+
+async function requirePlatformAccountPatchPermissions(ctx, payload, actionLabel = '修改主系统账号') {
+  const actions = adminAccountPatchPermissionActions(payload)
+  let account = null
+  for (const action of actions) {
+    account = await requirePlatformScope(ctx, actionLabel, { permissionKey: 'accounts', permissionAction: action })
+    if (!account) {
+      return null
+    }
+  }
+  return account
+}
+
+function trafficChannelPatchPermissionActions(payload) {
+  const actions = []
+  const body = payload && typeof payload === 'object' ? payload : {}
+  if (Object.prototype.hasOwnProperty.call(body, 'name')) actions.push('editChannel')
+  if (Object.prototype.hasOwnProperty.call(body, 'remark')) actions.push('remark')
+  if (Object.prototype.hasOwnProperty.call(body, 'disabled')) actions.push('toggleStatus')
+  if (Object.prototype.hasOwnProperty.call(body, 'portalUsername')
+    || Object.prototype.hasOwnProperty.call(body, 'portalPassword')) {
+    actions.push('bindPortalAccount')
+  }
+  return uniqueActions(actions.length ? actions : ['editChannel'])
+}
+
+async function requireTrafficActions(ctx, actions, actionLabel) {
+  for (const action of uniqueActions(actions)) {
+    if (!await requireAdminPermission(ctx, [ADMIN_ROLES.SUPER], actionLabel, { permissionKey: 'traffic', permissionAction: action })) {
+      return ''
+    }
+  }
+  return true
+}
+
+function trafficPartnerPatchPermissionActions(payload) {
+  const body = payload && typeof payload === 'object' ? payload : {}
+  const actions = []
+  if (Object.prototype.hasOwnProperty.call(body, 'status')) actions.push('toggleStatus')
+  if (Object.prototype.hasOwnProperty.call(body, 'channelCodes')
+    || Object.prototype.hasOwnProperty.call(body, 'username')
+    || Object.prototype.hasOwnProperty.call(body, 'password')) {
+    actions.push('bindPortalAccount')
+  }
+  if (Object.prototype.hasOwnProperty.call(body, 'name')) actions.push('editChannel')
+  return uniqueActions(actions.length ? actions : ['editChannel'])
+}
+
+async function requireAdminShipmentTrackingPermission(ctx, actionLabel) {
+  const role = await resolveAdminRole(ctx)
+  if (!role) {
+    fail(
+      ctx,
+      `未提供后台角色信息，无法执行${actionLabel}。请在请求头传 x-admin-role: super_admin / boss / reviewer / collector`,
+      401,
+    )
+    return ''
+  }
+  const account = await resolveAdminAccount(ctx)
+  if (!account) {
+    fail(ctx, '未识别到有效后台账号，请重新登录', 401)
+    return ''
+  }
+  if (!ADMIN_ROLE_SET.has(role)) {
+    fail(ctx, `当前角色【${getRoleLabel(role)}】无权限执行${actionLabel}`, 403)
+    return ''
+  }
+  if (!hasAdminShipmentTrackingPermission(account)) {
+    fail(ctx, `当前账号无权限执行${actionLabel}`, 403)
+    return ''
+  }
+  if (account.scopeType === 'platform') {
+    if (!(await resolveEffectiveTenantId(ctx))) {
+      return ''
+    }
+    if (!(await enforcePlatformReadonlyForTenantWrite(ctx, actionLabel))) {
+      return ''
+    }
+    return role || ADMIN_ROLES.SUPER
+  }
+  if (!(await resolveEffectiveTenantId(ctx))) {
+    return ''
+  }
+  if (!(await enforcePlatformReadonlyForTenantWrite(ctx, actionLabel))) {
+    return ''
+  }
+  return role
 }
 
 async function requireAdminUsersListView(ctx, actionLabel) {
@@ -1423,7 +1607,9 @@ async function requireAdminUsersActionOnAny(ctx, action, actionLabel) {
     fail(ctx, `当前角色【${getRoleLabel(role)}】无权限执行${actionLabel}`, 403)
     return ''
   }
-  if (!hasAdminUsersPermissionOnAny(account, action)) {
+  const keys = ['users.registered', 'users.noOrder', 'users.ordering']
+  const allowed = keys.some(key => hasAdminPermission(account, key, action))
+  if (!allowed) {
     fail(ctx, `当前账号无权限执行${actionLabel}`, 403)
     return ''
   }
@@ -2655,14 +2841,40 @@ async function requirePlatformScope(ctx, actionLabel = '访问平台接口', opt
 }
 
 /** 子系统管理等：仅超级管理员（平台老板不可用） */
-async function requirePlatformSuperAdminScope(ctx, actionLabel = '访问子系统管理') {
-  const role = await requireAdminPermission(ctx, [ADMIN_ROLES.SUPER], actionLabel, { strictRoles: true })
+async function requirePlatformSuperAdminScope(ctx, actionLabel = '访问子系统管理', options = {}) {
+  const role = await requireAdminPermission(ctx, [ADMIN_ROLES.SUPER], actionLabel, { ...options, strictRoles: true })
   if (!role) {
     return null
   }
   const account = await resolveAdminAccount(ctx)
   if (!account || account.scopeType !== 'platform') {
     fail(ctx, '仅平台账号可访问该接口', 403)
+    return null
+  }
+  return account
+}
+
+async function requirePlatformSuperAdminScopeOnAny(ctx, permissionKeys, permissionAction, actionLabel = '访问子系统管理') {
+  const role = await resolveAdminRole(ctx)
+  if (!role) {
+    fail(ctx, `未提供后台角色信息，无法执行${actionLabel}`, 401)
+    return null
+  }
+  const account = await resolveAdminAccount(ctx)
+  if (!account) {
+    fail(ctx, '未识别到有效后台账号，请重新登录', 401)
+    return null
+  }
+  if (!roleMatchesAllowedRoles(role, [ADMIN_ROLES.SUPER], true)
+    || !hasAdminPermissionOnAny(account, permissionKeys, permissionAction)) {
+    fail(ctx, `当前账号无权限执行${actionLabel}`, 403)
+    return null
+  }
+  if (account.scopeType !== 'platform') {
+    fail(ctx, '仅平台账号可访问该接口', 403)
+    return null
+  }
+  if (!(await resolveEffectiveTenantId(ctx))) {
     return null
   }
   return account
@@ -4195,6 +4407,12 @@ router.get('/products', async (ctx) => {
   const searchKey = String(keyword || '').trim()
   const showAll = includeAll === '1'
   const salesMode = String(salesModeQ || ctx.query.zone || '').trim()
+  if (ctx.headers.authorization || ctx.headers['x-admin-role']) {
+    const permissionKey = adminProductPermissionKeyForSalesMode(salesMode)
+    if (!await requireAdminPermission(ctx, [ADMIN_ROLES.SUPER], 'admin action', { permissionKey, permissionAction: 'view' })) {
+      return
+    }
+  }
   const tenantId = normalizeTenantId(ctx.state && ctx.state.tenantId ? ctx.state.tenantId : DEFAULT_TENANT_ID)
   const workspaceType = normalizeWorkspaceType(ctx.state && ctx.state.workspaceType ? ctx.state.workspaceType : 'tenant')
   const filterOpts = { categoryKey, searchKey, showAll, salesMode }
@@ -4214,11 +4432,12 @@ router.get('/products', async (ctx) => {
 })
 
 router.post('/products', async (ctx) => {
-  if (!await requireAdminPermission(ctx, [ADMIN_ROLES.SUPER], '新增商品', { permissionKey: 'products.mall', permissionAction: 'create' })) {
+  const payload = ctx.request.body || {}
+  const permissionKey = adminProductPermissionKeyForSalesMode(payload.salesMode)
+  if (!await requireAdminPermission(ctx, [ADMIN_ROLES.SUPER], 'admin action', { permissionKey, permissionAction: 'create' })) {
     return
   }
   const db = readDb()
-  const payload = ctx.request.body || {}
   const parsed = parseProductPayload(payload)
   if (parsed.error) {
     fail(ctx, parsed.error)
@@ -4243,9 +4462,6 @@ router.post('/products', async (ctx) => {
 })
 
 router.patch('/products/:id', async (ctx) => {
-  if (!await requireAdminPermission(ctx, [ADMIN_ROLES.SUPER], '修改商品', { permissionKey: 'products.mall', permissionAction: 'update' })) {
-    return
-  }
   const db = readDb()
   const { id } = ctx.params
   const payload = ctx.request.body || {}
@@ -4261,6 +4477,12 @@ router.patch('/products/:id', async (ctx) => {
   }
 
   const prev = normalizeProductRecord(db.products[targetIndex])
+  const permissionKey = adminProductPermissionKeyForSalesMode(prev.salesMode || parsed.data.salesMode)
+  const patchKeys = Object.keys(parsed.data || {})
+  const permissionAction = patchKeys.length === 1 && patchKeys[0] === 'onSale' ? 'toggleOnSale' : 'update'
+  if (!await requireAdminPermission(ctx, [ADMIN_ROLES.SUPER], 'admin action', { permissionKey, permissionAction })) {
+    return
+  }
   const merged = normalizeProductRecord({
     ...prev,
     ...parsed.data,
@@ -4273,14 +4495,15 @@ router.patch('/products/:id', async (ctx) => {
 })
 
 router.delete('/products/:id', async (ctx) => {
-  if (!await requireAdminPermission(ctx, [ADMIN_ROLES.SUPER], '删除商品', { permissionKey: 'products.mall', permissionAction: 'delete' })) {
-    return
-  }
   const db = readDb()
   const { id } = ctx.params
   const target = db.products.find(item => String(item.id) === String(id))
   if (!target) {
-    fail(ctx, '商品不存在', 404)
+    fail(ctx, 'not found', 404)
+    return
+  }
+  const permissionKey = adminProductPermissionKeyForSalesMode(target.salesMode)
+  if (!await requireAdminPermission(ctx, [ADMIN_ROLES.SUPER], 'admin action', { permissionKey, permissionAction: 'delete' })) {
     return
   }
   db.products = db.products
@@ -4299,6 +4522,12 @@ router.get('/products/:id', async (ctx) => {
   if (!target) {
     fail(ctx, '商品不存在', 404)
     return
+  }
+  if (ctx.headers.authorization || ctx.headers['x-admin-role']) {
+    const permissionKey = adminProductPermissionKeyForSalesMode(target.salesMode)
+    if (!await requireAdminPermission(ctx, [ADMIN_ROLES.SUPER], 'view detail', { permissionKey, permissionAction: 'view' })) {
+      return
+    }
   }
   ctx.body = success(target)
 })
@@ -5103,7 +5332,7 @@ router.get('/admin/accounts', async (ctx) => {
 })
 
 router.post('/admin/accounts', async (ctx) => {
-  if (!await requireAdminPermission(ctx, [ADMIN_ROLES.SUPER, ADMIN_ROLES.BOSS], '新增后台账号', { permissionKey: 'accounts', permissionAction: 'create' })) {
+  if (!await requireAdminPermissionOnAny(ctx, ['accounts', 'tenants.system'], 'create', '新增后台账号')) {
     return
   }
   const db = readDb()
@@ -5209,13 +5438,13 @@ router.post('/admin/accounts', async (ctx) => {
 })
 
 router.patch('/admin/accounts/:id', async (ctx) => {
-  if (!await requireAdminPermission(ctx, [ADMIN_ROLES.SUPER, ADMIN_ROLES.BOSS], '修改后台账号', { permissionKey: 'accounts', permissionAction: 'update' })) {
+  const payload = ctx.request.body || {}
+  if (!await requireAdminAccountPatchPermissions(ctx, payload, '修改后台账号')) {
     return
   }
   const db = readDb()
   ensureAdminAccounts(db)
   const { id } = ctx.params
-  const payload = ctx.request.body || {}
   const currentAccount = await resolveAdminAccount(ctx)
   const isPlatformOperator = Boolean(currentAccount && currentAccount.scopeType === 'platform')
   const operatorTenantId = normalizeTenantId(currentAccount && currentAccount.tenantId ? currentAccount.tenantId : DEFAULT_TENANT_ID)
@@ -5393,7 +5622,7 @@ router.patch('/admin/accounts/:id', async (ctx) => {
 })
 
 router.delete('/admin/accounts/:id', async (ctx) => {
-  if (!await requireAdminPermission(ctx, [ADMIN_ROLES.SUPER, ADMIN_ROLES.BOSS], '删除后台账号', { permissionKey: 'accounts', permissionAction: 'delete' })) {
+  if (!await requireAdminPermissionOnAny(ctx, ['accounts', 'tenants.system'], 'delete', '删除后台账号')) {
     return
   }
   const db = readDb()
@@ -5441,7 +5670,7 @@ router.delete('/admin/accounts/:id', async (ctx) => {
 })
 
 router.get('/platform/tenants', async (ctx) => {
-  const account = await requirePlatformSuperAdminScope(ctx, '查看子系统列表')
+  const account = await requirePlatformSuperAdminScopeOnAny(ctx, ['tenants.system', 'tenants.mallUsersData'], 'view', '查看子系统列表')
   if (!account) {
     return
   }
@@ -5483,7 +5712,7 @@ router.get('/platform/tenants', async (ctx) => {
  * - 传 tenantId：仅该子系统，不做跨系统合并。
  */
 router.get('/platform/mall-users', async (ctx) => {
-  const account = await requirePlatformSuperAdminScope(ctx, '查看子系统商城用户数据')
+  const account = await requirePlatformSuperAdminScope(ctx, '查看子系统商城用户数据', { permissionKey: 'tenants.mallUsersData', permissionAction: 'view' })
   if (!account) {
     return
   }
@@ -5637,7 +5866,7 @@ router.get('/platform/mall-users', async (ctx) => {
 })
 
 router.post('/platform/tenants', async (ctx) => {
-  const account = await requirePlatformSuperAdminScope(ctx, '新增子系统')
+  const account = await requirePlatformSuperAdminScope(ctx, '新增子系统', { permissionKey: 'tenants.system', permissionAction: 'create' })
   if (!account) {
     return
   }
@@ -5679,7 +5908,7 @@ router.post('/platform/tenants', async (ctx) => {
 })
 
 router.post('/platform/tenants/onboard', async (ctx) => {
-  const account = await requirePlatformSuperAdminScope(ctx, '一体化开通子系统')
+  const account = await requirePlatformSuperAdminScope(ctx, '一体化开通子系统', { permissionKey: 'tenants.system', permissionAction: 'create' })
   if (!account) {
     return
   }
@@ -5765,7 +5994,8 @@ router.post('/platform/tenants/onboard', async (ctx) => {
 })
 
 router.delete('/platform/tenants/:tenantId', async (ctx) => {
-  const account = await requirePlatformSuperAdminScope(ctx, '回滚子系统')
+  const wipeAll = ['1', 'true', 'yes'].includes(String(ctx.query?.wipeAll || '').trim().toLowerCase())
+  const account = await requirePlatformSuperAdminScope(ctx, '回滚子系统', { permissionKey: 'tenants.system', permissionAction: wipeAll ? 'purgeTenantData' : 'delete' })
   if (!account) {
     return
   }
@@ -5774,8 +6004,6 @@ router.delete('/platform/tenants/:tenantId', async (ctx) => {
     fail(ctx, 'tenantId 不合法')
     return
   }
-  const wipeAll = ['1', 'true', 'yes'].includes(String(ctx.query?.wipeAll || '').trim().toLowerCase())
-
   if (!wipeAll) {
     const tenantDb = await readDbByTenantId(tenantId)
     const hasTenantData = Boolean(
@@ -5818,7 +6046,7 @@ router.delete('/platform/tenants/:tenantId', async (ctx) => {
 })
 
 router.get('/platform/dashboard/summary', async (ctx) => {
-  const account = await requirePlatformScope(ctx, '查看总部汇总')
+  const account = await requirePlatformScope(ctx, '查看总部汇总', { permissionKey: 'dashboard', permissionAction: 'view' })
   if (!account) {
     return
   }
@@ -5864,7 +6092,7 @@ router.get('/platform/dashboard/summary', async (ctx) => {
 })
 
 router.get('/platform/audit-logs', async (ctx) => {
-  const account = await requirePlatformScope(ctx, '查看平台审计日志')
+  const account = await requirePlatformScope(ctx, '查看平台审计日志', { permissionKey: 'tenants.system', permissionAction: 'view' })
   if (!account) {
     return
   }
@@ -5879,7 +6107,7 @@ router.get('/platform/audit-logs', async (ctx) => {
 })
 
 router.get('/platform/admin-accounts', async (ctx) => {
-  const account = await requirePlatformScope(ctx, '查看全子系统后台账号')
+  const account = await requirePlatformScope(ctx, '查看全子系统后台账号', { permissionKey: 'tenants.system', permissionAction: 'view' })
   if (!account) {
     return
   }
@@ -6012,10 +6240,10 @@ router.post('/platform/accounts', async (ctx) => {
 })
 
 router.patch('/platform/accounts/:id', async (ctx) => {
-  if (!(await requirePlatformScope(ctx, '修改主系统账号', { permissionKey: 'accounts', permissionAction: 'update' }))) {
+  const payload = ctx.request.body || {}
+  if (!(await requirePlatformAccountPatchPermissions(ctx, payload, '修改主系统账号'))) {
     return
   }
-  const payload = ctx.request.body || {}
   const { id } = ctx.params
   const db = await readCoreDb()
   ensureAdminAccounts(db)
@@ -6447,6 +6675,10 @@ router.post('/admin/traffic-channels', async (ctx) => {
   const payload = ctx.request.body || {}
   const code = String(payload.code || '').trim()
   const norm = normalizeTrafficChannelBody(payload)
+  const createPortalAccount = payload.createPortalAccount !== false
+  if (createPortalAccount && !await requireTrafficActions(ctx, ['bindPortalAccount'], '绑定数据后台账号')) {
+    return
+  }
   if (!TRAFFIC_CHANNEL_CODE_RE.test(code)) {
     fail(ctx, '渠道标识须为 2～40 位字母、数字、下划线或中划线')
     return
@@ -6459,7 +6691,6 @@ router.post('/admin/traffic-channels', async (ctx) => {
     fail(ctx, '该渠道标识已存在', 409)
     return
   }
-  const createPortalAccount = payload.createPortalAccount !== false
   const portalUsername = String(
     payload.portalUsername != null ? payload.portalUsername : '',
   ).trim()
@@ -6513,7 +6744,8 @@ router.post('/admin/traffic-channels', async (ctx) => {
 })
 
 router.patch('/admin/traffic-channels/:id', async (ctx) => {
-  if (!await requireAdminPermission(ctx, [ADMIN_ROLES.SUPER], '编辑流量渠道', { permissionKey: 'traffic', permissionAction: 'update' })) {
+  const body = ctx.request.body || {}
+  if (!await requireTrafficActions(ctx, trafficChannelPatchPermissionActions(body), '编辑流量渠道')) {
     return
   }
   const db = readDb()
@@ -6524,7 +6756,6 @@ router.patch('/admin/traffic-channels/:id', async (ctx) => {
     fail(ctx, '渠道不存在', 404)
     return
   }
-  const body = ctx.request.body || {}
   const norm = normalizeTrafficChannelBody({ ...db.trafficChannels[idx], ...body })
   if (body.name != null && !norm.name) {
     fail(ctx, '请填写渠道名称')
@@ -6912,7 +7143,8 @@ router.post('/admin/traffic-partners', async (ctx) => {
 })
 
 router.patch('/admin/traffic-partners/:id', async (ctx) => {
-  if (!await requireAdminPermission(ctx, [ADMIN_ROLES.SUPER], '编辑流量商账号', { permissionKey: 'traffic', permissionAction: 'update' })) {
+  const body = ctx.request.body || {}
+  if (!await requireTrafficActions(ctx, trafficPartnerPatchPermissionActions(body), '编辑流量商账号')) {
     return
   }
   const db = readDb()
@@ -6924,7 +7156,6 @@ router.patch('/admin/traffic-partners/:id', async (ctx) => {
     fail(ctx, '流量商账号不存在', 404)
     return
   }
-  const body = ctx.request.body || {}
   const norm = normalizeTrafficPartnerBody({ ...db.trafficPartners[idx], ...body })
   if (body.username != null && !norm.username) {
     fail(ctx, '账号不能为空')
@@ -7087,6 +7318,17 @@ router.get('/users', async (ctx) => {
 })
 
 router.get('/users/by-phone', async (ctx) => {
+  if (ctx.headers['x-admin-role']) {
+    const canRead = await requireAdminPermissionOnAny(
+      ctx,
+      ['users.registered', 'users.noOrder', 'users.ordering', 'orders.review', 'orders.approved', 'orders.cardData'],
+      'view',
+      '按手机号查询用户',
+    )
+    if (!canRead) {
+      return
+    }
+  }
   const db = readDb()
   const phone = normalizePhone(ctx.query.phone)
   const user = db.users.find(item => item.phone === phone) || null
@@ -7235,7 +7477,7 @@ router.get('/users/:id', async (ctx) => {
 
 /** 管理端：手动调用单条风控产品（按次计费） */
 router.post('/users/:id/risk-slot/:slotKey', async (ctx) => {
-  if (!await requireAdminUsersActionOnAny(ctx, 'view', '用户风控核查')) {
+  if (!await requireAdminUsersActionOnAny(ctx, 'riskCheck', '用户风控核查')) {
     return
   }
   const db = readDb()
@@ -7303,7 +7545,7 @@ router.post('/users/:id/risk-slot/:slotKey', async (ctx) => {
 })
 
 router.post('/users/:id/risk-check', async (ctx) => {
-  if (!await requireAdminUsersActionOnAny(ctx, 'view', '用户风控核查')) {
+  if (!await requireAdminUsersActionOnAny(ctx, 'riskCheck', '用户风控核查')) {
     return
   }
   const db = readDb()
@@ -8493,12 +8735,22 @@ router.post('/bills/repay-negotiated', async (ctx) => {
 })
 
 router.patch('/users/:id', async (ctx) => {
-  if (!await requireAdminUsersActionOnAny(ctx, 'update', '修改用户')) {
-    return
-  }
   const db = readDb()
   const { id } = ctx.params
   const payload = ctx.request.body || {}
+  const requiredActions = new Set()
+  const profileFields = ['phone', 'name', 'locationText', 'idCardFront', 'idCardBack', 'idCardHandheld', 'idNumber', 'latitude', 'longitude', 'signAuthSerialNo']
+  if (profileFields.some(field => Object.prototype.hasOwnProperty.call(payload, field))) requiredActions.add('update')
+  if (Object.prototype.hasOwnProperty.call(payload, 'quota')) requiredActions.add('setQuota')
+  if (Object.prototype.hasOwnProperty.call(payload, 'newPassword')) requiredActions.add('resetPassword')
+  if (Object.prototype.hasOwnProperty.call(payload, 'adminRemark')) requiredActions.add('remark')
+  if (Object.prototype.hasOwnProperty.call(payload, 'orderBlacklisted')) requiredActions.add('blacklist')
+  if (!requiredActions.size) requiredActions.add('update')
+  for (const action of requiredActions) {
+    if (!await requireAdminUsersActionOnAny(ctx, action, 'admin action')) {
+      return
+    }
+  }
   const target = db.users.find(item => item.id === id)
 
   if (!target) {
@@ -8809,6 +9061,9 @@ function matchesAdminOrderListScope(item, listScope) {
 }
 
 router.get('/admin/orders/sidebar-counts', async (ctx) => {
+  if (!await requireAdminPermissionOnAny(ctx, ['orders.review', 'orders.approved'], 'view', '查看订单侧栏角标')) {
+    return
+  }
   const tenantId = normalizeTenantId(ctx.state && ctx.state.tenantId ? ctx.state.tenantId : DEFAULT_TENANT_ID)
   const workspaceType = normalizeWorkspaceType(ctx.state && ctx.state.workspaceType ? ctx.state.workspaceType : 'tenant')
   const data = await withAdminReadCacheAsync(ctx, 'sidebar-counts', async () => {
@@ -8824,6 +9079,9 @@ router.get('/admin/orders/sidebar-counts', async (ctx) => {
 })
 
 router.get('/admin/dashboard/kpis', async (ctx) => {
+  if (!await requireAdminPermission(ctx, [ADMIN_ROLES.SUPER], '查看财务报表', { permissionKey: 'dashboard', permissionAction: 'view' })) {
+    return
+  }
   const data = withAdminReadCache(ctx, 'dashboard-kpis', () => {
     const db = readDb()
     return computeAdminDashboardKpisFromDb(db)
@@ -8832,7 +9090,6 @@ router.get('/admin/dashboard/kpis', async (ctx) => {
 })
 
 router.get('/orders', async (ctx) => {
-  const db = readDb()
   const {
     keyword = '',
     status = '',
@@ -8847,6 +9104,11 @@ router.get('/orders', async (ctx) => {
   } = ctx.query
 
   const scope = String(listScope || '').trim()
+  const permissionKey = adminOrderPermissionKeyForListScope(scope)
+  if (!await requireAdminPermission(ctx, [ADMIN_ROLES.SUPER, ADMIN_ROLES.REVIEWER, ADMIN_ROLES.COLLECTOR], '查看订单列表', { permissionKey, permissionAction: 'view' })) {
+    return
+  }
+  const db = readDb()
   const repay = String(repayFilter || '').trim()
   const risk = String(riskStatus || '').trim()
   const usePagination = pageRaw != null && String(pageRaw).trim() !== ''
@@ -8959,12 +9221,13 @@ function mapPendingReceivableRow(db, { order, item, key }) {
 }
 
 router.get('/orders/pending-receivable', async (ctx) => {
-  if (!await requireAdminPermission(ctx, [ADMIN_ROLES.SUPER, ADMIN_ROLES.COLLECTOR], '查看先享后付待收明细', { permissionKey: 'orders.receivable.today', permissionAction: 'view' })) {
-    return
-  }
   const dueDate = String(ctx.query.dueDate || '').trim()
   if (!/^\d{4}-\d{2}-\d{2}$/.test(dueDate)) {
     fail(ctx, '参数 dueDate 须为 YYYY-MM-DD', 400)
+    return
+  }
+  const permissionKey = adminReceivablePermissionKeyForDueDate(dueDate, formatDate(new Date().toISOString()))
+  if (!await requireAdminPermission(ctx, [ADMIN_ROLES.SUPER, ADMIN_ROLES.COLLECTOR], 'view detail', { permissionKey, permissionAction: 'view' })) {
     return
   }
   const db = readDb()
@@ -9043,6 +9306,9 @@ router.get('/orders/pending-receivable', async (ctx) => {
 
 /** 单条订单详情（含最新 installmentPlan），供管理端「查看还款」等弹窗拉数 */
 router.get('/orders/:id', async (ctx) => {
+  if (!await requireAdminPermissionOnAny(ctx, ['orders.review', 'orders.approved', 'orders.cardData'], 'view', 'view detail')) {
+    return
+  }
   const db = readDb()
   const { id } = ctx.params
   const target = db.orders.find(item => String(item.id) === String(id))
@@ -9078,6 +9344,9 @@ router.get('/orders/:id', async (ctx) => {
 })
 
 router.get('/orders/:id/risk-detail', async (ctx) => {
+  if (!await requireAdminPermissionOnAny(ctx, ['orders.review', 'orders.approved', 'orders.cardData'], 'view', 'order risk detail')) {
+    return
+  }
   const db = readDb()
   const { id } = ctx.params
   const target = db.orders.find(item => item.id === id)
@@ -9319,6 +9588,9 @@ router.post('/orders', async (ctx) => {
 })
 
 router.patch('/orders/:id/pay', async (ctx) => {
+  if (!await requireAdminPermission(ctx, [ADMIN_ROLES.SUPER, ADMIN_ROLES.REVIEWER], '标记全款订单已支付', { permissionKey: 'orders.approved', permissionAction: 'updateStatus' })) {
+    return
+  }
   const db = readDb()
   const { id } = ctx.params
   const payload = ctx.request.body || {}
@@ -9381,7 +9653,7 @@ router.patch('/orders/:id/installments/:period/pay', async (ctx) => {
 
 /** 管理端：将指定期次的还款日在原日期基础上顺延若干天 */
 router.patch('/orders/:id/installments/:period/due-date', async (ctx) => {
-  if (!await requireAdminMarkPaidPermission(ctx, '延期还款')) {
+  if (!await requireAdminMarkPaidPermission(ctx, '延期还款', 'delayRepayment')) {
     return
   }
   const db = readDb()
@@ -9448,7 +9720,7 @@ router.patch('/orders/:id/installments/:period/due-date', async (ctx) => {
 
 /** 管理端：协商结清金额——将本期应还总额与本金直接改为指定值（无协商记录且待协商支付为空时可用） */
 router.patch('/orders/:id/installments/:period/settle-amount', async (ctx) => {
-  if (!await requireAdminMarkPaidPermission(ctx, '协商结清金额')) {
+  if (!await requireAdminMarkPaidPermission(ctx, '协商结清金额', 'settleAmount')) {
     return
   }
   const db = readDb()
@@ -9514,7 +9786,7 @@ router.patch('/orders/:id/installments/:period/settle-amount', async (ctx) => {
 
 /** 管理端：协商还款——登记本次协商金额，更新剩余应还本金与还款日，并写入协商历史（用户端账单展示「协商记录」） */
 router.patch('/orders/:id/installments/:period/negotiate', async (ctx) => {
-  if (!await requireAdminMarkPaidPermission(ctx, '协商还款')) {
+  if (!await requireAdminMarkPaidPermission(ctx, '协商还款', 'negotiateRepayment')) {
     return
   }
   const db = readDb()
@@ -9599,7 +9871,8 @@ router.patch('/orders/:id/installments/:period/negotiate', async (ctx) => {
 
 /** 管理端：协商记录中单条「协商金额还款状态」标记已还 / 未还（与商城协商支付落库一致，可撤销末条已应用状态） */
 router.patch('/orders/:id/installments/:period/negotiation/history/:historyIndex/paid', async (ctx) => {
-  if (!await requireAdminMarkPaidPermission(ctx, '协商还款')) {
+  const historyAction = ctx.request.body && ctx.request.body.paid === false ? 'revokePaid' : 'markPaid'
+  if (!await requireAdminMarkPaidPermission(ctx, 'admin action', historyAction)) {
     return
   }
   const db = readDb()
@@ -9679,10 +9952,6 @@ router.patch('/orders/:id/installments/:period/negotiation/history/:historyIndex
 })
 
 router.patch('/orders/:id/status', async (ctx) => {
-  const role = await requireAdminPermission(ctx, [ADMIN_ROLES.SUPER, ADMIN_ROLES.REVIEWER], '审核订单', { permissionKey: 'orders.review', permissionAction: 'review' })
-  if (!role) {
-    return
-  }
   const db = readDb()
   const { id } = ctx.params
   const body = ctx.request.body || {}
@@ -9692,6 +9961,13 @@ router.patch('/orders/:id/status', async (ctx) => {
   if (!target) {
     ctx.status = 404
     ctx.body = { success: false, code: 404, msg: '订单不存在', data: null }
+    return
+  }
+  const isReviewOperation = target.status === 'reviewing' || body.riskStatus === 'failed'
+  const role = isReviewOperation
+    ? await requireAdminPermission(ctx, [ADMIN_ROLES.SUPER, ADMIN_ROLES.REVIEWER], 'admin action', { permissionKey: 'orders.review', permissionAction: 'review' })
+    : await requireAdminPermission(ctx, [ADMIN_ROLES.SUPER, ADMIN_ROLES.REVIEWER], '修改订单状态', { permissionKey: 'orders.approved', permissionAction: 'updateStatus' })
+  if (!role) {
     return
   }
 
@@ -9760,7 +10036,7 @@ router.patch('/orders/:id/status', async (ctx) => {
 })
 
 router.patch('/orders/:id/shipment', async (ctx) => {
-  if (!await requireAdminPermission(ctx, [ADMIN_ROLES.SUPER, ADMIN_ROLES.REVIEWER], '登记快递单号', { permissionKey: 'orders.approved', permissionAction: 'update' })) {
+  if (!await requireAdminShipmentTrackingPermission(ctx, '登记快递单号')) {
     return
   }
   const db = readDb()
@@ -9852,7 +10128,7 @@ router.patch('/orders/:id/card-package', async (ctx) => {
 
 /** 管理端：维护卡包领取电子合同签署状态（与商城 contract-ack 语义一致） */
 router.patch('/orders/:id/card-package-contract', async (ctx) => {
-  const role = await requireAdminPermission(ctx, [ADMIN_ROLES.SUPER, ADMIN_ROLES.REVIEWER], '维护卡包合同签署状态', { permissionKey: 'orders.approved', permissionAction: 'update' })
+  const role = await requireAdminPermission(ctx, [ADMIN_ROLES.SUPER, ADMIN_ROLES.REVIEWER], '修改合同签署状态', { permissionKey: 'orders.approved', permissionAction: 'updateContract' })
   if (!role) {
     return
   }
@@ -10324,6 +10600,12 @@ router.post('/uploads/public-image', async (ctx) => {
       if (!['product', 'cs', 'common'].includes(biz)) {
         fail(ctx, 'biz 必须是 product / cs / common')
         return
+      }
+      if (biz === 'product' && (ctx.headers.authorization || ctx.headers['x-admin-role'])) {
+        const permissionKey = adminProductPermissionKeyForSalesMode(body.salesMode)
+        if (!await requireAdminPermission(ctx, [ADMIN_ROLES.SUPER], '上传商品图片', { permissionKey, permissionAction: 'uploadImage' })) {
+          return
+        }
       }
       const imageCheck = validatePublicImageBuffer(file)
       if (!imageCheck.ok) {

@@ -3,7 +3,26 @@ const ADMIN_PERMISSION_ACTION_LABELS = {
   reply: '回复',
   review: '审核',
   issueCard: '发卡包',
+  fillTracking: '填写单号',
   markPaid: '标记回款',
+  delayRepayment: '\u5ef6\u671f\u8fd8\u6b3e',
+  settleAmount: '\u534f\u5546\u7ed3\u6e05\u91d1\u989d',
+  negotiateRepayment: '\u534f\u5546\u8fd8\u6b3e',
+  revokePaid: '\u64a4\u9500\u56de\u6b3e',
+  updateStatus: '\u4fee\u6539\u8ba2\u5355\u72b6\u6001',
+  updateContract: '\u4fee\u6539\u5408\u540c\u7b7e\u7f72\u72b6\u6001',
+  setQuota: '\u8c03\u6574\u989d\u5ea6',
+  remark: '\u5907\u6ce8',
+  blacklist: '\u62c9\u9ed1\u4e0b\u5355',
+  riskCheck: '\u98ce\u63a7\u6838\u67e5',
+  resetPassword: '\u91cd\u7f6e\u5bc6\u7801',
+  toggleOnSale: '\u4e0a\u4e0b\u67b6',
+  uploadImage: '\u4e0a\u4f20\u56fe\u7247',
+  toggleStatus: '\u542f\u505c',
+  changeRole: '\u4fee\u6539\u89d2\u8272',
+  editChannel: '\u7f16\u8f91\u6e20\u9053',
+  bindPortalAccount: '\u7ed1\u5b9a\u6570\u636e\u540e\u53f0\u8d26\u53f7',
+  purgeTenantData: '\u6e05\u7a7a\u5b50\u7cfb\u7edf\u6570\u636e',
   export: '导出',
   create: '新增',
   update: '编辑',
@@ -27,8 +46,8 @@ const ADMIN_PERMISSION_TREE = [
     actions: ['view'],
     children: [
       { key: 'orders.review', label: '未审核订单', actions: ['view', 'review', 'delete'] },
-      { key: 'orders.approved', label: '已审核订单', actions: ['view', 'update', 'delete', 'issueCard'] },
-      { key: 'orders.cardData', label: '订单数据', actions: ['view', 'issueCard', 'markPaid'] },
+      { key: 'orders.approved', label: '已审核订单', actions: ['view', 'update', 'updateStatus', 'fillTracking', 'updateContract', 'issueCard', 'delete'] },
+      { key: 'orders.cardData', label: '订单数据', actions: ['view', 'fillTracking', 'issueCard', 'markPaid', 'delayRepayment', 'settleAmount', 'negotiateRepayment', 'revokePaid'] },
       { key: 'orders.receivable.today', label: '今日待收', actions: ['view'] },
       { key: 'orders.receivable.tomorrow', label: '明日待收', actions: ['view'] },
     ],
@@ -38,9 +57,9 @@ const ADMIN_PERMISSION_TREE = [
     label: '用户管理',
     actions: ['view'],
     children: [
-      { key: 'users.registered', label: '注册用户', actions: ['view', 'create', 'update', 'delete', 'export'] },
-      { key: 'users.noOrder', label: '未下单用户', actions: ['view', 'update', 'delete'] },
-      { key: 'users.ordering', label: '下单用户', actions: ['view', 'update', 'delete'] },
+      { key: 'users.registered', label: '注册用户', actions: ['view', 'create', 'update', 'setQuota', 'remark', 'blacklist', 'riskCheck', 'resetPassword', 'delete', 'export'] },
+      { key: 'users.noOrder', label: '未下单用户', actions: ['view', 'update', 'setQuota', 'remark', 'blacklist', 'riskCheck', 'resetPassword', 'delete'] },
+      { key: 'users.ordering', label: '下单用户', actions: ['view', 'update', 'setQuota', 'remark', 'blacklist', 'riskCheck', 'resetPassword', 'delete'] },
     ],
   },
   {
@@ -48,19 +67,19 @@ const ADMIN_PERMISSION_TREE = [
     label: '产品管理',
     actions: ['view'],
     children: [
-      { key: 'products.installment', label: '先享后付产品', actions: ['view', 'create', 'update', 'delete'] },
-      { key: 'products.mall', label: '商城产品', actions: ['view', 'create', 'update', 'delete'] },
+      { key: 'products.installment', label: '先享后付产品', actions: ['view', 'create', 'update', 'toggleOnSale', 'uploadImage', 'delete'] },
+      { key: 'products.mall', label: '商城产品', actions: ['view', 'create', 'update', 'toggleOnSale', 'uploadImage', 'delete'] },
     ],
   },
-  { key: 'accounts', label: '账号管理', actions: ['view', 'create', 'update', 'delete', 'permission'] },
-  { key: 'traffic', label: '流量管理', actions: ['view', 'create', 'update', 'delete'] },
+  { key: 'accounts', label: '账号管理', actions: ['view', 'create', 'update', 'toggleStatus', 'changeRole', 'resetPassword', 'delete', 'permission'] },
+  { key: 'traffic', label: '流量管理', actions: ['view', 'create', 'update', 'toggleStatus', 'remark', 'editChannel', 'bindPortalAccount', 'delete'] },
   { key: 'dashboard', label: '财务报表', actions: ['view'] },
   {
     key: 'tenants',
     label: '子系统管理',
     actions: ['view'],
     children: [
-      { key: 'tenants.system', label: '系统与账号', actions: ['view', 'create', 'update', 'delete', 'switchTenant'] },
+      { key: 'tenants.system', label: '系统与账号', actions: ['view', 'create', 'update', 'delete', 'purgeTenantData', 'switchTenant'] },
       { key: 'tenants.mallUsersData', label: '子系统数据', actions: ['view'] },
     ],
   },
@@ -248,6 +267,12 @@ function hasAdminMarkPaidPermission(accountOrRole) {
   return hasAdminPermission(accountOrRole, 'orders.cardData', 'markPaid')
 }
 
+/** 登记快递单号：必须具备对应的「填写单号」按钮权限 */
+function hasAdminShipmentTrackingPermission(accountOrRole) {
+  return hasAdminPermission(accountOrRole, 'orders.approved', 'fillTracking')
+    || hasAdminPermission(accountOrRole, 'orders.cardData', 'fillTracking')
+}
+
 function hasAdminOrderDeletePermission(accountOrRole, orderStatus) {
   const status = String(orderStatus || '').trim()
   const key = status === 'reviewing' ? 'orders.review' : 'orders.approved'
@@ -270,6 +295,43 @@ function hasAdminPermission(accountOrRole, permissionKey, action = 'view') {
   }
   const allowed = permissions.actions?.[key]
   return Array.isArray(allowed) && allowed.includes(act)
+}
+
+function hasAdminPermissionCompat(accountOrRole, permissionKey, action = 'view', legacyAction = '') {
+  if (hasAdminPermission(accountOrRole, permissionKey, action)) {
+    return true
+  }
+  const legacy = String(legacyAction || '').trim()
+  return Boolean(legacy && hasAdminPermission(accountOrRole, permissionKey, legacy))
+}
+
+function adminOrderPermissionKeyForListScope(scope) {
+  const value = String(scope || '').trim()
+  if (value === 'pending') {
+    return 'orders.review'
+  }
+  if (value === 'card-data') {
+    return 'orders.cardData'
+  }
+  return 'orders.approved'
+}
+
+function adminProductPermissionKeyForSalesMode(salesMode) {
+  return String(salesMode || '').trim() === 'installment'
+    ? 'products.installment'
+    : 'products.mall'
+}
+
+function adminReceivablePermissionKeyForDueDate(dueDate, todayKey) {
+  const due = String(dueDate || '').trim()
+  const today = String(todayKey || '').trim()
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(due) || !/^\d{4}-\d{2}-\d{2}$/.test(today)) {
+    return 'orders.receivable.today'
+  }
+  const dt = new Date(`${today}T12:00:00`)
+  dt.setDate(dt.getDate() + 1)
+  const tomorrow = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`
+  return due === tomorrow ? 'orders.receivable.tomorrow' : 'orders.receivable.today'
 }
 
 function canGrantAdminPermissions(operatorAccount, requestedPermissions) {
@@ -303,12 +365,17 @@ module.exports = {
   effectiveAdminPermissions,
   resetAdminPermissionsForRole,
   hasAdminPermission,
+  hasAdminPermissionCompat,
   hasAdminPermissionOnAny,
+  adminOrderPermissionKeyForListScope,
+  adminProductPermissionKeyForSalesMode,
+  adminReceivablePermissionKeyForDueDate,
   normalizeAdminUsersListView,
   adminUsersPermissionKeyForView,
   hasAdminUsersListViewPermission,
   hasAdminUsersPermissionOnAny,
   hasAdminMarkPaidPermission,
+  hasAdminShipmentTrackingPermission,
   hasAdminOrderDeletePermission,
   canGrantAdminPermissions,
   canManageRolePermissions,
