@@ -105,9 +105,16 @@ const { buildCardPackageContractViewHtml } = require('./cardPackageContractViewH
 const { buildCardPackageContractPdfBuffer } = require('./cardPackageContractPdf')
 const lakalaPayment = require('./payment/lakalaPaymentService')
 const { registerLakalaRoutes } = require('./payment/registerLakalaRoutes')
+const {
+  ensureDuodiandianChannel,
+  ensureDuodiandianPortalPartner,
+  isDuodiandianPublicPath,
+  registerDuodiandianGatewayRoutes,
+} = require('./duodiandianGateway')
 
 const app = new Koa()
 const router = new Router({ prefix: '/api' })
+const duodiandianPublicRouter = new Router()
 const PORT = Number(process.env.PORT || 3110)
 /** GET /static/* → api/public/*（卡包合同模板 PDF 等，供电子签上游按 URL 拉取；本地 mock 下载 PDF 由程序按订单动态生成，不读该目录） */
 const API_PUBLIC_DIR = path.join(__dirname, '..', 'public')
@@ -8599,6 +8606,16 @@ registerLakalaRoutes(router, {
   resolvePlacingMallUserFromBearer,
 })
 
+registerDuodiandianGatewayRoutes(router, {
+  readDb,
+  writeDb,
+})
+
+registerDuodiandianGatewayRoutes(duodiandianPublicRouter, {
+  readDb,
+  writeDb,
+})
+
 /**
  * 商城用户还款：与后台 PATCH /orders/:id/installments/:period/pay 写入同一套 installmentPlan，
  * 需校验下单注册账号与订单 mallUserId；与 OrdersPage 一致，卡包未发放前不允许记为已还。
@@ -10717,6 +10734,12 @@ app.use(bodyParser({
   formLimit: '12mb',
   textLimit: '12mb',
 }))
+
+function isManagedApiPath(pathValue) {
+  const pathRaw = String(pathValue || '')
+  return pathRaw.startsWith('/api/') || isDuodiandianPublicPath(pathRaw)
+}
+
 app.use(async (ctx, next) => {
   const tenantId = resolveTenantIdFromRequest(ctx)
   const rawWorkspace = resolveWorkspaceTypeFromRequest(ctx)
@@ -10730,7 +10753,7 @@ app.use(async (ctx, next) => {
       await next()
     })
   }
-  if (String(ctx.path || '').startsWith('/api/') && isMongoPersistenceEnabled()) {
+  if (isManagedApiPath(ctx.path) && isMongoPersistenceEnabled()) {
     await runWithMongoRequestDedup(runNested)
   }
   else {
@@ -10742,7 +10765,7 @@ app.use(async (ctx, next) => {
  * 默认 MONGO_REFRESH_MODE=version：仅 app_meta.updatedAt 变化时才全量读 Mongo；非 every_request 全量读。
  */
 app.use(async (ctx, next) => {
-  if (String(ctx.path || '').startsWith('/api/') && isMongoPersistenceEnabled()) {
+  if (isManagedApiPath(ctx.path) && isMongoPersistenceEnabled()) {
     try {
       const tenantId = normalizeTenantId(ctx.state && ctx.state.tenantId ? ctx.state.tenantId : DEFAULT_TENANT_ID)
       const workspaceType = normalizeWorkspaceType(ctx.state && ctx.state.workspaceType ? ctx.state.workspaceType : 'tenant')
@@ -10764,7 +10787,7 @@ app.use(async (ctx, next) => {
   await next()
 })
 app.use(async (ctx, next) => {
-  if (String(ctx.path || '').startsWith('/api/')) {
+  if (isManagedApiPath(ctx.path)) {
     try {
       const workspaceType = normalizeWorkspaceType(ctx.state && ctx.state.workspaceType ? ctx.state.workspaceType : 'tenant')
       const headerTenantId = normalizeTenantId(ctx.state && ctx.state.tenantId ? ctx.state.tenantId : DEFAULT_TENANT_ID)
@@ -10799,7 +10822,7 @@ app.use(async (ctx, next) => {
     return
   }
   const pathRaw = String(ctx.path || '')
-  if (!pathRaw.startsWith('/api/')) {
+  if (!isManagedApiPath(pathRaw)) {
     return
   }
   const awaitAll = mongoConfig.isMongoAwaitPersistEnabled()
@@ -10820,6 +10843,8 @@ app.use(async (ctx, next) => {
 })
 app.use(router.routes())
 app.use(router.allowedMethods())
+app.use(duodiandianPublicRouter.routes())
+app.use(duodiandianPublicRouter.allowedMethods())
 app.use(riskControlRouter.routes())
 app.use(riskControlRouter.allowedMethods())
 
@@ -10888,7 +10913,10 @@ app.use(riskControlRouter.allowedMethods())
   try {
     const db = readDb()
     ensureProductCatalog(db)
+    ensureDuodiandianChannel(db)
+    ensureDuodiandianPortalPartner(db)
     reconcileInstallmentCompletionAcrossDb(db)
+    writeDb(db)
   }
   catch (err) {
     console.warn('[api] 启动时先享后付/订单状态对账失败:', err?.message || err)
