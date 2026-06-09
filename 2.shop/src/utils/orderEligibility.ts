@@ -79,10 +79,10 @@ export function validateMallOrderBeforeRisk(input: MallOrderEligibilityInput): M
     return { ok: false, message: '身份证号码格式不正确，请核对后再下单' }
   }
   if (age < MIN_ORDER_AGE || age > MAX_ORDER_AGE) {
-    return { ok: false, message: '下单年龄需在22周岁到49周岁之间（包含22和49周岁）' }
+    return { ok: false, message: '当前年龄暂不支持下单' }
   }
   if (isRestrictedIdCardRegion(idNumber)) {
-    return { ok: false, message: '当前身份证所属地区暂不支持下单' }
+    return { ok: false, message: '所属地区暂不支持下单' }
   }
 
   const locationText = [
@@ -90,7 +90,7 @@ export function validateMallOrderBeforeRisk(input: MallOrderEligibilityInput): M
     input.phoneLocationText,
   ].map(normalizeText).filter(Boolean).join(' ')
   if (isRestrictedRegionText(locationText)) {
-    return { ok: false, message: '当前手机号归属地或收货地区暂不支持下单' }
+    return { ok: false, message: '当前收货地址暂不支持下单' }
   }
 
   return { ok: true, message: '' }
