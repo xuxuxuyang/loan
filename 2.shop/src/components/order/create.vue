@@ -14,6 +14,7 @@ import type { LakalaPreorderPayload } from '~/composables/useLakalaPayment'
 import LakalaPaySheet from '~/components/payment/LakalaPaySheet.vue'
 import { notifyError, notifySuccess, notifyWarning } from '~/utils/epFeedback'
 import { installmentRiskRejectToast } from '~/utils/installmentRiskMessage'
+import { validateMallOrderBeforeRisk } from '~/utils/orderEligibility'
 
 const route = useRoute()
 const router = useRouter()
@@ -306,6 +307,22 @@ async function submitOrder() {
     notifyWarning(
       `当前商品总额（￥${itemAmount.value.toFixed(2)}）已超过您的授信额度（￥${creditQuota.value}），请更换商品后再试`,
     )
+    return
+  }
+
+  const preRiskEligibility = validateMallOrderBeforeRisk({
+    idNumber: profile.value?.idNumber,
+    phone: currentUserPhone.value,
+    phoneLocationText: profile.value?.locationText,
+    addressParts: [
+      shippingAddress.value.province,
+      shippingAddress.value.city,
+      shippingAddress.value.district,
+      shippingAddress.value.detail,
+    ],
+  })
+  if (!preRiskEligibility.ok) {
+    notifyWarning(preRiskEligibility.message)
     return
   }
 
