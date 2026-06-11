@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { CirclePlus, EditPen } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
-import { computed, onUnmounted, reactive, ref, watch } from 'vue'
+import { computed, onUnmounted, reactive, ref, watch, type CSSProperties } from 'vue'
 import { useRoute } from 'vue-router'
 import { apiErrorMessage, readApiErrorMessage, withMallTenantHeaders } from '../composables/useAdminApi'
 import { adminSessionRevision, getAdminSession, isSuperAdminRole } from '../composables/useAdminAuth'
@@ -13,7 +13,11 @@ import UserRiskDetailDialog, {
   type UserRiskSnapshot,
 } from '../components/UserRiskDetailDialog.vue'
 import { donePageProgress, startPageProgress } from '../utils/progress'
-import { trafficChannelDisplayKey } from '../utils/trafficChannelTagStyle'
+import {
+  getTrafficChannelTagStyle,
+  MALL_SELF_REGISTER_CHANNEL_LABEL,
+  trafficChannelDisplayKey,
+} from '../utils/trafficChannelTagStyle'
 import {
   displayCreditStatusFromOrderSevenSnapshot,
   type DisplayCreditStatus,
@@ -41,6 +45,7 @@ interface AdminTrafficChannelRow {
   id: string
   code: string
   name: string
+  disabled?: boolean
 }
 
 interface ApiUserItem {
@@ -100,6 +105,12 @@ const EXPORT_FIELD_OPTIONS = [
 
 const DEFAULT_EXPORT_FIELDS = ['name', 'phone'] as const
 const exportSelectedFields = ref<string[]>([...DEFAULT_EXPORT_FIELDS])
+/** 导出弹窗模式：注册用户 / 已发放卡包客户 */
+const exportViewMode = ref<'registered' | 'cardPackageIssued'>('registered')
+/** 已发放卡包客户导出：手机号中间位脱敏（默认开启） */
+const exportMaskPhone = ref(true)
+/** 已发放卡包客户导出：按下单时间区间筛选（YYYY-MM-DD） */
+const exportOrderDateRange = ref<[string, string] | null>(null)
 const deletingId = ref('')
 const pendingDeleteId = ref('')
 const creating = ref(false)
@@ -112,6 +123,7 @@ const remarkSaving = ref(false)
 const remarkTarget = ref<ListedUser | null>(null)
 const remarkDraft = ref('')
 const blacklistBusyId = ref('')
+const registerChannelSavingId = ref('')
 const createDialogVisible = ref(false)
 const keyword = ref('')
 /** 下单用户页：按「最近一笔已计入订单」的本地日期筛选 */
@@ -189,13 +201,27 @@ const {
   canExport: canExportUsers,
 } = useAdminPagePermission(undefined, () => isSuperAdminRole(getAdminSession()?.role))
 const canEditUsers = computed(() => canUpdateUser.value || canResetPassword.value)
+const canManageRegisterChannel = computed(() => {
+  void adminSessionRevision.value
+  const role = getAdminSession()?.role
+  return role === 'super_admin' || role === 'boss'
+})
 
 /** 下单用户页：仅展示订单数大于 0 的用户 */
 const isOrderingUsersView = computed(() => route.path === '/users/ordering')
+/** 已发放卡包客户页：仅展示至少有一笔卡包已发放订单的用户 */
+const isCardPackageIssuedUsersView = computed(() => route.path === '/users/card-package-issued')
 /** 未下单用户页：仅展示已注册且订单数为 0 的用户 */
 const isNoOrderUsersView = computed(() => route.path === '/users/no-order')
-/** 仅「注册用户」页提供渠道导出 */
+/** 列表首列展示下单时间（下单用户 / 已发放卡包客户） */
+const showsOrderTimeColumn = computed(() => isOrderingUsersView.value || isCardPackageIssuedUsersView.value)
+/** 仅「注册用户」「已发放卡包客户」页提供导出 */
 const isRegisteredUsersPage = computed(() => route.name === 'users')
+/** 支持导出的用户列表页 */
+const canShowExportButton = computed(() => isRegisteredUsersPage.value || isCardPackageIssuedUsersView.value)
+const exportDialogTitle = computed(() =>
+  exportViewMode.value === 'cardPackageIssued' ? '导出已发放卡包客户' : '导出注册用户',
+)
 
 const editForm = reactive({
   name: '',
@@ -208,7 +234,7 @@ const editForm = reactive({
 watch(
   () => route.path,
   (path) => {
-    if (path !== '/users/ordering') {
+    if (path !== '/users/ordering' && path !== '/users/card-package-issued') {
       orderDateKey.value = null
     }
     currentPage.value = 1
@@ -224,6 +250,46 @@ const registerChannelOptions = computed(() => {
   }
   return [...set].sort((a, b) => a.localeCompare(b, 'zh-CN'))
 })
+
+const registerChannelEditOptions = computed(() => trafficChannelsForFilter.value
+  .filter(ch => ch && !ch.disabled && String(ch.code || '').trim())
+  .map(ch => ({
+    code: String(ch.code || '').trim(),
+    name: String(ch.name || ch.code || '').trim(),
+  }))
+  .sort((a, b) => a.name.localeCompare(b.name, 'zh-CN')))
+
+function registerChannelTagVars(displayKey: string, colorSeed?: string | null): CSSProperties {
+  if (String(colorSeed || '').trim() === '__mall_register__') {
+    return {
+      '--register-channel-bg': '#ffffff',
+      '--register-channel-color': '#374151',
+      '--register-channel-border': '#d1d5db',
+    } as CSSProperties
+  }
+  const style = getTrafficChannelTagStyle(displayKey, colorSeed)
+  return {
+    '--register-channel-bg': String(style.backgroundColor || '#f8fafc'),
+    '--register-channel-color': String(style.color || '#475569'),
+    '--register-channel-border': String(style.borderColor || '#cbd5e1'),
+  } as CSSProperties
+}
+
+function registerChannelDisplayForUser(user: ListedUser): string {
+  return trafficChannelDisplayKey(user.registerChannelLabel, user.registerChannelName, user.registerChannelCode)
+    || MALL_SELF_REGISTER_CHANNEL_LABEL
+}
+
+function registerChannelSelectVars(user: ListedUser): CSSProperties {
+  const code = user.registerChannelCode || '__mall_register__'
+  return registerChannelTagVars(registerChannelDisplayForUser(user), code)
+}
+
+function registerChannelOptionVars(code: string, name: string): CSSProperties {
+  const key = code === '__none__' ? MALL_SELF_REGISTER_CHANNEL_LABEL : name
+  const seed = code === '__none__' ? '__mall_register__' : code
+  return registerChannelTagVars(key, seed)
+}
 
 function formatDateTime(value?: string) {
   if (!value) return '-'
@@ -353,6 +419,41 @@ async function fetchTrafficChannelsForFilter() {
   }
 }
 
+async function updateUserRegisterChannel(user: ListedUser, nextCode: string) {
+  if (!canManageRegisterChannel.value || registerChannelSavingId.value) {
+    return
+  }
+  const currentCode = user.registerChannelCode || '__none__'
+  if (nextCode === currentCode) {
+    return
+  }
+  registerChannelSavingId.value = user.id
+  try {
+    const response = await fetch(`${MALL_API_BASE}/users/${encodeURIComponent(user.id)}/register-channel`, {
+      method: 'PATCH',
+      headers: withMallTenantHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({
+        registerChannelCode: nextCode === '__none__' ? '' : nextCode,
+      }),
+    })
+    const payload = await response.json() as { success?: boolean, msg?: string, data?: ApiUserItem }
+    if (!response.ok || payload.success === false) {
+      throw new Error(apiErrorMessage(payload, '修改注册渠道失败'))
+    }
+    if (payload.data) {
+      upsertUserFromApiRow(payload.data)
+    }
+    ElMessage.success('注册渠道已更新')
+  }
+  catch (error) {
+    console.error('修改注册渠道失败', error)
+    ElMessage.error((error as Error)?.message || '修改注册渠道失败')
+  }
+  finally {
+    registerChannelSavingId.value = ''
+  }
+}
+
 function parseExportFilename(contentDisposition: string | null): string {
   if (!contentDisposition) {
     return ''
@@ -371,11 +472,14 @@ function parseExportFilename(contentDisposition: string | null): string {
 }
 
 function openExportDialog() {
-  if (!canExportUsers.value || !isRegisteredUsersPage.value) {
+  if (!canExportUsers.value || !canShowExportButton.value) {
     return
   }
+  exportViewMode.value = isCardPackageIssuedUsersView.value ? 'cardPackageIssued' : 'registered'
   exportChannelFilter.value = REGISTER_CHANNEL_FILTER_ALL
   exportSelectedFields.value = [...DEFAULT_EXPORT_FIELDS]
+  exportMaskPhone.value = exportViewMode.value === 'cardPackageIssued'
+  exportOrderDateRange.value = null
   exportDialogVisible.value = true
   void fetchTrafficChannelsForFilter()
 }
@@ -397,8 +501,52 @@ function exportChannelLabel(ch: string): string {
   return ch
 }
 
-async function exportRegisteredUsers() {
-  if (!canExportUsers.value || !isRegisteredUsersPage.value) {
+function exportFilenameDateYmd(): string {
+  const d = new Date()
+  const y = d.getFullYear()
+  const m = `${d.getMonth() + 1}`.padStart(2, '0')
+  const day = `${d.getDate()}`.padStart(2, '0')
+  return `${y}${m}${day}`
+}
+
+function buildExportDateRangeLabel(range?: [string, string] | null): string {
+  if (!range || range.length !== 2) {
+    return exportFilenameDateYmd()
+  }
+  const from = parseExportDateYmd(range[0])
+  const to = parseExportDateYmd(range[1])
+  if (from && to) {
+    const fromCompact = from.replace(/-/g, '')
+    const toCompact = to.replace(/-/g, '')
+    if (from > to) {
+      return fromCompact === toCompact ? fromCompact : `${toCompact}-${fromCompact}`
+    }
+    return fromCompact === toCompact ? fromCompact : `${fromCompact}-${toCompact}`
+  }
+  if (from) {
+    return `${from.replace(/-/g, '')}起`
+  }
+  if (to) {
+    return `${to.replace(/-/g, '')}止`
+  }
+  return exportFilenameDateYmd()
+}
+
+function parseExportDateYmd(raw?: string): string {
+  const value = String(raw || '').trim()
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return ''
+  }
+  return value
+}
+
+function buildCardPackageIssuedExportFilename(channel: string, range?: [string, string] | null): string {
+  const safeChannel = exportChannelLabel(channel).replace(/[\\/:*?"<>|]/g, '_')
+  return `已通过客户_${buildExportDateRangeLabel(range)}_${safeChannel}.csv`
+}
+
+async function exportUsersCsv() {
+  if (!canExportUsers.value || !canShowExportButton.value) {
     return
   }
   const ch = exportChannelFilter.value || REGISTER_CHANNEL_FILTER_ALL
@@ -413,6 +561,22 @@ async function exportRegisteredUsers() {
     const params = new URLSearchParams()
     params.set('registerChannel', ch)
     params.set('fields', fields.join(','))
+    if (exportViewMode.value === 'cardPackageIssued') {
+      params.set('view', 'card-package-issued')
+      if (exportMaskPhone.value) {
+        params.set('maskPhone', '1')
+      }
+      const range = exportOrderDateRange.value
+      if (range && range.length === 2) {
+        const [from, to] = range
+        if (from) {
+          params.set('orderDateFrom', from)
+        }
+        if (to) {
+          params.set('orderDateTo', to)
+        }
+      }
+    }
     const response = await fetch(`${MALL_API_BASE}/users/export?${params}`, {
       method: 'GET',
       headers: withMallTenantHeaders(),
@@ -432,7 +596,9 @@ async function exportRegisteredUsers() {
     }
     const blob = await response.blob()
     const filename = parseExportFilename(response.headers.get('Content-Disposition'))
-      || `注册用户_${exportChannelLabel(ch)}.csv`
+      || (exportViewMode.value === 'cardPackageIssued'
+        ? buildCardPackageIssuedExportFilename(ch, exportOrderDateRange.value)
+        : `注册用户_${exportChannelLabel(ch)}.csv`)
     const url = URL.createObjectURL(blob)
     const anchor = document.createElement('a')
     anchor.href = url
@@ -471,11 +637,14 @@ async function fetchUsers() {
       else if (isNoOrderUsersView.value) {
         params.set('view', 'no-order')
       }
+      else if (isCardPackageIssuedUsersView.value) {
+        params.set('view', 'card-package-issued')
+      }
       const ch = registerChannelFilter.value
       if (ch && ch !== REGISTER_CHANNEL_FILTER_ALL) {
         params.set('registerChannel', ch)
       }
-      if (isOrderingUsersView.value && orderDateKey.value) {
+      if (showsOrderTimeColumn.value && orderDateKey.value) {
         params.set('orderDate', orderDateKey.value)
       }
       const response = await fetch(`${MALL_API_BASE}/users?${params}`, {
@@ -929,7 +1098,7 @@ async function toggleBlacklist(user: ListedUser) {
         />
       </el-select>
       <el-date-picker
-        v-if="isOrderingUsersView"
+        v-if="showsOrderTimeColumn"
         v-model="orderDateKey"
         class="toolbar-datepicker"
         type="date"
@@ -961,7 +1130,7 @@ async function toggleBlacklist(user: ListedUser) {
         添加用户
       </button>
       <button
-        v-if="canExportUsers && isRegisteredUsersPage"
+        v-if="canExportUsers && canShowExportButton"
         class="btn btn-export"
         type="button"
         :disabled="exporting || loading"
@@ -974,7 +1143,7 @@ async function toggleBlacklist(user: ListedUser) {
     <table class="table">
       <thead>
         <tr>
-          <th>{{ isOrderingUsersView ? '下单时间' : '注册时间' }}</th>
+          <th>{{ showsOrderTimeColumn ? '下单时间' : '注册时间' }}</th>
           <th>姓名</th>
           <th>手机号</th>
           <th>注册渠道</th>
@@ -991,11 +1160,53 @@ async function toggleBlacklist(user: ListedUser) {
           v-for="item in users"
           :key="item.id"
         >
-          <td>{{ isOrderingUsersView ? formatDateTime(item.lastOrderAt) : item.registerAt }}</td>
+          <td>{{ showsOrderTimeColumn ? formatDateTime(item.lastOrderAt) : item.registerAt }}</td>
           <td>{{ item.name }}</td>
           <td>{{ item.phone }}</td>
           <td class="td-register-channel">
+            <el-dropdown
+              v-if="canManageRegisterChannel"
+              trigger="click"
+              popper-class="register-channel-dropdown-popper"
+              :disabled="registerChannelSavingId === item.id"
+              @command="(value: string) => updateUserRegisterChannel(item, value)"
+            >
+              <span
+                class="register-channel-dropdown-trigger"
+                :class="{ 'register-channel-dropdown-trigger--busy': registerChannelSavingId === item.id }"
+              >
+                <span
+                  class="register-channel-pill"
+                  :style="registerChannelSelectVars(item)"
+                >{{ registerChannelDisplayForUser(item) }}</span>
+              </span>
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item
+                    command="__none__"
+                    :disabled="!item.registerChannelCode"
+                  >
+                    <span
+                      class="register-channel-option-tag"
+                      :style="registerChannelOptionVars('__none__', MALL_SELF_REGISTER_CHANNEL_LABEL)"
+                    >{{ MALL_SELF_REGISTER_CHANNEL_LABEL }}</span>
+                  </el-dropdown-item>
+                  <el-dropdown-item
+                    v-for="ch in registerChannelEditOptions"
+                    :key="ch.code"
+                    :command="ch.code"
+                    :disabled="item.registerChannelCode === ch.code"
+                  >
+                    <span
+                      class="register-channel-option-tag"
+                      :style="registerChannelOptionVars(ch.code, ch.name)"
+                    >{{ ch.name }}</span>
+                  </el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
             <TrafficChannelNameTag
+              v-else
               mall-plain-when-empty
               :display-key="trafficChannelDisplayKey(item.registerChannelLabel, item.registerChannelName, item.registerChannelCode)"
               :color-seed="item.registerChannelCode || undefined"
@@ -1377,7 +1588,7 @@ async function toggleBlacklist(user: ListedUser) {
     >
       <div class="modal-panel create-modal export-modal">
         <div class="modal-header">
-          <h3>导出注册用户</h3>
+          <h3>{{ exportDialogTitle }}</h3>
           <button
             type="button"
             class="btn btn-ghost"
@@ -1411,6 +1622,26 @@ async function toggleBlacklist(user: ListedUser) {
             />
           </el-select>
         </label>
+        <label
+          v-if="exportViewMode === 'cardPackageIssued'"
+          class="quota-label full export-date-range-label"
+        >
+          下单时间
+          <el-date-picker
+            v-model="exportOrderDateRange"
+            class="export-date-range"
+            type="daterange"
+            range-separator="至"
+            start-placeholder="开始日期"
+            end-placeholder="结束日期"
+            value-format="YYYY-MM-DD"
+            format="YYYY年MM月DD日"
+            clearable
+          />
+          <p class="export-date-range__hint">
+            可选；不选则导出全部已发放卡包客户。按列表「下单时间」所在日期筛选。
+          </p>
+        </label>
         <div class="export-fields-block">
           <p class="export-fields-block__title">
             导出字段
@@ -1435,6 +1666,17 @@ async function toggleBlacklist(user: ListedUser) {
             请至少选择一个字段
           </p>
         </div>
+        <div
+          v-if="exportViewMode === 'cardPackageIssued'"
+          class="export-mask-block"
+        >
+          <el-checkbox v-model="exportMaskPhone">
+            脱敏加密
+          </el-checkbox>
+          <p class="export-mask-block__hint">
+            勾选后对手机号中间关键位以 * 展示（如 156****7827）
+          </p>
+        </div>
         <p class="export-modal-format">
           文件格式为 <strong>CSV 表格</strong>（.csv），可用 Microsoft Excel、WPS 等直接打开。
         </p>
@@ -1451,7 +1693,7 @@ async function toggleBlacklist(user: ListedUser) {
             class="btn btn-export-solid"
             type="button"
             :disabled="exporting || !exportSelectedFields.length"
-            @click="exportRegisteredUsers"
+            @click="exportUsersCsv"
           >
             {{ exporting ? '导出中…' : '确认导出' }}
           </button>
@@ -1764,6 +2006,25 @@ async function toggleBlacklist(user: ListedUser) {
   border-radius: 8px;
 }
 
+.export-date-range-label {
+  margin-top: 12px;
+}
+
+.export-date-range {
+  width: 100%;
+}
+
+.export-date-range :deep(.el-input__wrapper) {
+  width: 100%;
+}
+
+.export-date-range__hint {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: #64748b;
+  line-height: 1.5;
+}
+
 .export-fields-block {
   margin-top: 4px;
   padding: 12px 14px;
@@ -1794,6 +2055,21 @@ async function toggleBlacklist(user: ListedUser) {
   margin: 10px 0 0;
   font-size: 12px;
   color: #b45309;
+}
+
+.export-mask-block {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+}
+
+.export-mask-block__hint {
+  margin: 6px 0 0 24px;
+  font-size: 12px;
+  color: #64748b;
+  line-height: 1.5;
 }
 
 .export-modal-format {
@@ -2656,6 +2932,74 @@ async function toggleBlacklist(user: ListedUser) {
 .td-register-channel {
   vertical-align: middle;
 }
+
+.register-channel-dropdown-trigger {
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+  outline: none;
+}
+
+.register-channel-dropdown-trigger--busy {
+  cursor: wait;
+  opacity: 0.72;
+}
+
+.register-channel-pill,
+:global(.register-channel-option-tag) {
+  display: inline-flex;
+  align-items: center;
+  max-width: 104px;
+  min-height: 22px;
+  padding: 0 9px;
+  border: 1px solid var(--register-channel-border);
+  border-radius: 999px;
+  background: var(--register-channel-bg);
+  color: var(--register-channel-color);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 20px;
+  white-space: nowrap;
+}
+
+.register-channel-pill {
+  transition: filter 0.15s ease, transform 0.12s ease;
+}
+
+.register-channel-dropdown-trigger:hover .register-channel-pill {
+  filter: brightness(0.97);
+}
+
+.register-channel-dropdown-trigger:active .register-channel-pill {
+  transform: scale(0.98);
+}
+
+:global(.register-channel-dropdown-popper .el-dropdown-menu) {
+  min-width: 92px;
+  padding: 6px;
+}
+
+:global(.register-channel-dropdown-popper .el-dropdown-menu__item) {
+  min-width: 0;
+  height: auto;
+  padding: 4px 6px;
+  line-height: 1;
+}
+
+:global(.register-channel-dropdown-popper .el-dropdown-menu__item.is-disabled) {
+  cursor: default;
+  opacity: 1;
+}
+
+:global(.register-channel-dropdown-popper .el-dropdown-menu__item.is-disabled .register-channel-option-tag) {
+  filter: saturate(0.9);
+  opacity: 0.66;
+}
+
+:global(.register-channel-dropdown-popper .el-dropdown-menu__item:not(.is-disabled):hover) {
+  background: #f8fafc;
+}
+
 
 .td-credit-status {
   vertical-align: middle;

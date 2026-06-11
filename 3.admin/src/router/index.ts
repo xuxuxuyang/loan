@@ -128,6 +128,12 @@ const router = createRouter({
       meta: { title: '明日待收', roles: ['super_admin', 'collector'], receivableOffsetDays: 1, permissionKey: 'orders.receivable.tomorrow' },
     },
     {
+      path: '/users/card-package-issued',
+      name: 'users-card-package-issued',
+      component: UsersPage,
+      meta: { title: '已发放卡包客户', roles: ['super_admin'], permissionKey: 'users.cardPackageIssued' },
+    },
+    {
       path: '/users/ordering',
       name: 'users-ordering',
       component: UsersPage,

@@ -138,6 +138,17 @@ const contextualPermissionActionLabels: Record<string, Record<string, string>> =
     resetPassword: '重置商城密码',
     delete: '删除下单用户',
   },
+  'users.cardPackageIssued': {
+    view: '查看已发放卡包客户',
+    update: '编辑用户资料',
+    setQuota: '调整授信额度',
+    remark: '编辑用户备注',
+    blacklist: '修改下单黑名单',
+    riskCheck: '执行风控核查',
+    resetPassword: '重置商城密码',
+    delete: '删除已发放卡包客户',
+    export: '导出已发放卡包客户',
+  },
   'products.installment': {
     view: '查看先享后付产品',
     create: '新增先享后付产品',

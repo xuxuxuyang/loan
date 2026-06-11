@@ -11,9 +11,9 @@ const config = {
   encKey: '1234567890abcdef',
   h5Origin: 'https://shop.example.com',
   channelCode: 'env-ddd',
-  channelName: '?????',
+  channelName: '哆点点',
   routePrefix: '/open/partners/env-ddd',
-  gatewayRemark: '??????',
+  gatewayRemark: '哆点点测试',
   portalUsername: 'env-ddd-portal',
   portalPassword: 'portal-secret',
   timestampSkewMs: 60_000,
@@ -122,8 +122,8 @@ test('uses env style config for channel seed and portal account', () => {
   const ch = gateway.ensureDuodiandianChannel(db, config)
   const partner = gateway.ensureDuodiandianPortalPartner(db, config)
   assert.equal(ch.code, 'env-ddd')
-  assert.equal(ch.name, '?????')
-  assert.equal(ch.remark, '??????')
+  assert.equal(ch.name, '哆点点')
+  assert.equal(ch.remark, '哆点点测试')
   assert.equal(partner.username, 'env-ddd-portal')
   assert.equal(partner.password, 'portal-secret')
   assert.deepEqual(partner.channelCodes, ['env-ddd'])

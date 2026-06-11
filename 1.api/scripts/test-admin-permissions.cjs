@@ -34,6 +34,7 @@ const PAGE_PERMISSION_SPEC = {
   'users.registered': ['view', 'create', 'update', 'setQuota', 'remark', 'blacklist', 'riskCheck', 'resetPassword', 'delete', 'export'],
   'users.noOrder': ['view', 'update', 'setQuota', 'remark', 'blacklist', 'riskCheck', 'resetPassword', 'delete'],
   'users.ordering': ['view', 'update', 'setQuota', 'remark', 'blacklist', 'riskCheck', 'resetPassword', 'delete'],
+  'users.cardPackageIssued': ['view', 'update', 'setQuota', 'remark', 'blacklist', 'riskCheck', 'resetPassword', 'delete', 'export'],
   'products.installment': ['view', 'create', 'update', 'toggleOnSale', 'uploadImage', 'delete'],
   'products.mall': ['view', 'create', 'update', 'toggleOnSale', 'uploadImage', 'delete'],
   accounts: ['view', 'create', 'update', 'toggleStatus', 'changeRole', 'resetPassword', 'delete', 'permission'],
@@ -144,7 +145,9 @@ assert.equal(ADMIN_PERMISSION_ACTION_LABELS.updateStatus, '修改订单状态')
 assert.equal(ADMIN_PERMISSION_ACTION_LABELS.updateContract, '修改合同签署状态')
 
 assert.equal(normalizeAdminUsersListView('no-order'), 'no-order')
+assert.equal(normalizeAdminUsersListView('card-package-issued'), 'card-package-issued')
 assert.equal(adminUsersPermissionKeyForView('ordering'), 'users.ordering')
+assert.equal(adminUsersPermissionKeyForView('card-package-issued'), 'users.cardPackageIssued')
 assert.equal(hasAdminUsersListViewPermission({ role: 'reviewer', permissions: {
   menus: ['users', 'users.noOrder'],
   actions: { 'users.noOrder': ['view', 'update', 'delete'] },

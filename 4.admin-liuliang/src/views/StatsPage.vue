@@ -37,19 +37,21 @@ const tableHeaderCellStyle = {
   fontWeight: 600 as const,
 }
 
-/** 与 admin TrafficManagementPage / api buildTrafficPartnerPortalStatsRow 同口径（渠道注册用户仅计首单） */
+/** 与 3.admin TrafficManagementPage / GET /admin/traffic-channels/overview portalStats 同口径（渠道注册用户仅计首单） */
 const STAT_HEADER_TIPS = {
-  clickCount: '推广链接的点击数',
-  registerCount: '通过本渠道注册的用户总数',
-  applicationCount: '上述注册用户中，存在首单（最早一笔订单）的用户数',
-  approvedCount: '上述注册用户首单已通过（已发放卡包）的用户数，每人最多计 1',
-  overdueCount: '上述注册用户首单已通过且分期逾期的用户数，每人最多计 1',
-  registerRate: '注册率 = 注册用户数 / 点击数',
-  applicationRate: '申请率 = 首单申请用户数 / 注册用户数',
-  approvalRate: '通过率 = 首单通过用户数 / 首单申请用户数',
-  overdueRate: '逾期率 = 首单逾期用户数 / 首单通过用户数',
-  registrationConversionRate: '注册转化率 = 首单通过用户数 / 注册用户数',
-  applicationConversionRate: '申请转化率 = 首单通过用户数 / 首单申请用户数',
+  clickCount:
+    '用户打开带本渠道参数（?channel=标识）的商城推广页时累计 +1；渠道已停用则不再累计。',
+  registerCount: '注册时「渠道标识」等于本流量商的用户总数。',
+  applicationCount: '上述注册用户中，存在首单（按下单时间最早一笔）的用户数（含待审核首单）。',
+  approvedCount: '上述注册用户的首单中，状态非「待审核」且已发放卡包的用户数（每人最多计 1）。',
+  overdueCount:
+    '上述注册用户首单中，已通过且为分期订单、存在已到期未还清期次的用户数（每人最多计 1）。',
+  registerRate: '注册数 ÷ 点击数 × 100，保留两位小数；点击数为 0 时显示 —。',
+  applicationRate: '申请数 ÷ 注册数 × 100，保留两位小数；注册数为 0 时显示 —。',
+  approvalRate: '通过数 ÷ 申请数 × 100，保留两位小数；申请数为 0 时显示 —。',
+  overdueRate: '逾期数 ÷ 通过数 × 100，保留两位小数；通过数为 0 时显示 —。',
+  registrationConversionRate: '通过数 ÷ 注册数 × 100，保留两位小数；注册数为 0 时显示 —。',
+  applicationConversionRate: '通过数 ÷ 申请数 × 100，保留两位小数；申请数为 0 时显示 —。',
 } as const
 
 const summary = computed(() => {

@@ -788,126 +788,6 @@ function flushMongoPersist() {
   return persistTailByTenant.get(scope.key) || persistTail
 }
 
-function resetDb() {
-  const scope = getScopeState()
-  const seed = buildSeedDb()
-  if (mongoBacked) {
-    mongoMemoryDbByTenant.set(scope.key, seed)
-    if (scope.key === 'tenant:default') {
-      mongoMemoryDb = seed
-    }
-    scheduleMongoPersist(clonePayloadForMongo(seed))
-    return seed
-  }
-  writeDb(seed)
-  return seed
-}
-
-const MONGO_BUILTIN_DBS = new Set(['admin', 'local', 'config'])
-
-/**
- * 删除与本项目配置的根数据库名同名及后缀库（例如 mall、mall__core、mall__tenant_xxx）。
- * 与 mongo.getMongoDb() 的根库解析一致（MONGODB_DB_NAME 或未填时用连接串默认库名）。
- * @param {import('mongodb').MongoClient | null | undefined} client
- * @returns {Promise<string[]>}
- */
-async function dropAllMongoProjectDatabases(client) {
-  if (!client) {
-    throw new Error('MongoClient 未就绪')
-  }
-  const configuredName = mongoConfig.getMongoConfig().dbName
-  const rootDb = configuredName && String(configuredName).trim()
-    ? client.db(String(configuredName).trim())
-    : client.db()
-  const base = rootDb.databaseName
-
-  const adminDb = client.db('admin').admin()
-  const res = await adminDb.listDatabases()
-  const rows = Array.isArray(res?.databases) ? res.databases : []
-  const toDrop = []
-  for (const entry of rows) {
-    const name = String(entry?.name ?? '').trim()
-    if (!name || MONGO_BUILTIN_DBS.has(name)) {
-      continue
-    }
-    if (name === base || name.startsWith(`${base}__`)) {
-      toDrop.push(name)
-    }
-  }
-
-  /** @type {string[]} */
-  const dropped = []
-  for (const name of toDrop) {
-    try {
-      await client.db(name).dropDatabase()
-      dropped.push(name)
-    }
-    catch (err) {
-      console.warn('[store] dropDatabase 跳过', name + ':', err?.message || err)
-    }
-  }
-  return dropped
-}
-
-/**
- * 清空单个库内的分集合 + app_meta + 旧 appState（不删其它后缀库）。
- */
-async function wipeAllMongoPersistence(dbm) {
-  for (const spec of ENTITY_SPECS) {
-    await dbm.collection(spec.collection).deleteMany({})
-  }
-  await dbm.collection(mongo.APP_META).deleteMany({})
-  await dbm.collection(mongo.APP_STATE).deleteMany({})
-}
-
-/**
- * 将 api/data/db.json（若存在且合法）或最小空库快照覆盖写入 Mongo（分集合）。
- */
-async function importLocalSnapshotToMongo() {
-  const dbm = mongo.getMongoDb()
-  if (!dbm) {
-    throw new Error('MongoDB 未连接，请先调用 connectMongo()')
-  }
-  let snapshot
-  let sourceUsed
-  if (fs.existsSync(DB_FILE)) {
-    try {
-      snapshot = shapeDbFromParsed(JSON.parse(fs.readFileSync(DB_FILE, 'utf-8')))
-      sourceUsed = 'db.json'
-    }
-    catch {
-      console.warn('[store] api/data/db.json 解析失败，已改用空库 + 默认账号')
-      snapshot = buildSeedDb()
-      sourceUsed = 'empty-bootstrap(db.json 无效)'
-    }
-  }
-  else {
-    snapshot = buildSeedDb()
-    sourceUsed = 'empty-bootstrap'
-  }
-  await persistShardedSnapshot(dbm, clonePayloadForMongo(snapshot))
-  await dbm.collection(mongo.APP_STATE).deleteOne({ _id: MAIN_STATE_ID }).catch(() => {})
-  if (mongoBacked) {
-    const scope = getScopeState()
-    mongoMemoryDbByTenant.set(scope.key, snapshot)
-    if (scope.key === 'tenant:default') {
-      mongoMemoryDb = snapshot
-    }
-  }
-  const counts = {
-    products: snapshot.products.length,
-    orders: snapshot.orders.length,
-    users: snapshot.users.length,
-    adminAccounts: snapshot.adminAccounts.length,
-    addresses: snapshot.addresses.length,
-    bankCards: snapshot.bankCards.length,
-    bills: snapshot.bills.length,
-    trafficChannels: Array.isArray(snapshot.trafficChannels) ? snapshot.trafficChannels.length : 0,
-    csSessions: Array.isArray(snapshot.csSessions) ? snapshot.csSessions.length : 0,
-  }
-  return { source: sourceUsed, counts }
-}
-
 function isMongoPersistenceEnabled() {
   return mongoBacked
 }
@@ -1097,37 +977,15 @@ async function refreshTenantCacheFromMongo(rawTenantId) {
   await refreshScopeCacheFromMongo('tenant', t)
 }
 
-/** 删除本地 JSON 形态的子系统快照文件 db.<tenant>.json（不影响 mall/default 主文件） */
-function removeTenantJsonStoreFile(rawTenantId) {
-  const t = normalizeTenantId(rawTenantId || DEFAULT_TENANT_ID)
-  if (!t || t === DEFAULT_TENANT_ID) {
-    return false
-  }
-  const safe = String(t).replace(/[^a-z0-9_-]/gi, '').toLowerCase()
-  const file = path.join(DB_DIR, `db.${safe}.json`)
-  try {
-    if (fs.existsSync(file)) {
-      fs.unlinkSync(file)
-      return true
-    }
-  }
-  catch (err) {
-    console.warn('[store] removeTenantJsonStoreFile', err?.message || err)
-  }
-  return false
-}
-
 module.exports = {
   buildSeedDb,
   readDb,
-  resetDb,
   writeDb,
   writeDbPartial,
   flushMongoPersist,
   hydrateFromMongoAfterConnect,
   hydrateTenantDbFromMongo,
   hasScopeCache,
-  importLocalSnapshotToMongo,
   isMongoPersistenceEnabled,
   evictTenantMemoryCache,
   refreshScopeCacheFromMongo,
@@ -1136,12 +994,7 @@ module.exports = {
   refreshTenantCacheFromMongo,
   runWithMongoRequestDedup,
   getMongoHydrateDepth,
-  removeTenantJsonStoreFile,
   clonePayloadForMongo,
-  /** 脚本：清空云库 mall 相关集合并写入 buildSeedDb() */
-  wipeAllMongoPersistence,
-  /** 脚本：删除根库 + mall__* 后缀库（完整重置多子系统/workspace 数据） */
-  dropAllMongoProjectDatabases,
   persistShardedSnapshot,
   persistShardedSnapshotPartial,
 }

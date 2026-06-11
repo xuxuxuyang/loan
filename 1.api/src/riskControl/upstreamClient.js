@@ -157,6 +157,13 @@ function joinUrl(baseUrl, path) {
   return `${base}${p}`
 }
 
+function jsonStringifyAscii(value) {
+  return JSON.stringify(value).replace(/[\u007f-\uffff]/g, (char) => {
+    const code = char.charCodeAt(0).toString(16).padStart(4, '0')
+    return `\\u${code}`
+  })
+}
+
 /**
  * 按上游约定构造 POST body：time（秒级字符串）、nostr、appid、sign、data。
  * sign = md5(appid#jsonData#time#appkey#nostr)，jsonData = stableStringify(data)。
@@ -199,10 +206,11 @@ async function postSignedUpstream(relPath, data) {
     const res = await fetch(url, {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/json',
+        'Content-Type': 'application/json; charset=utf-8',
         Accept: 'application/json',
       },
-      body: JSON.stringify(payload),
+      // 上游短信服务曾把中文短信内容按非 UTF-8 解码；ASCII JSON 可避免签名/短信内容乱码。
+      body: jsonStringifyAscii(payload),
       signal: ac.signal,
     })
     const text = await res.text()

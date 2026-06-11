@@ -4,6 +4,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import zhCn from 'element-plus/es/locale/lang/zh-cn'
 import {
   Avatar,
+  Box,
   Calendar,
   ChatDotRound,
   CircleCheck,
@@ -118,6 +119,7 @@ const allMenus: MenuEntry[] = [
       { label: '注册用户', path: '/users', icon: User },
       { label: '未下单用户', path: '/users/no-order', icon: UserFilled },
       { label: '下单用户', path: '/users/ordering', icon: ShoppingCart },
+      { label: '已发放卡包客户', path: '/users/card-package-issued', icon: Box },
     ],
   },
   {

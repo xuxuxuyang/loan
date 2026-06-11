@@ -17,14 +17,6 @@
 
 ---
 
-## `POST /admin/reset-data`
-
-- **用在哪：** 仅服务端（仓库内前端未接）。
-- **鉴权：** 超级管理员。
-- **传参：** 无（重置本地 JSON 数据）。
-
----
-
 ## `GET /products`
 
 - **用在哪：** `app/composables/useTeaProducts.ts`；`admin/src/views/ProductsPage.vue`。

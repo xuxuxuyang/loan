@@ -11,3 +11,5 @@ node_modules/
 # 运行时生成的静态资源（PDF 缓存、上传等）
 /public/generated/
 /public/uploads/
+
+backups

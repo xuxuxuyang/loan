@@ -13,7 +13,6 @@ const {
   readDb,
   writeDb,
   writeDbPartial,
-  resetDb,
   hydrateFromMongoAfterConnect,
   isMongoPersistenceEnabled,
   flushMongoPersist,
@@ -23,7 +22,6 @@ const {
   refreshScopeForAdminAuth,
   refreshTenantCacheFromMongo,
   runWithMongoRequestDedup,
-  removeTenantJsonStoreFile,
 } = require('./store')
 const {
   runWithTenant,
@@ -37,6 +35,7 @@ const {
 } = require('./tenantContext')
 const { resolveTenantIdFromRequest, resolveWorkspaceTypeFromRequest } = require('./tenantResolver')
 const { DEFAULT_SUPER_ADMIN_USERNAME, BOOTSTRAP_ADMIN_ACCOUNTS } = require('./defaultBootstrap')
+const { applyUserRegisterChannel } = require('./userRegisterChannel')
 const {
   ADMIN_PERMISSION_ACTIONS,
   ADMIN_PERMISSION_ACTION_LABELS,
@@ -78,6 +77,10 @@ const {
   runSingleRiskSlot,
   isRiskUpstreamConfigured,
 } = require('./riskControl/preliminaryReview')
+const {
+  isMallOrderRepaymentSettled,
+  mallOrderRepaymentAwareStatus,
+} = require('./orderRepaymentSettlement')
 const {
   runOrderSubmitUpstreamRiskPack,
   runOrderSubmitSingleRiskStep,
@@ -315,11 +318,7 @@ function pickUserFirstOrder(orders) {
 
 function isInstallmentOrderFullyRepaid(order) {
   ensureOrderInstallmentPlan(order)
-  const plan = Array.isArray(order?.installmentPlan) ? order.installmentPlan : []
-  if (plan.length === 0) {
-    return true
-  }
-  return plan.every(item => item && installmentItemIsPaid(item))
+  return isMallOrderRepaymentSettled(order)
 }
 
 /** 上一笔订单是否满足老客户判定：已下单、卡包已发、已全部还款 */
@@ -1626,7 +1625,7 @@ async function requireAdminUsersActionOnAny(ctx, action, actionLabel) {
     fail(ctx, `当前角色【${getRoleLabel(role)}】无权限执行${actionLabel}`, 403)
     return ''
   }
-  const keys = ['users.registered', 'users.noOrder', 'users.ordering']
+  const keys = ['users.registered', 'users.noOrder', 'users.ordering', 'users.cardPackageIssued']
   const allowed = keys.some(key => hasAdminPermission(account, key, action))
   if (!allowed) {
     fail(ctx, `当前账号无权限执行${actionLabel}`, 403)
@@ -2230,10 +2229,6 @@ function applyInstallmentCompletionOrderStatus(order, opts = {}) {
     return false
   }
   if (order.status === 'enjoying') {
-    /** 卡包已发放即视为订单生命周期已完成：不因分期未结清而回退到待收货/待发货（与后台、商城展示一致） */
-    if (order.cardPackageIssued) {
-      return false
-    }
     ensureOrderShipment(order)
     const tn = String(order.trackingNumber || '').trim()
     order.status = tn ? 'receiving' : 'shipping'
@@ -2242,10 +2237,10 @@ function applyInstallmentCompletionOrderStatus(order, opts = {}) {
   return false
 }
 
-/** 幂等：历史数据或旧逻辑下「卡包已发但 status 仍为 shipping/receiving」时对齐为 enjoying */
+/** 幂等：只有已还清的先享后付订单，才可对齐为 enjoying（已完成） */
 function reconcileCardPackageIssuedToEnjoying(order) {
   ensureOrderCardPackage(order)
-  if (order.payType !== 'installment' || !order.cardPackageIssued) {
+  if (order.payType !== 'installment' || !order.cardPackageIssued || !isMallOrderRepaymentSettled(order)) {
     return false
   }
   if (order.status === 'enjoying') {
@@ -3695,6 +3690,7 @@ function resolveApiMongoRefreshPlan(ctx) {
     '/api/admin/traffic-channels/overview': trafficOverviewKeys,
     '/api/admin/traffic-channels/portal-stats': trafficOverviewKeys,
     '/api/admin/traffic-channels/quality': trafficOverviewKeys,
+    '/api/traffic-partner/stats': trafficOverviewKeys,
     '/api/admin/traffic-channels': trafficListKeys,
     '/api/admin/cs/sessions': csSessionsWithUsersKeys,
     '/api/my/summary': ['users', 'orders', 'bankCards'],
@@ -3983,7 +3979,11 @@ function listAdminUsersFilteredRows(db, query, opts = {}) {
     orderDate = '',
   } = query
   const needOrderStats = opts.needOrderStats !== false
-  const statsIndex = needOrderStats ? buildMallUserOrderStatsIndex(db) : null
+  const statsIndex = needOrderStats
+    ? buildMallUserOrderStatsIndex(db, {
+      kpiCardPackageIssuedOnly: view === 'card-package-issued',
+    })
+    : null
 
   let candidates = db.users
   if (key) {
@@ -4006,16 +4006,9 @@ function listAdminUsersFilteredRows(db, query, opts = {}) {
     return { user, orderCount: stats.orderCount, lastOrderAt: stats.lastOrderAt }
   })
 
-  if (view === 'ordering') {
+  if (view === 'ordering' || view === 'card-package-issued') {
     rows = rows.filter(item => Number(item.orderCount || 0) > 0)
-    if (orderDate) {
-      rows = rows.filter((item) => {
-        if (!item.lastOrderAt) {
-          return false
-        }
-        return localYmdFromIso(item.lastOrderAt) === orderDate
-      })
-    }
+    rows = rows.filter(item => matchesAdminUserOrderDateFilter(item.lastOrderAt, query))
     rows.sort((a, b) => {
       const ta = a.lastOrderAt ? new Date(a.lastOrderAt).getTime() : 0
       const tb = b.lastOrderAt ? new Date(b.lastOrderAt).getTime() : 0
@@ -4100,8 +4093,31 @@ function registerChannelExportLabelFromUser(db, user) {
   return '商城注册'
 }
 
-function exportNeedsOrderStats(fields) {
+function exportNeedsOrderStats(fields, view = 'registered') {
+  if (view === 'card-package-issued') {
+    return true
+  }
   return Array.isArray(fields) && fields.includes('orderCount')
+}
+
+function parseExportMaskPhone(raw) {
+  const value = String(raw || '').trim().toLowerCase()
+  return value === '1' || value === 'true' || value === 'yes'
+}
+
+/** 导出 CSV：11 位手机号保留前 3 后 4，中间以 * 替代 */
+function maskPhoneForExport(phone) {
+  const digits = String(phone || '').replace(/\D/g, '')
+  if (digits.length >= 11) {
+    return `${digits.slice(0, 3)}****${digits.slice(-4)}`
+  }
+  if (digits.length >= 7) {
+    return `${digits.slice(0, 3)}****${digits.slice(-4)}`
+  }
+  if (digits.length >= 3) {
+    return `${digits.slice(0, 2)}***`
+  }
+  return digits
 }
 
 function exportNeedsChannelResolution(fields, registerChannel) {
@@ -4112,7 +4128,8 @@ function exportNeedsChannelResolution(fields, registerChannel) {
 }
 
 /** 按导出勾选字段逐项取值，避免 attachUserOrderStats 的无关 enrich */
-function pickRegisteredUserExportValues(user, db, fields, statsIndex) {
+function pickRegisteredUserExportValues(user, db, fields, statsIndex, opts = {}) {
+  const maskPhone = opts.maskPhone === true
   const values = {}
   for (const key of fields) {
     switch (key) {
@@ -4122,9 +4139,11 @@ function pickRegisteredUserExportValues(user, db, fields, statsIndex) {
       case 'name':
         values.name = String(user.name || '').trim()
         break
-      case 'phone':
-        values.phone = String(user.phone || '').trim()
+      case 'phone': {
+        const raw = String(user.phone || '').trim()
+        values.phone = maskPhone ? maskPhoneForExport(raw) : raw
         break
+      }
       case 'registerChannel':
         values.registerChannel = registerChannelExportLabelFromUser(db, user)
         break
@@ -4183,19 +4202,24 @@ function parseRegisteredUserExportFields(raw) {
 function buildRegisteredUsersExportCsv(db, query) {
   const fields = parseRegisteredUserExportFields(query.fields)
   const registerChannel = String(query.registerChannel || '').trim() || '__all__'
+  const view = normalizeAdminUsersListView(query.view || 'registered')
+  const maskPhone = parseExportMaskPhone(query.maskPhone)
   if (exportNeedsChannelResolution(fields, registerChannel)) {
     ensureTrafficChannels(db)
   }
   const { rows, statsIndex } = listAdminUsersFilteredRows(db, {
     registerChannel,
-    view: 'registered',
+    view,
+    orderDateFrom: String(query.orderDateFrom || '').trim(),
+    orderDateTo: String(query.orderDateTo || '').trim(),
+    orderDate: String(query.orderDate || '').trim(),
   }, {
-    needOrderStats: exportNeedsOrderStats(fields),
+    needOrderStats: exportNeedsOrderStats(fields, view),
   })
   const headers = fields.map(key => REGISTERED_USER_EXPORT_FIELDS[key])
   const lines = [headers.map(escapeCsvCell).join(',')]
   for (const { user } of rows) {
-    const valuesByField = pickRegisteredUserExportValues(user, db, fields, statsIndex)
+    const valuesByField = pickRegisteredUserExportValues(user, db, fields, statsIndex, { maskPhone })
     lines.push(fields.map(key => valuesByField[key]).map(escapeCsvCell).join(','))
   }
   return `${lines.join('\r\n')}\r\n`
@@ -4209,6 +4233,14 @@ function exportFilenameDateStamp() {
   const hh = `${d.getHours()}`.padStart(2, '0')
   const min = `${d.getMinutes()}`.padStart(2, '0')
   return `${y}${m}${day}_${hh}${min}`
+}
+
+function exportFilenameDateYmd() {
+  const d = new Date()
+  const y = d.getFullYear()
+  const m = `${d.getMonth() + 1}`.padStart(2, '0')
+  const day = `${d.getDate()}`.padStart(2, '0')
+  return `${y}${m}${day}`
 }
 
 function getUserPhone(ctx) {
@@ -4232,10 +4264,7 @@ function calcMySummary(db, phone) {
 
   const mallSummaryStatus = (item) => {
     ensureOrderCardPackage(item)
-    if (item.payType === 'installment' && item.cardPackageIssued) {
-      return 'enjoying'
-    }
-    return item.status
+    return mallOrderRepaymentAwareStatus(item)
   }
   const orderCount = {
     reviewing: userOrders.filter(item => mallSummaryStatus(item) === 'reviewing').length,
@@ -4383,7 +4412,7 @@ router.get('/health', async (ctx) => {
         entityCollections: entityCounts,
         metaCollection: mongo.APP_META,
         metaUpdatedAt: metaMain && metaMain.updatedAt ? metaMain.updatedAt.toISOString() : null,
-        /** 若仍为 true，说明尚未完成迁移或存在旧数据，应重启 api 或执行 import:mongo-local */
+        /** 若仍为 true，说明尚未完成迁移或存在旧数据，应重启 api 并检查 Mongo 状态 */
         legacyAppStateMainPresent: Boolean(legacyMain),
       }
     }
@@ -4398,20 +4427,6 @@ router.get('/health', async (ctx) => {
     mongo: mongo.getMongoHealthSummary(),
     persistence: isMongoPersistenceEnabled() ? 'mongodb' : 'json_file',
     mallSnapshot,
-  })
-})
-
-router.post('/admin/reset-data', async (ctx) => {
-  if (!await requireAdminPermission(ctx, [ADMIN_ROLES.SUPER], '重置数据')) {
-    return
-  }
-  const db = resetDb()
-  ensureProductCatalog(db)
-  ctx.body = success({
-    products: db.products.length,
-    orders: db.orders.length,
-    users: db.users.length,
-    adminAccounts: Array.isArray(db.adminAccounts) ? db.adminAccounts.length : 0,
   })
 })
 
@@ -6012,58 +6027,6 @@ router.post('/platform/tenants/onboard', async (ctx) => {
   }
 })
 
-router.delete('/platform/tenants/:tenantId', async (ctx) => {
-  const wipeAll = ['1', 'true', 'yes'].includes(String(ctx.query?.wipeAll || '').trim().toLowerCase())
-  const account = await requirePlatformSuperAdminScope(ctx, '回滚子系统', { permissionKey: 'tenants.system', permissionAction: wipeAll ? 'purgeTenantData' : 'delete' })
-  if (!account) {
-    return
-  }
-  const tenantId = normalizeTenantId(ctx.params?.tenantId || '')
-  if (!tenantId || tenantId === DEFAULT_TENANT_ID) {
-    fail(ctx, 'tenantId 不合法')
-    return
-  }
-  if (!wipeAll) {
-    const tenantDb = await readDbByTenantId(tenantId)
-    const hasTenantData = Boolean(
-      (Array.isArray(tenantDb.users) && tenantDb.users.length)
-      || (Array.isArray(tenantDb.orders) && tenantDb.orders.length)
-      || (Array.isArray(tenantDb.products) && tenantDb.products.length)
-      || (Array.isArray(tenantDb.adminAccounts) && tenantDb.adminAccounts.length),
-    )
-    if (hasTenantData) {
-      fail(ctx, '子系统已存在数据，不允许回滚删除', 409)
-      return
-    }
-  }
-  let droppedMongoDb = false
-  const client = mongo.getMongoClient && mongo.getMongoClient()
-  if (client) {
-    try {
-      const dbName = String(mongoConfig.getMongoConfig().dbName || 'mall').trim() || 'mall'
-      const scopedName = `${dbName}__tenant_${tenantId}`
-      await client.db(scopedName).dropDatabase()
-      droppedMongoDb = true
-    }
-    catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      if (!/not found|does not exist|ns not found/i.test(msg)) {
-        fail(ctx, `删除子系统数据库失败：${msg}`, 502)
-        return
-      }
-    }
-  }
-  const removedJsonFile = removeTenantJsonStoreFile(tenantId)
-  const removed = await unregisterKnownTenantId(tenantId)
-  if (!removed && !droppedMongoDb && !removedJsonFile) {
-    fail(ctx, '子系统不存在或已被回滚', 404)
-    return
-  }
-  evictTenantMemoryCache(tenantId)
-  await platformAuditRecord(ctx, wipeAll ? 'platform.tenants.purge' : 'platform.tenants.rollback', { tenantId })
-  ctx.body = success({ tenantId, wiped: Boolean(wipeAll) })
-})
-
 router.get('/platform/dashboard/summary', async (ctx) => {
   const account = await requirePlatformScope(ctx, '查看总部汇总', { permissionKey: 'dashboard', permissionAction: 'view' })
   if (!account) {
@@ -7063,23 +7026,25 @@ function listAdminTrafficChannelsForPage(db) {
     .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)))
 }
 
+/**
+ * 流量商门户统计：与管理端 GET /admin/traffic-channels/overview 的 portalStats 同函数、同索引；
+ * 仅过滤该账号绑定且未停用的渠道。
+ */
 function buildTrafficPartnerPortalStats(db, partner) {
   ensureTrafficChannels(db)
-  const todayKey = normalizeInstallmentDueDateKey(formatDate(new Date().toISOString()))
   const codes = new Set(
     (Array.isArray(partner.channelCodes) ? partner.channelCodes : [])
       .map(c => String(c || '').trim())
       .filter(Boolean),
   )
-  const channels = db.trafficChannels.filter((ch) => {
-    if (!ch || ch.disabled) {
+  return buildTrafficChannelPortalStatsRows(db).filter((row) => {
+    const code = String(row.code || '').trim()
+    if (!codes.has(code)) {
       return false
     }
-    return codes.has(String(ch.code || '').trim())
+    const ch = db.trafficChannels.find(c => c && String(c.code || '').trim() === code)
+    return Boolean(ch && !ch.disabled)
   })
-  return channels
-    .sort((a, b) => String(a.createdAt || '').localeCompare(String(b.createdAt || '')))
-    .map(ch => buildTrafficPartnerPortalStatsRow(db, ch, todayKey))
 }
 
 function incrementTrafficChannelClick(db, code) {
@@ -7290,21 +7255,109 @@ function localYmdFromIso(iso) {
   return `${y}-${m}-${day}`
 }
 
+function parseExportOrderDateYmd(raw) {
+  const value = String(raw || '').trim()
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return ''
+  }
+  const parts = value.split('-').map(Number)
+  const y = parts[0]
+  const m = parts[1]
+  const d = parts[2]
+  const dt = new Date(y, m - 1, d)
+  if (dt.getFullYear() !== y || dt.getMonth() !== m - 1 || dt.getDate() !== d) {
+    return ''
+  }
+  return value
+}
+
+function normalizeExportOrderDateRange(orderDateFrom, orderDateTo) {
+  let from = parseExportOrderDateYmd(orderDateFrom)
+  let to = parseExportOrderDateYmd(orderDateTo)
+  if (from && to && from > to) {
+    const swap = from
+    from = to
+    to = swap
+  }
+  return { from, to }
+}
+
+function exportYmdCompact(ymd) {
+  return String(ymd || '').replace(/-/g, '')
+}
+
+/** 已通过客户导出文件名：已通过客户_日期或区间_渠道.csv */
+function buildCardPackageIssuedExportFilename(orderDateFrom, orderDateTo, channelSafeName) {
+  const { from, to } = normalizeExportOrderDateRange(orderDateFrom, orderDateTo)
+  let datePart = exportFilenameDateYmd()
+  if (from && to) {
+    const fromCompact = exportYmdCompact(from)
+    const toCompact = exportYmdCompact(to)
+    datePart = fromCompact === toCompact ? fromCompact : `${fromCompact}-${toCompact}`
+  }
+  else if (from) {
+    datePart = `${exportYmdCompact(from)}起`
+  }
+  else if (to) {
+    datePart = `${exportYmdCompact(to)}止`
+  }
+  return `已通过客户_${datePart}_${channelSafeName}.csv`
+}
+
+function matchesAdminUserOrderDateFilter(lastOrderAt, query) {
+  const { from, to } = normalizeExportOrderDateRange(query.orderDateFrom, query.orderDateTo)
+  const orderDate = String(query.orderDate || '').trim()
+  const hasRange = Boolean(from || to)
+  const hasSingle = Boolean(orderDate)
+  if (!hasRange && !hasSingle) {
+    return true
+  }
+  const ymd = lastOrderAt ? localYmdFromIso(lastOrderAt) : ''
+  if (!ymd) {
+    return false
+  }
+  if (hasRange) {
+    if (from && ymd < from) {
+      return false
+    }
+    if (to && ymd > to) {
+      return false
+    }
+    return true
+  }
+  return ymd === orderDate
+}
+
 router.get('/users/export', async (ctx) => {
-  if (!await requireAdminPermission(ctx, [ADMIN_ROLES.SUPER, ADMIN_ROLES.BOSS], '导出注册用户数据', { permissionKey: 'users.registered', permissionAction: 'export' })) {
+  const view = normalizeAdminUsersListView(ctx.query.view || 'registered')
+  const permissionKey = adminUsersPermissionKeyForView(view)
+  const actionLabel = view === 'card-package-issued' ? '导出已发放卡包客户数据' : '导出注册用户数据'
+  if (!await requireAdminPermission(ctx, [ADMIN_ROLES.SUPER, ADMIN_ROLES.BOSS], actionLabel, { permissionKey, permissionAction: 'export' })) {
     return
   }
   const registerChannel = String(ctx.query.registerChannel || '').trim() || '__all__'
   const fields = String(ctx.query.fields || '').trim()
+  const maskPhone = ctx.query.maskPhone
+  const orderDateFrom = String(ctx.query.orderDateFrom || '').trim()
+  const orderDateTo = String(ctx.query.orderDateTo || '').trim()
   const db = readDb()
-  const csv = buildRegisteredUsersExportCsv(db, { registerChannel, fields })
+  const csv = buildRegisteredUsersExportCsv(db, {
+    registerChannel,
+    fields,
+    view,
+    maskPhone,
+    orderDateFrom,
+    orderDateTo,
+  })
   const channelLabel = registerChannel === '__none__'
     ? '商城注册'
     : registerChannel === '__all__'
       ? '全部'
       : registerChannel
   const safeName = channelLabel.replace(/[\\/:*?"<>|]/g, '_')
-  const filename = `注册用户_${safeName}_${exportFilenameDateStamp()}.csv`
+  const filename = view === 'card-package-issued'
+    ? buildCardPackageIssuedExportFilename(orderDateFrom, orderDateTo, safeName)
+    : `注册用户_${safeName}_${exportFilenameDateStamp()}.csv`
   ctx.set('Content-Type', 'text/csv; charset=utf-8')
   ctx.set('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`)
   ctx.body = `\uFEFF${csv}`
@@ -7321,7 +7374,9 @@ router.get('/users', async (ctx) => {
     ? 'ordering'
     : viewRaw === 'no-order'
       ? 'no-order'
-      : 'registered'
+      : viewRaw === 'card-package-issued'
+        ? 'card-package-issued'
+        : 'registered'
   const registerChannel = String(ctx.query.registerChannel || '').trim()
   const orderDate = String(ctx.query.orderDate || '').trim()
   const page = Math.max(1, parseInt(String(ctx.query.page || '1'), 10) || 1)
@@ -7344,16 +7399,20 @@ router.get('/users', async (ctx) => {
     rows = rows.filter(item => item.id.includes(key) || item.name.includes(key) || item.phone.includes(key))
   }
 
-  rows = rows.map(item => attachUserOrderStats(db, item, { includeAdminPasswordEcho: true }))
-
   if (registerChannel === '__none__') {
-    rows = rows.filter(item => !userRegisterChannelDisplayKey(item))
+    rows = rows.filter(item => !userRegisterChannelDisplayKeyFromUser(db, item))
   }
   else if (registerChannel && registerChannel !== '__all__') {
-    rows = rows.filter(item => userRegisterChannelDisplayKey(item) === registerChannel)
+    rows = rows.filter(item => userRegisterChannelDisplayKeyFromUser(db, item) === registerChannel)
   }
 
-  if (view === 'ordering') {
+  const cardPackageStatsOnly = view === 'card-package-issued'
+  rows = rows.map(item => attachUserOrderStats(db, item, {
+    includeAdminPasswordEcho: true,
+    kpiCardPackageIssuedOnly: cardPackageStatsOnly,
+  }))
+
+  if (view === 'ordering' || view === 'card-package-issued') {
     rows = rows.filter(item => Number(item.orderCount || 0) > 0)
     if (orderDate) {
       rows = rows.filter((item) => {
@@ -7390,7 +7449,7 @@ router.get('/users/by-phone', async (ctx) => {
   if (ctx.headers['x-admin-role']) {
     const canRead = await requireAdminPermissionOnAny(
       ctx,
-      ['users.registered', 'users.noOrder', 'users.ordering', 'orders.review', 'orders.approved', 'orders.cardData'],
+      ['users.registered', 'users.noOrder', 'users.ordering', 'users.cardPackageIssued', 'orders.review', 'orders.approved', 'orders.cardData'],
       'view',
       '按手机号查询用户',
     )
@@ -7520,6 +7579,39 @@ router.post('/mall/installment-risk/wave/:waveId/step/:stepKey', async (ctx) => 
 })
 
 /** 管理端：用户详情 + 风控档案占位（打开弹窗时不自动跑全量接口） */
+router.patch('/users/:id/register-channel', async (ctx) => {
+  if (!await requireAdminPermission(ctx, [ADMIN_ROLES.SUPER, ADMIN_ROLES.BOSS], '修改用户注册渠道', { strictRoles: true })) {
+    return
+  }
+  const db = readDb()
+  const { id } = ctx.params
+  const target = db.users.find(item => item.id === id)
+  if (!target) {
+    fail(ctx, '用户不存在', 404)
+    return
+  }
+
+  const body = ctx.request.body || {}
+  try {
+    applyUserRegisterChannel(db, target, body.registerChannelCode)
+  }
+  catch (err) {
+    const raw = String(err && err.message ? err.message : '')
+    const msg = raw === 'register_channel_not_found'
+      ? '注册渠道不存在'
+      : raw === 'register_channel_disabled'
+        ? '注册渠道已停用'
+        : raw === 'user_not_found'
+          ? '用户不存在'
+          : '修改注册渠道失败'
+    fail(ctx, msg, Number(err && err.status) || 400)
+    return
+  }
+
+  writeUsersDb(db)
+  ctx.body = success(attachUserOrderStats(db, target, { includeAdminPasswordEcho: true }))
+})
+
 router.get('/users/:id', async (ctx) => {
   if (!await requireAdminUsersActionOnAny(ctx, 'view', '查看用户详情')) {
     return
@@ -7758,10 +7850,7 @@ router.get('/my/orders', async (ctx) => {
   if (statusFilter && allowedStatus.has(statusFilter)) {
     list = list.filter((item) => {
       ensureOrderCardPackage(item)
-      if (item.payType === 'installment' && item.cardPackageIssued) {
-        return statusFilter === 'enjoying'
-      }
-      return item.status === statusFilter
+      return mallOrderRepaymentAwareStatus(item) === statusFilter
     })
   }
   const enriched = list
@@ -7771,6 +7860,7 @@ router.get('/my/orders', async (ctx) => {
       ensureOrderInstallmentPlan(order)
       return {
         ...enrichMallOrderWithBuyerFields(db, order),
+        status: mallOrderRepaymentAwareStatus(order),
         installmentAllPaid: isInstallmentOrderFullyRepaid(order),
       }
     })
@@ -8931,16 +9021,17 @@ router.delete('/users/:id', async (ctx) => {
 /** 与 admin 侧栏角标、GET /orders?adminStatus= 展示口径一致 */
 function resolveAdminOrderDisplayStatus(item) {
   ensureOrderRiskState(item)
+  const status = mallOrderRepaymentAwareStatus(item)
   if (item.status === 'reviewing' && item.payType === 'installment') {
     return item.riskStatus === 'failed' ? '风控未通过' : '待审核'
   }
   if (item.status === 'reviewing' && !item.paid) {
     return '待付款'
   }
-  if (item.status === 'reviewing' || item.status === 'shipping') {
+  if (status === 'reviewing' || status === 'shipping') {
     return '待发货'
   }
-  if (item.status === 'receiving') {
+  if (status === 'receiving') {
     ensureOrderShipment(item)
     return '待收货'
   }
@@ -9462,10 +9553,10 @@ router.post('/orders', async (ctx) => {
     return
   }
   const hasOpenOrderForAccount = db.orders.some(
-    item => orderBelongsToRegisteredMallUser(db, item, placingUser) && item.status !== 'enjoying',
+    item => orderBelongsToRegisteredMallUser(db, item, placingUser) && !isMallOrderRepaymentSettled(item),
   )
   if (hasOpenOrderForAccount) {
-    fail(ctx, '您尚有未完成的订单，请待订单完成后再下单', 400)
+    fail(ctx, '您尚有未还清的订单，请结清后再下单', 400)
     return
   }
   const rawQty = Number(payload.quantity)
@@ -10188,14 +10279,13 @@ router.patch('/orders/:id/card-package', async (ctx) => {
   }
   const wasIssued = Boolean(target.cardPackageIssued)
   target.cardPackageIssued = payload.cardPackageIssued
-  /** 管理端规则：卡包标记已发放时与订单「已完成」联动（enjoying ↔ 前端展示已完成） */
+  /** 管理端规则：卡包发放不再等于已完成，只有还清后才进入 enjoying */
   if (payload.cardPackageIssued === true) {
     if (!wasIssued) {
       target.cardPackageIssuedAt = new Date().toISOString()
       applyInstallmentDueDatesOnCardPackageIssue(target, target.cardPackageIssuedAt)
     }
-    target.status = 'enjoying'
-    target.skipInstallmentAutoEnjoying = false
+    applyInstallmentCompletionOrderStatus(target, { ignoreAdminSkip: true })
   }
   else if (wasIssued) {
     target.cardPackageIssuedAt = ''
