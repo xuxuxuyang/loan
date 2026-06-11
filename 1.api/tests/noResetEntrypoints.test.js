@@ -14,6 +14,7 @@ test('package scripts do not expose database reset or local snapshot import comm
     'mongo:fresh',
     'json:fresh',
     'import:mongo-local',
+    'import:mall-seed',
   ]
 
   for (const name of forbidden) {
@@ -27,6 +28,9 @@ test('dangerous reset/import scripts are not present in the repository', () => {
     'scripts/mongo-bootstrap-only.js',
     'scripts/project-full-reset.js',
     'scripts/local-json-reset.js',
+    'scripts/import-mall-zone-seed.js',
+    'scripts/seed-mall-showcase-catalog.js',
+    'scripts/write-mall-zone-seed.js',
   ]
 
   for (const relativePath of forbiddenFiles) {

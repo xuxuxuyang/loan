@@ -7,7 +7,6 @@
     "test": "node ../scripts/check-mojibake.js .. && node --test tests/*.test.js",
     "dev": "cross-env NODE_ENV=development nodemon --watch src --ext js,json src/index.js",
     "start": "cross-env NODE_ENV=production node src/index.js",
-    "import:mall-seed": "node scripts/import-mall-zone-seed.js",
     "benchmark:load": "node scripts/load-benchmark.cjs"
   },
   "keywords": [],

@@ -54,7 +54,6 @@
     本页读取同目录下的 <code>mall-zone-products.seed.json</code>。<strong>必须用商城 dev server 打开</strong>（例如在项目 <code>shop</code>
     目录执行开发命令后访问 <code>http://localhost:端口/mall-zone-preview.html</code>），不能直接双击磁盘上的 file://，否则浏览器会拦截 fetch。
     展示价已为大陆常见网页标价 ×120%（四舍五入到元）；每项中的 <code>_officialCnyReference</code> 与 <code>_officialUrl</code> 仅在 JSON 中存在，入库时会被丢弃。
-    重新生成：<code>node api/scripts/write-mall-zone-seed.js</code>。
   </p>
   <div id="stat" style="margin-bottom:.75rem;font-size:.875rem;"></div>
   <div id="root" class="grid"></div>

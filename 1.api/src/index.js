@@ -112,6 +112,7 @@ const {
   ensureDuodiandianChannel,
   ensureDuodiandianPortalPartner,
   isDuodiandianPublicPath,
+  notifyDuodiandianOrderEvent,
   registerDuodiandianGatewayRoutes,
 } = require('./duodiandianGateway')
 
@@ -8706,6 +8707,24 @@ registerDuodiandianGatewayRoutes(duodiandianPublicRouter, {
   writeDb,
 })
 
+function queueDuodiandianOrderNotify(event, order, db) {
+  if (!event || !order || !db) {
+    return
+  }
+  void notifyDuodiandianOrderEvent({ event, order, db })
+    .then((result) => {
+      if (result && result.sent) {
+        console.log('[duodiandian-notify] sent:', event, order.id || '')
+      }
+      else if (result && result.reason && result.reason !== 'application_not_found' && result.reason !== 'notify_url_missing') {
+        console.warn('[duodiandian-notify] skipped:', event, order.id || '', result.reason)
+      }
+    })
+    .catch((err) => {
+      console.warn('[duodiandian-notify] unexpected:', event, order.id || '', err && err.message ? err.message : err)
+    })
+}
+
 /**
  * 商城用户还款：与后台 PATCH /orders/:id/installments/:period/pay 写入同一套 installmentPlan，
  * 需校验下单注册账号与订单 mallUserId；与 OrdersPage 一致，卡包未发放前不允许记为已还。
@@ -8746,8 +8765,10 @@ router.post('/bills/repay', async (ctx) => {
       }
     }
     let repaidPeriods = 0
+    const repaidNotifyOrders = []
     for (const order of loanOrders) {
       ensureOrderInstallmentPlan(order)
+      const wasSettled = isMallOrderRepaymentSettled(order)
       let touched = false
       for (const planItem of order.installmentPlan) {
         if (planItem && !installmentItemIsPaid(planItem)) {
@@ -8762,11 +8783,15 @@ router.post('/bills/repay', async (ctx) => {
       if (touched) {
         order.installmentScheduleExplicit = true
         applyInstallmentCompletionOrderStatus(order, { ignoreAdminSkip: true })
+        if (!wasSettled && isMallOrderRepaymentSettled(order)) {
+          repaidNotifyOrders.push(order)
+        }
       }
     }
     writeOrdersDb(db)
     await flushMongoPersist()
     const dbAfter = readDb()
+    repaidNotifyOrders.forEach(order => queueDuodiandianOrderNotify('repaid', order, dbAfter))
     ctx.body = success({ all: true, repaidPeriods, billing: buildMallBillsSuccessData(dbAfter, phone) })
     return
   }
@@ -8809,12 +8834,16 @@ router.post('/bills/repay', async (ctx) => {
     /** 用户可选择「协商支付」分步还，也可「全部支付」一次性还清本期应还并放弃待协商首段 */
     planItem.negotiationPayPending = null
   }
+  const wasSettled = isMallOrderRepaymentSettled(target)
   planItem.paid = true
   target.installmentScheduleExplicit = true
   applyInstallmentCompletionOrderStatus(target, { ignoreAdminSkip: true })
   writeOrdersDb(db)
   await flushMongoPersist()
   const dbAfterSingle = readDb()
+  if (!wasSettled && isMallOrderRepaymentSettled(target)) {
+    queueDuodiandianOrderNotify('repaid', target, dbAfterSingle)
+  }
   ctx.body = success({
     orderId: target.id,
     period: periodNumber,
@@ -8885,6 +8914,7 @@ router.post('/bills/repay-negotiated', async (ctx) => {
     fail(ctx, '协商待支付数据异常，请联系客服', 400)
     return
   }
+  const wasSettled = isMallOrderRepaymentSettled(target)
   const applied = applyInstallmentNegotiationPayCompleted(planItem)
   if (!applied.ok) {
     fail(ctx, applied.msg, 400)
@@ -8895,6 +8925,9 @@ router.post('/bills/repay-negotiated', async (ctx) => {
   writeOrdersDb(db)
   await flushMongoPersist()
   const dbNegotiateAfter = readDb()
+  if (!wasSettled && isMallOrderRepaymentSettled(target)) {
+    queueDuodiandianOrderNotify('repaid', target, dbNegotiateAfter)
+  }
   ctx.body = success({
     orderId: target.id,
     period: periodNumber,
@@ -9804,6 +9837,7 @@ router.patch('/orders/:id/installments/:period/pay', async (ctx) => {
     return
   }
 
+  const wasSettled = isMallOrderRepaymentSettled(target)
   planItem.paid = Boolean(payload.paid)
   if (planItem.paid && planItem.negotiationPayPending) {
     planItem.negotiationPayPending = null
@@ -9818,6 +9852,9 @@ router.patch('/orders/:id/installments/:period/pay', async (ctx) => {
 
   writeOrdersDb(db)
   await flushMongoPersist()
+  if (!wasSettled && isMallOrderRepaymentSettled(target)) {
+    queueDuodiandianOrderNotify('repaid', target, readDb())
+  }
   ctx.body = success(target)
 })
 
@@ -10089,6 +10126,7 @@ router.patch('/orders/:id/installments/:period/negotiation/history/:historyIndex
   const row = hist[historyIndex]
   const isLast = historyIndex === hist.length - 1
   const paid = Boolean(payload.paid)
+  const wasSettled = isMallOrderRepaymentSettled(target)
 
   if (paid) {
     if (isLast && planItem.negotiationPayPending && Number(planItem.negotiationPayPending.negotiatedAmount || 0) > 0) {
@@ -10118,6 +10156,9 @@ router.patch('/orders/:id/installments/:period/negotiation/history/:historyIndex
   applyInstallmentCompletionOrderStatus(target, { ignoreAdminSkip: true })
   writeOrdersDb(db)
   await flushMongoPersist()
+  if (!wasSettled && isMallOrderRepaymentSettled(target)) {
+    queueDuodiandianOrderNotify('repaid', target, readDb())
+  }
   ctx.body = success(target)
 })
 
@@ -10133,6 +10174,8 @@ router.patch('/orders/:id/status', async (ctx) => {
     ctx.body = { success: false, code: 404, msg: '订单不存在', data: null }
     return
   }
+  const previousStatus = target.status
+  const previousRiskStatus = target.riskStatus
   const isReviewOperation = target.status === 'reviewing' || body.riskStatus === 'failed'
   const role = isReviewOperation
     ? await requireAdminPermission(ctx, [ADMIN_ROLES.SUPER, ADMIN_ROLES.REVIEWER], 'admin action', { permissionKey: 'orders.review', permissionAction: 'review' })
@@ -10158,6 +10201,9 @@ router.patch('/orders/:id/status', async (ctx) => {
     target.riskCheckedAt = new Date().toISOString()
     ensureOrderCardPackage(target)
     writeOrdersDb(db)
+    if (previousRiskStatus !== 'failed') {
+      queueDuodiandianOrderNotify('risk_reject', target, readDb())
+    }
     ctx.body = success(target)
     return
   }
@@ -10202,6 +10248,9 @@ router.patch('/orders/:id/status', async (ctx) => {
   }
   ensureOrderCardPackage(target)
   writeOrdersDb(db)
+  if (status === 'shipping' && previousStatus !== 'shipping' && target.payType === 'installment') {
+    queueDuodiandianOrderNotify('risk_pass', target, readDb())
+  }
   ctx.body = success(target)
 })
 
@@ -10292,6 +10341,9 @@ router.patch('/orders/:id/card-package', async (ctx) => {
     clearInstallmentDueDatesBeforeCardIssue(target)
   }
   writeOrdersDb(db)
+  if (!wasIssued && payload.cardPackageIssued === true) {
+    queueDuodiandianOrderNotify('loan_pass', target, readDb())
+  }
   ctx.body = success(target)
 })
 

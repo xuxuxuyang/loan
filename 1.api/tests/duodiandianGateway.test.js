@@ -1,6 +1,8 @@
 ﻿const assert = require('node:assert/strict')
 const test = require('node:test')
 const crypto = require('node:crypto')
+const fs = require('node:fs')
+const path = require('node:path')
 
 const gateway = require('../src/duodiandianGateway')
 
@@ -9,6 +11,7 @@ const config = {
   partnerCode: 'duodiandian',
   signKey: 'sign-secret',
   encKey: '1234567890abcdef',
+  replayNotifyUrl: 'https://test.ybloan.com/market/halfFlow/447285613150998528/open/order/replay/notify',
   h5Origin: 'https://shop.example.com',
   channelCode: 'env-ddd',
   channelName: '哆点点',
@@ -170,4 +173,111 @@ test('matches only the duodiandian public path for no-api middleware handling', 
   assert.equal(gateway.isDuodiandianPublicPath('/api/open/partners/env-ddd/getUrl', config), false)
   assert.equal(gateway.isDuodiandianPublicPath('/open/partners/other/getUrl', config), false)
   assert.equal(gateway.isDuodiandianPublicPath('/open/partners/env-ddd-other/getUrl', config), false)
+})
+
+test('builds encrypted outbound notify envelope for replay notify endpoint', () => {
+  const payload = {
+    applyNo: 'A001',
+    partnerOrderNo: 'P001',
+    status: 'AUDIT_PASS',
+    approvalAmount: '1200',
+    availableAmount: '1200',
+    yearlyRate: '0%',
+  }
+  const timestamp = '1748400093574'
+  const envelopeOut = gateway.buildDuodiandianNotifyEnvelope(payload, config, { timestamp })
+  assert.equal(envelopeOut.partner, config.partner)
+  assert.equal(envelopeOut.timestamp, timestamp)
+  assert.match(envelopeOut.data, /^[0-9A-F]+$/)
+  assert.equal(envelopeOut.sign, signBusinessData(payload, timestamp))
+  assert.deepEqual(gateway.parseDuodiandianEnvelope(envelopeOut, config, { now: Number(timestamp) }), payload)
+})
+
+test('sends risk, loan and repaid callbacks to the configured replay notify url', async () => {
+  const db = { partnerGatewayApplications: [] }
+  gateway.upsertDuodiandianApplication(db, { applyNo: 'A001', userPhone: '13900139000' }, config)
+  gateway.bindPartnerOrderNo(db, 'A001', 'P001', config)
+  const calls = []
+  const httpClient = async (url, options) => {
+    calls.push({ url, options })
+    return {
+      ok: true,
+      status: 200,
+      async json() { return { code: 200, message: '成功' } },
+    }
+  }
+  const base = {
+    db,
+    order: {
+      id: 'O001',
+      phone: '13900139000',
+      totalAmount: 3000,
+      cardPackageAmount: 1200,
+      riskReason: '人工审核不通过',
+    },
+    config,
+    httpClient,
+    now: () => 1748400093574,
+  }
+
+  await gateway.notifyDuodiandianOrderEvent({ ...base, event: 'risk_pass' })
+  await gateway.notifyDuodiandianOrderEvent({ ...base, event: 'loan_pass' })
+  await gateway.notifyDuodiandianOrderEvent({ ...base, event: 'repaid' })
+
+  assert.equal(calls.length, 3)
+  assert(calls.every(call => call.url === config.replayNotifyUrl))
+  const payloads = calls.map(call => gateway.parseDuodiandianEnvelope(JSON.parse(call.options.body), config, { now: 1748400093574 }))
+  assert.deepEqual(payloads.map(p => p.status), ['AUDIT_PASS', 'LOAN_PASS', 'REPAID'])
+  assert.equal(payloads[0].approvalAmount, '1200')
+  assert.equal(payloads[0].availableAmount, '1200')
+  assert.equal(payloads[0].yearlyRate, '0%')
+  assert.equal(payloads[1].withdrawAmount, '1200')
+})
+
+test('skips outbound notify without touching non duodiandian orders', async () => {
+  const calls = []
+  const result = await gateway.notifyDuodiandianOrderEvent({
+    db: { partnerGatewayApplications: [] },
+    order: { id: 'O001', phone: '13900139000', totalAmount: 3000 },
+    event: 'risk_pass',
+    config,
+    httpClient: async (...args) => calls.push(args),
+  })
+  assert.equal(result.sent, false)
+  assert.equal(result.reason, 'application_not_found')
+  assert.equal(calls.length, 0)
+})
+
+test('deduplicates successful outbound notify per applyNo and status in current process', async () => {
+  const db = { partnerGatewayApplications: [] }
+  gateway.upsertDuodiandianApplication(db, { applyNo: 'A-DEDUP', userPhone: '13900139001' }, config)
+  gateway.bindPartnerOrderNo(db, 'A-DEDUP', 'P-DEDUP', config)
+  let callCount = 0
+  const httpClient = async () => {
+    callCount += 1
+    return {
+      ok: true,
+      status: 200,
+      async json() { return { code: '200', msg: '成功' } },
+    }
+  }
+  const args = {
+    db,
+    order: { id: 'O-DEDUP', phone: '13900139001', cardPackageAmount: 1000 },
+    event: 'risk_pass',
+    config,
+    httpClient,
+  }
+  assert.equal((await gateway.notifyDuodiandianOrderEvent(args)).sent, true)
+  assert.equal((await gateway.notifyDuodiandianOrderEvent(args)).reason, 'duplicate_skipped')
+  assert.equal(callCount, 1)
+})
+
+test('does not notify duodiandian audit result from shop order submit machine review', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'index.js'), 'utf8')
+  const start = source.indexOf("router.post('/orders', async (ctx) => {")
+  const end = source.indexOf("router.patch('/orders/:id/pay'", start)
+  assert(start >= 0 && end > start, 'order submit route must be found')
+  const orderSubmitRoute = source.slice(start, end)
+  assert.equal(orderSubmitRoute.includes('queueDuodiandianOrderNotify'), false)
 })

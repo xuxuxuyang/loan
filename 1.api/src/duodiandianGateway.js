@@ -8,6 +8,8 @@ class DuodiandianGatewayError extends Error {
   }
 }
 
+const outboundNotifySentKeys = new Set()
+
 function nonEmpty(value) {
   return value !== undefined && value !== null && value !== ''
 }
@@ -129,6 +131,8 @@ function duodiandianConfigFromEnv() {
     partnerCode: normalizeCode(process.env.DUODIANDIAN_PARTNER_CODE) || partner,
     signKey: readTrim(process.env.DUODIANDIAN_SIGN_KEY),
     encKey: readTrim(process.env.DUODIANDIAN_ENC_KEY),
+    replayNotifyUrl: readTrim(process.env.DUODIANDIAN_REPLAY_NOTIFY_URL || process.env.DUODIANDIAN_CALLBACK_URL),
+    yearlyRate: readTrim(process.env.DUODIANDIAN_YEARLY_RATE),
     h5Origin: readTrim(process.env.DUODIANDIAN_H5_ORIGIN || process.env.MALL_H5_ORIGIN).replace(/\/$/, ''),
     timestampSkewMs: readTrim(process.env.DUODIANDIAN_TIMESTAMP_SKEW_MS),
     channelCode,
@@ -154,6 +158,8 @@ function resolveGatewayConfig(config = {}) {
   merged.channelName = readTrim(merged.channelName)
   merged.gatewayRemark = readTrim(merged.gatewayRemark)
   merged.routePrefix = normalizeRoutePrefix(merged.routePrefix)
+  merged.replayNotifyUrl = readTrim(merged.replayNotifyUrl || merged.callbackUrl)
+  merged.yearlyRate = readTrim(merged.yearlyRate) || '0%'
   merged.h5Origin = readTrim(merged.h5Origin).replace(/\/$/, '')
   merged.portalUsername = readTrim(merged.portalUsername)
   merged.portalPassword = readTrim(merged.portalPassword)
@@ -209,6 +215,27 @@ function decryptHexJson(hex, encKey) {
   }
   catch (err) {
     throw new DuodiandianGatewayError(`AES data decrypt failed: ${err.message || err}`)
+  }
+}
+
+function encryptJsonToHex(payload, encKey) {
+  const cipher = crypto.createCipheriv(aesAlgorithmForKey(encKey), Buffer.from(encKey), null)
+  cipher.setAutoPadding(true)
+  return Buffer.concat([
+    cipher.update(JSON.stringify(payload), 'utf8'),
+    cipher.final(),
+  ]).toString('hex').toUpperCase()
+}
+
+function buildDuodiandianNotifyEnvelope(payload, config = {}, options = {}) {
+  const cfg = resolveGatewayConfig(config)
+  requireGatewayConfig(cfg, ['partner', 'signKey', 'encKey'])
+  const timestamp = readTrim(options.timestamp) || String(Date.now())
+  return {
+    partner: cfg.partner,
+    data: encryptJsonToHex(payload, cfg.encKey),
+    timestamp,
+    sign: signBusinessPayload(payload, cfg.signKey, timestamp),
   }
 }
 
@@ -447,6 +474,147 @@ function buildDuodiandianH5Url(db, payload, config = {}) {
   return url.toString()
 }
 
+function normalizeMoneyText(value) {
+  const n = Number(value)
+  if (!Number.isFinite(n) || n <= 0) return '0'
+  if (Number.isInteger(n)) return String(n)
+  return String(Number(n.toFixed(2)))
+}
+
+function orderNotifyAmount(order) {
+  if (!order || typeof order !== 'object') return '0'
+  const cardPackageAmount = Number(order.cardPackageAmount)
+  if (Number.isFinite(cardPackageAmount) && cardPackageAmount > 0) {
+    return normalizeMoneyText(cardPackageAmount)
+  }
+  return normalizeMoneyText(order.totalAmount)
+}
+
+function findDuodiandianApplicationForOrder(db, order, config = {}) {
+  const cfg = resolveGatewayConfig(config)
+  requireGatewayConfig(cfg, ['partnerCode', 'channelCode'])
+  const applications = Array.isArray(db && db.partnerGatewayApplications) ? db.partnerGatewayApplications : []
+  const phones = collectOrderPhones(order).map(normalizePhone).filter(Boolean)
+  if (!phones.length) return null
+  return applications.find((app) => {
+    if (!app || typeof app !== 'object') return false
+    if (normalizeCode(app.partnerCode) !== cfg.partnerCode) return false
+    if (normalizeCode(app.channel) !== cfg.channelCode) return false
+    if (!readTrim(app.partnerOrderNo)) return false
+    return phones.includes(normalizePhone(app.userPhone || app.phone))
+  }) || null
+}
+
+function buildDuodiandianOrderNotifyPayload(app, order, event, config = {}) {
+  const cfg = resolveGatewayConfig(config)
+  const base = {
+    applyNo: readTrim(app && app.applyNo),
+    partnerOrderNo: readTrim(app && app.partnerOrderNo),
+  }
+  const amount = orderNotifyAmount(order)
+  if (event === 'risk_pass') {
+    return {
+      ...base,
+      status: 'AUDIT_PASS',
+      approvalAmount: amount,
+      availableAmount: amount,
+      yearlyRate: cfg.yearlyRate,
+    }
+  }
+  if (event === 'risk_reject') {
+    return {
+      ...base,
+      status: 'AUDIT_REJECT',
+      rejectReason: readTrim(order && order.riskReason) || '风控未通过',
+    }
+  }
+  if (event === 'loan_pass') {
+    return {
+      ...base,
+      status: 'LOAN_PASS',
+      withdrawAmount: amount,
+    }
+  }
+  if (event === 'repaid') {
+    return {
+      ...base,
+      status: 'REPAID',
+    }
+  }
+  throw new DuodiandianGatewayError(`unsupported notify event: ${event}`, 500)
+}
+
+function parseNotifyResponseBody(text) {
+  if (!text) return {}
+  try {
+    return JSON.parse(text)
+  }
+  catch {
+    return { raw: text }
+  }
+}
+
+async function notifyDuodiandianOrderEvent(options = {}) {
+  const cfg = resolveGatewayConfig(options.config || {})
+  const db = options.db
+  const order = options.order
+  const event = readTrim(options.event)
+  if (!db || !order || !event) {
+    return { sent: false, reason: 'invalid_arguments' }
+  }
+  if (!cfg.replayNotifyUrl) {
+    return { sent: false, reason: 'notify_url_missing' }
+  }
+  let app
+  try {
+    app = findDuodiandianApplicationForOrder(db, order, cfg)
+  }
+  catch (err) {
+    console.warn('[duodiandian-notify] skip:', err && err.message ? err.message : err)
+    return { sent: false, reason: 'config_invalid' }
+  }
+  if (!app) {
+    return { sent: false, reason: 'application_not_found' }
+  }
+  const payload = buildDuodiandianOrderNotifyPayload(app, order, event, cfg)
+  const sentKey = `${payload.applyNo}:${payload.status}`
+  if (outboundNotifySentKeys.has(sentKey)) {
+    return { sent: false, reason: 'duplicate_skipped', payload }
+  }
+  const timestamp = typeof options.now === 'function' ? String(options.now()) : String(Date.now())
+  const envelope = buildDuodiandianNotifyEnvelope(payload, cfg, { timestamp })
+  const client = typeof options.httpClient === 'function'
+    ? options.httpClient
+    : (typeof fetch === 'function' ? fetch : null)
+  if (!client) {
+    return { sent: false, reason: 'fetch_unavailable', payload }
+  }
+  try {
+    const resp = await client(cfg.replayNotifyUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(envelope),
+    })
+    const text = typeof resp.text === 'function'
+      ? await resp.text()
+      : (typeof resp.json === 'function' ? JSON.stringify(await resp.json()) : '')
+    const body = parseNotifyResponseBody(text)
+    const code = body && body.code !== undefined ? String(body.code) : ''
+    const accepted = Boolean(resp.ok) && (!code || code === '200')
+    if (!accepted) {
+      console.warn('[duodiandian-notify] failed:', event, resp.status, text)
+    }
+    if (accepted) {
+      outboundNotifySentKeys.add(sentKey)
+    }
+    return { sent: accepted, reason: accepted ? 'ok' : 'remote_rejected', status: resp.status, body, payload }
+  }
+  catch (err) {
+    console.warn('[duodiandian-notify] error:', event, err && err.message ? err.message : err)
+    return { sent: false, reason: 'request_failed', error: err && err.message ? err.message : String(err), payload }
+  }
+}
+
 function gatewaySuccess(ctx, data = undefined) {
   ctx.status = 200
   ctx.body = data === undefined ? { code: '200', msg: '成功' } : { code: '200', msg: '成功', data }
@@ -581,6 +749,7 @@ module.exports = {
   duodiandianConfigFromEnv,
   resolveGatewayConfig,
   signBusinessPayload,
+  buildDuodiandianNotifyEnvelope,
   parseDuodiandianEnvelope,
   ensureDuodiandianChannel,
   ensureDuodiandianPortalPartner,
@@ -588,6 +757,9 @@ module.exports = {
   bindPartnerOrderNo,
   recordDuodiandianCallback,
   buildDuodiandianH5Url,
+  buildDuodiandianOrderNotifyPayload,
+  findDuodiandianApplicationForOrder,
+  notifyDuodiandianOrderEvent,
   buildDuodiandianCheckPrefixResult,
   isDuodiandianPublicPath,
   registerDuodiandianGatewayRoutes,
