@@ -493,6 +493,28 @@ async function persistShardedSnapshotPartial(dbm, snapshot, entityKeys) {
   await persistAppMeta(dbm, snapshot)
 }
 
+async function persistEntityItem(dbm, entityKey, item, snapshot, updatedAt = new Date()) {
+  if (!dbm) {
+    return
+  }
+  const spec = ENTITY_SPECS.find(s => s.key === entityKey)
+  if (!spec) {
+    throw new Error(`[store] unknown entity key: ${entityKey}`)
+  }
+  const pk = entityMongoPrimaryKey(item, spec.key)
+  if (pk === undefined || pk === null) {
+    throw new Error(`[store] missing primary key for ${entityKey}`)
+  }
+  const body = JSON.parse(JSON.stringify(item || {}))
+  delete body._id
+  await dbm.collection(spec.collection).replaceOne(
+    { _id: pk },
+    { ...body, _id: pk },
+    { upsert: true },
+  )
+  await persistAppMeta(dbm, snapshot || {}, updatedAt)
+}
+
 function legacyAppStateDocToRaw(legacyDoc) {
   const { _id: _drop, updatedAt: _u, ...rest } = legacyDoc
   return rest
@@ -544,6 +566,18 @@ function scheduleMongoPersistPartial(snapshot, entityKeys) {
     /** 执行落库时取内存最新快照，避免队列中较早任务用旧 csSessions 覆盖较新写入 */
     const latest = mongoMemoryDbByTenant.get(scopeKey)
     await persistShardedSnapshotPartial(dbm, clonePayloadForMongo(latest || snapshot), keys)
+  })
+}
+
+function scheduleMongoPersistEntity(snapshot, entityKey, item) {
+  const scopeKey = getScopeState().key
+  const itemSnapshot = JSON.parse(JSON.stringify(item || {}))
+  scheduleMongoPersistJob(scopeKey, async () => {
+    const dbm = mongo.getMongoDb()
+    if (!dbm) {
+      return
+    }
+    await persistEntityItem(dbm, entityKey, itemSnapshot, clonePayloadForMongo(snapshot))
   })
 }
 
@@ -782,6 +816,20 @@ function writeDbPartial(db, entityKeys) {
   writeDb(db)
 }
 
+/** Mongo 模式下仅持久化单条实体；JSON 回退模式仍写完整快照以保持原语义。 */
+function writeDbEntity(db, entityKey, item) {
+  const scope = getScopeState()
+  if (mongoBacked) {
+    mongoMemoryDbByTenant.set(scope.key, db)
+    if (scope.key === 'tenant:default') {
+      mongoMemoryDb = db
+    }
+    scheduleMongoPersistEntity(clonePayloadForMongo(db), entityKey, item)
+    return
+  }
+  writeDb(db)
+}
+
 /** 供脚本在 writeDb 后 await，确保 Mongo 持久化已完成再断开连接 */
 function flushMongoPersist() {
   const scope = getScopeState()
@@ -982,6 +1030,7 @@ module.exports = {
   readDb,
   writeDb,
   writeDbPartial,
+  writeDbEntity,
   flushMongoPersist,
   hydrateFromMongoAfterConnect,
   hydrateTenantDbFromMongo,
@@ -995,6 +1044,7 @@ module.exports = {
   runWithMongoRequestDedup,
   getMongoHydrateDepth,
   clonePayloadForMongo,
+  persistEntityItem,
   persistShardedSnapshot,
   persistShardedSnapshotPartial,
 }

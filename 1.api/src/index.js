@@ -13,6 +13,7 @@ const {
   readDb,
   writeDb,
   writeDbPartial,
+  writeDbEntity,
   hydrateFromMongoAfterConnect,
   isMongoPersistenceEnabled,
   flushMongoPersist,
@@ -3420,9 +3421,54 @@ function writeCsSessionsDb(db) {
   writeDbPartial(db, ['csSessions'])
 }
 
+function writeProductsDb(db) {
+  writeDbPartial(db, ['products'])
+}
+
+function writeAdminAccountsDb(db) {
+  writeDbPartial(db, ['adminAccounts'])
+}
+
 /** 订单对账/变更仅持久化 orders */
 function writeOrdersDb(db) {
   writeDbPartial(db, ['orders'])
+}
+
+/** 审核状态变更仅持久化当前订单 */
+function writeOrderDb(db, order) {
+  writeDbEntity(db, 'orders', order)
+}
+
+function reviewPerfNowMs() {
+  return Number(process.hrtime.bigint() / 1000000n)
+}
+
+function reviewSlowLogThresholdMs() {
+  const raw = Number(process.env.API_REVIEW_SLOW_LOG_MS || 1000)
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 0
+}
+
+function maybeLogReviewPerf(ctx, marks, extra = {}) {
+  const threshold = reviewSlowLogThresholdMs()
+  if (threshold <= 0 || !marks || !marks.start || !marks.end) {
+    return
+  }
+  const totalMs = marks.end - marks.start
+  if (totalMs < threshold) {
+    return
+  }
+  const safe = {
+    orderId: extra.orderId || '',
+    operation: extra.operation || '',
+    statusCode: ctx.status || 200,
+    totalMs,
+    readDbMs: marks.readDbEnd && marks.start ? marks.readDbEnd - marks.start : undefined,
+    authMs: marks.authEnd && marks.authStart ? marks.authEnd - marks.authStart : undefined,
+    businessMs: marks.businessEnd && marks.businessStart ? marks.businessEnd - marks.businessStart : undefined,
+    persistScheduleMs: marks.persistScheduleEnd && marks.persistScheduleStart ? marks.persistScheduleEnd - marks.persistScheduleStart : undefined,
+    flushMs: marks.flushEnd && marks.flushStart ? marks.flushEnd - marks.flushStart : undefined,
+  }
+  console.warn('[review-status-perf]', safe)
 }
 
 /** 拉卡拉流水变更仅持久化 lakalaPayments */
@@ -3453,6 +3499,18 @@ function writeBankCardsDb(db) {
 /** 商城用户变更仅持久化 users */
 function writeUsersDb(db) {
   writeDbPartial(db, ['users'])
+}
+
+function writeTrafficChannelsDb(db) {
+  writeDbPartial(db, ['trafficChannels'])
+}
+
+function writeTrafficPartnersDb(db) {
+  writeDbPartial(db, ['trafficPartners'])
+}
+
+function writeTrafficChannelsAndPartnersDb(db) {
+  writeDbPartial(db, ['trafficChannels', 'trafficPartners'])
 }
 
 /** 删除用户时同步清理 addresses / bankCards */
@@ -4503,7 +4561,7 @@ router.post('/products', async (ctx) => {
   })
 
   db.products = [nextProduct, ...db.products.map(normalizeProductRecord)]
-  writeDb(db)
+  writeProductsDb(db)
   ctx.body = success(nextProduct)
 })
 
@@ -4536,7 +4594,7 @@ router.patch('/products/:id', async (ctx) => {
   })
   db.products[targetIndex] = merged
   db.products = db.products.map(normalizeProductRecord)
-  writeDb(db)
+  writeProductsDb(db)
   ctx.body = success(merged)
 })
 
@@ -4555,7 +4613,7 @@ router.delete('/products/:id', async (ctx) => {
   db.products = db.products
     .map(normalizeProductRecord)
     .filter(item => String(item.id) !== String(id))
-  writeDb(db)
+  writeProductsDb(db)
   ctx.body = success({ id: Number(id) })
 })
 
@@ -4674,7 +4732,7 @@ router.post('/auth/register', async (ctx) => {
   }
 
   const user = createMallUserFromRegisterPayload(db, payload)
-  writeDb(db)
+  writeUsersDb(db)
   ctx.body = success(attachUserOrderStats(db, user, { mall: true }))
 })
 
@@ -5662,7 +5720,7 @@ router.patch('/admin/accounts/:id', async (ctx) => {
     target.permissions = normalizedPermissionPayload
   }
   target.updatedAt = new Date().toISOString()
-  writeDb(db)
+  writeAdminAccountsDb(db)
   clearAdminAccountCaches()
   ctx.body = success(toAdminAccountView(target))
 })
@@ -5710,7 +5768,7 @@ router.delete('/admin/accounts/:id', async (ctx) => {
     return
   }
   db.adminAccounts = db.adminAccounts.filter(item => item.id !== id)
-  writeDb(db)
+  writeAdminAccountsDb(db)
   clearAdminAccountCaches()
   ctx.body = success({ id })
 })
@@ -6731,7 +6789,7 @@ router.post('/admin/traffic-channels', async (ctx) => {
       return
     }
   }
-  writeDb(db)
+  writeTrafficChannelsAndPartnersDb(db)
   const view = toTrafficChannelView(row, 0)
   if (portalBind && portalBind.partner) {
     view.portalAccount = {
@@ -6838,7 +6896,7 @@ router.patch('/admin/traffic-channels/:id', async (ctx) => {
       }
     }
   }
-  writeDb(db)
+  writeTrafficChannelsAndPartnersDb(db)
   const reg = db.users.filter(u => u.registerChannelCode === merged.code).length
   const view = attachPortalAccountToTrafficChannelView(
     db,
@@ -6869,7 +6927,7 @@ router.delete('/admin/traffic-channels/:id', async (ctx) => {
   const channelCode = String(ch.code || '').trim()
   db.trafficChannels.splice(idx, 1)
   const portalCleanup = removeTrafficPartnerBindingsForChannel(db, channelCode, now)
-  writeDb(db)
+  writeTrafficChannelsAndPartnersDb(db)
   ctx.body = success({
     id,
     removedPortalAccountCount: portalCleanup.removedPartnerIds.length,
@@ -7083,7 +7141,7 @@ router.post('/traffic/channel-click', async (ctx) => {
     fail(ctx, '渠道不存在或已停用', 404)
     return
   }
-  writeDb(db)
+  writeTrafficChannelsDb(db)
   ctx.body = success({ channel: code })
 })
 
@@ -7184,7 +7242,7 @@ router.post('/admin/traffic-partners', async (ctx) => {
     updatedAt: now,
   }
   db.trafficPartners.push(row)
-  writeDb(db)
+  writeTrafficPartnersDb(db)
   ctx.body = success(toTrafficPartnerView(row))
 })
 
@@ -7244,7 +7302,7 @@ router.patch('/admin/traffic-partners/:id', async (ctx) => {
     updatedAt: now,
   }
   db.trafficPartners[idx] = merged
-  writeDb(db)
+  writeTrafficPartnersDb(db)
   ctx.body = success(toTrafficPartnerView(merged))
 })
 
@@ -7520,7 +7578,7 @@ router.post('/mall/me/emergency-contacts', async (ctx) => {
     return
   }
   user.emergencyContacts = list
-  writeDb(db)
+  writeUsersDb(db)
   ctx.body = success({ user: attachUserOrderStats(db, user, { mall: true }) })
 })
 
@@ -7708,7 +7766,7 @@ router.post('/users/:id/risk-slot/:slotKey', async (ctx) => {
     summaryMessage: prev.summaryMessage || '',
     userId: target.id,
   }
-  writeDb(db)
+  writeUsersDb(db)
 
   ctx.body = success({
     row,
@@ -7765,7 +7823,7 @@ router.post('/users/:id/risk-check', async (ctx) => {
     ...snapshot,
     userId: target.id,
   }
-  writeDb(db)
+  writeUsersDb(db)
 
   ctx.body = success({
     user: attachUserOrderStats(db, target, { includeAdminPasswordEcho: true }),
@@ -7829,7 +7887,7 @@ router.post('/users', async (ctx) => {
     nextUser.adminPasswordPlain = initPwd
   }
   db.users.unshift(nextUser)
-  writeDb(db)
+  writeUsersDb(db)
   ctx.body = success(attachUserOrderStats(db, nextUser, { includeAdminPasswordEcho: true }))
 })
 
@@ -10174,95 +10232,130 @@ router.patch('/orders/:id/installments/:period/negotiation/history/:historyIndex
 })
 
 router.patch('/orders/:id/status', async (ctx) => {
-  const db = readDb()
-  const { id } = ctx.params
-  const body = ctx.request.body || {}
-  const { status } = body
-  const target = db.orders.find(item => item.id === id)
+  const marks = { start: reviewPerfNowMs() }
+  const logExtra = { orderId: String(ctx.params.id || ''), operation: 'status_update' }
+  try {
+    const db = readDb()
+    const { id } = ctx.params
+    const body = ctx.request.body || {}
+    const { status } = body
+    const target = db.orders.find(item => item.id === id)
+    marks.readDbEnd = reviewPerfNowMs()
 
-  if (!target) {
-    ctx.status = 404
-    ctx.body = { success: false, code: 404, msg: '订单不存在', data: null }
-    return
-  }
-  const previousStatus = target.status
-  const previousRiskStatus = target.riskStatus
-  const isReviewOperation = target.status === 'reviewing' || body.riskStatus === 'failed'
-  const role = isReviewOperation
-    ? await requireAdminPermission(ctx, [ADMIN_ROLES.SUPER, ADMIN_ROLES.REVIEWER], 'admin action', { permissionKey: 'orders.review', permissionAction: 'review' })
-    : await requireAdminPermission(ctx, [ADMIN_ROLES.SUPER, ADMIN_ROLES.REVIEWER], '修改订单状态', { permissionKey: 'orders.approved', permissionAction: 'updateStatus' })
-  if (!role) {
-    return
-  }
-
-  /** 人工审核不通过：保持 reviewing，仅将先享后付风控标为未通过（与系统风控失败同列展示逻辑） */
-  if (body.riskStatus === 'failed') {
-    ensureOrderRiskState(target)
-    if (target.payType !== 'installment') {
-      fail(ctx, '仅先享后付订单可操作审核不通过', 400)
+    if (!target) {
+      ctx.status = 404
+      ctx.body = { success: false, code: 404, msg: '订单不存在', data: null }
       return
     }
-    if (target.status !== 'reviewing') {
-      fail(ctx, '仅待审核中的订单可标记审核不通过', 400)
+    const previousStatus = target.status
+    const previousRiskStatus = target.riskStatus
+    const isReviewOperation = target.status === 'reviewing' || body.riskStatus === 'failed'
+    marks.authStart = reviewPerfNowMs()
+    const role = isReviewOperation
+      ? await requireAdminPermission(ctx, [ADMIN_ROLES.SUPER, ADMIN_ROLES.REVIEWER], 'admin action', { permissionKey: 'orders.review', permissionAction: 'review' })
+      : await requireAdminPermission(ctx, [ADMIN_ROLES.SUPER, ADMIN_ROLES.REVIEWER], '修改订单状态', { permissionKey: 'orders.approved', permissionAction: 'updateStatus' })
+    marks.authEnd = reviewPerfNowMs()
+    if (!role) {
       return
     }
-    const customReason = typeof body.riskReason === 'string' ? body.riskReason.trim() : ''
-    target.riskStatus = 'failed'
-    target.riskReason = customReason || '人工审核不通过'
-    target.riskCheckedAt = new Date().toISOString()
+
+    marks.businessStart = reviewPerfNowMs()
+    /** 人工审核不通过：保持 reviewing，仅将先享后付风控标为未通过（与系统风控失败同列展示逻辑） */
+    if (body.riskStatus === 'failed') {
+      logExtra.operation = 'risk_reject'
+      ensureOrderRiskState(target)
+      if (target.payType !== 'installment') {
+        fail(ctx, '仅先享后付订单可操作审核不通过', 400)
+        return
+      }
+      if (target.status !== 'reviewing') {
+        fail(ctx, '仅待审核中的订单可标记审核不通过', 400)
+        return
+      }
+      const customReason = typeof body.riskReason === 'string' ? body.riskReason.trim() : ''
+      target.riskStatus = 'failed'
+      target.riskReason = customReason || '人工审核不通过'
+      target.riskCheckedAt = new Date().toISOString()
+      ensureOrderCardPackage(target)
+      marks.businessEnd = reviewPerfNowMs()
+      marks.persistScheduleStart = reviewPerfNowMs()
+      writeOrderDb(db, target)
+      marks.persistScheduleEnd = reviewPerfNowMs()
+      marks.flushStart = reviewPerfNowMs()
+      await flushMongoPersist()
+      ctx.state.mongoPersistFlushed = true
+      marks.flushEnd = reviewPerfNowMs()
+      if (previousRiskStatus !== 'failed') {
+        queueDuodiandianOrderNotify('risk_reject', target, readDb())
+      }
+      ctx.body = success(target)
+      return
+    }
+
+    if (status) {
+      logExtra.operation = status === 'shipping' ? 'risk_pass' : 'status_update'
+      if (role === ADMIN_ROLES.REVIEWER && status !== 'shipping') {
+        fail(ctx, '审核员仅允许执行“审核通过（状态改为 shipping）”操作', 403)
+        return
+      }
+      ensureOrderRiskState(target)
+      if (status === 'shipping' && target.payType === 'installment' && target.riskStatus !== 'passed') {
+        fail(ctx, '该订单风控未通过，不能审核通过')
+        return
+      }
+      if (status === 'shipping') {
+        ensureOrderShipment(target)
+        const tn = String(target.trackingNumber || '').trim()
+        if (tn) {
+          fail(ctx, '已填写快递单号时不可将订单改回待发货，请先在「快递单号」中清空单号', 400)
+          return
+        }
+      }
+      if (status === 'receiving') {
+        const tnRecv = String(target.trackingNumber || '').trim()
+        if (!tnRecv) {
+          fail(ctx, '请填写快递单号后再将订单改为待收货', 400)
+          return
+        }
+      }
+      if (status === 'enjoying' && !target.cardPackageIssued) {
+        fail(ctx, '卡包未发放时不可将订单标记为已完成，请先在「卡包发放」中标记已发放', 400)
+        return
+      }
+      target.status = status
+      if (status === 'reviewing') {
+        target.trackingNumber = ''
+      }
+      // 避免后续 GET /orders 对账时因「先享后付已全部还清」再次把状态写回 enjoying，导致管理端改状态后列表仍显示「已完成」
+      if (target.payType === 'installment') {
+        target.skipInstallmentAutoEnjoying = status !== 'enjoying'
+      }
+    }
     ensureOrderCardPackage(target)
-    writeOrdersDb(db)
-    if (previousRiskStatus !== 'failed') {
-      queueDuodiandianOrderNotify('risk_reject', target, readDb())
+    marks.businessEnd = reviewPerfNowMs()
+    marks.persistScheduleStart = reviewPerfNowMs()
+    writeOrderDb(db, target)
+    marks.persistScheduleEnd = reviewPerfNowMs()
+    marks.flushStart = reviewPerfNowMs()
+    await flushMongoPersist()
+    ctx.state.mongoPersistFlushed = true
+    marks.flushEnd = reviewPerfNowMs()
+    if (status === 'shipping' && previousStatus !== 'shipping' && target.payType === 'installment') {
+      queueDuodiandianOrderNotify('risk_pass', target, readDb())
     }
     ctx.body = success(target)
-    return
   }
-
-  if (status) {
-    if (role === ADMIN_ROLES.REVIEWER && status !== 'shipping') {
-      fail(ctx, '审核员仅允许执行“审核通过（状态改为 shipping）”操作', 403)
-      return
+  finally {
+    const now = reviewPerfNowMs()
+    if (marks.businessStart && !marks.businessEnd) {
+      marks.businessEnd = now
     }
-    ensureOrderRiskState(target)
-    if (status === 'shipping' && target.payType === 'installment' && target.riskStatus !== 'passed') {
-      fail(ctx, '该订单风控未通过，不能审核通过')
-      return
+    if (marks.flushStart && !marks.flushEnd) {
+      marks.flushEnd = now
     }
-    if (status === 'shipping') {
-      ensureOrderShipment(target)
-      const tn = String(target.trackingNumber || '').trim()
-      if (tn) {
-        fail(ctx, '已填写快递单号时不可将订单改回待发货，请先在「快递单号」中清空单号', 400)
-        return
-      }
-    }
-    if (status === 'receiving') {
-      const tnRecv = String(target.trackingNumber || '').trim()
-      if (!tnRecv) {
-        fail(ctx, '请填写快递单号后再将订单改为待收货', 400)
-        return
-      }
-    }
-    if (status === 'enjoying' && !target.cardPackageIssued) {
-      fail(ctx, '卡包未发放时不可将订单标记为已完成，请先在「卡包发放」中标记已发放', 400)
-      return
-    }
-    target.status = status
-    if (status === 'reviewing') {
-      target.trackingNumber = ''
-    }
-    // 避免后续 GET /orders 对账时因「先享后付已全部还清」再次把状态写回 enjoying，导致管理端改状态后列表仍显示「已完成」
-    if (target.payType === 'installment') {
-      target.skipInstallmentAutoEnjoying = status !== 'enjoying'
-    }
+    marks.end = now
+    maybeLogReviewPerf(ctx, marks, logExtra)
   }
-  ensureOrderCardPackage(target)
-  writeOrdersDb(db)
-  if (status === 'shipping' && previousStatus !== 'shipping' && target.payType === 'installment') {
-    queueDuodiandianOrderNotify('risk_pass', target, readDb())
-  }
-  ctx.body = success(target)
 })
 
 router.patch('/orders/:id/shipment', async (ctx) => {
@@ -10985,6 +11078,9 @@ app.use(async (ctx, next) => {
     shouldFlush = method === 'POST' || method === 'PUT' || method === 'PATCH' || method === 'DELETE'
   }
   if (!shouldFlush) {
+    return
+  }
+  if (ctx.state && ctx.state.mongoPersistFlushed) {
     return
   }
   try {
