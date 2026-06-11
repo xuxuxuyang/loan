@@ -42,6 +42,26 @@ function isDuodiandianPublicPath(pathValue, config = {}) {
   return path === prefix || path.startsWith(`${prefix}/`)
 }
 
+function resolveDuodiandianMongoRefreshPlan(method, pathValue, config = {}) {
+  const methodValue = String(method || 'GET').toUpperCase()
+  if (methodValue !== 'POST') return null
+  const cfg = resolveGatewayConfig(config)
+  const prefix = normalizeRoutePrefix(cfg.routePrefix)
+  const path = normalizePath(pathValue)
+  if (!prefix || !path || !isDuodiandianPublicPath(path, cfg)) return null
+  const endpoint = path.slice(prefix.length) || '/'
+  if (endpoint === '/contractQuery') {
+    return { mode: 'skip' }
+  }
+  if (endpoint === '/checkPrefix' || endpoint === '/checkPrefIx') {
+    return { mode: 'partial', keys: ['users', 'orders', 'partnerGatewayApplications'], allowColdPartial: true }
+  }
+  if (endpoint === '/getUrl') {
+    return { mode: 'partial', keys: ['partnerGatewayApplications'], allowColdPartial: true }
+  }
+  return { mode: 'full' }
+}
+
 function normalizePath(value) {
   const raw = readTrim(value)
   if (!raw) return ''
@@ -647,7 +667,21 @@ function registerDuodiandianGatewayRoutes(router, deps = {}) {
   const routeConfig = resolveGatewayConfig(configProvider())
   requireGatewayConfig(routeConfig, ['routePrefix'])
 
-  async function handle(ctx, action) {
+  async function handleRead(ctx, action, options = {}) {
+    const needsDb = options.needsDb !== false
+    try {
+      const config = resolveGatewayConfig(configProvider())
+      const payload = parseDuodiandianEnvelope(ctx.request.body || {}, config)
+      const db = needsDb ? readDb() : undefined
+      const result = await action({ ctx, payload, db, config })
+      gatewaySuccess(ctx, result)
+    }
+    catch (err) {
+      gatewayFail(ctx, err)
+    }
+  }
+
+  async function handleWrite(ctx, action) {
     try {
       const config = resolveGatewayConfig(configProvider())
       const payload = parseDuodiandianEnvelope(ctx.request.body || {}, config)
@@ -665,13 +699,13 @@ function registerDuodiandianGatewayRoutes(router, deps = {}) {
   const prefix = routeConfig.routePrefix
 
   async function checkPrefix(ctx) {
-    await handle(ctx, async ({ payload, db, config }) => buildDuodiandianCheckPrefixResult(db, payload, config))
+    await handleRead(ctx, async ({ payload, db, config }) => buildDuodiandianCheckPrefixResult(db, payload, config))
   }
   router.post(`${prefix}/checkPrefix`, checkPrefix)
   router.post(`${prefix}/checkPrefIx`, checkPrefix)
 
   router.post(`${prefix}/contractQuery`, async (ctx) => {
-    await handle(ctx, async ({ config }) => {
+    await handleRead(ctx, async ({ config }) => {
       requireGatewayConfig(config, ['userAgreementName', 'userAgreementPath', 'privacyPolicyName', 'privacyPolicyPath'])
       const base = readTrim(config.h5Origin).replace(/\/$/, '')
       return [
@@ -684,11 +718,11 @@ function registerDuodiandianGatewayRoutes(router, deps = {}) {
           contractUrl: contractUrl(base, config.privacyPolicyPath, config.channelCode),
         },
       ]
-    })
+    }, { needsDb: false })
   })
 
   router.post(`${prefix}/apply`, async (ctx) => {
-    await handle(ctx, async ({ payload, db, config }) => {
+    await handleWrite(ctx, async ({ payload, db, config }) => {
       const app = upsertDuodiandianApplication(db, payload, config)
       const partnerOrderNo = app.partnerOrderNo || makePartnerOrderNo(app.applyNo)
       bindPartnerOrderNo(db, app.applyNo, partnerOrderNo, config)
@@ -703,41 +737,41 @@ function registerDuodiandianGatewayRoutes(router, deps = {}) {
   })
 
   router.post(`${prefix}/getUrl`, async (ctx) => {
-    await handle(ctx, async ({ payload, db, config }) => ({
+    await handleRead(ctx, async ({ payload, db, config }) => ({
       url: buildDuodiandianH5Url(db, payload, config),
     }))
   })
 
   router.post(`${prefix}/order/status/notify`, async (ctx) => {
-    await handle(ctx, async ({ payload, db, config }) => {
+    await handleWrite(ctx, async ({ payload, db, config }) => {
       recordDuodiandianCallback(db, 'orderStatus', payload, config)
       return undefined
     })
   })
 
   router.post(`${prefix}/order/bindCard/notify`, async (ctx) => {
-    await handle(ctx, async ({ payload, db, config }) => {
+    await handleWrite(ctx, async ({ payload, db, config }) => {
       recordDuodiandianCallback(db, 'bindCard', payload, config)
       return undefined
     })
   })
 
   router.post(`${prefix}/order/replayPlan/notify`, async (ctx) => {
-    await handle(ctx, async ({ payload, db, config }) => {
+    await handleWrite(ctx, async ({ payload, db, config }) => {
       recordDuodiandianCallback(db, 'replayPlan', payload, config)
       return undefined
     })
   })
 
   router.post(`${prefix}/order/replay/notify`, async (ctx) => {
-    await handle(ctx, async ({ payload, db, config }) => {
+    await handleWrite(ctx, async ({ payload, db, config }) => {
       recordDuodiandianCallback(db, 'repayment', payload, config)
       return undefined
     })
   })
 
   router.post(`${prefix}/order/sign/notify`, async (ctx) => {
-    await handle(ctx, async ({ payload, db, config }) => {
+    await handleWrite(ctx, async ({ payload, db, config }) => {
       recordDuodiandianCallback(db, 'sign', payload, config)
       return undefined
     })
@@ -762,5 +796,6 @@ module.exports = {
   notifyDuodiandianOrderEvent,
   buildDuodiandianCheckPrefixResult,
   isDuodiandianPublicPath,
+  resolveDuodiandianMongoRefreshPlan,
   registerDuodiandianGatewayRoutes,
 }

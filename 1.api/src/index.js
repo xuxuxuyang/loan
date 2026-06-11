@@ -112,6 +112,7 @@ const {
   ensureDuodiandianChannel,
   ensureDuodiandianPortalPartner,
   isDuodiandianPublicPath,
+  resolveDuodiandianMongoRefreshPlan,
   notifyDuodiandianOrderEvent,
   registerDuodiandianGatewayRoutes,
 } = require('./duodiandianGateway')
@@ -3659,14 +3660,18 @@ function isPaginatedListQuery(ctx) {
 }
 
 function resolveApiMongoRefreshPlan(ctx) {
+  const method = String(ctx.method || 'GET').toUpperCase()
+  const path = String(ctx.path || '')
+  const duodiandianPlan = resolveDuodiandianMongoRefreshPlan(method, path)
+  if (duodiandianPlan) {
+    return duodiandianPlan
+  }
   if (!isAdminReadOptimizeEnabled()) {
     return { mode: 'full' }
   }
-  const method = String(ctx.method || 'GET').toUpperCase()
   if (method !== 'GET') {
     return { mode: 'full' }
   }
-  const path = String(ctx.path || '')
   /** 直连 Mongo 单集合，跳过 hydrate 队列（账号页 / 侧栏角标 / 商品列表） */
   if (
     path === '/api/admin/accounts'

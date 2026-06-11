@@ -19,6 +19,10 @@ const config = {
   gatewayRemark: '哆点点测试',
   portalUsername: 'env-ddd-portal',
   portalPassword: 'portal-secret',
+  userAgreementName: '平台服务协议',
+  userAgreementPath: '/serviceAgreement',
+  privacyPolicyName: '隐私协议',
+  privacyPolicyPath: '/privacyPolicy',
   timestampSkewMs: 60_000,
 }
 
@@ -142,6 +146,109 @@ test('registers routes under configured route prefix', () => {
   assert(paths.includes('/open/partners/env-ddd/order/replay/notify'))
 })
 
+function makeCapturingRouter() {
+  const routes = new Map()
+  return {
+    routes,
+    post(path, handler) {
+      routes.set(path, handler)
+    },
+  }
+}
+
+function makeCtx(payload) {
+  return {
+    request: { body: envelope(payload) },
+    status: 0,
+    body: null,
+  }
+}
+
+function registerCountingRoutes(db) {
+  let reads = 0
+  let writes = 0
+  const router = makeCapturingRouter()
+  gateway.registerDuodiandianGatewayRoutes(router, {
+    readDb() {
+      reads += 1
+      return db
+    },
+    writeDb() {
+      writes += 1
+    },
+    configProvider: () => config,
+  })
+  return {
+    router,
+    counts() {
+      return { reads, writes }
+    },
+  }
+}
+
+test('contract query is read-only and keeps protocol response fields', async () => {
+  const state = registerCountingRoutes({ trafficChannels: [], partnerGatewayApplications: [] })
+  const ctx = makeCtx({ applyNo: 'A-CONTRACT' })
+
+  await state.router.routes.get('/open/partners/env-ddd/contractQuery')(ctx)
+
+  assert.equal(ctx.status, 200)
+  assert.deepEqual(state.counts(), { reads: 0, writes: 0 })
+  assert.deepEqual(ctx.body.data.map(item => item.contractName), ['平台服务协议', '隐私协议'])
+  assert(ctx.body.data.every(item => item.contractUrl.startsWith('https://shop.example.com/')))
+})
+
+test('checkPrefIx is read-only and does not persist channel seed changes', async () => {
+  const db = {
+    users: [{ id: 'U1', phone: '15257084456', registerChannelCode: 'natural' }],
+    orders: [],
+    partnerGatewayApplications: [],
+    trafficChannels: [],
+  }
+  const state = registerCountingRoutes(db)
+  const ctx = makeCtx({ phone_pre: '18800001' })
+
+  await state.router.routes.get('/open/partners/env-ddd/checkPrefIx')(ctx)
+
+  assert.equal(ctx.status, 200)
+  assert.deepEqual(state.counts(), { reads: 1, writes: 0 })
+  assert.deepEqual(ctx.body.data, { check_ret: 'Y', phone_md5: [] })
+  assert.deepEqual(db.trafficChannels, [])
+})
+
+test('getUrl is read-only and returns the existing application H5 link', async () => {
+  const db = { partnerGatewayApplications: [] }
+  const app = gateway.upsertDuodiandianApplication(db, { applyNo: 'A-URL', userPhone: '13900139000' }, config)
+  gateway.bindPartnerOrderNo(db, app.applyNo, 'P-URL', config)
+  const state = registerCountingRoutes(db)
+  const ctx = makeCtx({ applyNo: 'A-URL' })
+
+  await state.router.routes.get('/open/partners/env-ddd/getUrl')(ctx)
+
+  assert.equal(ctx.status, 200)
+  assert.deepEqual(state.counts(), { reads: 1, writes: 0 })
+  const parsed = new URL(ctx.body.data.url)
+  assert.equal(parsed.origin, 'https://shop.example.com')
+  assert.equal(parsed.searchParams.get('applyNo'), 'A-URL')
+  assert.equal(parsed.searchParams.get('channel'), 'env-ddd')
+})
+
+test('apply still writes application data and keeps apply response fields', async () => {
+  const db = { users: [], orders: [], trafficChannels: [], trafficPartners: [], partnerGatewayApplications: [] }
+  const state = registerCountingRoutes(db)
+  const ctx = makeCtx({ applyNo: 'A-APPLY', userPhone: '13900139000' })
+
+  await state.router.routes.get('/open/partners/env-ddd/apply')(ctx)
+
+  assert.equal(ctx.status, 200)
+  assert.deepEqual(state.counts(), { reads: 1, writes: 1 })
+  assert.equal(ctx.body.data.status, '1')
+  assert.equal(ctx.body.data.approvalAmount, '0')
+  assert.equal(ctx.body.data.approvalStatus, 'ING')
+  assert.match(ctx.body.data.partnerOrderNo, /^DDD[A-F0-9]{16}$/)
+  assert.equal(db.partnerGatewayApplications.length, 1)
+})
+
 test('check prefix filters internal duplicate users without leaking matched phone md5', () => {
   const db = {
     users: [
@@ -173,6 +280,38 @@ test('matches only the duodiandian public path for no-api middleware handling', 
   assert.equal(gateway.isDuodiandianPublicPath('/api/open/partners/env-ddd/getUrl', config), false)
   assert.equal(gateway.isDuodiandianPublicPath('/open/partners/other/getUrl', config), false)
   assert.equal(gateway.isDuodiandianPublicPath('/open/partners/env-ddd-other/getUrl', config), false)
+})
+
+test('uses lightweight mongo refresh plans only for duodiandian read-only endpoints', () => {
+  assert.deepEqual(
+    gateway.resolveDuodiandianMongoRefreshPlan('POST', '/open/partners/env-ddd/contractQuery', config),
+    { mode: 'skip' },
+  )
+  assert.deepEqual(
+    gateway.resolveDuodiandianMongoRefreshPlan('POST', '/open/partners/env-ddd/checkPrefIx', config),
+    { mode: 'partial', keys: ['users', 'orders', 'partnerGatewayApplications'], allowColdPartial: true },
+  )
+  assert.deepEqual(
+    gateway.resolveDuodiandianMongoRefreshPlan('POST', '/open/partners/env-ddd/checkPrefix', config),
+    { mode: 'partial', keys: ['users', 'orders', 'partnerGatewayApplications'], allowColdPartial: true },
+  )
+  assert.deepEqual(
+    gateway.resolveDuodiandianMongoRefreshPlan('POST', '/open/partners/env-ddd/getUrl', config),
+    { mode: 'partial', keys: ['partnerGatewayApplications'], allowColdPartial: true },
+  )
+})
+
+test('keeps duodiandian write endpoints on full mongo refresh plan', () => {
+  assert.deepEqual(
+    gateway.resolveDuodiandianMongoRefreshPlan('POST', '/open/partners/env-ddd/apply', config),
+    { mode: 'full' },
+  )
+  assert.deepEqual(
+    gateway.resolveDuodiandianMongoRefreshPlan('POST', '/open/partners/env-ddd/order/replay/notify', config),
+    { mode: 'full' },
+  )
+  assert.equal(gateway.resolveDuodiandianMongoRefreshPlan('GET', '/open/partners/env-ddd/getUrl', config), null)
+  assert.equal(gateway.resolveDuodiandianMongoRefreshPlan('POST', '/open/partners/other/getUrl', config), null)
 })
 
 test('builds encrypted outbound notify envelope for replay notify endpoint', () => {
