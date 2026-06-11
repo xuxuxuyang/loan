@@ -357,33 +357,6 @@ function mapMallOrderToAdminOrder(order: MallOrderPayload): OrderItem {
   }
 }
 
-/**
- * 侧栏订单角标：与 OrderReviewPage 默认「待审核」列表、OrdersPage「已审核订单」（未发卡包）口径一致。
- */
-export function computeAdminOrderSidebarCounts(payloads: unknown[]): {
-  pendingReview: number
-  reviewedOrdersList: number
-} {
-  if (!Array.isArray(payloads)) {
-    return { pendingReview: 0, reviewedOrdersList: 0 }
-  }
-  let pendingReview = 0
-  let reviewedOrdersList = 0
-  for (const raw of payloads) {
-    if (!raw || typeof raw !== 'object') {
-      continue
-    }
-    const o = mapMallOrderToAdminOrder(raw as MallOrderPayload)
-    if (o.status === '待审核') {
-      pendingReview += 1
-    }
-    if (o.status !== '待审核' && o.status !== '风控未通过' && !o.cardPackageIssued) {
-      reviewedOrdersList += 1
-    }
-  }
-  return { pendingReview, reviewedOrdersList }
-}
-
 function mergeOrderAfterPatch(prev: OrderItem, mapped: OrderItem): OrderItem {
   const ur = mapped.userRemark.trim() ? mapped.userRemark : prev.userRemark
   const ec = mapped.emergencyContactsComplete !== undefined

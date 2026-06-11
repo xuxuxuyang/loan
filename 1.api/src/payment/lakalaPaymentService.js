@@ -22,6 +22,12 @@ function generateOutTradeNo(prefix = 'LP') {
   return `${prefix}${Date.now()}${Math.random().toString(36).slice(2, 8)}`.slice(0, 32)
 }
 
+function positiveIntegerEnv(key, fallback) {
+  const raw = String(process.env[key] || '').trim()
+  const n = Number(raw)
+  return Number.isInteger(n) && n > 0 ? n : fallback
+}
+
 function resolveNotifyUrl() {
   const url = lakala.readEnvTrim('LAKALA_NOTIFY_URL')
   if (!url) {
@@ -298,7 +304,10 @@ async function syncPaymentStatus(outTradeNo, { mallUser } = {}) {
 }
 
 /** 同步当前用户近期 pending 支付单（覆盖 session 丢失、收银台内换支付方式等场景） */
-async function syncAllPendingPayments(mallUser, { maxAgeMs = 24 * 60 * 60 * 1000, limit = 5 } = {}) {
+async function syncAllPendingPayments(mallUser, {
+  maxAgeMs = positiveIntegerEnv('LAKALA_PENDING_SYNC_MAX_AGE_MS', 24 * 60 * 60 * 1000),
+  limit = positiveIntegerEnv('LAKALA_PENDING_SYNC_LIMIT', 5),
+} = {}) {
   const db = deps.readDb()
   ensurePaymentStore(db)
   const userId = String(mallUser?.id || '')

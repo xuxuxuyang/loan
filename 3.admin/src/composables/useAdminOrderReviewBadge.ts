@@ -1,13 +1,10 @@
 import { onUnmounted, ref, watch, type ComputedRef } from 'vue'
 import { useRoute } from 'vue-router'
-import { computeAdminOrderSidebarCounts } from '../stores/useOrdersStore'
 import { getAdminSession } from './useAdminAuth'
 import { withMallTenantHeaders } from './useAdminApi'
 
 const MALL_API_BASE = `${(import.meta.env.VITE_MALL_API_BASE || 'http://localhost:3110/api').replace(/\/$/, '')}`
 
-/** 设为 true 时才使用全量 GET /orders（仅作紧急回滚用，默认禁用以避免后台角标读全库） */
-const USE_LEGACY_ORDER_BADGE_POLL = String(import.meta.env.VITE_ADMIN_LEGACY_ORDER_BADGE_POLL || '').trim() === 'true'
 
 /**
  * 侧栏「未审核订单」：与审核页默认列表一致，仅统计「待审核」（不含「风控未通过」）。
@@ -47,25 +44,7 @@ async function fetchOrderSidebarBadgeCountsFromLightweight() {
   return true
 }
 
-async function fetchOrderSidebarBadgeCountsFromLegacyOrders() {
-  const response = await fetch(`${MALL_API_BASE}/orders`, {
-    method: 'GET',
-    headers: withMallTenantHeaders(),
-  })
-  const payload = await response.json() as {
-    success?: boolean
-    data?: unknown[]
-  }
-  if (!response.ok || payload.success === false) {
-    return
-  }
-  const list = Array.isArray(payload.data) ? payload.data : []
-  const { pendingReview, reviewedOrdersList } = computeAdminOrderSidebarCounts(list)
-  ordersMenuPendingReviewTotal.value = pendingReview
-  ordersMenuReviewedListTotal.value = reviewedOrdersList
-}
-
-/** 轮询仅更新侧栏角标数字，不替换 useOrdersStore.orders，避免 GET 订单全量快照覆盖 PATCH 刚合并的数据。 */
+/** 轮询仅更新侧栏角标数字，不替换 useOrdersStore.orders；只读取轻量角标接口，不读取全量订单。 */
 async function fetchOrderSidebarBadgeCounts() {
   const s = getAdminSession()
   if (!s?.token) {
@@ -74,10 +53,6 @@ async function fetchOrderSidebarBadgeCounts() {
     return
   }
   try {
-    if (USE_LEGACY_ORDER_BADGE_POLL) {
-      await fetchOrderSidebarBadgeCountsFromLegacyOrders()
-      return
-    }
     await fetchOrderSidebarBadgeCountsFromLightweight()
   }
   catch {

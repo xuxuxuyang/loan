@@ -121,12 +121,17 @@ const app = new Koa()
 const router = new Router({ prefix: '/api' })
 const duodiandianPublicRouter = new Router()
 const PORT = Number(process.env.PORT || 3110)
+function positiveIntegerFromEnv(key, fallback) {
+  const raw = String(process.env[key] || '').trim()
+  const n = Number(raw)
+  return Number.isInteger(n) && n > 0 ? n : fallback
+}
 /** GET /static/* → api/public/*（卡包合同模板 PDF 等，供电子签上游按 URL 拉取；本地 mock 下载 PDF 由程序按订单动态生成，不读该目录） */
 const API_PUBLIC_DIR = path.join(__dirname, '..', 'public')
 
 const mallIdCardUpload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 5 * 1024 * 1024 },
+  limits: { fileSize: positiveIntegerFromEnv('MALL_ID_CARD_UPLOAD_MAX_BYTES', 5 * 1024 * 1024) },
   fileFilter(_req, file, cb) {
     if (/^image\/(jpeg|png|webp)$/i.test(file.mimetype || '')) {
       cb(null, true)
@@ -138,7 +143,7 @@ const mallIdCardUpload = multer({
 })
 const mallPublicImageUpload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 8 * 1024 * 1024 },
+  limits: { fileSize: positiveIntegerFromEnv('MALL_PUBLIC_IMAGE_UPLOAD_MAX_BYTES', 8 * 1024 * 1024) },
   fileFilter(_req, file, cb) {
     if (/^image\/(jpeg|png|webp|gif)$/i.test(file.mimetype || '')) {
       cb(null, true)
@@ -150,7 +155,7 @@ const mallPublicImageUpload = multer({
 })
 const ALLOWED_ID_CARD_EXTS = new Set(['.jpg', '.jpeg', '.png', '.webp'])
 const ALLOWED_ID_CARD_MIMES = new Set(['image/jpeg', 'image/png', 'image/webp'])
-const MALL_PASSWORD_PEPPER = 'mall-local-pepper-v1'
+const MALL_PASSWORD_PEPPER = String(process.env.MALL_PASSWORD_PEPPER || 'mall-local-pepper-v1')
 const PRODUCT_CATEGORIES = new Set(['phone', 'digital', 'appliance', 'cosmetics'])
 /** 历史数据中的旧分类键 → 新分类（仅读库归一化，新建商品请用新分类） */
 const PRODUCT_CATEGORY_LEGACY_MAP = {
@@ -4351,7 +4356,8 @@ router.get('/geocode/reverse', async (ctx) => {
     return
   }
   try {
-    const url = new URL('https://nominatim.openstreetmap.org/reverse')
+    const reverseGeocodeUrl = String(process.env.REVERSE_GEOCODE_URL || 'https://nominatim.openstreetmap.org/reverse').trim()
+    const url = new URL(reverseGeocodeUrl)
     url.searchParams.set('format', 'jsonv2')
     url.searchParams.set('lat', String(lat))
     url.searchParams.set('lon', String(lng))
@@ -4361,7 +4367,7 @@ router.get('/geocode/reverse', async (ctx) => {
     const res = await fetch(url.toString(), {
       headers: {
         Accept: 'application/json',
-        'User-Agent': 'tea-mall-registration/1.0 (dev)',
+        'User-Agent': String(process.env.REVERSE_GEOCODE_USER_AGENT || 'tea-mall-registration/1.0 (dev)').trim(),
       },
     })
     if (!res.ok) {

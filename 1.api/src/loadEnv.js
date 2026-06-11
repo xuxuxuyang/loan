@@ -19,7 +19,15 @@ const PROXY_ENV_KEYS = [
   'ALL_PROXY',
   'all_proxy',
 ]
-const REQUIRED_NO_PROXY = ['127.0.0.1', 'localhost', '.aliyuncs.com']
+const DEFAULT_REQUIRED_NO_PROXY = ['127.0.0.1', 'localhost', '.aliyuncs.com']
+
+function requiredNoProxyList() {
+  const raw = String(process.env.API_REQUIRED_NO_PROXY || '').trim()
+  const list = raw
+    ? raw.split(',').map(s => s.trim()).filter(Boolean)
+    : DEFAULT_REQUIRED_NO_PROXY
+  return list.length ? list : DEFAULT_REQUIRED_NO_PROXY
+}
 
 function fileExists(p) {
   try {
@@ -38,7 +46,7 @@ function hardenProxyEnv() {
     }
   }
   const existed = String(process.env.NO_PROXY || process.env.no_proxy || '').trim()
-  const merged = [...new Set([...existed.split(',').map(s => s.trim()).filter(Boolean), ...REQUIRED_NO_PROXY])]
+  const merged = [...new Set([...existed.split(',').map(s => s.trim()).filter(Boolean), ...requiredNoProxyList()])]
   const noProxy = merged.join(',')
   process.env.NO_PROXY = noProxy
   process.env.no_proxy = noProxy

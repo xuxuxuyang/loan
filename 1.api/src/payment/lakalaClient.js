@@ -271,6 +271,12 @@ function shouldSendCounterTermNo() {
   return envFlagEnabled('LAKALA_COUNTER_SEND_TERM_NO')
 }
 
+function allowedCounterUrlHosts() {
+  const raw = readEnvTrim('LAKALA_COUNTER_URL_ALLOWED_HOSTS')
+  const list = raw.split(',').map(s => s.trim().toLowerCase()).filter(Boolean)
+  return list.length ? list : ['pay.wsmsd.cn', 'pay.lakala.com', 'huijingcai']
+}
+
 /**
  * 聚合收银台 special_create 的 req_data（唯一组装入口，脚本与业务共用）
  * 开关见 api/.env.development、api/.env.production
@@ -383,7 +389,7 @@ function normalizeCounterUrl(url) {
   try {
     const u = new URL(raw)
     const host = u.hostname.toLowerCase()
-    if (!host.includes('pay.wsmsd.cn') && !host.includes('pay.lakala.com') && !host.includes('huijingcai')) {
+    if (!allowedCounterUrlHosts().some(item => host.includes(item))) {
       return raw
     }
     const q = u.search.startsWith('?') ? u.search.slice(1) : ''
