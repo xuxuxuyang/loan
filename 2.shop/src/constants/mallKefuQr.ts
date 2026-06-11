@@ -1,4 +1,5 @@
-/** 领取卡包弹窗、首页客服、我的在线客服共用的企业微信二维码 */
-import mallKefuQrUrl from '~/assets/kefu.png'
+import { MALL_RUNTIME_CONFIG } from '~/config/mallRuntime'
 
-export const MALL_KEFU_QR_URL = mallKefuQrUrl
+/** Shared customer-service QR config for claim, home, and my pages. */
+export const MALL_KEFU_QR_URL = MALL_RUNTIME_CONFIG.kefuQrUrl
+export const MALL_KEFU_DISPLAY_NAME = MALL_RUNTIME_CONFIG.kefuDisplayName

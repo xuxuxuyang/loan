@@ -2,9 +2,11 @@
 import { h } from 'vue'
 import type { TeaProduct } from '~/composables/useTeaProducts'
 import mallDefaultAvatarUrl from '~/assets/mall-default-avatar.png?url'
+import { MALL_RUNTIME_CONFIG } from '~/config/mallRuntime'
 import { alertDialog, notifyInfo, notifySuccess } from '~/utils/epFeedback'
 
 const route = useRoute()
+const mallSiteUrl = MALL_RUNTIME_CONFIG.siteUrl || (typeof window !== 'undefined' ? window.location.origin : '')
 const { smartNavigate } = useCustomRouting(route)
 const { isLoggedIn, loginPhone, profile, syncFromStorage, logout } = useMallAuth()
 const { summary, fetchSummary, cardPackages, fetchCardPackages } = useMallMy()
@@ -178,7 +180,7 @@ async function showIosPwaGuide() {
       ]
     : [
         '请先用 Safari 打开商城',
-        '访问 https://wenshuosc.com',
+        `访问 ${mallSiteUrl}`,
         '点击右下角底部的...',
         '点击“共享”按钮',
         '选择“查看更多”',
@@ -449,14 +451,6 @@ async function handleService(key: string) {
       </div>
     </div>
 
-    <!-- <div class="mb-4 rounded-2xl bg-white px-3 py-4 text-center normal-font">
-      <p class="text-lg leading-6 text-black/65">
-        客服电话：<span class="font-semibold text-[#c06b37]">18968327662</span>
-      </p>
-      <p class="mt-1 text-lg leading-6 text-black/45">
-        9:00-18:00
-      </p>
-    </div> -->
 
     <div class="normal-font">
       <div class="mb-4 text-center">

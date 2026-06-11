@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { MallCardPackageDTO } from '~/api/modules/mall'
+import { MALL_KEFU_DISPLAY_NAME } from '~/constants/mallKefuQr'
 
 defineProps<{
   visible: boolean
@@ -57,14 +58,14 @@ const claimTipText = computed(() => (
       <div class="card-package-claim-qr-wrap overflow-hidden rounded-xl bg-[#0b7bff] shadow-inner ring-1 ring-black/[0.06]">
         <img
           :src="kefuQrUrl"
-          alt="请使用微信扫描图中二维码，添加荷花客服企业微信，联系办理现金礼领取"
+          alt="Customer service QR code"
           class="card-package-claim-qr-img mx-auto block w-full max-w-[min(100%,280px)] object-contain"
           loading="lazy"
           decoding="async"
         >
       </div>
       <p class="text-center text-xs text-black/45">
-        荷花客服 · 海曙文硕贸易
+        {{ MALL_KEFU_DISPLAY_NAME }}
       </p>
     </div>
     <template #footer>

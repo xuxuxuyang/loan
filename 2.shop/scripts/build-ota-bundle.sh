@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# 构建 H5 OTA 热更新包：dist → zip + latest.json（上传 OSS 后 App 自动拉取，无需重打 APK）
+# Build H5 OTA bundle: dist -> zip + latest.json.
+# Production upload URL is read from .env.production (VITE_APP_OTA_BASE_URL),
+# so the OSS bucket/path is maintained with the rest of production config.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -7,8 +9,43 @@ cd "$ROOT"
 
 npm run build
 
+read_env_value() {
+  node - "$1" <<'NODE'
+const fs = require('fs')
+
+const key = process.argv[2]
+const file = '.env.production'
+if (!fs.existsSync(file)) {
+  process.exit(0)
+}
+const lines = fs.readFileSync(file, 'utf8').split(/\r?\n/)
+for (const line of lines) {
+  const trimmed = line.trim()
+  if (!trimmed || trimmed.startsWith('#')) continue
+  const eq = trimmed.indexOf('=')
+  if (eq === -1) continue
+  if (trimmed.slice(0, eq).trim() !== key) continue
+  let value = trimmed.slice(eq + 1).trim()
+  if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+    value = value.slice(1, -1)
+  }
+  process.stdout.write(value)
+  break
+}
+NODE
+}
+
 VERSION="${OTA_VERSION:-$(node -p "require('./package.json').version")}"
-OTA_BASE_URL="${OTA_BASE_URL:-https://gaoxiaofuwupingtai.oss-cn-hangzhou.aliyuncs.com/app-ota}"
+ENV_OTA_BASE_URL="$(read_env_value VITE_APP_OTA_BASE_URL)"
+ENV_OTA_MANIFEST_URL="$(read_env_value VITE_APP_OTA_MANIFEST_URL)"
+if [ -z "$ENV_OTA_BASE_URL" ] && [ -n "$ENV_OTA_MANIFEST_URL" ]; then
+  ENV_OTA_BASE_URL="${ENV_OTA_MANIFEST_URL%/*}"
+fi
+OTA_BASE_URL="${OTA_BASE_URL:-$ENV_OTA_BASE_URL}"
+if [ -z "$OTA_BASE_URL" ]; then
+  echo "Missing OTA base URL. Set VITE_APP_OTA_BASE_URL in .env.production or export OTA_BASE_URL."
+  exit 1
+fi
 OUT_DIR="$ROOT/ota-out"
 ZIP_NAME="wenshuo-mall-${VERSION}.zip"
 ZIP_PATH="$OUT_DIR/$ZIP_NAME"
@@ -25,7 +62,7 @@ zip_dist() {
     powershell -NoProfile -Command "Set-Location dist; Compress-Archive -Path '*' -DestinationPath '../${ZIP_PATH#$ROOT/}' -Force"
     return
   fi
-  echo "请安装 zip，或在 Windows 下使用 Git Bash / PowerShell 运行"
+  echo "Please install zip, or run this script with Git Bash / PowerShell on Windows."
   exit 1
 }
 
@@ -57,11 +94,11 @@ const manifest = {
 fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`)
 
 console.log('')
-console.log('OTA 包已生成：')
+console.log('OTA bundle generated:')
 console.log(`  ${zipPath}`)
 console.log(`  ${manifestPath}`)
 console.log('')
-console.log('请上传到 OSS 目录 app-ota/（覆盖 latest.json 与同版本 zip）：')
+console.log('Upload latest.json and the versioned zip to the configured OTA directory:')
 console.log(`  ${manifest.url}`)
 console.log(`  ${baseUrl}/latest.json`)
 NODE

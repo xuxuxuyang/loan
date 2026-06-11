@@ -1,3 +1,4 @@
+import { MALL_RUNTIME_CONFIG } from '~/config/mallRuntime'
 import type { MallPostOrderRefreshPayload } from '~/composables/useMallMy'
 
 export type MallOrderStatus = 'reviewing' | 'shipping' | 'receiving' | 'enjoying'
@@ -235,11 +236,11 @@ export function orderHasShippedTracking(order: MallOrder): boolean {
 }
 
 /**
- * 跳转快递100 首页（https://www.kuaidi100.com/），由用户粘贴单号查询；
- * 项目未对接快递 API 时使用。
+ * Opens the configured third-party tracking lookup page.
+ * Keep the production URL in VITE_MALL_TRACKING_LOOKUP_URL, not in business code.
  */
 export function trackingNumberThirdPartyLookupUrl(): string {
-  return 'https://www.kuaidi100.com/'
+  return MALL_RUNTIME_CONFIG.trackingLookupUrl
 }
 
 export interface SyncMallOrdersOptions {
