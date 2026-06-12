@@ -4,6 +4,7 @@ loadDotenvExports(__dirname)
 const cloudConfig = require('./cloudConfig')
 const mongoConfig = require('./mongoConfig')
 const mongo = require('./mongo')
+const adminMongoReadOptimize = require('./adminMongoReadOptimize')
 
 const Koa = require('koa')
 const Router = require('@koa/router')
@@ -115,6 +116,7 @@ const {
   isDuodiandianPublicPath,
   resolveDuodiandianMongoRefreshPlan,
   notifyDuodiandianOrderEvent,
+  findReusableDuodiandianApplyRiskReview,
   registerDuodiandianGatewayRoutes,
 } = require('./duodiandianGateway')
 
@@ -3444,7 +3446,7 @@ function reviewPerfNowMs() {
 }
 
 function reviewSlowLogThresholdMs() {
-  const raw = Number(process.env.API_REVIEW_SLOW_LOG_MS || 1000)
+  const raw = Number(process.env.API_REVIEW_SLOW_LOG_MS)
   return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 0
 }
 
@@ -3743,6 +3745,21 @@ function resolveApiMongoRefreshPlan(ctx) {
     || path === '/api/products'
   ) {
     return { mode: 'skip' }
+  }
+  if (path === '/api/orders' && isPaginatedListQuery(ctx)) {
+    const safeOrderFilter = adminMongoReadOptimize.buildAdminOrderMongoFilter({
+      keyword: ctx.query.keyword,
+      status: ctx.query.status,
+      adminStatus: ctx.query.adminStatus,
+      payType: ctx.query.payType,
+      date: ctx.query.date,
+      scope: ctx.query.listScope,
+      repay: ctx.query.repayFilter,
+      risk: ctx.query.riskStatus,
+    })
+    if (safeOrderFilter) {
+      return { mode: 'skip' }
+    }
   }
   /** 流量管理 overview：渠道 + 流量商账号 + 用户/订单统计（非 11 集合全量） */
   const trafficOverviewKeys = ['adminAccounts', 'trafficChannels', 'trafficPartners', 'users', 'orders']
@@ -5198,6 +5215,53 @@ function resolveMongoScopedDbName(workspaceType, tenantId) {
     return `${dbName}__tenant_${t}`
   }
   return dbName
+}
+
+function getMongoScopedCollection(workspaceType, tenantId, collectionName) {
+  const client = mongo.getMongoClient && mongo.getMongoClient()
+  if (!client || !collectionName) {
+    return null
+  }
+  return client.db(resolveMongoScopedDbName(workspaceType, tenantId)).collection(collectionName)
+}
+
+async function readMongoEntityDocsByIds(workspaceType, tenantId, collectionName, ids) {
+  const cleanIds = [...new Set((Array.isArray(ids) ? ids : [])
+    .map(id => String(id || '').trim())
+    .filter(Boolean))]
+  if (!cleanIds.length) {
+    return []
+  }
+  const coll = getMongoScopedCollection(workspaceType, tenantId, collectionName)
+  if (!coll) {
+    return null
+  }
+  const docs = await coll.find({ _id: { $in: cleanIds } }).toArray()
+  return docs.map(mapMongoEntityDoc).filter(Boolean)
+}
+
+async function buildAdminOrderMongoEnrichDb(workspaceType, tenantId, fallbackDb, pageOrders) {
+  try {
+    const userIds = [...new Set((Array.isArray(pageOrders) ? pageOrders : [])
+      .map(order => String(order && order.mallUserId || '').trim())
+      .filter(Boolean))]
+    const users = await readMongoEntityDocsByIds(workspaceType, tenantId, mongo.COLLECTIONS.users, userIds)
+    const ordersColl = getMongoScopedCollection(workspaceType, tenantId, mongo.COLLECTIONS.orders)
+    if (!ordersColl || !Array.isArray(users)) {
+      return fallbackDb
+    }
+    const orders = userIds.length
+      ? (await ordersColl.find({ mallUserId: { $in: userIds } }).toArray()).map(mapMongoEntityDoc).filter(Boolean)
+      : []
+    return {
+      ...(fallbackDb || {}),
+      users,
+      orders,
+    }
+  }
+  catch {
+    return fallbackDb
+  }
 }
 
 function mapMongoEntityDoc(doc) {
@@ -7453,6 +7517,33 @@ router.get('/users', async (ctx) => {
   const pageSize = Math.min(100, Math.max(1, parseInt(String(ctx.query.pageSize || '20'), 10) || 20))
 
   if (isAdminReadOptimizeEnabled()) {
+    if (isMongoPersistenceEnabled()) {
+      const tenantId = normalizeTenantId(ctx.state && ctx.state.tenantId ? ctx.state.tenantId : DEFAULT_TENANT_ID)
+      const workspaceType = normalizeWorkspaceType(ctx.state && ctx.state.workspaceType ? ctx.state.workspaceType : 'tenant')
+      const mongoPage = await adminMongoReadOptimize.readAdminUsersPageFromMongoScoped(
+        name => getMongoScopedCollection(workspaceType, tenantId, name),
+        {
+          key,
+          view,
+          registerChannel,
+          orderDate,
+          page,
+          pageSize,
+        },
+      )
+      if (mongoPage) {
+        const list = mongoPage.users.map(user => attachUserOrderStats(db, user, {
+          includeAdminPasswordEcho: true,
+        }))
+        ctx.body = success({
+          list,
+          total: mongoPage.total,
+          page: mongoPage.page,
+          pageSize: mongoPage.pageSize,
+        })
+        return
+      }
+    }
     ctx.body = success(listAdminUsersPaginatedBeforeEnrich(db, {
       key,
       view,
@@ -8769,11 +8860,17 @@ registerLakalaRoutes(router, {
 registerDuodiandianGatewayRoutes(router, {
   readDb,
   writeDb,
+  writeDbPartial,
+  flushMongoPersist,
+  runApplyRiskPack: runOrderSubmitUpstreamRiskPack,
 })
 
 registerDuodiandianGatewayRoutes(duodiandianPublicRouter, {
   readDb,
   writeDb,
+  writeDbPartial,
+  flushMongoPersist,
+  runApplyRiskPack: runOrderSubmitUpstreamRiskPack,
 })
 
 function queueDuodiandianOrderNotify(event, order, db) {
@@ -9340,9 +9437,11 @@ router.get('/admin/orders/sidebar-counts', async (ctx) => {
   const workspaceType = normalizeWorkspaceType(ctx.state && ctx.state.workspaceType ? ctx.state.workspaceType : 'tenant')
   const data = await withAdminReadCacheAsync(ctx, 'sidebar-counts', async () => {
     if (isAdminReadOptimizeEnabled() && isMongoPersistenceEnabled()) {
-      const orders = await readOrdersFromMongoScoped(workspaceType, tenantId)
-      if (Array.isArray(orders)) {
-        return computeAdminOrderSidebarCountsFromDb({ orders })
+      const counted = await adminMongoReadOptimize.countAdminOrderSidebarCountsFromMongoScoped(
+        name => getMongoScopedCollection(workspaceType, tenantId, name),
+      )
+      if (counted) {
+        return counted
       }
     }
     return computeAdminOrderSidebarCountsFromDb(readDb())
@@ -9388,6 +9487,44 @@ router.get('/orders', async (ctx) => {
   if (usePagination && isAdminReadOptimizeEnabled()) {
     const page = Math.max(1, parseInt(String(pageRaw), 10) || 1)
     const pageSize = Math.min(100, Math.max(1, parseInt(String(pageSizeRaw || '20'), 10) || 20))
+    if (isMongoPersistenceEnabled()) {
+      const tenantId = normalizeTenantId(ctx.state && ctx.state.tenantId ? ctx.state.tenantId : DEFAULT_TENANT_ID)
+      const workspaceType = normalizeWorkspaceType(ctx.state && ctx.state.workspaceType ? ctx.state.workspaceType : 'tenant')
+      const mongoPage = await adminMongoReadOptimize.readAdminOrdersPageFromMongoScoped(
+        name => getMongoScopedCollection(workspaceType, tenantId, name),
+        {
+          keyword,
+          status,
+          adminStatus,
+          payType,
+          date,
+          scope,
+          repay,
+          risk,
+        },
+        page,
+        pageSize,
+      )
+      if (mongoPage) {
+        const enrichDb = await buildAdminOrderMongoEnrichDb(workspaceType, tenantId, db, mongoPage.orders)
+        const userOrdersCache = new Map()
+        const list = mongoPage.orders.map((order) => {
+          prepareAdminOrderListItem(order)
+          const row = enrichMallOrderWithBuyerFields(enrichDb, order)
+          return {
+            ...row,
+            isOldCustomer: isOldCustomerAtOrder(enrichDb, order, userOrdersCache),
+          }
+        })
+        ctx.body = success({
+          list,
+          total: mongoPage.total,
+          page: mongoPage.page,
+          pageSize: mongoPage.pageSize,
+        })
+        return
+      }
+    }
     ctx.body = success(listAdminOrdersPaginatedBeforeEnrich(db, {
       keyword,
       status,
@@ -9784,6 +9921,24 @@ router.post('/orders', async (ctx) => {
       }
     }
     else {
+      const reusableApplyRisk = findReusableDuodiandianApplyRiskReview(db, {
+        userName: riskUserNameForWave,
+        phoneNumber: riskPhoneForWave || normalizePhone(placingUser.phone),
+        idNumber: idForRisk,
+      })
+      if (reusableApplyRisk) {
+        orderSubmitRiskStepsFull = []
+        riskResult = {
+          status: reusableApplyRisk.status === 'PASS' ? 'passed' : 'failed',
+          reason: reusableApplyRisk.status === 'PASS' ? '' : (reusableApplyRisk.reason || '点多多进件预风控未通过'),
+          checkedAt: reusableApplyRisk.checkedAt || new Date().toISOString(),
+          preliminaryStepsSummary: Array.isArray(reusableApplyRisk.stepsSummary) ? reusableApplyRisk.stepsSummary : [],
+        }
+        nextOrder.riskReviewSource = 'duodiandian_apply'
+        nextOrder.riskReviewApplyNo = reusableApplyRisk.app && reusableApplyRisk.app.applyNo
+        nextOrder.riskReviewPartnerOrderNo = reusableApplyRisk.app && reusableApplyRisk.app.partnerOrderNo
+      }
+      else {
       try {
         const pack = await runOrderSubmitUpstreamRiskPack({
           userName: riskUserNameForWave,
@@ -9813,6 +9968,7 @@ router.post('/orders', async (ctx) => {
           preliminaryStepsSummary: [],
         }
       }
+      }
     }
     nextOrder.riskStatus = riskResult.status
     nextOrder.riskReason = riskResult.reason
@@ -9820,7 +9976,7 @@ router.post('/orders', async (ctx) => {
     if (Array.isArray(riskResult.preliminaryStepsSummary)) {
       nextOrder.riskPreliminaryStepsSummary = riskResult.preliminaryStepsSummary
     }
-    nextOrder.riskOrderSubmitPack = true
+    nextOrder.riskOrderSubmitPack = nextOrder.riskReviewSource === 'duodiandian_apply' ? false : true
     const buyerForRiskSnap = riskSubject || placingUser
     if (buyerForRiskSnap && orderSubmitRiskStepsFull.length > 0) {
       mergeInstallmentOrderRiskStepsIntoUserSnapshot(
@@ -9847,6 +10003,14 @@ router.post('/orders', async (ctx) => {
     writeOrdersDb(db)
   }
   await flushMongoPersist()
+  if (nextOrder.payType === 'installment') {
+    if (nextOrder.riskStatus === 'passed') {
+      queueDuodiandianOrderNotify('risk_pass', nextOrder, readDb())
+    }
+    else if (nextOrder.riskStatus === 'failed') {
+      queueDuodiandianOrderNotify('risk_reject', nextOrder, readDb())
+    }
+  }
   const phoneSync = normalizePhone(placingUser.phone)
   let mallRefresh
   if (/^1\d{10}$/.test(phoneSync)) {

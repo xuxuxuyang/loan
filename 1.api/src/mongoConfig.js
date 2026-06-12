@@ -17,7 +17,7 @@ function getMongoConfig() {
   const uri = readEnv('MONGODB_URI', ['MONGO_URI', 'DATABASE_URL'])
   const dbName = readEnv('MONGODB_DB_NAME', ['MONGO_DB_NAME'])
   const rawPool = readEnv('MONGODB_MAX_POOL_SIZE', ['MONGO_MAX_POOL_SIZE'])
-  let maxPoolSize = 10
+  let maxPoolSize
   if (rawPool) {
     const n = Number(rawPool)
     if (Number.isFinite(n) && n > 0) {
@@ -91,11 +91,11 @@ function isMongoMutationPersistFlushSkipped() {
  * - single_instance：单 Node 进程内跳过跨请求 refresh（仅单实例部署时使用）
  */
 function getMongoRefreshMode() {
-  const raw = String(process.env.MONGO_REFRESH_MODE || 'version').trim().toLowerCase()
-  if (raw === 'every_request' || raw === 'single_instance') {
+  const raw = readEnv('MONGO_REFRESH_MODE').toLowerCase()
+  if (raw === 'version' || raw === 'every_request' || raw === 'single_instance') {
     return raw
   }
-  return 'version'
+  return ''
 }
 
 /** 管理端只读优化总开关（与 api/src/index.js 一致） */

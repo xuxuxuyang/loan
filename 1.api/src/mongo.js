@@ -78,9 +78,11 @@ async function connectMongo() {
   }
 
   const { uri, maxPoolSize } = mongoConfig.getMongoConfig()
-  connectPromise = new MongoClient(uri, {
-    maxPoolSize,
-  })
+  const clientOptions = {}
+  if (maxPoolSize) {
+    clientOptions.maxPoolSize = maxPoolSize
+  }
+  connectPromise = new MongoClient(uri, clientOptions)
     .connect()
     .then((c) => {
       client = c

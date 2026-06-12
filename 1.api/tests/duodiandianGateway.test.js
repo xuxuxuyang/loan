@@ -12,6 +12,7 @@ const config = {
   signKey: 'sign-secret',
   encKey: '1234567890abcdef',
   replayNotifyUrl: 'https://test.ybloan.com/market/halfFlow/447285613150998528/open/order/replay/notify',
+  statusNotifyUrl: 'https://test.ybloan.com/market/halfFlow/447285613150998528/open/order/status/notify',
   h5Origin: 'https://shop.example.com',
   channelCode: 'env-ddd',
   channelName: '哆点点',
@@ -47,6 +48,10 @@ function signBusinessData(payload, timestamp, signKey = config.signKey) {
     .map((key) => `${key}=${payload[key]}`)
   const signStr = `${pairs.join('&')}${pairs.length ? '&' : ''}key=${signKey}&timestamp=${timestamp}`
   return crypto.createHash('md5').update(signStr, 'utf8').digest('hex')
+}
+
+function md5Text(value) {
+  return crypto.createHash('md5').update(String(value), 'utf8').digest('hex')
 }
 
 function envelope(payload, overrides = {}) {
@@ -186,6 +191,31 @@ function registerCountingRoutes(db) {
   }
 }
 
+function registerScopedRoutes(db) {
+  const calls = []
+  const router = makeCapturingRouter()
+  gateway.registerDuodiandianGatewayRoutes(router, {
+    readDb() {
+      calls.push({ type: 'read' })
+      return db
+    },
+    writeDb() {
+      calls.push({ type: 'fullWrite' })
+    },
+    writeDbPartial(_db, keys) {
+      calls.push({ type: 'partialWrite', keys })
+    },
+    async flushMongoPersist() {
+      calls.push({ type: 'flush', applicationCount: (db.partnerGatewayApplications || []).length })
+    },
+    configProvider: () => config,
+  })
+  return {
+    router,
+    calls,
+  }
+}
+
 test('contract query is read-only and keeps protocol response fields', async () => {
   const state = registerCountingRoutes({ trafficChannels: [], partnerGatewayApplications: [] })
   const ctx = makeCtx({ applyNo: 'A-CONTRACT' })
@@ -249,7 +279,33 @@ test('apply still writes application data and keeps apply response fields', asyn
   assert.equal(db.partnerGatewayApplications.length, 1)
 })
 
-test('check prefix filters internal duplicate users without leaking matched phone md5', () => {
+test('apply persists only duodiandian gateway collections and flushes before success', async () => {
+  const db = { users: [], orders: [], trafficChannels: [], trafficPartners: [], partnerGatewayApplications: [] }
+  const state = registerScopedRoutes(db)
+  const ctx = makeCtx({ applyNo: 'A-SCOPED', userPhone: '18800001111' })
+
+  await state.router.routes.get('/open/partners/env-ddd/apply')(ctx)
+
+  assert.equal(ctx.status, 200)
+  assert.deepEqual(state.calls.map(call => call.type), ['read', 'partialWrite', 'flush'])
+  assert.deepEqual(state.calls[1].keys, ['partnerGatewayApplications', 'trafficChannels', 'trafficPartners'])
+  assert.equal(state.calls[2].applicationCount, 1)
+  assert.equal(db.partnerGatewayApplications[0].applyNo, 'A-SCOPED')
+})
+
+test('checkPrefIx blocks a phone prefix immediately after apply succeeds', async () => {
+  const db = { users: [], orders: [], trafficChannels: [], trafficPartners: [], partnerGatewayApplications: [] }
+  const state = registerScopedRoutes(db)
+
+  await state.router.routes.get('/open/partners/env-ddd/apply')(makeCtx({ applyNo: 'A-DUP', userPhone: '18800001111' }))
+  const checkCtx = makeCtx({ phone_pre: '18800001' })
+  await state.router.routes.get('/open/partners/env-ddd/checkPrefIx')(checkCtx)
+
+  assert.equal(checkCtx.status, 200)
+  assert.deepEqual(checkCtx.body.data, { check_ret: 'N', phone_md5: [md5Text('18800001111')] })
+})
+
+test('check prefix filters internal duplicate users and returns matched phone md5', () => {
   const db = {
     users: [
       { id: 'U1', phone: '15257084456', registerChannelCode: 'natural' },
@@ -260,7 +316,7 @@ test('check prefix filters internal duplicate users without leaking matched phon
   }
   const result = gateway.buildDuodiandianCheckPrefixResult(db, { phone_pre: '15257084' }, config)
   assert.equal(result.check_ret, 'N')
-  assert.deepEqual(result.phone_md5, [])
+  assert.deepEqual(result.phone_md5, [md5Text('15257084456')])
 })
 
 test('check prefix allows clean prefixes and still does not expose phone md5', () => {
@@ -301,14 +357,14 @@ test('uses lightweight mongo refresh plans only for duodiandian read-only endpoi
   )
 })
 
-test('keeps duodiandian write endpoints on full mongo refresh plan', () => {
+test('uses scoped mongo refresh plans for duodiandian write endpoints', () => {
   assert.deepEqual(
     gateway.resolveDuodiandianMongoRefreshPlan('POST', '/open/partners/env-ddd/apply', config),
-    { mode: 'full' },
+    { mode: 'partial', keys: ['partnerGatewayApplications', 'trafficChannels', 'trafficPartners'], allowColdPartial: true },
   )
   assert.deepEqual(
     gateway.resolveDuodiandianMongoRefreshPlan('POST', '/open/partners/env-ddd/order/replay/notify', config),
-    { mode: 'full' },
+    { mode: 'partial', keys: ['partnerGatewayApplications'], allowColdPartial: true },
   )
   assert.equal(gateway.resolveDuodiandianMongoRefreshPlan('GET', '/open/partners/env-ddd/getUrl', config), null)
   assert.equal(gateway.resolveDuodiandianMongoRefreshPlan('POST', '/open/partners/other/getUrl', config), null)
@@ -332,7 +388,7 @@ test('builds encrypted outbound notify envelope for replay notify endpoint', () 
   assert.deepEqual(gateway.parseDuodiandianEnvelope(envelopeOut, config, { now: Number(timestamp) }), payload)
 })
 
-test('sends risk, loan and repaid callbacks to the configured replay notify url', async () => {
+test('sends risk, loan and repaid callbacks to the configured status notify url', async () => {
   const db = { partnerGatewayApplications: [] }
   gateway.upsertDuodiandianApplication(db, { applyNo: 'A001', userPhone: '13900139000' }, config)
   gateway.bindPartnerOrderNo(db, 'A001', 'P001', config)
@@ -364,7 +420,7 @@ test('sends risk, loan and repaid callbacks to the configured replay notify url'
   await gateway.notifyDuodiandianOrderEvent({ ...base, event: 'repaid' })
 
   assert.equal(calls.length, 3)
-  assert(calls.every(call => call.url === config.replayNotifyUrl))
+  assert(calls.every(call => call.url === config.statusNotifyUrl))
   const payloads = calls.map(call => gateway.parseDuodiandianEnvelope(JSON.parse(call.options.body), config, { now: 1748400093574 }))
   assert.deepEqual(payloads.map(p => p.status), ['AUDIT_PASS', 'LOAN_PASS', 'REPAID'])
   assert.equal(payloads[0].approvalAmount, '1200')
@@ -412,11 +468,200 @@ test('deduplicates successful outbound notify per applyNo and status in current 
   assert.equal(callCount, 1)
 })
 
-test('does not notify duodiandian audit result from shop order submit machine review', () => {
+test('pre-reviews duodiandian apply payload and notifies audit pass without storing plaintext identity', async () => {
+  const db = { partnerGatewayApplications: [] }
+  const app = gateway.upsertDuodiandianApplication(db, {
+    applyNo: 'A-RISK-PASS',
+    userPhone: '13900139000',
+    name: 'Alice',
+    idNo: '110101199001011234',
+  }, config)
+  gateway.bindPartnerOrderNo(db, app.applyNo, 'P-RISK-PASS', config)
+  const calls = []
+  let riskCalls = 0
+
+  const result = await gateway.runDuodiandianApplyRiskReview({
+    app,
+    payload: {
+      applyNo: app.applyNo,
+      userPhone: '13900139000',
+      name: 'Alice',
+      idNo: '110101199001011234',
+    },
+    config,
+    now: () => 1748400093574,
+    runRiskPack: async (params) => {
+      riskCalls += 1
+      assert.deepEqual(params, {
+        userName: 'Alice',
+        phoneNumber: '13900139000',
+        idNumber: '110101199001011234',
+      })
+      return {
+        allPassed: true,
+        message: '',
+        steps: [{ key: 'mobile2', label: '运营商二要素验证', ok: true }],
+      }
+    },
+    httpClient: async (url, options) => {
+      calls.push({ url, options })
+      return { ok: true, status: 200, async text() { return JSON.stringify({ code: '200' }) } }
+    },
+  })
+
+  assert.equal(result.status, 'PASS')
+  assert.equal(riskCalls, 1)
+  assert.equal(app.riskReviewStatus, 'PASS')
+  assert.equal(app.riskReviewSource, 'duodiandian_apply')
+  assert.equal(app.riskNotifyStatus, 'SENT')
+  assert.equal(typeof app.riskReviewIdentityHash, 'string')
+  assert(!app.name)
+  assert(!app.idNo)
+  assert(!app.idNumber)
+  assert.deepEqual(app.riskReviewStepsSummary, [
+    { key: 'mobile2', state: 'ok', label: '运营商二要素验证', error: undefined },
+  ])
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].url, config.statusNotifyUrl)
+  const notified = gateway.parseDuodiandianEnvelope(JSON.parse(calls[0].options.body), config, { now: 1748400093574 })
+  assert.equal(notified.applyNo, 'A-RISK-PASS')
+  assert.equal(notified.partnerOrderNo, 'P-RISK-PASS')
+  assert.equal(notified.status, 'AUDIT_PASS')
+})
+
+test('derives duodiandian status notify url from legacy replay notify url', () => {
+  const resolved = gateway.resolveGatewayConfig({
+    ...config,
+    statusNotifyUrl: '',
+  })
+
+  assert.equal(
+    resolved.statusNotifyUrl,
+    'https://test.ybloan.com/market/halfFlow/447285613150998528/open/order/status/notify',
+  )
+})
+
+test('skips duodiandian apply pre-review when identity data is incomplete', async () => {
+  const app = { applyNo: 'A-RISK-SKIP', partnerOrderNo: 'P-RISK-SKIP' }
+  let riskCalls = 0
+  let notifyCalls = 0
+
+  const result = await gateway.runDuodiandianApplyRiskReview({
+    app,
+    payload: { applyNo: 'A-RISK-SKIP', userPhone: '13900139000', name: 'Alice' },
+    config,
+    runRiskPack: async () => {
+      riskCalls += 1
+      return { allPassed: true, steps: [] }
+    },
+    httpClient: async () => {
+      notifyCalls += 1
+      return { ok: true, status: 200, async text() { return '{}' } }
+    },
+  })
+
+  assert.equal(result.status, 'SKIPPED')
+  assert.equal(app.riskReviewStatus, 'SKIPPED')
+  assert.match(app.riskReviewReason, /identity|姓名|手机号|身份证/i)
+  assert.equal(riskCalls, 0)
+  assert.equal(notifyCalls, 0)
+})
+
+test('does not run apply pre-review twice for the same identity hash', async () => {
+  const app = { applyNo: 'A-RISK-DEDUP', partnerOrderNo: 'P-RISK-DEDUP' }
+  const payload = {
+    applyNo: app.applyNo,
+    userPhone: '13900139000',
+    name: 'Alice',
+    idNo: '110101199001011234',
+  }
+  let riskCalls = 0
+
+  await gateway.runDuodiandianApplyRiskReview({
+    app,
+    payload,
+    config,
+    runRiskPack: async () => {
+      riskCalls += 1
+      return { allPassed: true, message: '', steps: [] }
+    },
+    httpClient: async () => ({ ok: true, status: 200, async text() { return JSON.stringify({ code: '200' }) } }),
+  })
+  const second = await gateway.runDuodiandianApplyRiskReview({
+    app,
+    payload,
+    config,
+    runRiskPack: async () => {
+      riskCalls += 1
+      return { allPassed: false, message: 'should not run', steps: [] }
+    },
+    httpClient: async () => ({ ok: true, status: 200, async text() { return JSON.stringify({ code: '200' }) } }),
+  })
+
+  assert.equal(riskCalls, 1)
+  assert.equal(second.reused, true)
+  assert.equal(second.status, 'PASS')
+})
+
+test('finds reusable duodiandian apply pre-review only for the same identity', async () => {
+  const db = { partnerGatewayApplications: [] }
+  const app = gateway.upsertDuodiandianApplication(db, {
+    applyNo: 'A-RISK-REUSE',
+    userPhone: '13900139000',
+    name: 'Alice',
+    idNo: '110101199001011234',
+  }, config)
+  gateway.bindPartnerOrderNo(db, app.applyNo, 'P-RISK-REUSE', config)
+  await gateway.runDuodiandianApplyRiskReview({
+    app,
+    payload: {
+      applyNo: app.applyNo,
+      userPhone: '13900139000',
+      name: 'Alice',
+      idNo: '110101199001011234',
+    },
+    config,
+    runRiskPack: async () => ({ allPassed: true, message: '', steps: [{ key: 'mobile2', ok: true }] }),
+    httpClient: async () => ({ ok: true, status: 200, async text() { return JSON.stringify({ code: '200' }) } }),
+  })
+
+  const match = gateway.findReusableDuodiandianApplyRiskReview(db, {
+    userName: 'Alice',
+    phoneNumber: '13900139000',
+    idNumber: '110101199001011234',
+  }, config)
+  const mismatch = gateway.findReusableDuodiandianApplyRiskReview(db, {
+    userName: 'Alice',
+    phoneNumber: '13900139000',
+    idNumber: '110101199001011235',
+  }, config)
+
+  assert.equal(match.app.applyNo, 'A-RISK-REUSE')
+  assert.equal(match.status, 'PASS')
+  assert.equal(mismatch, null)
+})
+
+test('notifies duodiandian audit result from shop order submit machine review after persistence', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'index.js'), 'utf8')
   const start = source.indexOf("router.post('/orders', async (ctx) => {")
   const end = source.indexOf("router.patch('/orders/:id/pay'", start)
   assert(start >= 0 && end > start, 'order submit route must be found')
   const orderSubmitRoute = source.slice(start, end)
-  assert.equal(orderSubmitRoute.includes('queueDuodiandianOrderNotify'), false)
+  assert.match(orderSubmitRoute, /await flushMongoPersist\(\)[\s\S]*queueDuodiandianOrderNotify\('risk_pass', nextOrder, readDb\(\)\)/)
+  assert.match(orderSubmitRoute, /await flushMongoPersist\(\)[\s\S]*queueDuodiandianOrderNotify\('risk_reject', nextOrder, readDb\(\)\)/)
+})
+
+test('order submit reuses duodiandian apply pre-review before calling paid risk pack', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'index.js'), 'utf8')
+  const start = source.indexOf("router.post('/orders', async (ctx) => {")
+  const end = source.indexOf("router.patch('/orders/:id/pay'", start)
+  assert(start >= 0 && end > start, 'order submit route must be found')
+  const orderSubmitRoute = source.slice(start, end)
+  const reuseIndex = orderSubmitRoute.indexOf('findReusableDuodiandianApplyRiskReview')
+  const packIndex = orderSubmitRoute.indexOf('await runOrderSubmitUpstreamRiskPack')
+  assert(reuseIndex >= 0, 'order submit route should look for reusable duodiandian apply pre-review')
+  assert(packIndex >= 0, 'order submit route should still keep normal paid risk pack fallback')
+  assert(reuseIndex < packIndex, 'pre-review reuse must be checked before paid risk pack is called')
+  assert.match(orderSubmitRoute, /riskReviewSource\s*=\s*'duodiandian_apply'/)
+  assert.match(orderSubmitRoute, /riskOrderSubmitPack\s*=\s*false/)
 })

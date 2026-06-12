@@ -9,6 +9,8 @@ class DuodiandianGatewayError extends Error {
 }
 
 const outboundNotifySentKeys = new Set()
+const DUODIANDIAN_APPLICATION_WRITE_KEYS = ['partnerGatewayApplications', 'trafficChannels', 'trafficPartners']
+const DUODIANDIAN_CALLBACK_WRITE_KEYS = ['partnerGatewayApplications']
 
 function nonEmpty(value) {
   return value !== undefined && value !== null && value !== ''
@@ -16,6 +18,10 @@ function nonEmpty(value) {
 
 function md5(input) {
   return crypto.createHash('md5').update(input, 'utf8').digest('hex')
+}
+
+function sha256(input) {
+  return crypto.createHash('sha256').update(input, 'utf8').digest('hex')
 }
 
 function readTrim(value) {
@@ -59,6 +65,16 @@ function resolveDuodiandianMongoRefreshPlan(method, pathValue, config = {}) {
   if (endpoint === '/getUrl') {
     return { mode: 'partial', keys: ['partnerGatewayApplications'], allowColdPartial: true }
   }
+  if (endpoint === '/apply') {
+    return { mode: 'partial', keys: DUODIANDIAN_APPLICATION_WRITE_KEYS, allowColdPartial: true }
+  }
+  if (endpoint === '/order/status/notify'
+    || endpoint === '/order/bindCard/notify'
+    || endpoint === '/order/replayPlan/notify'
+    || endpoint === '/order/replay/notify'
+    || endpoint === '/order/sign/notify') {
+    return { mode: 'partial', keys: DUODIANDIAN_CALLBACK_WRITE_KEYS, allowColdPartial: true }
+  }
   return { mode: 'full' }
 }
 
@@ -66,6 +82,18 @@ function normalizePath(value) {
   const raw = readTrim(value)
   if (!raw) return ''
   return raw.startsWith('/') ? raw : `/${raw}`
+}
+
+function deriveStatusNotifyUrl(value) {
+  const url = readTrim(value)
+  if (!url) return ''
+  if (url.includes('/open/order/replay/notify')) {
+    return url.replace('/open/order/replay/notify', '/open/order/status/notify')
+  }
+  if (url.includes('/order/replay/notify')) {
+    return url.replace('/order/replay/notify', '/order/status/notify')
+  }
+  return ''
 }
 
 function normalizePhone(value) {
@@ -105,30 +133,47 @@ function collectOrderPhones(order) {
   ].filter(nonEmpty)
 }
 
-function hasBlockingUserPrefixHit(db, prefix) {
-  return (Array.isArray(db.users) ? db.users : []).some((user) => {
-    if (!user || typeof user !== 'object') return false
-    return phoneStartsWithPrefix(user.phone || user.mobile || user.userPhone, prefix)
-  })
+function pushMatchingPhoneMd5(target, value, prefix) {
+  const phone = normalizePhone(value)
+  if (phoneStartsWithPrefix(phone, prefix)) {
+    target.add(md5(phone))
+  }
 }
 
-function hasBlockingOrderPrefixHit(db, prefix) {
-  return (Array.isArray(db.orders) ? db.orders : []).some((order) => {
+function collectBlockingUserPhoneMd5(db, prefix, target) {
+  for (const user of (Array.isArray(db.users) ? db.users : [])) {
+    if (!user || typeof user !== 'object') continue
+    pushMatchingPhoneMd5(target, user.phone || user.mobile || user.userPhone, prefix)
+  }
+}
+
+function collectBlockingOrderPhoneMd5(db, prefix, target) {
+  for (const order of (Array.isArray(db.orders) ? db.orders : [])) {
     const phones = collectOrderPhones(order)
-    return phones.some(phone => phoneStartsWithPrefix(phone, prefix))
-  })
+    for (const phone of phones) {
+      pushMatchingPhoneMd5(target, phone, prefix)
+    }
+  }
 }
 
-function hasBlockingApplicationPrefixHit(db, prefix, config = {}) {
+function collectBlockingApplicationPhoneMd5(db, prefix, config = {}, target) {
   const cfg = resolveGatewayConfig(config)
-  return (Array.isArray(db.partnerGatewayApplications) ? db.partnerGatewayApplications : []).some((app) => {
-    if (!app || typeof app !== 'object') return false
+  for (const app of (Array.isArray(db.partnerGatewayApplications) ? db.partnerGatewayApplications : [])) {
+    if (!app || typeof app !== 'object') continue
     const appPartner = normalizeCode(app.partnerCode)
     const appChannel = normalizeCode(app.channel)
     const isCurrentPartner = appPartner === cfg.partnerCode && appChannel === cfg.channelCode
-    if (!isCurrentPartner) return false
-    return phoneStartsWithPrefix(app.userPhone || app.phone, prefix)
-  })
+    if (!isCurrentPartner) continue
+    pushMatchingPhoneMd5(target, app.userPhone || app.phone, prefix)
+  }
+}
+
+function collectBlockingPhoneMd5(db, prefix, config = {}) {
+  const matches = new Set()
+  collectBlockingUserPhoneMd5(db, prefix, matches)
+  collectBlockingOrderPhoneMd5(db, prefix, matches)
+  collectBlockingApplicationPhoneMd5(db, prefix, config, matches)
+  return [...matches]
 }
 
 function buildDuodiandianCheckPrefixResult(db, payload, config = {}) {
@@ -136,11 +181,8 @@ function buildDuodiandianCheckPrefixResult(db, payload, config = {}) {
   if (prefix.length < 3) {
     return { check_ret: 'N', phone_md5: [] }
   }
-  const blocked = hasBlockingUserPrefixHit(db, prefix)
-    || hasBlockingOrderPrefixHit(db, prefix)
-    || hasBlockingApplicationPrefixHit(db, prefix, config)
-  // Never return matched phone hashes; the partner only receives an allow/deny result.
-  return { check_ret: blocked ? 'N' : 'Y', phone_md5: [] }
+  const phoneMd5 = collectBlockingPhoneMd5(db, prefix, config)
+  return { check_ret: phoneMd5.length > 0 ? 'N' : 'Y', phone_md5: phoneMd5 }
 }
 
 function duodiandianConfigFromEnv() {
@@ -152,6 +194,7 @@ function duodiandianConfigFromEnv() {
     signKey: readTrim(process.env.DUODIANDIAN_SIGN_KEY),
     encKey: readTrim(process.env.DUODIANDIAN_ENC_KEY),
     replayNotifyUrl: readTrim(process.env.DUODIANDIAN_REPLAY_NOTIFY_URL || process.env.DUODIANDIAN_CALLBACK_URL),
+    statusNotifyUrl: readTrim(process.env.DUODIANDIAN_STATUS_NOTIFY_URL || process.env.DUODIANDIAN_AUDIT_NOTIFY_URL),
     yearlyRate: readTrim(process.env.DUODIANDIAN_YEARLY_RATE),
     h5Origin: readTrim(process.env.DUODIANDIAN_H5_ORIGIN || process.env.MALL_H5_ORIGIN).replace(/\/$/, ''),
     timestampSkewMs: readTrim(process.env.DUODIANDIAN_TIMESTAMP_SKEW_MS),
@@ -179,6 +222,8 @@ function resolveGatewayConfig(config = {}) {
   merged.gatewayRemark = readTrim(merged.gatewayRemark)
   merged.routePrefix = normalizeRoutePrefix(merged.routePrefix)
   merged.replayNotifyUrl = readTrim(merged.replayNotifyUrl || merged.callbackUrl)
+  merged.statusNotifyUrl = readTrim(merged.statusNotifyUrl || merged.auditNotifyUrl)
+    || deriveStatusNotifyUrl(merged.replayNotifyUrl)
   merged.yearlyRate = readTrim(merged.yearlyRate) || '0%'
   merged.h5Origin = readTrim(merged.h5Origin).replace(/\/$/, '')
   merged.portalUsername = readTrim(merged.portalUsername)
@@ -390,6 +435,36 @@ function sanitizeApplySnapshot(payload) {
   }
 }
 
+function normalizeApplyRiskSubject(payload = {}) {
+  const userName = readTrim(payload.name || payload.userName || payload.realName)
+  const phoneNumber = normalizePhone(payload.userPhone || payload.phone || payload.mobile || payload.phoneNumber)
+  const idNumber = readTrim(payload.idNo || payload.idNumber || payload.id_card || payload.idCardNo).toUpperCase()
+  return {
+    userName,
+    phoneNumber: phoneNumber.startsWith('86') && phoneNumber.length === 13 ? phoneNumber.slice(2) : phoneNumber,
+    idNumber,
+  }
+}
+
+function applyRiskIdentityHash(subject = {}) {
+  const userName = readTrim(subject.userName)
+  const phoneNumber = normalizePhone(subject.phoneNumber)
+  const idNumber = readTrim(subject.idNumber).toUpperCase()
+  if (!userName || !/^1\d{10}$/.test(phoneNumber) || !idNumber) {
+    return ''
+  }
+  return sha256([userName, phoneNumber, idNumber].join('|'))
+}
+
+function summarizeRiskSteps(steps) {
+  return (Array.isArray(steps) ? steps : []).map(s => ({
+    key: s && s.key,
+    state: s && s.skipped ? 'skipped' : (s && s.ok ? 'ok' : 'fail'),
+    label: s && s.label,
+    error: s && s.error,
+  }))
+}
+
 function upsertDuodiandianApplication(db, payload, config = {}) {
   const cfg = resolveGatewayConfig(config)
   requireGatewayConfig(cfg, ['partnerCode', 'channelCode', 'channelName'])
@@ -425,6 +500,162 @@ function upsertDuodiandianApplication(db, payload, config = {}) {
   app.rawApplyMasked = sanitizeApplySnapshot(payload)
   app.updatedAt = now
   return app
+}
+
+function buildApplyRiskNotifyPayload(app, review, config = {}) {
+  const cfg = resolveGatewayConfig(config)
+  const base = {
+    applyNo: readTrim(app && app.applyNo),
+    partnerOrderNo: readTrim(app && app.partnerOrderNo),
+  }
+  if (review.status === 'PASS') {
+    return {
+      ...base,
+      status: 'AUDIT_PASS',
+      approvalAmount: '0',
+      availableAmount: '0',
+      yearlyRate: cfg.yearlyRate,
+    }
+  }
+  if (review.status === 'REJECT') {
+    return {
+      ...base,
+      status: 'AUDIT_REJECT',
+      rejectReason: readTrim(review.reason) || '风控未通过',
+    }
+  }
+  throw new DuodiandianGatewayError(`unsupported apply risk notify status: ${review.status}`, 500)
+}
+
+async function notifyDuodiandianApplyRiskReview(options = {}) {
+  const cfg = resolveGatewayConfig(options.config || {})
+  const app = options.app
+  const review = options.review || {}
+  if (!app || !review || (review.status !== 'PASS' && review.status !== 'REJECT')) {
+    return { sent: false, reason: 'invalid_arguments' }
+  }
+  if (!cfg.statusNotifyUrl) {
+    return { sent: false, reason: 'notify_url_missing' }
+  }
+  const payload = buildApplyRiskNotifyPayload(app, review, cfg)
+  const sentKey = `apply-risk:${payload.applyNo}:${payload.status}`
+  if (outboundNotifySentKeys.has(sentKey)) {
+    return { sent: false, reason: 'duplicate_skipped', payload }
+  }
+  const timestamp = typeof options.now === 'function' ? String(options.now()) : String(Date.now())
+  const envelope = buildDuodiandianNotifyEnvelope(payload, cfg, { timestamp })
+  const client = typeof options.httpClient === 'function'
+    ? options.httpClient
+    : (typeof fetch === 'function' ? fetch : null)
+  if (!client) {
+    return { sent: false, reason: 'fetch_unavailable', payload }
+  }
+  try {
+    const resp = await client(cfg.statusNotifyUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(envelope),
+    })
+    const text = typeof resp.text === 'function'
+      ? await resp.text()
+      : (typeof resp.json === 'function' ? JSON.stringify(await resp.json()) : '')
+    const body = parseNotifyResponseBody(text)
+    const code = body && body.code !== undefined ? String(body.code) : ''
+    const accepted = Boolean(resp.ok) && (!code || code === '200')
+    if (accepted) {
+      outboundNotifySentKeys.add(sentKey)
+    }
+    return { sent: accepted, reason: accepted ? 'ok' : 'remote_rejected', status: resp.status, body, payload }
+  }
+  catch (err) {
+    return { sent: false, reason: 'request_failed', error: err && err.message ? err.message : String(err), payload }
+  }
+}
+
+async function runDuodiandianApplyRiskReview(options = {}) {
+  const app = options.app
+  const payload = options.payload || {}
+  if (!app || typeof app !== 'object') {
+    throw new DuodiandianGatewayError('application is required', 500)
+  }
+  const nowIso = new Date(typeof options.now === 'function' ? Number(options.now()) : Date.now()).toISOString()
+  const subject = normalizeApplyRiskSubject(payload)
+  const identityHash = applyRiskIdentityHash(subject)
+  app.riskReviewSource = 'duodiandian_apply'
+  app.riskReviewAt = nowIso
+  if (!identityHash) {
+    app.riskReviewStatus = 'SKIPPED'
+    app.riskReviewReason = 'identity data incomplete: requires name, phone and idNumber'
+    return { status: 'SKIPPED', reason: app.riskReviewReason }
+  }
+  if (app.riskReviewIdentityHash === identityHash && ['PASS', 'REJECT', 'ERROR'].includes(String(app.riskReviewStatus || ''))) {
+    return { status: app.riskReviewStatus, reused: true, reason: app.riskReviewReason || '' }
+  }
+  app.riskReviewIdentityHash = identityHash
+  if (typeof options.runRiskPack !== 'function') {
+    app.riskReviewStatus = 'SKIPPED'
+    app.riskReviewReason = 'apply pre-risk runner is not configured'
+    return { status: 'SKIPPED', reason: app.riskReviewReason }
+  }
+
+  let pack
+  try {
+    pack = await options.runRiskPack(subject)
+  }
+  catch (err) {
+    app.riskReviewStatus = 'ERROR'
+    app.riskReviewReason = err && err.message ? String(err.message) : String(err)
+    app.riskReviewStepsSummary = []
+    return { status: 'ERROR', reason: app.riskReviewReason }
+  }
+
+  const review = {
+    status: pack && pack.allPassed ? 'PASS' : 'REJECT',
+    reason: pack && pack.allPassed ? '' : String((pack && pack.message) || '风控未通过'),
+  }
+  app.riskReviewStatus = review.status
+  app.riskReviewReason = review.reason
+  app.riskReviewStepsSummary = summarizeRiskSteps(pack && pack.steps)
+
+  const notify = await notifyDuodiandianApplyRiskReview({
+    app,
+    review,
+    config: options.config,
+    httpClient: options.httpClient,
+    now: options.now,
+  })
+  app.riskNotifyStatus = notify.sent ? 'SENT' : 'FAILED'
+  app.riskNotifyReason = notify.reason
+  if (notify.error) {
+    app.riskNotifyLastError = notify.error
+  }
+  else {
+    delete app.riskNotifyLastError
+  }
+  return { status: review.status, reason: review.reason, notify }
+}
+
+function findReusableDuodiandianApplyRiskReview(db, subject, config = {}) {
+  const cfg = resolveGatewayConfig(config)
+  const identityHash = applyRiskIdentityHash(subject)
+  if (!identityHash || !db || !Array.isArray(db.partnerGatewayApplications)) {
+    return null
+  }
+  const app = db.partnerGatewayApplications.find(item => item
+    && normalizeCode(item.partnerCode) === cfg.partnerCode
+    && normalizeCode(item.channel) === cfg.channelCode
+    && item.riskReviewIdentityHash === identityHash
+    && (item.riskReviewStatus === 'PASS' || item.riskReviewStatus === 'REJECT')) || null
+  if (!app) {
+    return null
+  }
+  return {
+    app,
+    status: app.riskReviewStatus,
+    reason: app.riskReviewReason || '',
+    checkedAt: app.riskReviewAt || app.updatedAt || app.createdAt || '',
+    stepsSummary: Array.isArray(app.riskReviewStepsSummary) ? app.riskReviewStepsSummary : [],
+  }
 }
 
 function bindPartnerOrderNo(db, applyNo, partnerOrderNo, config = {}) {
@@ -582,7 +813,7 @@ async function notifyDuodiandianOrderEvent(options = {}) {
   if (!db || !order || !event) {
     return { sent: false, reason: 'invalid_arguments' }
   }
-  if (!cfg.replayNotifyUrl) {
+  if (!cfg.statusNotifyUrl) {
     return { sent: false, reason: 'notify_url_missing' }
   }
   let app
@@ -610,7 +841,7 @@ async function notifyDuodiandianOrderEvent(options = {}) {
     return { sent: false, reason: 'fetch_unavailable', payload }
   }
   try {
-    const resp = await client(cfg.replayNotifyUrl, {
+    const resp = await client(cfg.statusNotifyUrl, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(envelope),
@@ -660,6 +891,9 @@ function contractUrl(base, path, channelCode) {
 function registerDuodiandianGatewayRoutes(router, deps = {}) {
   const readDb = deps.readDb
   const writeDb = deps.writeDb
+  const writeDbPartial = typeof deps.writeDbPartial === 'function' ? deps.writeDbPartial : null
+  const flushMongoPersist = typeof deps.flushMongoPersist === 'function' ? deps.flushMongoPersist : null
+  const runApplyRiskPack = typeof deps.runApplyRiskPack === 'function' ? deps.runApplyRiskPack : null
   if (typeof readDb !== 'function' || typeof writeDb !== 'function') {
     throw new Error('readDb/writeDb are required')
   }
@@ -681,18 +915,69 @@ function registerDuodiandianGatewayRoutes(router, deps = {}) {
     }
   }
 
-  async function handleWrite(ctx, action) {
+  function gatewayPerfNowMs() {
+    return Number(process.hrtime.bigint() / 1000000n)
+  }
+
+  function gatewaySlowLogThresholdMs() {
+    const raw = Number(process.env.DUODIANDIAN_GATEWAY_SLOW_LOG_MS || 1000)
+    return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 0
+  }
+
+  function maybeLogGatewayPerf(ctx, marks, extra = {}) {
+    const threshold = gatewaySlowLogThresholdMs()
+    if (threshold <= 0 || !marks || !marks.start || !marks.end) return
+    const totalMs = marks.end - marks.start
+    if (totalMs < threshold) return
+    console.warn('[duodiandian-gateway-perf]', {
+      endpoint: extra.endpoint || ctx.path || '',
+      statusCode: ctx.status || 200,
+      totalMs,
+      parseMs: marks.parseEnd && marks.start ? marks.parseEnd - marks.start : undefined,
+      readDbMs: marks.readDbEnd && marks.readDbStart ? marks.readDbEnd - marks.readDbStart : undefined,
+      actionMs: marks.actionEnd && marks.actionStart ? marks.actionEnd - marks.actionStart : undefined,
+      persistScheduleMs: marks.persistEnd && marks.persistStart ? marks.persistEnd - marks.persistStart : undefined,
+      flushMs: marks.flushEnd && marks.flushStart ? marks.flushEnd - marks.flushStart : undefined,
+    })
+  }
+
+  async function handleWrite(ctx, action, options = {}) {
+    const marks = { start: gatewayPerfNowMs() }
     try {
       const config = resolveGatewayConfig(configProvider())
+      const endpoint = options.endpoint || ctx.path || ''
       const payload = parseDuodiandianEnvelope(ctx.request.body || {}, config)
+      marks.parseEnd = gatewayPerfNowMs()
+      marks.readDbStart = gatewayPerfNowMs()
       const db = readDb()
+      marks.readDbEnd = gatewayPerfNowMs()
       ensureDuodiandianChannel(db, config)
+      marks.actionStart = gatewayPerfNowMs()
       const result = await action({ ctx, payload, db, config })
-      writeDb(db)
+      marks.actionEnd = gatewayPerfNowMs()
+      const persistKeys = Array.isArray(options.persistKeys) ? options.persistKeys : null
+      marks.persistStart = gatewayPerfNowMs()
+      if (persistKeys && writeDbPartial) {
+        writeDbPartial(db, persistKeys)
+      }
+      else {
+        writeDb(db)
+      }
+      marks.persistEnd = gatewayPerfNowMs()
+      if (flushMongoPersist) {
+        marks.flushStart = gatewayPerfNowMs()
+        await flushMongoPersist()
+        marks.flushEnd = gatewayPerfNowMs()
+        if (ctx.state) ctx.state.mongoPersistFlushed = true
+      }
       gatewaySuccess(ctx, result)
+      marks.end = gatewayPerfNowMs()
+      maybeLogGatewayPerf(ctx, marks, { endpoint })
     }
     catch (err) {
       gatewayFail(ctx, err)
+      marks.end = gatewayPerfNowMs()
+      maybeLogGatewayPerf(ctx, marks, { endpoint: options.endpoint || ctx.path || '' })
     }
   }
 
@@ -726,6 +1011,12 @@ function registerDuodiandianGatewayRoutes(router, deps = {}) {
       const app = upsertDuodiandianApplication(db, payload, config)
       const partnerOrderNo = app.partnerOrderNo || makePartnerOrderNo(app.applyNo)
       bindPartnerOrderNo(db, app.applyNo, partnerOrderNo, config)
+      await runDuodiandianApplyRiskReview({
+        app,
+        payload,
+        config,
+        runRiskPack: runApplyRiskPack,
+      })
       return {
         status: '1',
         partnerOrderNo,
@@ -733,7 +1024,7 @@ function registerDuodiandianGatewayRoutes(router, deps = {}) {
         approvalAmount: '0',
         approvalStatus: 'ING',
       }
-    })
+    }, { endpoint: `${prefix}/apply`, persistKeys: DUODIANDIAN_APPLICATION_WRITE_KEYS })
   })
 
   router.post(`${prefix}/getUrl`, async (ctx) => {
@@ -746,35 +1037,35 @@ function registerDuodiandianGatewayRoutes(router, deps = {}) {
     await handleWrite(ctx, async ({ payload, db, config }) => {
       recordDuodiandianCallback(db, 'orderStatus', payload, config)
       return undefined
-    })
+    }, { endpoint: `${prefix}/order/status/notify`, persistKeys: DUODIANDIAN_CALLBACK_WRITE_KEYS })
   })
 
   router.post(`${prefix}/order/bindCard/notify`, async (ctx) => {
     await handleWrite(ctx, async ({ payload, db, config }) => {
       recordDuodiandianCallback(db, 'bindCard', payload, config)
       return undefined
-    })
+    }, { endpoint: `${prefix}/order/bindCard/notify`, persistKeys: DUODIANDIAN_CALLBACK_WRITE_KEYS })
   })
 
   router.post(`${prefix}/order/replayPlan/notify`, async (ctx) => {
     await handleWrite(ctx, async ({ payload, db, config }) => {
       recordDuodiandianCallback(db, 'replayPlan', payload, config)
       return undefined
-    })
+    }, { endpoint: `${prefix}/order/replayPlan/notify`, persistKeys: DUODIANDIAN_CALLBACK_WRITE_KEYS })
   })
 
   router.post(`${prefix}/order/replay/notify`, async (ctx) => {
     await handleWrite(ctx, async ({ payload, db, config }) => {
       recordDuodiandianCallback(db, 'repayment', payload, config)
       return undefined
-    })
+    }, { endpoint: `${prefix}/order/replay/notify`, persistKeys: DUODIANDIAN_CALLBACK_WRITE_KEYS })
   })
 
   router.post(`${prefix}/order/sign/notify`, async (ctx) => {
     await handleWrite(ctx, async ({ payload, db, config }) => {
       recordDuodiandianCallback(db, 'sign', payload, config)
       return undefined
-    })
+    }, { endpoint: `${prefix}/order/sign/notify`, persistKeys: DUODIANDIAN_CALLBACK_WRITE_KEYS })
   })
 }
 
@@ -788,6 +1079,11 @@ module.exports = {
   ensureDuodiandianChannel,
   ensureDuodiandianPortalPartner,
   upsertDuodiandianApplication,
+  runDuodiandianApplyRiskReview,
+  notifyDuodiandianApplyRiskReview,
+  findReusableDuodiandianApplyRiskReview,
+  normalizeApplyRiskSubject,
+  applyRiskIdentityHash,
   bindPartnerOrderNo,
   recordDuodiandianCallback,
   buildDuodiandianH5Url,
