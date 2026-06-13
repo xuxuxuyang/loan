@@ -404,6 +404,39 @@ async function loadShardedPartialRawFromDb(dbm, entityKeys) {
 }
 
 const BULK_CHUNK = 400
+const SHRINK_PROTECT_DEFAULT = { minExisting: 5, maxRemoveRatio: 0.8 }
+const SHRINK_PROTECT_BY_ENTITY = {
+  products: SHRINK_PROTECT_DEFAULT,
+  orders: { minExisting: 50, maxRemoveRatio: 0.5 },
+  users: { minExisting: 50, maxRemoveRatio: 0.2 },
+  adminAccounts: SHRINK_PROTECT_DEFAULT,
+  addresses: { minExisting: 50, maxRemoveRatio: 0.5 },
+  bankCards: SHRINK_PROTECT_DEFAULT,
+  bills: SHRINK_PROTECT_DEFAULT,
+  trafficChannels: SHRINK_PROTECT_DEFAULT,
+  trafficPartners: SHRINK_PROTECT_DEFAULT,
+  partnerGatewayApplications: SHRINK_PROTECT_DEFAULT,
+  csSessions: SHRINK_PROTECT_DEFAULT,
+  lakalaPayments: SHRINK_PROTECT_DEFAULT,
+}
+
+function assertSafeEntitySnapshotShrink(spec, existing, list) {
+  const rule = spec && SHRINK_PROTECT_BY_ENTITY[spec.key]
+  if (!rule) {
+    return
+  }
+  const existingCount = Array.isArray(existing) ? existing.length : 0
+  const nextCount = Array.isArray(list) ? list.length : 0
+  if (existingCount < rule.minExisting) {
+    return
+  }
+  const removedCount = Math.max(0, existingCount - nextCount)
+  const removedRatio = existingCount > 0 ? removedCount / existingCount : 0
+  if (removedRatio <= rule.maxRemoveRatio) {
+    return
+  }
+  throw new Error(`[store] refusing to shrink ${spec.key} from ${existingCount} to ${nextCount}; possible stale snapshot`)
+}
 
 /**
  * 同步单个分集合：删除库中不在快照内的 _id，再 bulkWrite replace upsert。
@@ -424,6 +457,7 @@ async function persistEntityCollection(dbm, spec, items) {
   }
 
   const existing = await coll.find({}, { projection: { _id: 1 } }).toArray()
+  assertSafeEntitySnapshotShrink(spec, existing, list)
   const toRemove = existing
     .map(e => e._id)
     .filter(_id => !wantKeys.has(stablePrimaryKeyString(_id)))

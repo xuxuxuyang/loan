@@ -5,6 +5,7 @@ const cloudConfig = require('./cloudConfig')
 const mongoConfig = require('./mongoConfig')
 const mongo = require('./mongo')
 const adminMongoReadOptimize = require('./adminMongoReadOptimize')
+const { shouldBlockRequestOnMongoRefreshError } = require('./mongoRefreshGuard')
 
 const Koa = require('koa')
 const Router = require('@koa/router')
@@ -815,7 +816,7 @@ async function migrateLegacyMainAccountsToCore() {
     })
 
     if (appended > 0) {
-      writeDb(coreDb)
+      writeAdminAccountsDb(coreDb)
     }
     return appended
   })
@@ -858,7 +859,7 @@ async function deleteTenantScopedAdminAccountInTenantDbById(tenantId, accountId)
       return { found: true, blocked: true, reason: 'default-super' }
     }
     db.adminAccounts.splice(index, 1)
-    writeDb(db)
+    writeAdminAccountsDb(db)
     clearAdminAccountCaches()
     return { found: true, deleted: true, target }
   })
@@ -885,7 +886,7 @@ async function writeCoreDb(db) {
     await refreshScopeCacheFromMongo('core', DEFAULT_TENANT_ID)
   }
   return runWithWorkspace('core', DEFAULT_TENANT_ID, () => {
-    writeDb(db)
+    writeDbPartial(db, ['adminAccounts'])
   })
 }
 
@@ -1967,7 +1968,7 @@ function ensureProductCatalog(db) {
     }
   }
   if (changed) {
-    writeDb(db)
+    writeProductsDb(db)
   }
 }
 
@@ -2635,7 +2636,7 @@ async function getOrBuildMockCardPackagePdfBuffer(ctx, db, order, user, phone, c
       if (prev && prev !== filename && /^cpdf-[a-f0-9]{32}\.pdf$/i.test(prev)) {
         await fsp.unlink(path.join(MOCK_CARD_PACKAGE_PDF_CACHE_DIR, prev)).catch(() => {})
       }
-      writeDb(db)
+      writeOrderDb(db, order)
       return buf
     }
     finally {
@@ -3421,6 +3422,10 @@ function computeCsAdminBadge(db) {
 /** 客服会话变更仅持久化 csSessions，避免整库 11 集合 sync */
 function writeCsSessionsDb(db) {
   writeDbPartial(db, ['csSessions'])
+}
+
+function writeAppMetaDb(db) {
+  writeDbPartial(db, [])
 }
 
 function writeProductsDb(db) {
@@ -4988,7 +4993,7 @@ async function createTenantScopedAdminAccount(targetTenantId, payload) {
       updatedAt: now,
     })
     db.adminAccounts.unshift(next)
-    writeDb(db)
+    writeAdminAccountsDb(db)
     clearAdminAccountCaches()
     return { ok: true, account: next }
   })
@@ -5026,7 +5031,7 @@ async function createPlatformScopedAdminAccount(payload) {
       updatedAt: now,
     })
     db.adminAccounts.unshift(next)
-    writeDb(db)
+    writeAdminAccountsDb(db)
     clearAdminAccountCaches()
     return { ok: true, account: next }
   })
@@ -5102,7 +5107,7 @@ function ensureTenantRegistered(db, tenantId) {
   if (changed) {
     writeKnownTenantIdsMeta(db, known)
     writeTenantCreatedAtMapMeta(db, createdAtById)
-    writeDb(db)
+    writeAppMetaDb(db)
   }
   return true
 }
@@ -5139,7 +5144,7 @@ async function unregisterKnownTenantId(tenantId) {
     }
     writeKnownTenantIdsMeta(db, nextKnown)
     writeTenantCreatedAtMapMeta(db, createdAtById)
-    writeDb(db)
+    writeAppMetaDb(db)
     return true
   })
 }
@@ -5195,7 +5200,7 @@ async function collectKnownTenantIdsForPlatform() {
       || merged.some(id => !knownSet.has(id))
     if (needsMetaWrite) {
       writeKnownTenantIdsMeta(db, merged)
-      writeDb(db)
+      writeAppMetaDb(db)
     }
   })
   return mergedForReturn
@@ -11190,8 +11195,13 @@ app.use(async (ctx, next) => {
         await refreshScopeCacheFromMongo(workspaceType, tenantId)
       }
     }
-    catch {
-      // ignore on-demand hydrate failures and fallback to in-memory snapshot
+    catch (err) {
+      if (shouldBlockRequestOnMongoRefreshError(ctx.method)) {
+        console.error('[mongo] refresh failed before mutation; request blocked:', err?.message || err)
+        fail(ctx, '数据库刷新失败，为保护线上数据，本次写入已拦截，请稍后重试', 503)
+        return
+      }
+      // Reads may fall back to the in-memory snapshot; writes must not.
     }
   }
   await next()
@@ -11329,7 +11339,7 @@ app.use(riskControlRouter.allowedMethods())
     ensureDuodiandianChannel(db)
     ensureDuodiandianPortalPartner(db)
     reconcileInstallmentCompletionAcrossDb(db)
-    writeDb(db)
+    writeTrafficChannelsAndPartnersDb(db)
   }
   catch (err) {
     console.warn('[api] 启动时先享后付/订单状态对账失败:', err?.message || err)
