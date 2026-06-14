@@ -24,12 +24,22 @@ interface TrafficPartnerStatsRow {
   overdueRate: number | null
   registrationConversionRate: number | null
   applicationConversionRate: number | null
+  approvedRows?: TrafficPartnerApprovedRow[]
+}
+
+interface TrafficPartnerApprovedRow {
+  id: string
+  issuedAt: string
+  name: string
+  phone: string
+  status: string
 }
 
 const router = useRouter()
 const loading = ref(false)
 const rows = ref<TrafficPartnerStatsRow[]>([])
 const errorMessage = ref('')
+const approvedDate = ref(formatLocalYmd(new Date()))
 
 const tableHeaderCellStyle = {
   background: '#f1f5f9',
@@ -72,6 +82,20 @@ const summary = computed(() => {
     approvedCount: acc.approvedCount + (r.approvedCount || 0),
     overdueCount: acc.overdueCount + (r.overdueCount || 0),
   }), init)
+})
+
+const approvedRows = computed<TrafficPartnerApprovedRow[]>(() => {
+  return rows.value
+    .flatMap(row => Array.isArray(row.approvedRows) ? row.approvedRows : [])
+    .sort((a, b) => String(b.issuedAt || '').localeCompare(String(a.issuedAt || '')))
+})
+
+const filteredApprovedRows = computed<TrafficPartnerApprovedRow[]>(() => {
+  const date = String(approvedDate.value || '').trim()
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    return approvedRows.value
+  }
+  return approvedRows.value.filter(row => String(row.issuedAt || '').startsWith(date))
 })
 
 const h5BaseForLink = computed(() => {
@@ -164,6 +188,13 @@ function formatRate(value: number | null | undefined) {
     return '—'
   }
   return `${Number(value).toFixed(2)}%`
+}
+
+function formatLocalYmd(d: Date) {
+  const y = d.getFullYear()
+  const m = `${d.getMonth() + 1}`.padStart(2, '0')
+  const day = `${d.getDate()}`.padStart(2, '0')
+  return `${y}-${m}-${day}`
 }
 
 function logout() {
@@ -544,6 +575,73 @@ onMounted(() => {
             </el-table>
           </div>
         </section>
+
+        <section class="panel approved-panel">
+          <div class="panel__head">
+            <div>
+              <h2 class="panel__title">
+                已通过客户
+              </h2>
+            </div>
+          </div>
+
+          <div class="panel__body">
+            <div class="approved-filter">
+              <span class="approved-filter__label">通过日期</span>
+              <el-date-picker
+                v-model="approvedDate"
+                class="approved-filter__date"
+                type="date"
+                value-format="YYYY-MM-DD"
+                format="YYYY-MM-DD"
+                placeholder="选择日期"
+                :clearable="false"
+                :disabled="loading"
+              />
+            </div>
+            <el-table
+              v-loading="loading"
+              :data="filteredApprovedRows"
+              stripe
+              border
+              size="default"
+              class="data-table approved-table"
+              :header-cell-style="tableHeaderCellStyle"
+              empty-text="暂无已通过客户"
+            >
+              <el-table-column
+                prop="issuedAt"
+                label="通过日期"
+                min-width="160"
+              />
+              <el-table-column
+                prop="name"
+                label="姓名"
+                min-width="120"
+              />
+              <el-table-column
+                prop="phone"
+                label="电话号码"
+                min-width="140"
+              />
+              <el-table-column
+                label="状态"
+                min-width="100"
+                align="center"
+              >
+                <template #default="{ row }">
+                  <el-tag
+                    type="success"
+                    effect="light"
+                    round
+                  >
+                    {{ row.status || '已通过' }}
+                  </el-tag>
+                </template>
+              </el-table-column>
+            </el-table>
+          </div>
+        </section>
       </main>
     </div>
 </template>
@@ -697,6 +795,33 @@ onMounted(() => {
   width: 100%;
 }
 
+.approved-panel {
+  min-height: 320px;
+}
+
+.approved-table {
+  min-height: 240px;
+}
+
+.approved-filter {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 10px;
+  padding: 0 0 14px;
+  margin: 0 0 14px;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.approved-filter__label {
+  font-size: 13px;
+  color: #64748b;
+}
+
+.approved-filter__date {
+  width: 180px;
+}
+
 .promo-link {
   display: flex;
   align-items: center;
@@ -758,6 +883,15 @@ onMounted(() => {
 
   .panel__head {
     flex-direction: column;
+  }
+
+  .approved-filter {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .approved-filter__date {
+    width: 100%;
   }
 }
 </style>

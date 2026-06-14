@@ -106,6 +106,7 @@ const contextualPermissionActionLabels: Record<string, Record<string, string>> =
   },
   'orders.receivable.today': { view: '查看今日待收' },
   'orders.receivable.tomorrow': { view: '查看明日待收' },
+  'orders.receivable.data': { view: '查看待收数据' },
   'users.registered': {
     view: '查看注册用户',
     create: '新增注册用户',

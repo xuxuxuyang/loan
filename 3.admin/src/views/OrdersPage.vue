@@ -1377,7 +1377,7 @@ watch(
         class="toolbar-date"
         type="date"
         value-format="YYYY-MM-DD"
-        placeholder="下单日期"
+        :placeholder="isCardPackageDataPage ? '发放日期' : '下单日期'"
       />
       <el-input
         v-model="keyword"
@@ -1412,7 +1412,7 @@ watch(
           <th>备注</th>
           <th>新老客户</th>
           <th>商品</th>
-          <th>下单时间</th>
+          <th>{{ isCardPackageDataPage ? '卡包发放时间' : '下单时间' }}</th>
           <th>订单金额</th>
           <th>订单状态</th>
           <th>快递单号</th>
@@ -1469,7 +1469,7 @@ watch(
           >
             {{ item.product }}
           </td>
-          <td>{{ item.createdAt }}</td>
+          <td>{{ isCardPackageDataPage ? (item.cardPackageIssuedAt || '-') : item.createdAt }}</td>
           <td>¥ {{ item.totalAmount }}</td>
           <td class="td-order-status">
             <el-dropdown

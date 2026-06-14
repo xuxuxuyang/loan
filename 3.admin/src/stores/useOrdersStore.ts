@@ -58,6 +58,7 @@ export interface OrderItem {
   riskReason: string
   payType: '先享后付' | '全款'
   createdAt: string
+  cardPackageIssuedAt: string
   installmentPlan: InstallmentItem[]
   /** 后台登记的卡包是否已发放（仅审核通过后的订单有意义） */
   cardPackageIssued: boolean
@@ -129,6 +130,7 @@ interface MallOrderPayload {
   /** 卡包金额（元），与商品卡包配置一致并对账落库 */
   cardPackageAmount?: number
   cardPackageIssued?: boolean
+  cardPackageIssuedAt?: string | null
   cardPackageContractSignedAt?: string | null
   trackingNumber?: string
   /** 管理端列表：关联收货手机号的商城用户后台备注 */
@@ -343,6 +345,7 @@ function mapMallOrderToAdminOrder(order: MallOrderPayload): OrderItem {
     riskReason: order.riskReason || '',
     payType: order.payType === 'installment' ? '先享后付' : '全款',
     createdAt: formatDateTime(order.createdAt),
+    cardPackageIssuedAt: formatDateTime(order.cardPackageIssuedAt || ''),
     installmentPlan: safePlan,
     cardPackageIssued,
     cardPackageContractSigned: Boolean(signedAt),

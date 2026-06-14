@@ -6,6 +6,8 @@ const mongoConfig = require('./mongoConfig')
 const mongo = require('./mongo')
 const adminMongoReadOptimize = require('./adminMongoReadOptimize')
 const { shouldBlockRequestOnMongoRefreshError } = require('./mongoRefreshGuard')
+const { computePendingReceivableStats } = require('./pendingReceivableStats')
+const { buildTrafficPartnerApprovedRowsForChannel } = require('./trafficPartnerApprovedRows')
 
 const Koa = require('koa')
 const Router = require('@koa/router')
@@ -7176,14 +7178,19 @@ function buildTrafficPartnerPortalStats(db, partner) {
       .map(c => String(c || '').trim())
       .filter(Boolean),
   )
-  return buildTrafficChannelPortalStatsRows(db).filter((row) => {
-    const code = String(row.code || '').trim()
-    if (!codes.has(code)) {
-      return false
-    }
-    const ch = db.trafficChannels.find(c => c && String(c.code || '').trim() === code)
-    return Boolean(ch && !ch.disabled)
-  })
+  return buildTrafficChannelPortalStatsRows(db)
+    .filter((row) => {
+      const code = String(row.code || '').trim()
+      if (!codes.has(code)) {
+        return false
+      }
+      const ch = db.trafficChannels.find(c => c && String(c.code || '').trim() === code)
+      return Boolean(ch && !ch.disabled)
+    })
+    .map(row => ({
+      ...row,
+      approvedRows: buildTrafficPartnerApprovedRowsForChannel(db, row.code),
+    }))
 }
 
 function incrementTrafficChannelClick(db, code) {
@@ -9641,16 +9648,11 @@ router.get('/orders/pending-receivable', async (ctx) => {
     return
   }
   const permissionKey = adminReceivablePermissionKeyForDueDate(dueDate, formatDate(new Date().toISOString()))
-  if (!await requireAdminPermission(ctx, [ADMIN_ROLES.SUPER, ADMIN_ROLES.COLLECTOR], 'view detail', { permissionKey, permissionAction: 'view' })) {
+  const receivablePermissionKeys = Array.from(new Set([permissionKey, 'orders.receivable.data']))
+  if (!await requireAdminPermissionOnAny(ctx, receivablePermissionKeys, 'view', 'view detail')) {
     return
   }
   const db = readDb()
-  const rowRefs = []
-  let totalDueOnDate = 0
-  let paidDueOnDate = 0
-  let unpaidDueOnDate = 0
-  let overdueBeforeDateCount = 0
-  let unpaidDueOnOrBeforeDateCount = 0
 
   for (const order of db.orders) {
     ensureOrderInstallmentPlan(order)
@@ -9659,47 +9661,13 @@ router.get('/orders/pending-receivable', async (ctx) => {
     if (order.payType === 'full' && order.status !== 'reviewing' && !order.paid) {
       order.paid = true
     }
-    const plan = Array.isArray(order.installmentPlan) ? order.installmentPlan : []
-    for (const item of plan) {
-      if (!item) {
-        continue
-      }
-      const key = normalizeInstallmentDueDateKey(item.dueDate)
-      if (key === dueDate) {
-        const amt = Number(Number(item.amount || 0).toFixed(2))
-        totalDueOnDate += amt
-        if (item.paid) {
-          paidDueOnDate += amt
-        }
-        else {
-          unpaidDueOnDate += amt
-        }
-      }
-      if (!item.paid && key) {
-        if (key <= dueDate) {
-          unpaidDueOnOrBeforeDateCount += 1
-          if (key < dueDate) {
-            overdueBeforeDateCount += 1
-          }
-        }
-      }
-      if (!item.paid && key === dueDate) {
-        rowRefs.push({ order, item, key })
-      }
-    }
   }
-  const totalAmount = Number(unpaidDueOnDate.toFixed(2))
-  totalDueOnDate = Number(totalDueOnDate.toFixed(2))
-  paidDueOnDate = Number(paidDueOnDate.toFixed(2))
-  unpaidDueOnDate = Number(unpaidDueOnDate.toFixed(2))
-  const overdueRateAsOfDate = unpaidDueOnOrBeforeDateCount > 0
-    ? Number(((overdueBeforeDateCount / unpaidDueOnOrBeforeDateCount) * 100).toFixed(2))
-    : 0
+  const receivableStats = computePendingReceivableStats(db.orders, dueDate)
   const pagination = parseOptionalListPagination(ctx.query, { defaultPageSize: 20, maxPageSize: 200 })
   const pagedRefs = pagination.enabled
-    ? paginateRows(rowRefs, pagination.page, pagination.pageSize)
+    ? paginateRows(receivableStats.rowRefs, pagination.page, pagination.pageSize)
     : null
-  const rows = (pagedRefs ? pagedRefs.list : rowRefs).map(ref => mapPendingReceivableRow(db, ref))
+  const rows = (pagedRefs ? pagedRefs.list : receivableStats.rowRefs).map(ref => mapPendingReceivableRow(db, ref))
   ctx.body = success({
     dueDate,
     rows,
@@ -9708,13 +9676,18 @@ router.get('/orders/pending-receivable', async (ctx) => {
       page: pagedRefs.page,
       pageSize: pagedRefs.pageSize,
     } : {}),
-    totalAmount,
-    totalDueOnDate,
-    paidDueOnDate,
-    unpaidDueOnDate,
-    overdueRateAsOfDate,
-    overdueBeforeDateCount,
-    unpaidDueOnOrBeforeDateCount,
+    totalAmount: receivableStats.totalAmount,
+    totalDueOnDate: receivableStats.totalDueOnDate,
+    paidDueOnDate: receivableStats.paidDueOnDate,
+    unpaidDueOnDate: receivableStats.unpaidDueOnDate,
+    totalDueOnDateCount: receivableStats.totalDueOnDateCount,
+    paidDueOnDateCount: receivableStats.paidDueOnDateCount,
+    unpaidDueOnDateCount: receivableStats.unpaidDueOnDateCount,
+    collectionRateOnDate: receivableStats.collectionRateOnDate,
+    unpaidRateOnDate: receivableStats.unpaidRateOnDate,
+    overdueRateAsOfDate: receivableStats.overdueRateAsOfDate,
+    overdueBeforeDateCount: receivableStats.overdueBeforeDateCount,
+    unpaidDueOnOrBeforeDateCount: receivableStats.unpaidDueOnOrBeforeDateCount,
   })
 })
 

@@ -18,6 +18,7 @@ declare module 'vue-router' {
     /** true：仅超级管理员（不含主系统老板蹭 super_admin） */
     strictSuperAdminOnly?: boolean
     receivableOffsetDays?: number
+    receivableDatePicker?: boolean
     permissionKey?: string
   }
 }
@@ -126,6 +127,12 @@ const router = createRouter({
       name: 'orders-receivable-tomorrow',
       component: ReceivableByDatePage,
       meta: { title: '明日待收', roles: ['super_admin', 'collector'], receivableOffsetDays: 1, permissionKey: 'orders.receivable.tomorrow' },
+    },
+    {
+      path: '/orders/receivable/data',
+      name: 'orders-receivable-data',
+      component: ReceivableByDatePage,
+      meta: { title: '待收数据', roles: ['super_admin', 'collector'], receivableDatePicker: true, permissionKey: 'orders.receivable.data' },
     },
     {
       path: '/users/card-package-issued',

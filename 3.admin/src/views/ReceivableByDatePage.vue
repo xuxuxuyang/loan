@@ -28,17 +28,23 @@ const pageSize = ref(50)
 const totalRows = ref(0)
 /** 应还日 = 统计日 的期次：应还总额（已还+未还） */
 const totalDueOnDate = ref(0)
+const totalDueOnDateCount = ref(0)
 /** 应还日 = 统计日 且已还 */
 const paidDueOnDate = ref(0)
+const paidDueOnDateCount = ref(0)
 /** 应还日 = 统计日 且未还（与明细合计一致） */
 const unpaidDueOnDate = ref(0)
-/** 应还日早于统计日且未还 ÷ 应还日不晚于统计日且未还 */
-const overdueRateAsOfDate = ref(0)
+const unpaidDueOnDateCount = ref(0)
+/** 应还日 = 统计日 的已还/未还笔数占比 */
+const collectionRateOnDate = ref(0)
+const unpaidRateOnDate = ref(0)
 
 const offsetDays = computed(() => {
   const raw = route.meta.receivableOffsetDays
   return typeof raw === 'number' && Number.isFinite(raw) ? raw : 0
 })
+
+const isDatePickerMode = computed(() => Boolean(route.meta.receivableDatePicker))
 
 function formatLocalYmd(d: Date) {
   const y = d.getFullYear()
@@ -47,7 +53,12 @@ function formatLocalYmd(d: Date) {
   return `${y}-${m}-${day}`
 }
 
+const selectedDueDate = ref(formatLocalYmd(new Date()))
+
 const dueDate = computed(() => {
+  if (isDatePickerMode.value && /^\d{4}-\d{2}-\d{2}$/.test(selectedDueDate.value)) {
+    return selectedDueDate.value
+  }
   const base = new Date()
   const d = new Date(base.getFullYear(), base.getMonth(), base.getDate() + offsetDays.value)
   return formatLocalYmd(d)
@@ -98,17 +109,17 @@ const filteredRows = computed(() => {
   })
 })
 
-const statDayPrefix = computed(() => (offsetDays.value === 0 ? '今日' : '明日'))
+const statDayPrefix = computed(() => {
+  if (isDatePickerMode.value) {
+    return '当日'
+  }
+  return offsetDays.value === 0 ? '今日' : '明日'
+})
 
 const base = `${(import.meta.env.VITE_MALL_API_BASE || 'http://localhost:3110/api').replace(/\/$/, '')}`
 
 const statisticAmountStyle = {
   color: '#b45309',
-  fontWeight: 600 as const,
-}
-
-const statisticRateStyle = {
-  color: '#be123c',
   fontWeight: 600 as const,
 }
 
@@ -142,7 +153,11 @@ async function load() {
         totalDueOnDate?: number
         paidDueOnDate?: number
         unpaidDueOnDate?: number
-        overdueRateAsOfDate?: number
+        totalDueOnDateCount?: number
+        paidDueOnDateCount?: number
+        unpaidDueOnDateCount?: number
+        collectionRateOnDate?: number
+        unpaidRateOnDate?: number
       }
     }
     try {
@@ -161,7 +176,11 @@ async function load() {
     unpaidDueOnDate.value = unpaid
     totalDueOnDate.value = Number(payload.data?.totalDueOnDate ?? unpaid)
     paidDueOnDate.value = Number(payload.data?.paidDueOnDate ?? 0)
-    overdueRateAsOfDate.value = Number(payload.data?.overdueRateAsOfDate ?? 0)
+    totalDueOnDateCount.value = Number(payload.data?.totalDueOnDateCount ?? 0)
+    paidDueOnDateCount.value = Number(payload.data?.paidDueOnDateCount ?? 0)
+    unpaidDueOnDateCount.value = Number(payload.data?.unpaidDueOnDateCount ?? totalRows.value)
+    collectionRateOnDate.value = Number(payload.data?.collectionRateOnDate ?? 0)
+    unpaidRateOnDate.value = Number(payload.data?.unpaidRateOnDate ?? 0)
   }
   catch (e) {
     errorMsg.value = e instanceof Error ? e.message : '加载失败'
@@ -170,7 +189,11 @@ async function load() {
     totalDueOnDate.value = 0
     paidDueOnDate.value = 0
     unpaidDueOnDate.value = 0
-    overdueRateAsOfDate.value = 0
+    totalDueOnDateCount.value = 0
+    paidDueOnDateCount.value = 0
+    unpaidDueOnDateCount.value = 0
+    collectionRateOnDate.value = 0
+    unpaidRateOnDate.value = 0
   }
   finally {
     loading.value = false
@@ -184,6 +207,9 @@ onMounted(() => {
 watch(
   () => [route.name, dueDate.value] as const,
   () => {
+    if (isDatePickerMode.value && !/^\d{4}-\d{2}-\d{2}$/.test(selectedDueDate.value)) {
+      selectedDueDate.value = formatLocalYmd(new Date())
+    }
     appliedKeyword.value = ''
     keyword.value = ''
     page.value = 1
@@ -234,6 +260,23 @@ function handlePageSizeChange(nextPageSize: number) {
         </div>
       </template>
 
+      <div
+        v-if="isDatePickerMode"
+        class="summary-date-toolbar"
+      >
+        <span class="summary-date-toolbar__label">选择统计日期</span>
+          <el-date-picker
+            v-model="selectedDueDate"
+            class="summary-date-picker"
+            type="date"
+            value-format="YYYY-MM-DD"
+            format="YYYY-MM-DD"
+            placeholder="请选择统计日期"
+            :clearable="false"
+            :disabled="loading"
+          />
+      </div>
+
       <el-row
         :gutter="16"
         class="stat-row"
@@ -250,7 +293,7 @@ function handlePageSizeChange(nextPageSize: number) {
             :value-style="statisticAmountStyle"
           />
           <p class="stat-sub">
-            应还日=统计日，已还+未还
+            应还日=统计日，已还+未还（{{ totalDueOnDateCount }} 笔）
           </p>
         </el-col>
         <el-col
@@ -264,7 +307,7 @@ function handlePageSizeChange(nextPageSize: number) {
             :precision="2"
           />
           <p class="stat-sub">
-            应还日=统计日且已入账
+            应还日=统计日且已入账（{{ paidDueOnDateCount }} 笔）
           </p>
         </el-col>
         <el-col
@@ -279,7 +322,7 @@ function handlePageSizeChange(nextPageSize: number) {
             :value-style="statisticAmountStyle"
           />
           <p class="stat-sub">
-            应还日=统计日且未还（{{ rows.length }} 笔）
+            应还日=统计日且未还（{{ unpaidDueOnDateCount }} 笔）
           </p>
         </el-col>
         <el-col
@@ -287,15 +330,25 @@ function handlePageSizeChange(nextPageSize: number) {
           :sm="12"
           :lg="6"
         >
-          <el-statistic
-            :title="`${statDayPrefix}逾期率`"
-            :value="overdueRateAsOfDate"
-            :precision="2"
-            suffix="%"
-            :value-style="statisticRateStyle"
-          />
+          <div
+            class="rate-pair"
+            :aria-label="`${statDayPrefix}回款率 ${collectionRateOnDate.toFixed(2)}%，未还率 ${unpaidRateOnDate.toFixed(2)}%`"
+          >
+            <div class="rate-pair__item">
+              <span class="rate-pair__label">{{ statDayPrefix }}回款率</span>
+              <strong class="rate-pair__value rate-pair__value--collection">
+                {{ collectionRateOnDate.toFixed(2) }}<span>%</span>
+              </strong>
+            </div>
+            <div class="rate-pair__item">
+              <span class="rate-pair__label">未还率</span>
+              <strong class="rate-pair__value rate-pair__value--unpaid">
+                {{ unpaidRateOnDate.toFixed(2) }}<span>%</span>
+              </strong>
+            </div>
+          </div>
           <p class="stat-sub">
-            应还早于统计日且未还 ÷ 应还不晚于统计日且未还
+            回款率=已还笔数÷总笔数；未还率=未还笔数÷总笔数
           </p>
         </el-col>
       </el-row>
@@ -468,6 +521,26 @@ function handlePageSizeChange(nextPageSize: number) {
   display: block;
 }
 
+.summary-date-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  padding: 0 0 16px;
+  margin: 0 0 14px;
+  border-bottom: 1px solid var(--el-border-color-lighter);
+}
+
+.summary-date-toolbar__label {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--el-text-color-primary);
+}
+
+.summary-date-picker {
+  width: min(100%, 240px);
+}
+
 .stat-row {
   padding-top: 4px;
 }
@@ -486,6 +559,46 @@ function handlePageSizeChange(nextPageSize: number) {
 
 .receivable-summary-card {
   flex-shrink: 0;
+}
+
+.rate-pair {
+  display: flex;
+  align-items: flex-start;
+  gap: 28px;
+}
+
+.rate-pair__item {
+  min-width: 96px;
+}
+
+.rate-pair__label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 13px;
+  color: var(--el-text-color-secondary);
+}
+
+.rate-pair__value {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 3px;
+  font-size: 20px;
+  line-height: 1;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.rate-pair__value span {
+  font-size: 16px;
+  font-weight: 500;
+}
+
+.rate-pair__value--collection {
+  color: #be123c;
+}
+
+.rate-pair__value--unpaid {
+  color: #b45309;
 }
 
 .receivable-alert {

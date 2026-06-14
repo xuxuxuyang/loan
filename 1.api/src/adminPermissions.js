@@ -50,6 +50,7 @@ const ADMIN_PERMISSION_TREE = [
       { key: 'orders.cardData', label: '订单数据', actions: ['view', 'fillTracking', 'issueCard', 'markPaid', 'delayRepayment', 'settleAmount', 'negotiateRepayment', 'revokePaid'] },
       { key: 'orders.receivable.today', label: '今日待收', actions: ['view'] },
       { key: 'orders.receivable.tomorrow', label: '明日待收', actions: ['view'] },
+      { key: 'orders.receivable.data', label: '待收数据', actions: ['view'] },
     ],
   },
   {
@@ -191,13 +192,14 @@ function defaultAdminPermissionsForRole(role) {
   }
   if (role === 'collector') {
     return permissionsFromMenuActions(
-      ['orders', 'orders.approved', 'orders.cardData', 'orders.receivable.today', 'orders.receivable.tomorrow'],
+      ['orders', 'orders.approved', 'orders.cardData', 'orders.receivable.today', 'orders.receivable.tomorrow', 'orders.receivable.data'],
       {
         orders: ['view'],
         'orders.approved': ['view'],
         'orders.cardData': ['view'],
         'orders.receivable.today': ['view'],
         'orders.receivable.tomorrow': ['view'],
+        'orders.receivable.data': ['view'],
       },
     )
   }
@@ -338,7 +340,13 @@ function adminReceivablePermissionKeyForDueDate(dueDate, todayKey) {
   const dt = new Date(`${today}T12:00:00`)
   dt.setDate(dt.getDate() + 1)
   const tomorrow = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`
-  return due === tomorrow ? 'orders.receivable.tomorrow' : 'orders.receivable.today'
+  if (due === today) {
+    return 'orders.receivable.today'
+  }
+  if (due === tomorrow) {
+    return 'orders.receivable.tomorrow'
+  }
+  return 'orders.receivable.data'
 }
 
 function canGrantAdminPermissions(operatorAccount, requestedPermissions) {

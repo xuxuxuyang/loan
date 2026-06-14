@@ -108,6 +108,7 @@ const allMenus: MenuEntry[] = [
       },
       { label: '今日待收', path: '/orders/receivable/today', icon: Calendar, roles: ['super_admin', 'collector'] },
       { label: '明日待收', path: '/orders/receivable/tomorrow', icon: Calendar, roles: ['super_admin', 'collector'] },
+      { label: '待收数据', path: '/orders/receivable/data', icon: Calendar, roles: ['super_admin', 'collector'] },
     ],
   },
   {
