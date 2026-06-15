@@ -19,6 +19,8 @@ interface PendingReceivableRow {
   amount: number
   /** 待收期次还款备注（与用户 adminRemark 无关） */
   collectionRemark?: string
+  /** 注册用户备注（只读展示，与 collectionRemark 无关） */
+  buyerAdminRemark?: string
 }
 
 const route = useRoute()
@@ -536,6 +538,19 @@ async function clearCollectionRemark() {
             </template>
           </el-table-column>
           <el-table-column
+            label="用户备注"
+            min-width="160"
+            show-overflow-tooltip
+          >
+            <template #default="{ row }">
+              <span
+                class="user-remark-preview"
+                :class="String(row.buyerAdminRemark || '').trim() ? 'user-remark-preview--filled' : 'user-remark-preview--empty'"
+                :title="String(row.buyerAdminRemark || '').trim() || ''"
+              >{{ String(row.buyerAdminRemark || '').trim() || '暂无备注' }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column
             prop="amount"
             label="待收金额（元）"
             min-width="130"
@@ -907,6 +922,27 @@ async function clearCollectionRemark() {
   font-size: 14px;
   font-weight: 700;
   color: #dc2626;
+}
+
+.user-remark-preview {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.user-remark-preview--empty {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--el-text-color-secondary);
+}
+
+.user-remark-preview--filled {
+  font-size: 14px;
+  font-weight: 700;
+  color: #2563eb;
+  letter-spacing: 0.01em;
 }
 
 .remark-dialog-meta {

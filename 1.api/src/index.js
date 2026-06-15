@@ -9642,11 +9642,13 @@ function mapPendingReceivableRow(db, { order, item, key }) {
     buyerPhoneDigits = buyerPhoneDigits.slice(2)
   }
   const buyerPhone = /^1\d{10}$/.test(buyerPhoneDigits) ? buyerPhoneDigits : ''
+  const rawRemark = buyer && typeof buyer.adminRemark === 'string' ? buyer.adminRemark.trim() : ''
   return {
     orderId: order.id,
     receiverName: String(order.receiverName || '').trim() || '商城用户',
     buyerName,
     buyerPhone,
+    buyerAdminRemark: rawRemark,
     receiverPhone: String(order.receiverPhone || '').trim(),
     productName: String(order.name || '').trim(),
     period: Number(item.period),
