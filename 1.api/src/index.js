@@ -9620,6 +9620,20 @@ function normalizeInstallmentDueDateKey(dueDate) {
   return formatDate(s).slice(0, 10)
 }
 
+function readInstallmentCollectionRemark(planItem) {
+  if (!planItem || typeof planItem.collectionRemark !== 'string') {
+    return ''
+  }
+  return planItem.collectionRemark.trim()
+}
+
+function normalizeInstallmentCollectionRemark(raw) {
+  if (raw == null) {
+    return ''
+  }
+  return String(raw).trim().slice(0, 500)
+}
+
 function mapPendingReceivableRow(db, { order, item, key }) {
   const buyer = resolveMallBuyerFromOrder(db, order)
   const buyerName = buyer ? String(buyer.name || '').trim() : ''
@@ -9638,6 +9652,7 @@ function mapPendingReceivableRow(db, { order, item, key }) {
     period: Number(item.period),
     dueDate: key,
     amount: Number(Number(item.amount || 0).toFixed(2)),
+    collectionRemark: readInstallmentCollectionRemark(item),
   }
 }
 
@@ -9688,6 +9703,63 @@ router.get('/orders/pending-receivable', async (ctx) => {
     overdueRateAsOfDate: receivableStats.overdueRateAsOfDate,
     overdueBeforeDateCount: receivableStats.overdueBeforeDateCount,
     unpaidDueOnOrBeforeDateCount: receivableStats.unpaidDueOnOrBeforeDateCount,
+  })
+})
+
+const ADMIN_RECEIVABLE_PERMISSION_KEYS = [
+  'orders.receivable.today',
+  'orders.receivable.tomorrow',
+  'orders.receivable.data',
+]
+
+async function requireAdminReceivableCollectionRemarkPermission(ctx, actionLabel = '编辑还款备注') {
+  if (await requireAdminPermissionOnAny(ctx, ADMIN_RECEIVABLE_PERMISSION_KEYS, 'remark', actionLabel)) {
+    return true
+  }
+  return requireAdminPermissionOnAny(ctx, ADMIN_RECEIVABLE_PERMISSION_KEYS, 'view', actionLabel)
+}
+
+/** 管理端：编辑待收期次的还款备注（存于 installmentPlan 期次项，与用户 adminRemark 无关） */
+router.patch('/orders/:id/installments/:period/collection-remark', async (ctx) => {
+  if (!await requireAdminReceivableCollectionRemarkPermission(ctx)) {
+    return
+  }
+  const db = readDb()
+  const { id, period } = ctx.params
+  const payload = ctx.request.body || {}
+  const target = db.orders.find(item => String(item.id) === String(id))
+  if (!target) {
+    fail(ctx, '订单不存在', 404)
+    return
+  }
+  const periodNumber = Number(period)
+  if (!Number.isInteger(periodNumber) || periodNumber <= 0) {
+    fail(ctx, '期数参数不正确', 400)
+    return
+  }
+  if (!Object.prototype.hasOwnProperty.call(payload, 'collectionRemark')) {
+    fail(ctx, '请提供 collectionRemark 字段', 400)
+    return
+  }
+  ensureOrderInstallmentPlan(target)
+  const planItem = findInstallmentPlanItemByPeriod(target.installmentPlan, periodNumber)
+  if (!planItem) {
+    fail(ctx, '先享后付记录不存在', 404)
+    return
+  }
+  const nextRemark = normalizeInstallmentCollectionRemark(payload.collectionRemark)
+  if (nextRemark) {
+    planItem.collectionRemark = nextRemark
+  }
+  else {
+    delete planItem.collectionRemark
+  }
+  writeOrdersDb(db)
+  await flushMongoPersist()
+  ctx.body = success({
+    orderId: target.id,
+    period: periodNumber,
+    collectionRemark: nextRemark,
   })
 })
 

@@ -104,9 +104,9 @@ const contextualPermissionActionLabels: Record<string, Record<string, string>> =
     negotiateRepayment: '登记协商还款',
     revokePaid: '撤销还款标记',
   },
-  'orders.receivable.today': { view: '查看今日待收' },
-  'orders.receivable.tomorrow': { view: '查看明日待收' },
-  'orders.receivable.data': { view: '查看待收数据' },
+  'orders.receivable.today': { view: '查看今日待收', remark: '编辑还款备注' },
+  'orders.receivable.tomorrow': { view: '查看明日待收', remark: '编辑还款备注' },
+  'orders.receivable.data': { view: '查看待收数据', remark: '编辑还款备注' },
   'users.registered': {
     view: '查看注册用户',
     create: '新增注册用户',

@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { Refresh } from '@element-plus/icons-vue'
+import { CirclePlus, EditPen, Refresh } from '@element-plus/icons-vue'
+import { ElMessage } from 'element-plus'
 import { useRoute } from 'vue-router'
 import { apiErrorMessage, withMallTenantHeaders } from '../composables/useAdminApi'
+import { useAdminPagePermission } from '../composables/useAdminPagePermission'
 
 interface PendingReceivableRow {
   orderId: string
@@ -15,9 +17,13 @@ interface PendingReceivableRow {
   period: number
   dueDate: string
   amount: number
+  /** 待收期次还款备注（与用户 adminRemark 无关） */
+  collectionRemark?: string
 }
 
 const route = useRoute()
+const { canRemark, canView } = useAdminPagePermission(undefined, true)
+const canEditCollectionRemark = computed(() => canRemark.value || canView.value)
 const loading = ref(false)
 const errorMsg = ref('')
 const rows = ref<PendingReceivableRow[]>([])
@@ -38,6 +44,11 @@ const unpaidDueOnDateCount = ref(0)
 /** 应还日 = 统计日 的已还/未还笔数占比 */
 const collectionRateOnDate = ref(0)
 const unpaidRateOnDate = ref(0)
+
+const remarkDialogVisible = ref(false)
+const remarkSaving = ref(false)
+const remarkTarget = ref<PendingReceivableRow | null>(null)
+const remarkDraft = ref('')
 
 const offsetDays = computed(() => {
   const raw = route.meta.receivableOffsetDays
@@ -226,6 +237,70 @@ function handlePageSizeChange(nextPageSize: number) {
   pageSize.value = nextPageSize
   page.value = 1
   void load()
+}
+
+function openRemarkDialog(row: PendingReceivableRow) {
+  if (!canEditCollectionRemark.value) {
+    return
+  }
+  remarkTarget.value = row
+  remarkDraft.value = String(row.collectionRemark || '').trim()
+  remarkDialogVisible.value = true
+}
+
+function closeRemarkDialog(force = false) {
+  if (!force && remarkSaving.value) {
+    return
+  }
+  remarkDialogVisible.value = false
+  remarkTarget.value = null
+  remarkDraft.value = ''
+}
+
+function patchRowCollectionRemark(orderId: string, period: number, collectionRemark: string) {
+  const idx = rows.value.findIndex(row => row.orderId === orderId && row.period === period)
+  if (idx >= 0) {
+    rows.value[idx] = { ...rows.value[idx], collectionRemark }
+  }
+}
+
+async function saveCollectionRemark() {
+  if (!remarkTarget.value || remarkSaving.value) {
+    return
+  }
+  const target = remarkTarget.value
+  remarkSaving.value = true
+  try {
+    const url = `${base}/orders/${encodeURIComponent(target.orderId)}/installments/${target.period}/collection-remark`
+    const res = await fetch(url, {
+      method: 'PATCH',
+      headers: withMallTenantHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ collectionRemark: remarkDraft.value.trim() }),
+    })
+    const payload = await res.json() as {
+      success?: boolean
+      msg?: string
+      data?: { collectionRemark?: string }
+    }
+    if (!res.ok || !payload.success) {
+      throw new Error(apiErrorMessage(payload, '保存还款备注失败'))
+    }
+    const saved = String(payload.data?.collectionRemark ?? remarkDraft.value.trim()).trim()
+    patchRowCollectionRemark(target.orderId, target.period, saved)
+    ElMessage.success(saved ? '还款备注已保存' : '还款备注已删除')
+    closeRemarkDialog(true)
+  }
+  catch (e) {
+    ElMessage.error(e instanceof Error ? e.message : '保存还款备注失败')
+  }
+  finally {
+    remarkSaving.value = false
+  }
+}
+
+async function clearCollectionRemark() {
+  remarkDraft.value = ''
+  await saveCollectionRemark()
 }
 </script>
 
@@ -424,6 +499,43 @@ function handlePageSizeChange(nextPageSize: number) {
             </template>
           </el-table-column>
           <el-table-column
+            label="还款备注"
+            min-width="160"
+          >
+            <template #default="{ row }">
+              <button
+                v-if="canEditCollectionRemark"
+                type="button"
+                class="remark-cell remark-cell--clickable"
+                :title="String(row.collectionRemark || '').trim() ? '点击编辑还款备注' : '点击添加还款备注'"
+                @click="openRemarkDialog(row)"
+              >
+                <span
+                  class="remark-cell__icon-wrap"
+                  aria-hidden="true"
+                >
+                  <el-icon
+                    class="remark-cell__icon"
+                    :class="String(row.collectionRemark || '').trim() ? 'remark-cell__icon--edit' : 'remark-cell__icon--add'"
+                    :size="16"
+                  >
+                    <EditPen v-if="String(row.collectionRemark || '').trim()" />
+                    <CirclePlus v-else />
+                  </el-icon>
+                </span>
+                <span
+                  class="remark-cell__text remark-preview"
+                  :class="String(row.collectionRemark || '').trim() ? 'remark-preview--filled' : 'remark-preview--empty'"
+                >{{ String(row.collectionRemark || '').trim() || '暂无备注' }}</span>
+              </button>
+              <span
+                v-else
+                class="remark-preview remark-preview--readonly"
+                :title="String(row.collectionRemark || '').trim() || ''"
+              >{{ String(row.collectionRemark || '').trim() || '—' }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column
             prop="amount"
             label="待收金额（元）"
             min-width="130"
@@ -483,6 +595,55 @@ function handlePageSizeChange(nextPageSize: number) {
         />
       </div>
     </el-card>
+
+    <el-dialog
+      v-model="remarkDialogVisible"
+      title="还款备注"
+      width="480px"
+      :close-on-click-modal="!remarkSaving"
+      :close-on-press-escape="!remarkSaving"
+      @closed="closeRemarkDialog(true)"
+    >
+      <p
+        v-if="remarkTarget"
+        class="remark-dialog-meta"
+      >
+        订单 {{ remarkTarget.orderId }} · 第 {{ remarkTarget.period }} 期 · 应还日 {{ remarkTarget.dueDate }}
+      </p>
+      <el-input
+        v-model="remarkDraft"
+        type="textarea"
+        :rows="4"
+        maxlength="500"
+        show-word-limit
+        placeholder="填写本期待收的还款备注（与用户备注无关）"
+        :disabled="remarkSaving"
+      />
+      <template #footer>
+        <el-button
+          :disabled="remarkSaving"
+          @click="closeRemarkDialog()"
+        >
+          取消
+        </el-button>
+        <el-button
+          v-if="String(remarkTarget?.collectionRemark || '').trim()"
+          type="danger"
+          plain
+          :loading="remarkSaving"
+          @click="clearCollectionRemark"
+        >
+          删除备注
+        </el-button>
+        <el-button
+          type="primary"
+          :loading="remarkSaving"
+          @click="saveCollectionRemark"
+        >
+          保存
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -672,5 +833,86 @@ function handlePageSizeChange(nextPageSize: number) {
   font-variant-numeric: tabular-nums;
   font-weight: 500;
   color: var(--el-text-color-primary);
+}
+
+.remark-cell {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  width: 100%;
+  padding: 0;
+  margin: 0;
+  border: none;
+  background: transparent;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+}
+
+.remark-cell--clickable {
+  cursor: pointer;
+}
+
+.remark-cell--clickable:hover .remark-preview--empty {
+  color: var(--el-color-primary);
+}
+
+.remark-cell--clickable:hover .remark-preview--filled {
+  color: #b91c1c;
+}
+
+.remark-cell__icon-wrap {
+  flex-shrink: 0;
+  line-height: 1.4;
+  padding-top: 2px;
+}
+
+.remark-cell__icon--add {
+  color: var(--el-color-primary);
+}
+
+.remark-cell__icon--edit {
+  color: #dc2626;
+}
+
+.remark-cell__text {
+  min-width: 0;
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+.remark-preview {
+  font-size: 13px;
+}
+
+.remark-preview--filled {
+  font-size: 14px;
+  font-weight: 700;
+  color: #dc2626;
+  letter-spacing: 0.01em;
+}
+
+.remark-preview--empty {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--el-text-color-placeholder);
+}
+
+.remark-preview--readonly {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+  font-weight: 700;
+  color: #dc2626;
+}
+
+.remark-dialog-meta {
+  margin: 0 0 12px;
+  font-size: 13px;
+  color: var(--el-text-color-secondary);
+  line-height: 1.45;
 }
 </style>

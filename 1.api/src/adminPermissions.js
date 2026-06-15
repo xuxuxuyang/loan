@@ -48,9 +48,9 @@ const ADMIN_PERMISSION_TREE = [
       { key: 'orders.review', label: '未审核订单', actions: ['view', 'review', 'delete'] },
       { key: 'orders.approved', label: '已审核订单', actions: ['view', 'update', 'updateStatus', 'fillTracking', 'updateContract', 'issueCard', 'delete'] },
       { key: 'orders.cardData', label: '订单数据', actions: ['view', 'fillTracking', 'issueCard', 'markPaid', 'delayRepayment', 'settleAmount', 'negotiateRepayment', 'revokePaid'] },
-      { key: 'orders.receivable.today', label: '今日待收', actions: ['view'] },
-      { key: 'orders.receivable.tomorrow', label: '明日待收', actions: ['view'] },
-      { key: 'orders.receivable.data', label: '待收数据', actions: ['view'] },
+      { key: 'orders.receivable.today', label: '今日待收', actions: ['view', 'remark'] },
+      { key: 'orders.receivable.tomorrow', label: '明日待收', actions: ['view', 'remark'] },
+      { key: 'orders.receivable.data', label: '待收数据', actions: ['view', 'remark'] },
     ],
   },
   {
@@ -197,9 +197,9 @@ function defaultAdminPermissionsForRole(role) {
         orders: ['view'],
         'orders.approved': ['view'],
         'orders.cardData': ['view'],
-        'orders.receivable.today': ['view'],
-        'orders.receivable.tomorrow': ['view'],
-        'orders.receivable.data': ['view'],
+        'orders.receivable.today': ['view', 'remark'],
+        'orders.receivable.tomorrow': ['view', 'remark'],
+        'orders.receivable.data': ['view', 'remark'],
       },
     )
   }
