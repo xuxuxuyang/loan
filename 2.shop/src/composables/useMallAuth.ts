@@ -67,6 +67,86 @@ function readRegisterApiErrorMessage(err: unknown): string {
   return '注册失败，请稍后重试'
 }
 
+function resolveQueryStringValue(params: URLSearchParams, key: string) {
+  return String(params.get(key) || '').trim()
+}
+
+function cleanDuodiandianTicketFromUrl() {
+  if (typeof window === 'undefined') {
+    return
+  }
+  const url = new URL(window.location.href)
+  url.searchParams.delete('loginTicket')
+  url.searchParams.delete('autoLoginPath')
+  window.history.replaceState(window.history.state, document.title, `${url.pathname}${url.search}${url.hash}`)
+}
+
+function resolveDuodiandianAutoLoginPath(params: URLSearchParams) {
+  const path = resolveQueryStringValue(params, 'autoLoginPath')
+  if (path.startsWith('/') && !path.startsWith('//') && !path.includes('://')) {
+    return path
+  }
+  return '/open/partners/duodiandian/autoLogin'
+}
+
+export async function autoLoginFromDuodiandianTicket(): Promise<boolean> {
+  if (import.meta.env.SSR || typeof window === 'undefined') {
+    return false
+  }
+  const params = new URLSearchParams(window.location.search)
+  const partner = resolveQueryStringValue(params, 'partner').toLowerCase()
+  const applyNo = resolveQueryStringValue(params, 'applyNo')
+  const loginTicket = resolveQueryStringValue(params, 'loginTicket')
+  const autoLoginPath = resolveDuodiandianAutoLoginPath(params)
+  if (partner !== 'duodiandian' || !applyNo || !loginTicket) {
+    return false
+  }
+  const handledKey = `duodiandian-auto-login:${applyNo}:${loginTicket}`
+  if (window.sessionStorage.getItem(handledKey)) {
+    cleanDuodiandianTicketFromUrl()
+    return false
+  }
+  window.sessionStorage.setItem(handledKey, '1')
+
+  const registerCookie = useCookie<string>(COOKIE_KEY, {
+    maxAge: 60 * 60 * 24 * 365,
+    default: () => '',
+  })
+  const loginCookie = useCookie<string>(LOGIN_COOKIE_KEY, {
+    maxAge: 60 * 60 * 24 * 30,
+    default: () => '',
+  })
+  const profile = useState<MallUserProfile | null>('mall-register-profile', () => null)
+  const loginPhone = useState<string>('mall-login-phone', () => normalizeMallAccount(loginCookie.value || ''))
+
+  try {
+    const response = await $fetch<{ success: boolean, data: { token: string, user: MallUserProfile } }>(
+      `${resolveMallApiBase()}${autoLoginPath}`,
+      {
+        method: 'POST',
+        body: { applyNo, loginTicket },
+      },
+    )
+    const user = response?.data?.user
+    const phone = normalizeMallAccount(user?.phone || '')
+    if (!phone) {
+      return false
+    }
+    loginPhone.value = phone
+    loginCookie.value = phone
+    profile.value = user
+    registerCookie.value = '1'
+    return true
+  }
+  catch (error) {
+    console.warn('[duodiandian-auto-login] failed')
+    return false
+  }
+  finally {
+    cleanDuodiandianTicketFromUrl()
+  }
+}
+
 export function useMallAuth() {
   const route = useRoute()
   const { smartNavigate } = useCustomRouting(route)
@@ -239,6 +319,7 @@ export function useMallAuth() {
     register,
     loginByPhone,
     loginByPassword,
+    autoLoginFromDuodiandianTicket,
     logout,
     ensureRegistered,
     syncFromStorage,

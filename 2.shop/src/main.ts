@@ -6,6 +6,7 @@ import App from './App.vue'
 import router from './router'
 import { runAppOtaCheck } from './composables/useAppOtaUpdate'
 import { captureRegisterChannelFromRoute } from './composables/useRegisterChannel'
+import { autoLoginFromDuodiandianTicket } from './composables/useMallAuth'
 import { installTenantFetchInterceptor } from './utils/tenant'
 
 import './assets/styles/tailwind.css'
@@ -36,9 +37,13 @@ async function bootstrap() {
     await runAppOtaCheck()
   }
 
+  installTenantFetchInterceptor()
+  if (!import.meta.env.SSR) {
+    await autoLoginFromDuodiandianTicket()
+  }
+
   const app = createApp(App)
   app.use(router)
-  installTenantFetchInterceptor()
   app.mount('#app')
 }
 

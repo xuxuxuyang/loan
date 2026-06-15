@@ -12,6 +12,7 @@ declare global {
   const LAKALA_PENDING_PAY_KEY: typeof import('./composables/useLakalaPayment').LAKALA_PENDING_PAY_KEY
   const MALL_BILL_CARD_PACKAGE_REPAY_MSG: typeof import('./composables/useMallMy').MALL_BILL_CARD_PACKAGE_REPAY_MSG
   const MALL_DEFAULT_CREDIT_QUOTA: typeof import('./composables/mallCreditQuota').MALL_DEFAULT_CREDIT_QUOTA
+  const autoLoginFromDuodiandianTicket: typeof import('./composables/useMallAuth').autoLoginFromDuodiandianTicket
   const captureRegisterChannelFromRoute: typeof import('./composables/useRegisterChannel').captureRegisterChannelFromRoute
   const clearPendingRegisterChannel: typeof import('./composables/useRegisterChannel').clearPendingRegisterChannel
   const computeMallCreditOrderPrincipal: typeof import('./composables/mallCreditQuota').computeMallCreditOrderPrincipal
@@ -160,6 +161,7 @@ declare module 'vue' {
     readonly LAKALA_PENDING_PAY_KEY: UnwrapRef<typeof import('./composables/useLakalaPayment')['LAKALA_PENDING_PAY_KEY']>
     readonly MALL_BILL_CARD_PACKAGE_REPAY_MSG: UnwrapRef<typeof import('./composables/useMallMy')['MALL_BILL_CARD_PACKAGE_REPAY_MSG']>
     readonly MALL_DEFAULT_CREDIT_QUOTA: UnwrapRef<typeof import('./composables/mallCreditQuota')['MALL_DEFAULT_CREDIT_QUOTA']>
+    readonly autoLoginFromDuodiandianTicket: UnwrapRef<typeof import('./composables/useMallAuth')['autoLoginFromDuodiandianTicket']>
     readonly captureRegisterChannelFromRoute: UnwrapRef<typeof import('./composables/useRegisterChannel')['captureRegisterChannelFromRoute']>
     readonly clearPendingRegisterChannel: UnwrapRef<typeof import('./composables/useRegisterChannel')['clearPendingRegisterChannel']>
     readonly computeMallCreditOrderPrincipal: UnwrapRef<typeof import('./composables/mallCreditQuota')['computeMallCreditOrderPrincipal']>

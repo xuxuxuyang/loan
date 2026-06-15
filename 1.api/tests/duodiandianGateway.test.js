@@ -45,7 +45,7 @@ function signBusinessData(payload, timestamp, signKey = config.signKey) {
   const pairs = Object.keys(payload)
     .filter((key) => payload[key] !== undefined && payload[key] !== null && payload[key] !== '')
     .sort()
-    .map((key) => `${key}=${payload[key]}`)
+    .map((key) => `${key}=${payload[key] && typeof payload[key] === 'object' ? JSON.stringify(payload[key]) : payload[key]}`)
   const signStr = `${pairs.join('&')}${pairs.length ? '&' : ''}key=${signKey}&timestamp=${timestamp}`
   return crypto.createHash('md5').update(signStr, 'utf8').digest('hex')
 }
@@ -164,6 +164,14 @@ function makeCapturingRouter() {
 function makeCtx(payload) {
   return {
     request: { body: envelope(payload) },
+    status: 0,
+    body: null,
+  }
+}
+
+function makeRawCtx(payload) {
+  return {
+    request: { body: payload },
     status: 0,
     body: null,
   }
@@ -293,6 +301,404 @@ test('apply persists only duodiandian gateway collections and flushes before suc
   assert.equal(db.partnerGatewayApplications[0].applyNo, 'A-SCOPED')
 })
 
+test('auto-register apply stores all duodiandian fields, transferred images and login ticket', async () => {
+  const db = { users: [], orders: [], trafficChannels: [], trafficPartners: [], partnerGatewayApplications: [] }
+  const calls = []
+  const router = makeCapturingRouter()
+  gateway.registerDuodiandianGatewayRoutes(router, {
+    readDb() {
+      calls.push({ type: 'read' })
+      return db
+    },
+    writeDb() {},
+    writeDbPartial(_db, keys) {
+      calls.push({ type: 'partialWrite', keys })
+    },
+    async flushMongoPersist() {
+      calls.push({ type: 'flush' })
+    },
+    configProvider: () => ({ ...config, applyAutoRegisterEnabled: true }),
+    runApplyRiskPack: async (subject) => {
+      assert.deepEqual(subject, {
+        userName: '张三',
+        phoneNumber: '13900139000',
+        idNumber: '110101199001011234',
+      })
+      return { allPassed: true, message: '', steps: [{ key: 'mobile2', label: '运营商二要素验证', ok: true }] }
+    },
+    transferPartnerImage: async ({ url, scene, phone }) => ({
+      originalUrl: url,
+      url: `https://oss.example.com/${phone}/${scene}.png`,
+      contentType: 'image/png',
+      size: 1234,
+      key: `${phone}/${scene}.png`,
+    }),
+    now: () => 1748400093574,
+    httpClient: async () => ({ ok: true, status: 200, async text() { return JSON.stringify({ code: '200' }) } }),
+  })
+
+  const payload = {
+    applyNo: 'A-AUTO',
+    applyIp: '203.0.113.1',
+    userPhone: '13900139000',
+    idNo: '110101199001011234',
+    name: '张三',
+    frontImage: 'https://img.example.com/front.png',
+    backImage: 'https://img.example.com/back.png',
+    faceImg: 'https://img.example.com/face.png',
+    gender: 'BOY',
+    nation: '汉',
+    authority: '北京市公安局',
+    validDate: '20200422-20400422',
+    address: '北京市朝阳区',
+    education: 'COLLEGE',
+    marriedStatus: 'UNMARRIED',
+    homeAddress: '北京市海淀区',
+    companyName: '示例公司',
+    companyAddress: '北京市西城区',
+    clientType: 'h5',
+    relations: [
+      { name: '李四', phone: '13800138000', relation: 'FRIEND' },
+    ],
+  }
+  const ctx = makeCtx(payload)
+
+  await router.routes.get('/open/partners/env-ddd/apply')(ctx)
+
+  assert.equal(ctx.status, 200)
+  assert.equal(db.users.length, 1)
+  assert.deepEqual(calls.map(c => c.type), ['read', 'partialWrite', 'flush'])
+  assert.deepEqual(calls[1].keys, ['partnerGatewayApplications', 'trafficChannels', 'trafficPartners', 'users'])
+  const user = db.users[0]
+  assert.equal(user.phone, '13900139000')
+  assert.equal(user.name, '张三')
+  assert.equal(user.idNumber, '110101199001011234')
+  assert.equal(user.idCardFront, 'https://oss.example.com/13900139000/front.png')
+  assert.equal(user.idCardBack, 'https://oss.example.com/13900139000/back.png')
+  assert.equal(user.idCardHandheld, 'https://oss.example.com/13900139000/face.png')
+  assert.deepEqual(user.emergencyContacts, [{ name: '李四', phone: '13800138000', relation: 'FRIEND' }])
+  assert.equal(user.partnerProfiles.duodiandian.raw.applyIp, '203.0.113.1')
+  assert.equal(user.partnerProfiles.duodiandian.raw.companyName, '示例公司')
+  assert.equal(user.partnerProfiles.duodiandian.images.face.transferredUrl, 'https://oss.example.com/13900139000/face.png')
+  assert.equal(user.partnerProfiles.duodiandian.idCardHandheldSource, 'faceImg')
+  assert.equal(user.partnerProfiles.duodiandian.riskReviewStatus, 'PASS')
+  assert.equal(db.partnerGatewayApplications[0].mallUserId, user.id)
+  assert.equal(db.partnerGatewayApplications[0].autoLoginTicketUsedAt, '')
+  const returnUrl = new URL(ctx.body.data.returnUrl)
+  assert.equal(returnUrl.searchParams.get('applyNo'), 'A-AUTO')
+  assert(returnUrl.searchParams.get('loginTicket'))
+  assert.equal(returnUrl.searchParams.get('autoLoginPath'), '/open/partners/env-ddd/autoLogin')
+})
+
+test('auto-login consumes a one-time duodiandian login ticket', async () => {
+  const db = { users: [], trafficChannels: [], trafficPartners: [], partnerGatewayApplications: [] }
+  const router = makeCapturingRouter()
+  gateway.registerDuodiandianGatewayRoutes(router, {
+    readDb() { return db },
+    writeDb() {},
+    writeDbPartial() {},
+    async flushMongoPersist() {},
+    configProvider: () => ({ ...config, applyAutoRegisterEnabled: true }),
+    runApplyRiskPack: async () => ({ allPassed: true, message: '', steps: [] }),
+    transferPartnerImage: async ({ url, scene }) => ({ originalUrl: url, url: `https://oss.example.com/${scene}.jpg`, contentType: 'image/jpeg', size: 100 }),
+    httpClient: async () => ({ ok: true, status: 200, async text() { return '{}' } }),
+  })
+  const applyCtx = makeCtx({
+    applyNo: 'A-LOGIN',
+    applyIp: '203.0.113.1',
+    userPhone: '13900139000',
+    idNo: '110101199001011234',
+    name: '张三',
+    frontImage: 'https://img.example.com/front.jpg',
+    backImage: 'https://img.example.com/back.jpg',
+    gender: 'BOY',
+    clientType: 'h5',
+    relations: [{ name: '李四', phone: '13800138000', relation: 'FRIEND' }],
+  })
+  await router.routes.get('/open/partners/env-ddd/apply')(applyCtx)
+  const ticket = new URL(applyCtx.body.data.returnUrl).searchParams.get('loginTicket')
+
+  const loginCtx = makeRawCtx({ applyNo: 'A-LOGIN', loginTicket: ticket })
+  await router.routes.get('/open/partners/env-ddd/autoLogin')(loginCtx)
+
+  assert.equal(loginCtx.status, 200)
+  assert.equal(loginCtx.body.data.token, 'mock-token-13900139000')
+  assert.equal(loginCtx.body.data.user.phone, '13900139000')
+  assert(db.partnerGatewayApplications[0].autoLoginTicketUsedAt)
+
+  const secondCtx = makeRawCtx({ applyNo: 'A-LOGIN', loginTicket: ticket })
+  await router.routes.get('/open/partners/env-ddd/autoLogin')(secondCtx)
+  assert.equal(secondCtx.status, 400)
+  assert.match(secondCtx.body.msg, /used|已使用|ticket/i)
+})
+
+test('auto-register apply is idempotent for the same approved applyNo', async () => {
+  const db = { users: [], trafficChannels: [], trafficPartners: [], partnerGatewayApplications: [] }
+  let riskCalls = 0
+  const router = makeCapturingRouter()
+  gateway.registerDuodiandianGatewayRoutes(router, {
+    readDb() { return db },
+    writeDb() {},
+    writeDbPartial() {},
+    async flushMongoPersist() {},
+    configProvider: () => ({ ...config, applyAutoRegisterEnabled: true }),
+    runApplyRiskPack: async () => {
+      riskCalls += 1
+      return { allPassed: true, message: '', steps: [] }
+    },
+    transferPartnerImage: async ({ url, scene }) => ({ originalUrl: url, url: `https://oss.example.com/${scene}.jpg`, contentType: 'image/jpeg', size: 100 }),
+    httpClient: async () => ({ ok: true, status: 200, async text() { return '{}' } }),
+  })
+  const payload = {
+    applyNo: 'A-IDEMP',
+    applyIp: '203.0.113.1',
+    userPhone: '13900139000',
+    idNo: '110101199001011234',
+    name: '张三',
+    frontImage: 'https://img.example.com/front.jpg',
+    backImage: 'https://img.example.com/back.jpg',
+    gender: 'BOY',
+    clientType: 'h5',
+    relations: [{ name: '李四', phone: '13800138000', relation: 'FRIEND' }],
+  }
+
+  const first = makeCtx(payload)
+  await router.routes.get('/open/partners/env-ddd/apply')(first)
+  const second = makeCtx(payload)
+  await router.routes.get('/open/partners/env-ddd/apply')(second)
+
+  assert.equal(first.status, 200)
+  assert.equal(second.status, 200)
+  assert.equal(db.users.length, 1)
+  assert.equal(riskCalls, 1)
+  assert.equal(second.body.data.approvalStatus, 'SUC')
+  assert(new URL(second.body.data.returnUrl).searchParams.get('loginTicket'))
+})
+
+test('auto-register is fail-closed for duplicate registered phones', async () => {
+  const db = {
+    users: [{ id: 'U-OLD', phone: '13900139000', name: '老用户' }],
+    orders: [],
+    trafficChannels: [],
+    trafficPartners: [],
+    partnerGatewayApplications: [],
+  }
+  const notified = []
+  const router = makeCapturingRouter()
+  gateway.registerDuodiandianGatewayRoutes(router, {
+    readDb() { return db },
+    writeDb() {},
+    writeDbPartial() {},
+    async flushMongoPersist() {},
+    configProvider: () => ({ ...config, applyAutoRegisterEnabled: true }),
+    runApplyRiskPack: async () => {
+      throw new Error('risk must not run for duplicate phone')
+    },
+    transferPartnerImage: async () => {
+      throw new Error('image transfer must not run for duplicate phone')
+    },
+    httpClient: async (_url, options) => {
+      notified.push(gateway.parseDuodiandianEnvelope(JSON.parse(options.body), config, { now: Date.now() }))
+      return { ok: true, status: 200, async text() { return JSON.stringify({ code: '200' }) } }
+    },
+  })
+
+  const ctx = makeCtx({
+    applyNo: 'A-DUP-PHONE',
+    applyIp: '203.0.113.1',
+    userPhone: '13900139000',
+    idNo: '110101199001011234',
+    name: '张三',
+    frontImage: 'https://img.example.com/front.jpg',
+    backImage: 'https://img.example.com/back.jpg',
+    gender: 'BOY',
+    clientType: 'h5',
+    relations: [{ name: '李四', phone: '13800138000', relation: 'FRIEND' }],
+  })
+  await router.routes.get('/open/partners/env-ddd/apply')(ctx)
+
+  assert.equal(ctx.status, 200)
+  assert.equal(db.users.length, 1)
+  assert.equal(db.users[0].name, '老用户')
+  assert.equal(db.partnerGatewayApplications[0].riskReviewStatus, 'REJECT')
+  assert.equal(notified[0].status, 'AUDIT_REJECT')
+  assert.match(notified[0].rejectReason, /已注册|duplicate/i)
+  assert.equal(ctx.body.data.approvalStatus, 'REJECT')
+})
+
+test('auto-register notifies audit reject when risk pack errors', async () => {
+  const db = { users: [], trafficChannels: [], trafficPartners: [], partnerGatewayApplications: [] }
+  const notified = []
+  const router = makeCapturingRouter()
+  gateway.registerDuodiandianGatewayRoutes(router, {
+    readDb() { return db },
+    writeDb() {},
+    writeDbPartial() {},
+    async flushMongoPersist() {},
+    configProvider: () => ({ ...config, applyAutoRegisterEnabled: true }),
+    runApplyRiskPack: async () => {
+      throw new Error('risk upstream down')
+    },
+    transferPartnerImage: async ({ url, scene }) => ({ originalUrl: url, url: `https://oss.example.com/${scene}.jpg`, contentType: 'image/jpeg', size: 100 }),
+    httpClient: async (_url, options) => {
+      notified.push(gateway.parseDuodiandianEnvelope(JSON.parse(options.body), config, { now: Date.now() }))
+      return { ok: true, status: 200, async text() { return JSON.stringify({ code: '200' }) } }
+    },
+  })
+
+  const ctx = makeCtx({
+    applyNo: 'A-RISK-ERR',
+    applyIp: '203.0.113.1',
+    userPhone: '13900139000',
+    idNo: '110101199001011234',
+    name: '张三',
+    frontImage: 'https://img.example.com/front.jpg',
+    backImage: 'https://img.example.com/back.jpg',
+    gender: 'BOY',
+    clientType: 'h5',
+    relations: [{ name: '李四', phone: '13800138000', relation: 'FRIEND' }],
+  })
+  await router.routes.get('/open/partners/env-ddd/apply')(ctx)
+
+  assert.equal(ctx.status, 200)
+  assert.equal(ctx.body.data.approvalStatus, 'REJECT')
+  assert.equal(db.users.length, 0)
+  assert.equal(db.partnerGatewayApplications[0].riskReviewStatus, 'REJECT')
+  assert.match(db.partnerGatewayApplications[0].riskReviewReason, /risk upstream down/)
+  assert.equal(notified[0].status, 'AUDIT_REJECT')
+})
+
+test('sandbox apply returns production-shaped success without creating a real mall user', async () => {
+  const db = { users: [], trafficChannels: [], trafficPartners: [], partnerGatewayApplications: [] }
+  const router = makeCapturingRouter()
+  gateway.registerDuodiandianGatewayRoutes(router, {
+    readDb() { return db },
+    writeDb() {},
+    writeDbPartial() {},
+    async flushMongoPersist() {},
+    configProvider: () => ({
+      ...config,
+      sandboxEnabled: true,
+      sandboxApplyPrefix: 'TEST_',
+      sandboxPhoneWhitelist: '13900139000',
+      sandboxMockRiskPass: true,
+    }),
+    runApplyRiskPack: async () => {
+      throw new Error('sandbox mock risk should not call real risk')
+    },
+    transferPartnerImage: async () => {
+      throw new Error('sandbox image transfer is disabled by default')
+    },
+  })
+
+  const ctx = makeCtx({
+    applyNo: 'TEST_A001',
+    applyIp: '203.0.113.1',
+    userPhone: '13900139000',
+    idNo: '110101199001011234',
+    name: '张三',
+    frontImage: 'https://img.example.com/front.jpg',
+    backImage: 'https://img.example.com/back.jpg',
+    faceImg: 'https://img.example.com/face.jpg',
+    gender: 'BOY',
+    clientType: 'h5',
+    relations: [{ name: '李四', phone: '13800138000', relation: 'FRIEND' }],
+  })
+  await router.routes.get('/open/partners/env-ddd/apply')(ctx)
+
+  assert.equal(ctx.status, 200)
+  assert.equal(ctx.body.data.approvalStatus, 'SUC')
+  assert.equal(db.users.length, 0)
+  const app = db.partnerGatewayApplications[0]
+  assert.equal(app.sandbox, true)
+  assert.equal(app.sandboxAutoLogin, true)
+  assert.equal(app.riskReviewStatus, 'PASS')
+  const returnUrl = new URL(ctx.body.data.returnUrl)
+  assert.equal(returnUrl.searchParams.get('applyNo'), 'TEST_A001')
+  assert(returnUrl.searchParams.get('loginTicket'))
+  assert.equal(returnUrl.searchParams.get('autoLoginPath'), '/open/partners/env-ddd/autoLogin')
+})
+
+test('sandbox auto-login consumes ticket using stored sandbox profile only', async () => {
+  const db = { users: [], trafficChannels: [], trafficPartners: [], partnerGatewayApplications: [] }
+  const router = makeCapturingRouter()
+  gateway.registerDuodiandianGatewayRoutes(router, {
+    readDb() { return db },
+    writeDb() {},
+    writeDbPartial() {},
+    async flushMongoPersist() {},
+    configProvider: () => ({
+      ...config,
+      sandboxEnabled: true,
+      sandboxApplyPrefix: 'TEST_',
+      sandboxPhoneWhitelist: '13900139000',
+      sandboxMockRiskPass: true,
+    }),
+  })
+  const applyCtx = makeCtx({
+    applyNo: 'TEST_LOGIN',
+    applyIp: '203.0.113.1',
+    userPhone: '13900139000',
+    idNo: '110101199001011234',
+    name: '张三',
+    frontImage: 'https://img.example.com/front.jpg',
+    backImage: 'https://img.example.com/back.jpg',
+    gender: 'BOY',
+    clientType: 'h5',
+    relations: [{ name: '李四', phone: '13800138000', relation: 'FRIEND' }],
+  })
+  await router.routes.get('/open/partners/env-ddd/apply')(applyCtx)
+  const ticket = new URL(applyCtx.body.data.returnUrl).searchParams.get('loginTicket')
+
+  const loginCtx = makeRawCtx({ applyNo: 'TEST_LOGIN', loginTicket: ticket })
+  await router.routes.get('/open/partners/env-ddd/autoLogin')(loginCtx)
+
+  assert.equal(loginCtx.status, 200)
+  assert.equal(loginCtx.body.data.token, 'mock-token-13900139000')
+  assert.equal(loginCtx.body.data.user.phone, '13900139000')
+  assert.equal(loginCtx.body.data.user.partnerProfiles.duodiandian.sandbox, true)
+  assert.equal(db.users.length, 0)
+  assert(db.partnerGatewayApplications[0].autoLoginTicketUsedAt)
+})
+
+test('sandbox apply rejects non-whitelisted test phones without touching real users', async () => {
+  const db = { users: [], trafficChannels: [], trafficPartners: [], partnerGatewayApplications: [] }
+  const router = makeCapturingRouter()
+  gateway.registerDuodiandianGatewayRoutes(router, {
+    readDb() { return db },
+    writeDb() {},
+    writeDbPartial() {},
+    async flushMongoPersist() {},
+    configProvider: () => ({
+      ...config,
+      sandboxEnabled: true,
+      sandboxApplyPrefix: 'TEST_',
+      sandboxPhoneWhitelist: '13900139000',
+      sandboxMockRiskPass: true,
+    }),
+  })
+
+  const ctx = makeCtx({
+    applyNo: 'TEST_DENY',
+    applyIp: '203.0.113.1',
+    userPhone: '13900139001',
+    idNo: '110101199001011234',
+    name: '张三',
+    frontImage: 'https://img.example.com/front.jpg',
+    backImage: 'https://img.example.com/back.jpg',
+    gender: 'BOY',
+    clientType: 'h5',
+    relations: [{ name: '李四', phone: '13800138000', relation: 'FRIEND' }],
+  })
+  await router.routes.get('/open/partners/env-ddd/apply')(ctx)
+
+  assert.equal(ctx.status, 200)
+  assert.equal(ctx.body.data.approvalStatus, 'REJECT')
+  assert.equal(db.users.length, 0)
+  assert.equal(db.partnerGatewayApplications[0].sandbox, true)
+  assert.match(db.partnerGatewayApplications[0].riskReviewReason, /sandbox phone not allowed/i)
+})
+
 test('checkPrefIx blocks a phone prefix immediately after apply succeeds', async () => {
   const db = { users: [], orders: [], trafficChannels: [], trafficPartners: [], partnerGatewayApplications: [] }
   const state = registerScopedRoutes(db)
@@ -354,6 +760,14 @@ test('uses lightweight mongo refresh plans only for duodiandian read-only endpoi
   assert.deepEqual(
     gateway.resolveDuodiandianMongoRefreshPlan('POST', '/open/partners/env-ddd/getUrl', config),
     { mode: 'partial', keys: ['partnerGatewayApplications'], allowColdPartial: true },
+  )
+  assert.deepEqual(
+    gateway.resolveDuodiandianMongoRefreshPlan('POST', '/open/partners/env-ddd/autoLogin', config),
+    { mode: 'partial', keys: ['partnerGatewayApplications', 'users'], allowColdPartial: true },
+  )
+  assert.deepEqual(
+    gateway.resolveDuodiandianMongoRefreshPlan('POST', '/open/partners/env-ddd/apply', { ...config, applyAutoRegisterEnabled: true }),
+    { mode: 'partial', keys: ['partnerGatewayApplications', 'trafficChannels', 'trafficPartners', 'users'], allowColdPartial: true },
   )
 })
 

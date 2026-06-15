@@ -10,7 +10,10 @@ class DuodiandianGatewayError extends Error {
 
 const outboundNotifySentKeys = new Set()
 const DUODIANDIAN_APPLICATION_WRITE_KEYS = ['partnerGatewayApplications', 'trafficChannels', 'trafficPartners']
+const DUODIANDIAN_AUTO_REGISTER_WRITE_KEYS = ['partnerGatewayApplications', 'trafficChannels', 'trafficPartners', 'users']
 const DUODIANDIAN_CALLBACK_WRITE_KEYS = ['partnerGatewayApplications']
+const DEFAULT_DUODIANDIAN_NOTIFY_TIMEOUT_MS = 8000
+const DEFAULT_DUODIANDIAN_RISK_TIMEOUT_MS = 15000
 
 function nonEmpty(value) {
   return value !== undefined && value !== null && value !== ''
@@ -65,8 +68,15 @@ function resolveDuodiandianMongoRefreshPlan(method, pathValue, config = {}) {
   if (endpoint === '/getUrl') {
     return { mode: 'partial', keys: ['partnerGatewayApplications'], allowColdPartial: true }
   }
+  if (endpoint === '/autoLogin') {
+    return { mode: 'partial', keys: ['partnerGatewayApplications', 'users'], allowColdPartial: true }
+  }
   if (endpoint === '/apply') {
-    return { mode: 'partial', keys: DUODIANDIAN_APPLICATION_WRITE_KEYS, allowColdPartial: true }
+    return {
+      mode: 'partial',
+      keys: cfg.applyAutoRegisterEnabled ? DUODIANDIAN_AUTO_REGISTER_WRITE_KEYS : DUODIANDIAN_APPLICATION_WRITE_KEYS,
+      allowColdPartial: true,
+    }
   }
   if (endpoint === '/order/status/notify'
     || endpoint === '/order/bindCard/notify'
@@ -209,6 +219,16 @@ function duodiandianConfigFromEnv() {
     userAgreementPath: normalizePath(process.env.DUODIANDIAN_USER_AGREEMENT_PATH),
     privacyPolicyName: readTrim(process.env.DUODIANDIAN_PRIVACY_POLICY_NAME),
     privacyPolicyPath: normalizePath(process.env.DUODIANDIAN_PRIVACY_POLICY_PATH),
+    applyAutoRegisterEnabled: readTrim(process.env.DUODIANDIAN_APPLY_AUTO_REGISTER_ENABLED),
+    autoLoginTicketTtlMs: readTrim(process.env.DUODIANDIAN_AUTO_LOGIN_TICKET_TTL_MS),
+    notifyTimeoutMs: readTrim(process.env.DUODIANDIAN_NOTIFY_TIMEOUT_MS),
+    applyRiskTimeoutMs: readTrim(process.env.DUODIANDIAN_APPLY_RISK_TIMEOUT_MS),
+    sandboxEnabled: readTrim(process.env.DUODIANDIAN_SANDBOX_ENABLED),
+    sandboxApplyPrefix: readTrim(process.env.DUODIANDIAN_SANDBOX_APPLY_PREFIX),
+    sandboxPhoneWhitelist: readTrim(process.env.DUODIANDIAN_SANDBOX_PHONE_WHITELIST),
+    sandboxMockRiskPass: readTrim(process.env.DUODIANDIAN_SANDBOX_MOCK_RISK_PASS),
+    sandboxTransferImages: readTrim(process.env.DUODIANDIAN_SANDBOX_TRANSFER_IMAGES),
+    sandboxNotifyEnabled: readTrim(process.env.DUODIANDIAN_SANDBOX_NOTIFY_ENABLED),
   }
 }
 
@@ -233,8 +253,45 @@ function resolveGatewayConfig(config = {}) {
   merged.userAgreementPath = normalizePath(merged.userAgreementPath)
   merged.privacyPolicyName = readTrim(merged.privacyPolicyName)
   merged.privacyPolicyPath = normalizePath(merged.privacyPolicyPath)
+  merged.applyAutoRegisterEnabled = parseBooleanFlag(merged.applyAutoRegisterEnabled)
+  merged.autoLoginTicketTtlMs = positiveNumber(merged.autoLoginTicketTtlMs, 10 * 60 * 1000)
+  merged.notifyTimeoutMs = positiveNumber(merged.notifyTimeoutMs, DEFAULT_DUODIANDIAN_NOTIFY_TIMEOUT_MS)
+  merged.applyRiskTimeoutMs = positiveNumber(merged.applyRiskTimeoutMs, DEFAULT_DUODIANDIAN_RISK_TIMEOUT_MS)
+  merged.sandboxEnabled = parseBooleanFlag(merged.sandboxEnabled)
+  merged.sandboxApplyPrefix = readTrim(merged.sandboxApplyPrefix) || 'TEST_'
+  merged.sandboxPhoneWhitelist = readTrim(merged.sandboxPhoneWhitelist)
+  merged.sandboxMockRiskPass = merged.sandboxMockRiskPass === undefined || merged.sandboxMockRiskPass === ''
+    ? true
+    : parseBooleanFlag(merged.sandboxMockRiskPass)
+  merged.sandboxTransferImages = parseBooleanFlag(merged.sandboxTransferImages)
+  merged.sandboxNotifyEnabled = parseBooleanFlag(merged.sandboxNotifyEnabled)
   merged.timestampSkewMs = Number(merged.timestampSkewMs)
   return merged
+}
+
+function parseBooleanFlag(value) {
+  const v = String(value || '').trim().toLowerCase()
+  return v === '1' || v === 'true' || v === 'yes' || v === 'on'
+}
+
+function positiveNumber(value, fallback) {
+  const n = Number(value)
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback
+}
+
+function promiseWithTimeout(promise, timeoutMs, message, abortController = null) {
+  let timer = null
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      if (abortController && typeof abortController.abort === 'function') {
+        abortController.abort()
+      }
+      reject(new Error(message || 'operation timeout'))
+    }, positiveNumber(timeoutMs, 1000))
+  })
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer) clearTimeout(timer)
+  })
 }
 
 function requireGatewayConfig(config, fields) {
@@ -465,6 +522,435 @@ function summarizeRiskSteps(steps) {
   }))
 }
 
+const DUODIANDIAN_REQUIRED_APPLY_FIELDS = Object.freeze([
+  'applyNo',
+  'applyIp',
+  'userPhone',
+  'idNo',
+  'name',
+  'frontImage',
+  'backImage',
+  'gender',
+  'clientType',
+  'relations',
+])
+
+const DUODIANDIAN_PROFILE_FIELDS = Object.freeze([
+  'applyNo',
+  'applyIp',
+  'userPhone',
+  'idNo',
+  'name',
+  'frontImage',
+  'backImage',
+  'faceImg',
+  'gender',
+  'nation',
+  'authority',
+  'validDate',
+  'address',
+  'education',
+  'marriedStatus',
+  'homeAddress',
+  'companyName',
+  'companyAddress',
+  'clientType',
+  'relations',
+])
+
+function normalizeDuodiandianRelations(value) {
+  if (!Array.isArray(value)) return []
+  return value.map(item => ({
+    name: readTrim(item && item.name),
+    phone: normalizePhone(item && item.phone),
+    relation: readTrim(item && item.relation),
+  })).filter(item => item.name || item.phone || item.relation)
+}
+
+function normalizeDuodiandianApplyPayload(payload = {}) {
+  const out = {}
+  for (const key of DUODIANDIAN_PROFILE_FIELDS) {
+    if (key === 'relations') {
+      out.relations = normalizeDuodiandianRelations(payload.relations)
+    }
+    else {
+      out[key] = readTrim(payload[key])
+    }
+  }
+  out.userPhone = normalizePhone(out.userPhone || payload.phone)
+  out.idNo = readTrim(out.idNo || payload.idNumber).toUpperCase()
+  return out
+}
+
+function validateDuodiandianApplyProfile(profile) {
+  const missing = []
+  for (const key of DUODIANDIAN_REQUIRED_APPLY_FIELDS) {
+    if (key === 'relations') {
+      if (!Array.isArray(profile.relations) || profile.relations.length < 1) missing.push(key)
+    }
+    else if (!readTrim(profile[key])) {
+      missing.push(key)
+    }
+  }
+  if (missing.length) {
+    throw new DuodiandianGatewayError(`duodiandian apply missing required fields: ${missing.join(', ')}`)
+  }
+  if (!/^1\d{10}$/.test(profile.userPhone)) {
+    throw new DuodiandianGatewayError('userPhone is invalid')
+  }
+  if (!profile.relations.every(item => item.name && /^1\d{10}$/.test(item.phone) && item.relation)) {
+    throw new DuodiandianGatewayError('relations must include name, phone and relation')
+  }
+  return profile
+}
+
+function publicUserForMallLogin(user) {
+  if (!user || typeof user !== 'object') return null
+  const clone = { ...user }
+  delete clone.passwordHash
+  return clone
+}
+
+function generateAutoLoginTicket(nowMs, ttlMs) {
+  const ticket = crypto.randomBytes(24).toString('base64url')
+  return {
+    ticket,
+    hash: sha256(ticket),
+    expiresAt: new Date(Number(nowMs) + positiveNumber(ttlMs, 10 * 60 * 1000)).toISOString(),
+  }
+}
+
+function nowFromOption(options = {}) {
+  return typeof options.now === 'function' ? Number(options.now()) : Date.now()
+}
+
+function csvSet(value) {
+  return new Set(readTrim(value).split(',').map(item => readTrim(item)).filter(Boolean))
+}
+
+function isDuodiandianSandboxApply(payload, config = {}) {
+  const cfg = resolveGatewayConfig(config)
+  if (!cfg.sandboxEnabled) return false
+  const applyNo = readTrim(payload && payload.applyNo)
+  return Boolean(applyNo && applyNo.startsWith(cfg.sandboxApplyPrefix))
+}
+
+function buildSandboxMallUser(profile, app, config = {}) {
+  return publicUserForMallLogin({
+    id: `SANDBOX-${profile.applyNo}`,
+    name: profile.name || '点多多沙箱用户',
+    phone: profile.userPhone,
+    idNumber: profile.idNo,
+    idCardFront: readTrim(app.sandboxTransferredImages && app.sandboxTransferredImages.front && app.sandboxTransferredImages.front.url) || profile.frontImage,
+    idCardBack: readTrim(app.sandboxTransferredImages && app.sandboxTransferredImages.back && app.sandboxTransferredImages.back.url) || profile.backImage,
+    idCardHandheld: readTrim(app.sandboxTransferredImages && app.sandboxTransferredImages.face && app.sandboxTransferredImages.face.url) || profile.faceImg,
+    registerChannelCode: config.channelCode,
+    registerChannelName: config.channelName,
+    emergencyContacts: profile.relations.map(item => ({ ...item })),
+    partnerProfiles: {
+      duodiandian: {
+        sandbox: true,
+        raw: { ...profile, relations: profile.relations.map(item => ({ ...item })) },
+        idCardHandheldSource: profile.faceImg ? 'faceImg' : '',
+        applyNo: app.applyNo,
+        partnerOrderNo: app.partnerOrderNo,
+        riskReviewStatus: app.riskReviewStatus,
+        riskReviewReason: app.riskReviewReason || '',
+      },
+    },
+  })
+}
+
+function createDuodiandianMallUser(db, app, profile, transferredImages, riskResult, config = {}, options = {}) {
+  if (!Array.isArray(db.users)) db.users = []
+  const nowMs = nowFromOption(options)
+  const nowIso = new Date(nowMs).toISOString()
+  const id = `U${nowMs}${crypto.randomBytes(3).toString('hex')}`
+  const images = transferredImages || {}
+  const front = images.front && images.front.url ? images.front.url : ''
+  const back = images.back && images.back.url ? images.back.url : ''
+  const face = images.face && images.face.url ? images.face.url : ''
+  const user = {
+    id,
+    name: profile.name || '商城用户',
+    phone: profile.userPhone,
+    idNumber: profile.idNo,
+    idCardFront: front,
+    idCardBack: back,
+    idCardHandheld: face,
+    locationText: profile.homeAddress || profile.address || '',
+    latitude: 0,
+    longitude: 0,
+    creditStatus: '待风控',
+    registerAt: nowIso,
+    quota: 0,
+    adminRemark: '',
+    orderBlacklisted: false,
+    registerChannelCode: config.channelCode,
+    registerChannelName: config.channelName,
+    emergencyContacts: profile.relations.map(item => ({ ...item })),
+    partnerProfiles: {
+      duodiandian: {
+        raw: { ...profile, relations: profile.relations.map(item => ({ ...item })) },
+        images: {
+          front: buildTransferredImageSnapshot(profile.frontImage, images.front),
+          back: buildTransferredImageSnapshot(profile.backImage, images.back),
+          face: buildTransferredImageSnapshot(profile.faceImg, images.face),
+        },
+        idCardHandheldSource: face ? 'faceImg' : '',
+        applyNo: app.applyNo,
+        partnerOrderNo: app.partnerOrderNo,
+        riskReviewStatus: riskResult && riskResult.status,
+        riskReviewReason: riskResult && riskResult.reason || '',
+        riskReviewStepsSummary: Array.isArray(app.riskReviewStepsSummary) ? app.riskReviewStepsSummary : [],
+        savedAt: nowIso,
+      },
+    },
+  }
+  db.users.unshift(user)
+  app.mallUserId = user.id
+  app.mallUserPhone = user.phone
+  app.mallUserCreatedAt = nowIso
+  return user
+}
+
+function buildTransferredImageSnapshot(originalUrl, transferred) {
+  return {
+    originalUrl: readTrim(originalUrl),
+    transferredUrl: readTrim(transferred && transferred.url),
+    contentType: readTrim(transferred && transferred.contentType),
+    size: Number(transferred && transferred.size) || 0,
+    key: readTrim(transferred && transferred.key),
+    transferredAt: readTrim(transferred && transferred.transferredAt) || (transferred ? new Date().toISOString() : ''),
+  }
+}
+
+async function transferDuodiandianApplyImages(profile, transferPartnerImage, options = {}) {
+  if (typeof transferPartnerImage !== 'function') {
+    throw new DuodiandianGatewayError('duodiandian image transfer is not configured', 503)
+  }
+  const tasks = [
+    ['front', profile.frontImage],
+    ['back', profile.backImage],
+  ]
+  if (profile.faceImg) tasks.push(['face', profile.faceImg])
+  const out = {}
+  await Promise.all(tasks.map(async ([scene, url]) => {
+    out[scene] = await transferPartnerImage({
+      url,
+      scene,
+      phone: profile.userPhone,
+      applyNo: profile.applyNo,
+      now: options.now,
+    })
+  }))
+  return out
+}
+
+async function rejectDuodiandianApplication(app, reason, config, options = {}) {
+  const nowIso = new Date(nowFromOption(options)).toISOString()
+  app.riskReviewSource = 'duodiandian_apply'
+  app.riskReviewAt = nowIso
+  app.riskReviewStatus = 'REJECT'
+  app.riskReviewReason = readTrim(reason) || '风控未通过'
+  const notify = await notifyDuodiandianApplyRiskReview({
+    app,
+    review: { status: 'REJECT', reason: app.riskReviewReason },
+    config,
+    httpClient: options.httpClient,
+    now: options.now,
+  })
+  app.riskNotifyStatus = notify.sent ? 'SENT' : 'FAILED'
+  app.riskNotifyReason = notify.reason
+  if (notify.error) app.riskNotifyLastError = notify.error
+  return { status: 'REJECT', reason: app.riskReviewReason, notify }
+}
+
+async function runDuodiandianAutoRegisterApply(options = {}) {
+  const { db, app, payload } = options
+  const config = resolveGatewayConfig(options.config || {})
+  const profile = validateDuodiandianApplyProfile(normalizeDuodiandianApplyPayload(payload))
+  app.duodiandianProfileRaw = { ...profile, relations: profile.relations.map(item => ({ ...item })) }
+  app.applyIp = profile.applyIp
+  app.clientType = profile.clientType
+
+  const existingAppUser = Array.isArray(db.users)
+    ? db.users.find(user => user && (user.id === app.mallUserId || normalizePhone(user.phone) === normalizePhone(app.mallUserPhone || app.userPhone)))
+    : null
+  if (app.riskReviewStatus === 'PASS' && existingAppUser && normalizePhone(existingAppUser.phone) === profile.userPhone) {
+    const nowMs = nowFromOption(options)
+    const ticket = generateAutoLoginTicket(nowMs, config.autoLoginTicketTtlMs)
+    app.autoLoginTicketHash = ticket.hash
+    app.autoLoginTicketExpiresAt = ticket.expiresAt
+    app.autoLoginTicketUsedAt = ''
+    app.autoLoginTicketIssuedAt = new Date(nowMs).toISOString()
+    return { status: 'PASS', reason: '', reused: true, user: existingAppUser, loginTicket: ticket.ticket }
+  }
+
+  if (Array.isArray(db.users) && db.users.some(user => normalizePhone(user && user.phone) === profile.userPhone)) {
+    return rejectDuodiandianApplication(app, '手机号已注册', config, options)
+  }
+
+  let images
+  try {
+    images = await transferDuodiandianApplyImages(profile, options.transferPartnerImage, options)
+    app.imageTransferStatus = 'PASS'
+  }
+  catch (err) {
+    app.imageTransferStatus = 'FAILED'
+    app.imageTransferReason = err && err.message ? String(err.message) : String(err)
+    return rejectDuodiandianApplication(app, `身份证图片处理失败：${app.imageTransferReason}`, config, options)
+  }
+
+  const review = await runDuodiandianApplyRiskReview({
+    app,
+    payload: { ...payload, userPhone: profile.userPhone, name: profile.name, idNo: profile.idNo },
+    config,
+    runRiskPack: options.runRiskPack,
+    httpClient: options.httpClient,
+    now: options.now,
+  })
+
+  if (review.status === 'REJECT') {
+    return review
+  }
+  if (review.status !== 'PASS') {
+    return rejectDuodiandianApplication(app, review.reason || '风控异常', config, options)
+  }
+
+  const user = createDuodiandianMallUser(db, app, profile, images, review, config, options)
+  const nowMs = nowFromOption(options)
+  const ticket = generateAutoLoginTicket(nowMs, config.autoLoginTicketTtlMs)
+  app.autoLoginTicketHash = ticket.hash
+  app.autoLoginTicketExpiresAt = ticket.expiresAt
+  app.autoLoginTicketUsedAt = ''
+  app.autoLoginTicketIssuedAt = new Date(nowMs).toISOString()
+  return { ...review, user, loginTicket: ticket.ticket }
+}
+
+async function runDuodiandianSandboxApply(options = {}) {
+  const { db, app, payload } = options
+  const config = resolveGatewayConfig(options.config || {})
+  const profile = validateDuodiandianApplyProfile(normalizeDuodiandianApplyPayload(payload))
+  const whitelist = csvSet(config.sandboxPhoneWhitelist)
+  app.sandbox = true
+  app.sandboxMode = 'duodiandian_apply'
+  app.sandboxProfileRaw = { ...profile, relations: profile.relations.map(item => ({ ...item })) }
+  app.duodiandianProfileRaw = { ...profile, relations: profile.relations.map(item => ({ ...item })) }
+  app.applyIp = profile.applyIp
+  app.clientType = profile.clientType
+
+  if (whitelist.size > 0 && !whitelist.has(profile.userPhone)) {
+    app.riskReviewSource = 'duodiandian_sandbox'
+    app.riskReviewAt = new Date(nowFromOption(options)).toISOString()
+    app.riskReviewStatus = 'REJECT'
+    app.riskReviewReason = 'sandbox phone not allowed'
+    return { status: 'REJECT', reason: app.riskReviewReason, sandbox: true }
+  }
+
+  if (config.sandboxTransferImages) {
+    try {
+      app.sandboxTransferredImages = await transferDuodiandianApplyImages(profile, options.transferPartnerImage, options)
+      app.imageTransferStatus = 'PASS'
+    }
+    catch (err) {
+      app.imageTransferStatus = 'FAILED'
+      app.imageTransferReason = err && err.message ? String(err.message) : String(err)
+      app.riskReviewSource = 'duodiandian_sandbox'
+      app.riskReviewAt = new Date(nowFromOption(options)).toISOString()
+      app.riskReviewStatus = 'REJECT'
+      app.riskReviewReason = `sandbox image failed: ${app.imageTransferReason}`
+      return { status: 'REJECT', reason: app.riskReviewReason, sandbox: true }
+    }
+  }
+
+  let review = { status: 'PASS', reason: '' }
+  if (!config.sandboxMockRiskPass) {
+    review = await runDuodiandianApplyRiskReview({
+      app,
+      payload: { ...payload, userPhone: profile.userPhone, name: profile.name, idNo: profile.idNo },
+      config,
+      runRiskPack: options.runRiskPack,
+      httpClient: config.sandboxNotifyEnabled ? options.httpClient : null,
+      now: options.now,
+    })
+  }
+  else {
+    app.riskReviewSource = 'duodiandian_sandbox'
+    app.riskReviewAt = new Date(nowFromOption(options)).toISOString()
+    app.riskReviewStatus = 'PASS'
+    app.riskReviewReason = ''
+    app.riskReviewStepsSummary = [{ key: 'sandbox', label: '点多多沙箱风控模拟通过', ok: true }]
+  }
+
+  if (review.status !== 'PASS') {
+    return { status: 'REJECT', reason: review.reason || 'sandbox risk rejected', sandbox: true }
+  }
+
+  const nowMs = nowFromOption(options)
+  const ticket = generateAutoLoginTicket(nowMs, config.autoLoginTicketTtlMs)
+  app.sandboxAutoLogin = true
+  app.mallUserId = `SANDBOX-${profile.applyNo}`
+  app.mallUserPhone = profile.userPhone
+  app.autoLoginTicketHash = ticket.hash
+  app.autoLoginTicketExpiresAt = ticket.expiresAt
+  app.autoLoginTicketUsedAt = ''
+  app.autoLoginTicketIssuedAt = new Date(nowMs).toISOString()
+  app.updatedAt = app.autoLoginTicketIssuedAt
+  return { status: 'PASS', reason: '', sandbox: true, loginTicket: ticket.ticket }
+}
+
+function consumeDuodiandianAutoLogin(db, payload, config = {}, options = {}) {
+  const cfg = resolveGatewayConfig(config)
+  const applyNo = readTrim(payload && payload.applyNo)
+  const ticket = readTrim(payload && payload.loginTicket)
+  if (!applyNo || !ticket) {
+    throw new DuodiandianGatewayError('applyNo and loginTicket are required')
+  }
+  const app = findApplicationByApplyNo(db, applyNo, cfg)
+  const sandboxLogin = Boolean(cfg.sandboxEnabled && app && app.sandbox && app.sandboxAutoLogin)
+  if (!cfg.applyAutoRegisterEnabled && !sandboxLogin) {
+    throw new DuodiandianGatewayError('duodiandian auto login is disabled', 503)
+  }
+  if (!app || app.riskReviewStatus !== 'PASS') {
+    throw new DuodiandianGatewayError('duodiandian application is not approved')
+  }
+  if (app.autoLoginTicketUsedAt) {
+    throw new DuodiandianGatewayError('login ticket already used')
+  }
+  if (!app.autoLoginTicketHash || sha256(ticket) !== app.autoLoginTicketHash) {
+    throw new DuodiandianGatewayError('invalid login ticket')
+  }
+  const nowMs = nowFromOption(options)
+  const expiresMs = new Date(app.autoLoginTicketExpiresAt || 0).getTime()
+  if (!Number.isFinite(expiresMs) || expiresMs < nowMs) {
+    throw new DuodiandianGatewayError('login ticket expired')
+  }
+  if (sandboxLogin) {
+    const profile = app.sandboxProfileRaw || app.duodiandianProfileRaw
+    if (!profile) {
+      throw new DuodiandianGatewayError('sandbox profile not found', 404)
+    }
+    app.autoLoginTicketUsedAt = new Date(nowMs).toISOString()
+    app.updatedAt = app.autoLoginTicketUsedAt
+    return {
+      token: `mock-token-${normalizePhone(profile.userPhone)}`,
+      user: buildSandboxMallUser(profile, app, cfg),
+    }
+  }
+  const user = (Array.isArray(db.users) ? db.users : []).find(item => item && item.id === app.mallUserId)
+    || (Array.isArray(db.users) ? db.users : []).find(item => normalizePhone(item && item.phone) === normalizePhone(app.mallUserPhone || app.userPhone))
+  if (!user) {
+    throw new DuodiandianGatewayError('mall user not found', 404)
+  }
+  app.autoLoginTicketUsedAt = new Date(nowMs).toISOString()
+  app.updatedAt = app.autoLoginTicketUsedAt
+  return {
+    token: `mock-token-${normalizePhone(user.phone)}`,
+    user: publicUserForMallLogin(user),
+  }
+}
+
 function upsertDuodiandianApplication(db, payload, config = {}) {
   const cfg = resolveGatewayConfig(config)
   requireGatewayConfig(cfg, ['partnerCode', 'channelCode', 'channelName'])
@@ -550,15 +1036,22 @@ async function notifyDuodiandianApplyRiskReview(options = {}) {
   if (!client) {
     return { sent: false, reason: 'fetch_unavailable', payload }
   }
+  const controller = typeof AbortController === 'function' ? new AbortController() : null
   try {
-    const resp = await client(cfg.statusNotifyUrl, {
+    const resp = await promiseWithTimeout(client(cfg.statusNotifyUrl, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(envelope),
-    })
-    const text = typeof resp.text === 'function'
-      ? await resp.text()
-      : (typeof resp.json === 'function' ? JSON.stringify(await resp.json()) : '')
+      ...(controller ? { signal: controller.signal } : {}),
+    }), cfg.notifyTimeoutMs, 'duodiandian notify timeout', controller)
+    const text = await promiseWithTimeout(
+      typeof resp.text === 'function'
+        ? resp.text()
+        : (typeof resp.json === 'function' ? resp.json().then(body => JSON.stringify(body)) : Promise.resolve('')),
+      cfg.notifyTimeoutMs,
+      'duodiandian notify response timeout',
+      controller,
+    )
     const body = parseNotifyResponseBody(text)
     const code = body && body.code !== undefined ? String(body.code) : ''
     const accepted = Boolean(resp.ok) && (!code || code === '200')
@@ -600,7 +1093,11 @@ async function runDuodiandianApplyRiskReview(options = {}) {
 
   let pack
   try {
-    pack = await options.runRiskPack(subject)
+    pack = await promiseWithTimeout(
+      options.runRiskPack(subject),
+      resolveGatewayConfig(options.config || {}).applyRiskTimeoutMs,
+      'duodiandian risk pack timeout',
+    )
   }
   catch (err) {
     app.riskReviewStatus = 'ERROR'
@@ -722,6 +1219,11 @@ function buildDuodiandianH5Url(db, payload, config = {}) {
   url.searchParams.set('channel', cfg.channelCode)
   url.searchParams.set('partner', cfg.partnerCode)
   url.searchParams.set('applyNo', app.applyNo)
+  const loginTicket = readTrim(payload && payload.loginTicket)
+  if (loginTicket) {
+    url.searchParams.set('loginTicket', loginTicket)
+    url.searchParams.set('autoLoginPath', `${cfg.routePrefix}/autoLogin`)
+  }
   return url.toString()
 }
 
@@ -894,6 +1396,9 @@ function registerDuodiandianGatewayRoutes(router, deps = {}) {
   const writeDbPartial = typeof deps.writeDbPartial === 'function' ? deps.writeDbPartial : null
   const flushMongoPersist = typeof deps.flushMongoPersist === 'function' ? deps.flushMongoPersist : null
   const runApplyRiskPack = typeof deps.runApplyRiskPack === 'function' ? deps.runApplyRiskPack : null
+  const transferPartnerImage = typeof deps.transferPartnerImage === 'function' ? deps.transferPartnerImage : null
+  const httpClient = typeof deps.httpClient === 'function' ? deps.httpClient : null
+  const now = typeof deps.now === 'function' ? deps.now : null
   if (typeof readDb !== 'function' || typeof writeDb !== 'function') {
     throw new Error('readDb/writeDb are required')
   }
@@ -981,6 +1486,47 @@ function registerDuodiandianGatewayRoutes(router, deps = {}) {
     }
   }
 
+  async function handleAutoLogin(ctx) {
+    const marks = { start: gatewayPerfNowMs() }
+    try {
+      const config = resolveGatewayConfig(configProvider())
+      const endpoint = `${prefix}/autoLogin`
+      const body = ctx.request.body || {}
+      const payload = body && body.partner && body.data
+        ? parseDuodiandianEnvelope(body, config)
+        : body
+      marks.parseEnd = gatewayPerfNowMs()
+      marks.readDbStart = gatewayPerfNowMs()
+      const db = readDb()
+      marks.readDbEnd = gatewayPerfNowMs()
+      marks.actionStart = gatewayPerfNowMs()
+      const result = consumeDuodiandianAutoLogin(db, payload, config, { now })
+      marks.actionEnd = gatewayPerfNowMs()
+      marks.persistStart = gatewayPerfNowMs()
+      if (writeDbPartial) {
+        writeDbPartial(db, ['partnerGatewayApplications'])
+      }
+      else {
+        writeDb(db)
+      }
+      marks.persistEnd = gatewayPerfNowMs()
+      if (flushMongoPersist) {
+        marks.flushStart = gatewayPerfNowMs()
+        await flushMongoPersist()
+        marks.flushEnd = gatewayPerfNowMs()
+        if (ctx.state) ctx.state.mongoPersistFlushed = true
+      }
+      gatewaySuccess(ctx, result)
+      marks.end = gatewayPerfNowMs()
+      maybeLogGatewayPerf(ctx, marks, { endpoint })
+    }
+    catch (err) {
+      gatewayFail(ctx, err)
+      marks.end = gatewayPerfNowMs()
+      maybeLogGatewayPerf(ctx, marks, { endpoint: `${prefix}/autoLogin` })
+    }
+  }
+
   const prefix = routeConfig.routePrefix
 
   async function checkPrefix(ctx) {
@@ -1011,20 +1557,59 @@ function registerDuodiandianGatewayRoutes(router, deps = {}) {
       const app = upsertDuodiandianApplication(db, payload, config)
       const partnerOrderNo = app.partnerOrderNo || makePartnerOrderNo(app.applyNo)
       bindPartnerOrderNo(db, app.applyNo, partnerOrderNo, config)
-      await runDuodiandianApplyRiskReview({
-        app,
-        payload,
-        config,
-        runRiskPack: runApplyRiskPack,
-      })
+      let autoResult = null
+      if (isDuodiandianSandboxApply(payload, config)) {
+        autoResult = await runDuodiandianSandboxApply({
+          db,
+          app,
+          payload,
+          config,
+          runRiskPack: runApplyRiskPack,
+          transferPartnerImage,
+          httpClient,
+          now,
+        })
+      }
+      else if (config.applyAutoRegisterEnabled) {
+        autoResult = await runDuodiandianAutoRegisterApply({
+          db,
+          app,
+          payload,
+          config,
+          runRiskPack: runApplyRiskPack,
+          transferPartnerImage,
+          httpClient,
+          now,
+        })
+      }
+      else {
+        await runDuodiandianApplyRiskReview({
+          app,
+          payload,
+          config,
+          runRiskPack: runApplyRiskPack,
+          httpClient,
+          now,
+        })
+      }
       return {
         status: '1',
         partnerOrderNo,
-        returnUrl: buildDuodiandianH5Url(db, { applyNo: app.applyNo }, config),
+        returnUrl: buildDuodiandianH5Url(db, {
+          applyNo: app.applyNo,
+          loginTicket: autoResult && autoResult.loginTicket,
+        }, config),
         approvalAmount: '0',
-        approvalStatus: 'ING',
+        approvalStatus: autoResult && autoResult.status === 'PASS'
+          ? 'SUC'
+          : (autoResult && autoResult.status === 'REJECT' ? 'REJECT' : 'ING'),
       }
-    }, { endpoint: `${prefix}/apply`, persistKeys: DUODIANDIAN_APPLICATION_WRITE_KEYS })
+    }, {
+      endpoint: `${prefix}/apply`,
+      persistKeys: resolveGatewayConfig(configProvider()).applyAutoRegisterEnabled
+        ? DUODIANDIAN_AUTO_REGISTER_WRITE_KEYS
+        : DUODIANDIAN_APPLICATION_WRITE_KEYS,
+    })
   })
 
   router.post(`${prefix}/getUrl`, async (ctx) => {
@@ -1032,6 +1617,8 @@ function registerDuodiandianGatewayRoutes(router, deps = {}) {
       url: buildDuodiandianH5Url(db, payload, config),
     }))
   })
+
+  router.post(`${prefix}/autoLogin`, handleAutoLogin)
 
   router.post(`${prefix}/order/status/notify`, async (ctx) => {
     await handleWrite(ctx, async ({ payload, db, config }) => {

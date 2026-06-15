@@ -122,6 +122,7 @@ const {
   findReusableDuodiandianApplyRiskReview,
   registerDuodiandianGatewayRoutes,
 } = require('./duodiandianGateway')
+const { transferDuodiandianImage } = require('./duodiandianImageTransfer')
 
 const app = new Koa()
 const router = new Router({ prefix: '/api' })
@@ -8875,6 +8876,7 @@ registerDuodiandianGatewayRoutes(router, {
   writeDbPartial,
   flushMongoPersist,
   runApplyRiskPack: runOrderSubmitUpstreamRiskPack,
+  transferPartnerImage: (args) => transferDuodiandianImage(args, { uploadImage: uploadPublicImage }),
 })
 
 registerDuodiandianGatewayRoutes(duodiandianPublicRouter, {
@@ -8883,6 +8885,7 @@ registerDuodiandianGatewayRoutes(duodiandianPublicRouter, {
   writeDbPartial,
   flushMongoPersist,
   runApplyRiskPack: runOrderSubmitUpstreamRiskPack,
+  transferPartnerImage: (args) => transferDuodiandianImage(args, { uploadImage: uploadPublicImage }),
 })
 
 function queueDuodiandianOrderNotify(event, order, db) {
