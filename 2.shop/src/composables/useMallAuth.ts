@@ -1,4 +1,5 @@
 import { clearPendingRegisterChannel, getPendingRegisterChannel, resolveChannelFromRouteQuery } from './useRegisterChannel'
+import { resolveDuodiandianLoginConsumeUrl } from '../utils/duodiandianLogin'
 
 export interface RegisterPayload {
   name: string
@@ -210,6 +211,29 @@ export function useMallAuth() {
     return response.data.user
   }
 
+  const consumeDuodiandianLoginToken = async (payload: { channel: string, applyNo: string, token: string, consumePath?: string }) => {
+    const channel = String(payload.channel || '').replace(/[^a-zA-Z0-9_-]/g, '')
+    const applyNo = String(payload.applyNo || '').trim()
+    const token = String(payload.token || '').trim()
+    if (!channel || !applyNo || !token) {
+      throw new Error('免登链接参数不完整')
+    }
+    const response = await $fetch<{ success: boolean, data: { token: string, user: MallUserProfile } }>(
+      resolveDuodiandianLoginConsumeUrl(resolveMallApiBase(), channel, payload.consumePath),
+      {
+        method: 'POST',
+        body: { applyNo, token },
+      },
+    )
+    const user = response.data.user
+    const normalizedPhone = normalizeMallAccount(user.phone)
+    loginPhone.value = normalizedPhone
+    loginCookie.value = normalizedPhone
+    profile.value = user
+    registerCookie.value = '1'
+    return user
+  }
+
   const ensureRegistered = async (redirectPath?: string) => {
     await syncFromStorage()
 
@@ -239,8 +263,10 @@ export function useMallAuth() {
     register,
     loginByPhone,
     loginByPassword,
+    consumeDuodiandianLoginToken,
     logout,
     ensureRegistered,
     syncFromStorage,
   }
 }
+

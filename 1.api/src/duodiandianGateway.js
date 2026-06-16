@@ -1,4 +1,4 @@
-﻿const crypto = require('node:crypto')
+const crypto = require('node:crypto')
 
 class DuodiandianGatewayError extends Error {
   constructor(message, status = 400) {
@@ -10,6 +10,7 @@ class DuodiandianGatewayError extends Error {
 
 const outboundNotifySentKeys = new Set()
 const DUODIANDIAN_APPLICATION_WRITE_KEYS = ['partnerGatewayApplications', 'trafficChannels', 'trafficPartners']
+const DUODIANDIAN_ASYNC_REVIEW_WRITE_KEYS = ['partnerGatewayApplications', 'users']
 const DUODIANDIAN_CALLBACK_WRITE_KEYS = ['partnerGatewayApplications']
 
 function nonEmpty(value) {
@@ -64,6 +65,9 @@ function resolveDuodiandianMongoRefreshPlan(method, pathValue, config = {}) {
   }
   if (endpoint === '/getUrl') {
     return { mode: 'partial', keys: ['partnerGatewayApplications'], allowColdPartial: true }
+  }
+  if (endpoint === '/login/consume') {
+    return { mode: 'partial', keys: ['users', 'partnerGatewayApplications'], allowColdPartial: true }
   }
   if (endpoint === '/apply') {
     return { mode: 'partial', keys: DUODIANDIAN_APPLICATION_WRITE_KEYS, allowColdPartial: true }
@@ -465,6 +469,266 @@ function summarizeRiskSteps(steps) {
   }))
 }
 
+function cloneJsonSafe(value) {
+  if (!value || typeof value !== 'object') return value
+  return JSON.parse(JSON.stringify(value))
+}
+
+function normalizeApplyRelations(value) {
+  return (Array.isArray(value) ? value : [])
+    .map(item => ({
+      name: readTrim(item && item.name),
+      phone: normalizePhone(item && item.phone),
+      relation: readTrim(item && item.relation),
+    }))
+    .filter(item => item.name || item.phone || item.relation)
+}
+
+function archiveDuodiandianApplyPayload(app, payload = {}) {
+  const subject = normalizeApplyRiskSubject(payload)
+  app.rawApplyPayload = cloneJsonSafe(payload)
+  app.applyIdentity = {
+    name: subject.userName,
+    userPhone: subject.phoneNumber,
+    idNo: subject.idNumber,
+    gender: readTrim(payload.gender),
+    nation: readTrim(payload.nation),
+    authority: readTrim(payload.authority),
+    validDate: readTrim(payload.validDate),
+    address: readTrim(payload.address),
+    education: readTrim(payload.education),
+    marriedStatus: readTrim(payload.marriedStatus),
+  }
+  app.applyImages = {
+    frontImage: readTrim(payload.frontImage),
+    backImage: readTrim(payload.backImage),
+    faceImg: readTrim(payload.faceImg),
+    imagePersistStatus: 'URL_ONLY',
+  }
+  app.applyRelations = normalizeApplyRelations(payload.relations)
+  app.applyProfile = {
+    applyIp: readTrim(payload.applyIp),
+    homeAddress: readTrim(payload.homeAddress),
+    companyName: readTrim(payload.companyName),
+    companyAddress: readTrim(payload.companyAddress),
+    clientType: readTrim(payload.clientType),
+  }
+  return app
+}
+
+function isDuodiandianApplyPayloadComplete(payload = {}) {
+  const subject = normalizeApplyRiskSubject(payload)
+  const relations = normalizeApplyRelations(payload.relations)
+  return Boolean(
+    readTrim(payload.applyNo)
+    && readTrim(payload.applyIp)
+    && subject.userName
+    && /^1\d{10}$/.test(subject.phoneNumber)
+    && subject.idNumber
+    && readTrim(payload.frontImage)
+    && readTrim(payload.backImage)
+    && readTrim(payload.gender)
+    && readTrim(payload.clientType)
+    && relations.length > 0
+    && relations.every(item => item.name && item.phone && item.relation)
+  )
+}
+
+function findExistingDuodiandianUserConflict(db, subject = {}) {
+  const users = Array.isArray(db && db.users) ? db.users : []
+  const phone = normalizePhone(subject.phoneNumber)
+  const idNo = readTrim(subject.idNumber).toUpperCase()
+  return users.find(user => user && (
+    (phone && normalizePhone(user.phone || user.mobile || user.userPhone) === phone)
+    || (idNo && readTrim(user.idNumber || user.idNo).toUpperCase() === idNo)
+  )) || null
+}
+
+function makeDuodiandianMallUser(app, payload, config = {}, steps = []) {
+  const cfg = resolveGatewayConfig(config)
+  const now = cfg.now || new Date().toISOString()
+  const subject = normalizeApplyRiskSubject(payload)
+  const relations = normalizeApplyRelations(payload.relations)
+  const user = {
+    id: `U${Date.now()}${Math.floor(Math.random() * 1000)}`,
+    name: subject.userName || '商城用户',
+    phone: subject.phoneNumber,
+    idNumber: subject.idNumber,
+    idCardFront: readTrim(payload.frontImage),
+    idCardBack: readTrim(payload.backImage),
+    idCardHandheld: readTrim(payload.faceImg),
+    locationText: readTrim(payload.homeAddress) || readTrim(payload.address),
+    latitude: 0,
+    longitude: 0,
+    creditStatus: '良好',
+    registerAt: now,
+    quota: 0,
+    adminRemark: '',
+    orderBlacklisted: false,
+    emergencyContacts: relations,
+    registerChannelCode: cfg.channelCode,
+    registerChannelName: cfg.channelName,
+    duodiandianApplyNo: readTrim(app && app.applyNo),
+    duodiandianPartnerOrderNo: readTrim(app && app.partnerOrderNo),
+    duodiandianApplyIp: readTrim(payload.applyIp),
+    duodiandianClientType: readTrim(payload.clientType),
+    riskControlSnapshot: {
+      configured: true,
+      simulated: false,
+      passed: true,
+      checkedAt: now,
+      summaryMessage: '',
+      fourteenRows: (Array.isArray(steps) ? steps : []).map((step, idx) => ({
+        slotKey: step && step.key ? step.key : `duodiandian_apply_${idx + 1}`,
+        productLabel: step && step.label ? step.label : (step && step.key ? step.key : `风控项${idx + 1}`),
+        state: step && step.ok ? 'ok' : 'fail',
+        error: step && step.error,
+        response: step && step.response,
+      })),
+      rawSteps: cloneJsonSafe(steps),
+      stepsSummary: summarizeRiskSteps(steps),
+      userId: '',
+    },
+  }
+  user.riskControlSnapshot.userId = user.id
+  return user
+}
+
+function issueDuodiandianLoginToken(app, now = Date.now()) {
+  if (!app || typeof app !== 'object') return ''
+  if (app.loginTokenHash && !app.loginTokenConsumedAt) {
+    return ''
+  }
+  const token = crypto.randomBytes(24).toString('hex')
+  app.loginTokenHash = sha256(token)
+  app.loginTokenIssuedAt = new Date(Number(now) || Date.now()).toISOString()
+  app.loginTokenConsumedAt = ''
+  return token
+}
+
+function verifyDuodiandianLoginToken(app, token, maxAgeMs = 10 * 60 * 1000) {
+  if (!app || !readTrim(token) || !app.loginTokenHash) {
+    throw new DuodiandianGatewayError('免登链接无效')
+  }
+  if (app.loginTokenConsumedAt) {
+    throw new DuodiandianGatewayError('免登链接已使用')
+  }
+  const issuedAtMs = Date.parse(String(app.loginTokenIssuedAt || ''))
+  if (!Number.isFinite(issuedAtMs) || Date.now() - issuedAtMs > maxAgeMs) {
+    throw new DuodiandianGatewayError('免登链接已失效')
+  }
+  if (sha256(readTrim(token)) !== app.loginTokenHash) {
+    throw new DuodiandianGatewayError('免登链接校验失败')
+  }
+  if (app.riskReviewStatus !== 'PASS') {
+    throw new DuodiandianGatewayError(app.riskReviewStatus === 'REJECT' ? '审核未通过' : '审核中，请稍候', app.riskReviewStatus === 'REJECT' ? 403 : 409)
+  }
+}
+
+function sanitizeDuodiandianLoginUser(user) {
+  if (!user || typeof user !== 'object') return user
+  return {
+    id: readTrim(user.id),
+    name: readTrim(user.name),
+    phone: normalizePhone(user.phone),
+    idNumber: readTrim(user.idNumber),
+    idCardFront: readTrim(user.idCardFront),
+    idCardBack: readTrim(user.idCardBack),
+    idCardHandheld: readTrim(user.idCardHandheld),
+    locationText: readTrim(user.locationText),
+    creditStatus: user.creditStatus || '良好',
+    quota: Number(user.quota || 0),
+    registerAt: readTrim(user.registerAt),
+    orderBlacklisted: Boolean(user.orderBlacklisted),
+    emergencyContacts: Array.isArray(user.emergencyContacts) ? user.emergencyContacts : [],
+    emergencyContactsComplete: true,
+  }
+}
+
+async function processDuodiandianApplyRiskJob(options = {}) {
+  const cfg = resolveGatewayConfig(options.config || {})
+  const db = typeof options.readDb === 'function' ? options.readDb() : options.db
+  const app = findApplicationByApplyNo(db, options.applyNo, cfg)
+  if (!app) return { status: 'SKIPPED', reason: 'application_not_found' }
+  const payload = app.rawApplyPayload || {}
+  const nowIso = new Date(typeof options.now === 'function' ? Number(options.now()) : Date.now()).toISOString()
+  const subject = normalizeApplyRiskSubject(payload)
+
+  async function persist() {
+    if (typeof options.writeDbPartial === 'function') {
+      options.writeDbPartial(db, DUODIANDIAN_ASYNC_REVIEW_WRITE_KEYS)
+    }
+    else if (typeof options.writeDb === 'function') {
+      options.writeDb(db)
+    }
+    if (typeof options.flushMongoPersist === 'function') {
+      await options.flushMongoPersist()
+    }
+  }
+
+  async function reject(reason, steps = []) {
+    app.riskReviewSource = 'duodiandian_apply_async'
+    app.riskReviewStatus = 'REJECT'
+    app.riskReviewReason = readTrim(reason) || '风控未通过'
+    app.riskReviewAt = nowIso
+    app.applyRiskSteps = cloneJsonSafe(steps)
+    app.riskReviewStepsSummary = summarizeRiskSteps(steps)
+    const notify = await notifyDuodiandianApplyRiskReview({
+      app,
+      review: { status: 'REJECT', reason: app.riskReviewReason },
+      config: cfg,
+      httpClient: options.httpClient,
+      now: options.now,
+    })
+    app.riskNotifyStatus = notify.sent ? 'SENT' : 'FAILED'
+    app.riskNotifyReason = notify.reason
+    await persist()
+    return { status: 'REJECT', reason: app.riskReviewReason }
+  }
+
+  const conflict = findExistingDuodiandianUserConflict(db, subject)
+  if (conflict) {
+    return reject('用户已存在，拒绝重复进件')
+  }
+  if (typeof options.runRiskPack !== 'function') {
+    return reject('apply async risk runner is not configured')
+  }
+
+  let pack
+  try {
+    pack = await options.runRiskPack(subject)
+  }
+  catch (err) {
+    return reject(err && err.message ? String(err.message) : String(err))
+  }
+  const steps = Array.isArray(pack && pack.steps) ? pack.steps : []
+  if (!pack || !pack.allPassed) {
+    return reject(String((pack && pack.message) || '风控未通过'), steps)
+  }
+
+  const user = makeDuodiandianMallUser(app, payload, cfg, steps)
+  if (!Array.isArray(db.users)) db.users = []
+  db.users.unshift(user)
+  app.mallUserId = user.id
+  app.riskReviewSource = 'duodiandian_apply_async'
+  app.riskReviewStatus = 'PASS'
+  app.riskReviewReason = ''
+  app.riskReviewAt = nowIso
+  app.applyRiskSteps = cloneJsonSafe(steps)
+  app.riskReviewStepsSummary = summarizeRiskSteps(steps)
+  const notify = await notifyDuodiandianApplyRiskReview({
+    app,
+    review: { status: 'PASS', reason: '' },
+    config: cfg,
+    httpClient: options.httpClient,
+    now: options.now,
+  })
+  app.riskNotifyStatus = notify.sent ? 'SENT' : 'FAILED'
+  app.riskNotifyReason = notify.reason
+  await persist()
+  return { status: 'PASS', userId: user.id }
+}
+
 function upsertDuodiandianApplication(db, payload, config = {}) {
   const cfg = resolveGatewayConfig(config)
   requireGatewayConfig(cfg, ['partnerCode', 'channelCode', 'channelName'])
@@ -498,6 +762,7 @@ function upsertDuodiandianApplication(db, payload, config = {}) {
   }
   app.userPhone = userPhone
   app.rawApplyMasked = sanitizeApplySnapshot(payload)
+  archiveDuodiandianApplyPayload(app, payload)
   app.updatedAt = now
   return app
 }
@@ -718,10 +983,15 @@ function buildDuodiandianH5Url(db, payload, config = {}) {
   const applyNo = readTrim(payload && payload.applyNo)
   const app = findApplicationByApplyNo(db, applyNo, cfg)
   if (!app) throw new DuodiandianGatewayError('applyNo is not bound to configured partner channel')
-  const url = new URL(cfg.h5Origin)
+  const url = new URL(app.loginTokenHash ? '/login' : '/', cfg.h5Origin)
   url.searchParams.set('channel', cfg.channelCode)
   url.searchParams.set('partner', cfg.partnerCode)
   url.searchParams.set('applyNo', app.applyNo)
+  if (payload && payload.loginToken) {
+    url.searchParams.set('trafficLogin', '1')
+    url.searchParams.set('token', readTrim(payload.loginToken))
+    url.searchParams.set('consumePath', `/api${cfg.routePrefix}/login/consume`)
+  }
   return url.toString()
 }
 
@@ -894,6 +1164,14 @@ function registerDuodiandianGatewayRoutes(router, deps = {}) {
   const writeDbPartial = typeof deps.writeDbPartial === 'function' ? deps.writeDbPartial : null
   const flushMongoPersist = typeof deps.flushMongoPersist === 'function' ? deps.flushMongoPersist : null
   const runApplyRiskPack = typeof deps.runApplyRiskPack === 'function' ? deps.runApplyRiskPack : null
+  const httpClient = typeof deps.httpClient === 'function' ? deps.httpClient : undefined
+  const scheduleAsyncJob = typeof deps.scheduleAsyncJob === 'function'
+    ? deps.scheduleAsyncJob
+    : (fn) => setTimeout(() => {
+        Promise.resolve()
+          .then(fn)
+          .catch(err => console.warn('[duodiandian-apply-async-risk]', err && err.message ? err.message : err))
+      }, 0)
   if (typeof readDb !== 'function' || typeof writeDb !== 'function') {
     throw new Error('readDb/writeDb are required')
   }
@@ -1008,29 +1286,111 @@ function registerDuodiandianGatewayRoutes(router, deps = {}) {
 
   router.post(`${prefix}/apply`, async (ctx) => {
     await handleWrite(ctx, async ({ payload, db, config }) => {
+      if (!isDuodiandianApplyPayloadComplete(payload)) {
+        throw new DuodiandianGatewayError('进件资料不完整，无法进入异步风控')
+      }
       const app = upsertDuodiandianApplication(db, payload, config)
       const partnerOrderNo = app.partnerOrderNo || makePartnerOrderNo(app.applyNo)
       bindPartnerOrderNo(db, app.applyNo, partnerOrderNo, config)
-      await runDuodiandianApplyRiskReview({
-        app,
-        payload,
+      app.riskReviewSource = 'duodiandian_apply_async'
+      app.riskReviewStatus = 'PENDING'
+      app.riskReviewReason = ''
+      const loginToken = issueDuodiandianLoginToken(app)
+      scheduleAsyncJob(() => processDuodiandianApplyRiskJob({
+        applyNo: app.applyNo,
         config,
+        readDb,
+        writeDb,
+        writeDbPartial,
+        flushMongoPersist,
         runRiskPack: runApplyRiskPack,
-      })
+        httpClient,
+      }))
       return {
         status: '1',
         partnerOrderNo,
-        returnUrl: buildDuodiandianH5Url(db, { applyNo: app.applyNo }, config),
+        returnUrl: buildDuodiandianH5Url(db, { applyNo: app.applyNo, loginToken }, config),
         approvalAmount: '0',
         approvalStatus: 'ING',
       }
     }, { endpoint: `${prefix}/apply`, persistKeys: DUODIANDIAN_APPLICATION_WRITE_KEYS })
   })
 
+  router.post(`${prefix}/login/consume`, async (ctx) => {
+    const marks = { start: gatewayPerfNowMs() }
+    try {
+      const config = resolveGatewayConfig(configProvider())
+      const payload = ctx.request.body || {}
+      const db = readDb()
+      const app = findApplicationByApplyNo(db, payload && payload.applyNo, config)
+      if (!app) throw new DuodiandianGatewayError('applyNo is not bound to configured partner channel')
+      verifyDuodiandianLoginToken(app, payload && payload.token)
+      const user = (Array.isArray(db.users) ? db.users : []).find(item => item && item.id === app.mallUserId)
+      if (!user) throw new DuodiandianGatewayError('免登用户不存在', 404)
+      app.loginTokenConsumedAt = new Date().toISOString()
+      if (writeDbPartial) {
+        writeDbPartial(db, ['partnerGatewayApplications'])
+      }
+      else {
+        writeDb(db)
+      }
+      if (flushMongoPersist) {
+        await flushMongoPersist()
+      }
+      gatewaySuccess(ctx, {
+        token: `mock-token-${normalizePhone(user.phone)}`,
+        user: sanitizeDuodiandianLoginUser(user),
+      })
+      marks.end = gatewayPerfNowMs()
+      maybeLogGatewayPerf(ctx, marks, { endpoint: `${prefix}/login/consume` })
+    }
+    catch (err) {
+      gatewayFail(ctx, err)
+      marks.end = gatewayPerfNowMs()
+      maybeLogGatewayPerf(ctx, marks, { endpoint: `${prefix}/login/consume` })
+    }
+  })
+
   router.post(`${prefix}/getUrl`, async (ctx) => {
-    await handleRead(ctx, async ({ payload, db, config }) => ({
-      url: buildDuodiandianH5Url(db, payload, config),
-    }))
+    const marks = { start: gatewayPerfNowMs() }
+    try {
+      const config = resolveGatewayConfig(configProvider())
+      const payload = parseDuodiandianEnvelope(ctx.request.body || {}, config)
+      marks.parseEnd = gatewayPerfNowMs()
+      marks.readDbStart = gatewayPerfNowMs()
+      const db = readDb()
+      marks.readDbEnd = gatewayPerfNowMs()
+      const app = findApplicationByApplyNo(db, payload && payload.applyNo, config)
+      if (!app) throw new DuodiandianGatewayError('applyNo is not bound to configured partner channel')
+      let loginToken = ''
+      if (app.riskReviewStatus === 'PASS' && app.mallUserId) {
+        loginToken = issueDuodiandianLoginToken(app)
+        if (!loginToken && app.loginTokenHash && !app.loginTokenConsumedAt) {
+          // Existing token plaintext is intentionally unavailable; rotate it for getUrl callers.
+          app.loginTokenConsumedAt = new Date().toISOString()
+          loginToken = issueDuodiandianLoginToken(app)
+        }
+        if (writeDbPartial) {
+          writeDbPartial(db, ['partnerGatewayApplications'])
+        }
+        else {
+          writeDb(db)
+        }
+        if (flushMongoPersist) {
+          await flushMongoPersist()
+        }
+      }
+      gatewaySuccess(ctx, {
+        url: buildDuodiandianH5Url(db, { applyNo: app.applyNo, loginToken }, config),
+      })
+      marks.end = gatewayPerfNowMs()
+      maybeLogGatewayPerf(ctx, marks, { endpoint: `${prefix}/getUrl` })
+    }
+    catch (err) {
+      gatewayFail(ctx, err)
+      marks.end = gatewayPerfNowMs()
+      maybeLogGatewayPerf(ctx, marks, { endpoint: `${prefix}/getUrl` })
+    }
   })
 
   router.post(`${prefix}/order/status/notify`, async (ctx) => {
@@ -1080,6 +1440,8 @@ module.exports = {
   ensureDuodiandianPortalPartner,
   upsertDuodiandianApplication,
   runDuodiandianApplyRiskReview,
+  processDuodiandianApplyRiskJob,
+  issueDuodiandianLoginToken,
   notifyDuodiandianApplyRiskReview,
   findReusableDuodiandianApplyRiskReview,
   normalizeApplyRiskSubject,

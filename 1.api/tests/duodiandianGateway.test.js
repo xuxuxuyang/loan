@@ -1,4 +1,4 @@
-﻿const assert = require('node:assert/strict')
+const assert = require('node:assert/strict')
 const test = require('node:test')
 const crypto = require('node:crypto')
 const fs = require('node:fs')
@@ -45,7 +45,7 @@ function signBusinessData(payload, timestamp, signKey = config.signKey) {
   const pairs = Object.keys(payload)
     .filter((key) => payload[key] !== undefined && payload[key] !== null && payload[key] !== '')
     .sort()
-    .map((key) => `${key}=${payload[key]}`)
+    .map((key) => `${key}=${payload[key] && typeof payload[key] === 'object' ? JSON.stringify(payload[key]) : payload[key]}`)
   const signStr = `${pairs.join('&')}${pairs.length ? '&' : ''}key=${signKey}&timestamp=${timestamp}`
   return crypto.createHash('md5').update(signStr, 'utf8').digest('hex')
 }
@@ -147,6 +147,7 @@ test('registers routes under configured route prefix', () => {
   gateway.registerDuodiandianGatewayRoutes(router, { readDb() { return {} }, writeDb() {}, configProvider: () => config })
   assert(paths.every(path => path.startsWith('/open/partners/env-ddd/')))
   assert(paths.includes('/open/partners/env-ddd/getUrl'))
+  assert(paths.includes('/open/partners/env-ddd/login/consume'))
   assert(paths.includes('/open/partners/env-ddd/order/replayPlan/notify'))
   assert(paths.includes('/open/partners/env-ddd/order/replay/notify'))
 })
@@ -164,6 +165,14 @@ function makeCapturingRouter() {
 function makeCtx(payload) {
   return {
     request: { body: envelope(payload) },
+    status: 0,
+    body: null,
+  }
+}
+
+function makePlainCtx(payload) {
+  return {
+    request: { body: payload },
     status: 0,
     body: null,
   }
@@ -193,6 +202,7 @@ function registerCountingRoutes(db) {
 
 function registerScopedRoutes(db) {
   const calls = []
+  const jobs = []
   const router = makeCapturingRouter()
   gateway.registerDuodiandianGatewayRoutes(router, {
     readDb() {
@@ -208,11 +218,36 @@ function registerScopedRoutes(db) {
     async flushMongoPersist() {
       calls.push({ type: 'flush', applicationCount: (db.partnerGatewayApplications || []).length })
     },
+    scheduleAsyncJob(fn) {
+      jobs.push(fn)
+    },
     configProvider: () => config,
   })
   return {
     router,
     calls,
+    jobs,
+  }
+}
+
+function fullApplyPayload(overrides = {}) {
+  return {
+    applyNo: 'A-FULL',
+    applyIp: '127.0.0.1',
+    userPhone: '13900139000',
+    idNo: '110101199001011234',
+    name: 'Alice',
+    frontImage: 'https://img.example.com/front.jpg',
+    backImage: 'https://img.example.com/back.jpg',
+    faceImg: 'https://img.example.com/face.jpg',
+    gender: 'GIRL',
+    clientType: 'h5',
+    homeAddress: '上海市浦东新区',
+    relations: [
+      { name: 'Bob', phone: '13800138000', relation: 'FATHER' },
+      { name: 'Cindy', phone: '13700137000', relation: 'FRIEND' },
+    ],
+    ...overrides,
   }
 }
 
@@ -266,7 +301,7 @@ test('getUrl is read-only and returns the existing application H5 link', async (
 test('apply still writes application data and keeps apply response fields', async () => {
   const db = { users: [], orders: [], trafficChannels: [], trafficPartners: [], partnerGatewayApplications: [] }
   const state = registerCountingRoutes(db)
-  const ctx = makeCtx({ applyNo: 'A-APPLY', userPhone: '13900139000' })
+  const ctx = makeCtx(fullApplyPayload({ applyNo: 'A-APPLY' }))
 
   await state.router.routes.get('/open/partners/env-ddd/apply')(ctx)
 
@@ -282,7 +317,7 @@ test('apply still writes application data and keeps apply response fields', asyn
 test('apply persists only duodiandian gateway collections and flushes before success', async () => {
   const db = { users: [], orders: [], trafficChannels: [], trafficPartners: [], partnerGatewayApplications: [] }
   const state = registerScopedRoutes(db)
-  const ctx = makeCtx({ applyNo: 'A-SCOPED', userPhone: '18800001111' })
+  const ctx = makeCtx(fullApplyPayload({ applyNo: 'A-SCOPED', userPhone: '18800001111' }))
 
   await state.router.routes.get('/open/partners/env-ddd/apply')(ctx)
 
@@ -293,11 +328,187 @@ test('apply persists only duodiandian gateway collections and flushes before suc
   assert.equal(db.partnerGatewayApplications[0].applyNo, 'A-SCOPED')
 })
 
+test('apply rejects incomplete payload before persistence or async review', async () => {
+  const db = { users: [], orders: [], trafficChannels: [], trafficPartners: [], partnerGatewayApplications: [] }
+  const state = registerScopedRoutes(db)
+  const ctx = makeCtx({ applyNo: 'A-INCOMPLETE', userPhone: '13900139000' })
+
+  await state.router.routes.get('/open/partners/env-ddd/apply')(ctx)
+
+  assert.equal(ctx.status, 400)
+  assert.match(ctx.body.msg, /资料|参数|payload/i)
+  assert.deepEqual(state.calls.map(call => call.type), ['read'])
+  assert.equal(state.jobs.length, 0)
+  assert.equal(db.partnerGatewayApplications.length, 0)
+})
+
+test('apply accepts complete payload quickly and defers risk review to async job', async () => {
+  const db = { users: [], orders: [], trafficChannels: [], trafficPartners: [], partnerGatewayApplications: [] }
+  let riskCalls = 0
+  const calls = []
+  const router = makeCapturingRouter()
+  const jobs = []
+  gateway.registerDuodiandianGatewayRoutes(router, {
+    readDb() { return db },
+    writeDb() { calls.push({ type: 'fullWrite' }) },
+    writeDbPartial(_db, keys) { calls.push({ type: 'partialWrite', keys }) },
+    async flushMongoPersist() { calls.push({ type: 'flush', users: db.users.length }) },
+    scheduleAsyncJob(fn) { jobs.push(fn) },
+    runApplyRiskPack: async () => {
+      riskCalls += 1
+      return { allPassed: true, message: '', steps: [{ key: 'mobile2', label: '运营商二要素验证', ok: true }] }
+    },
+    httpClient: async () => ({ ok: true, status: 200, async text() { return JSON.stringify({ code: '200' }) } }),
+    configProvider: () => config,
+  })
+
+  const ctx = makeCtx(fullApplyPayload({ applyNo: 'A-ASYNC-PASS' }))
+  await router.routes.get('/open/partners/env-ddd/apply')(ctx)
+
+  assert.equal(ctx.status, 200)
+  assert.equal(ctx.body.data.approvalStatus, 'ING')
+  assert.equal(ctx.body.data.approvalAmount, '0')
+  assert.match(ctx.body.data.returnUrl, /\/login\?/)
+  assert.doesNotMatch(ctx.body.data.returnUrl, /\/traffic-login\?/)
+  assert.equal(new URL(ctx.body.data.returnUrl).searchParams.get('trafficLogin'), '1')
+  assert.equal(new URL(ctx.body.data.returnUrl).searchParams.get('consumePath'), '/api/open/partners/env-ddd/login/consume')
+  assert.equal(riskCalls, 0)
+  assert.equal(db.users.length, 0)
+  assert.equal(jobs.length, 1)
+  assert.deepEqual(calls[0].keys, ['partnerGatewayApplications', 'trafficChannels', 'trafficPartners'])
+
+  await jobs[0]()
+
+  assert.equal(riskCalls, 1)
+  assert.equal(db.users.length, 1)
+  assert.equal(db.users[0].phone, '13900139000')
+  assert.equal(db.users[0].idNumber, '110101199001011234')
+  assert.equal(db.users[0].idCardFront, 'https://img.example.com/front.jpg')
+  assert.equal(db.users[0].idCardBack, 'https://img.example.com/back.jpg')
+  assert.equal(db.users[0].idCardHandheld, 'https://img.example.com/face.jpg')
+  assert.deepEqual(db.users[0].emergencyContacts, [
+    { name: 'Bob', phone: '13800138000', relation: 'FATHER' },
+    { name: 'Cindy', phone: '13700137000', relation: 'FRIEND' },
+  ])
+  assert.equal(db.users[0].registerChannelCode, 'env-ddd')
+  assert.equal(db.users[0].duodiandianApplyNo, 'A-ASYNC-PASS')
+  const app = db.partnerGatewayApplications[0]
+  assert.equal(app.mallUserId, db.users[0].id)
+  assert.equal(app.riskReviewStatus, 'PASS')
+  assert.equal(app.loginTokenConsumedAt, '')
+  assert(app.loginTokenHash)
+  assert.equal(app.rawApplyPayload.frontImage, 'https://img.example.com/front.jpg')
+  assert.deepEqual(calls.filter(call => call.type === 'partialWrite').at(-1).keys, ['partnerGatewayApplications', 'users'])
+})
+
+test('async apply review rejects duplicate phone without mutating existing users', async () => {
+  const existing = {
+    id: 'U-OLD',
+    name: 'Existing',
+    phone: '13900139000',
+    idNumber: '110101199001011234',
+    idCardFront: 'old-front',
+  }
+  const db = { users: [{ ...existing }], orders: [], trafficChannels: [], trafficPartners: [], partnerGatewayApplications: [] }
+  let riskCalls = 0
+  const jobs = []
+  const router = makeCapturingRouter()
+  gateway.registerDuodiandianGatewayRoutes(router, {
+    readDb() { return db },
+    writeDb() {},
+    writeDbPartial() {},
+    async flushMongoPersist() {},
+    scheduleAsyncJob(fn) { jobs.push(fn) },
+    runApplyRiskPack: async () => {
+      riskCalls += 1
+      return { allPassed: true, steps: [] }
+    },
+    httpClient: async () => ({ ok: true, status: 200, async text() { return JSON.stringify({ code: '200' }) } }),
+    configProvider: () => config,
+  })
+
+  await router.routes.get('/open/partners/env-ddd/apply')(makeCtx(fullApplyPayload({ applyNo: 'A-DUP-USER' })))
+  await jobs[0]()
+
+  assert.equal(riskCalls, 0)
+  assert.deepEqual(db.users, [existing])
+  assert.equal(db.partnerGatewayApplications[0].riskReviewStatus, 'REJECT')
+  assert.match(db.partnerGatewayApplications[0].riskReviewReason, /已存在|duplicate/i)
+})
+
+test('duodiandian login token can be consumed once after async approval', async () => {
+  const db = { users: [], orders: [], trafficChannels: [], trafficPartners: [], partnerGatewayApplications: [] }
+  const jobs = []
+  const router = makeCapturingRouter()
+  gateway.registerDuodiandianGatewayRoutes(router, {
+    readDb() { return db },
+    writeDb() {},
+    writeDbPartial() {},
+    async flushMongoPersist() {},
+    scheduleAsyncJob(fn) { jobs.push(fn) },
+    runApplyRiskPack: async () => ({ allPassed: true, message: '', steps: [] }),
+    httpClient: async () => ({ ok: true, status: 200, async text() { return JSON.stringify({ code: '200' }) } }),
+    configProvider: () => config,
+  })
+
+  const applyCtx = makeCtx(fullApplyPayload({ applyNo: 'A-TOKEN' }))
+  await router.routes.get('/open/partners/env-ddd/apply')(applyCtx)
+  await jobs[0]()
+  const token = new URL(applyCtx.body.data.returnUrl).searchParams.get('token')
+
+  const first = makePlainCtx({ applyNo: 'A-TOKEN', token })
+  await router.routes.get('/open/partners/env-ddd/login/consume')(first)
+  assert.equal(first.status, 200)
+  assert.equal(first.body.data.token, 'mock-token-13900139000')
+  assert.equal(first.body.data.user.phone, '13900139000')
+  assert.equal(first.body.data.user.riskControlSnapshot, undefined)
+
+  const second = makePlainCtx({ applyNo: 'A-TOKEN', token })
+  await router.routes.get('/open/partners/env-ddd/login/consume')(second)
+  assert.equal(second.status, 400)
+  assert.match(second.body.msg, /已使用|used|失效/i)
+})
+
+test('getUrl issues a fresh login token after async approval', async () => {
+  const db = { users: [], orders: [], trafficChannels: [], trafficPartners: [], partnerGatewayApplications: [] }
+  const jobs = []
+  const router = makeCapturingRouter()
+  gateway.registerDuodiandianGatewayRoutes(router, {
+    readDb() { return db },
+    writeDb() {},
+    writeDbPartial() {},
+    async flushMongoPersist() {},
+    scheduleAsyncJob(fn) { jobs.push(fn) },
+    runApplyRiskPack: async () => ({ allPassed: true, message: '', steps: [] }),
+    httpClient: async () => ({ ok: true, status: 200, async text() { return JSON.stringify({ code: '200' }) } }),
+    configProvider: () => config,
+  })
+
+  await router.routes.get('/open/partners/env-ddd/apply')(makeCtx(fullApplyPayload({ applyNo: 'A-GETURL-TOKEN' })))
+  await jobs[0]()
+
+  const getUrlCtx = makeCtx({ applyNo: 'A-GETURL-TOKEN', userPhone: '13900139000', h5Type: 'DETAIL' })
+  await router.routes.get('/open/partners/env-ddd/getUrl')(getUrlCtx)
+
+  assert.equal(getUrlCtx.status, 200)
+  const url = new URL(getUrlCtx.body.data.url)
+  assert.equal(url.pathname, '/login')
+  assert.equal(url.searchParams.get('trafficLogin'), '1')
+  assert.equal(url.searchParams.get('consumePath'), '/api/open/partners/env-ddd/login/consume')
+  assert.equal(url.searchParams.get('applyNo'), 'A-GETURL-TOKEN')
+  assert(url.searchParams.get('token'), 'getUrl must return a usable login token')
+
+  const consumeCtx = makePlainCtx({ applyNo: 'A-GETURL-TOKEN', token: url.searchParams.get('token') })
+  await router.routes.get('/open/partners/env-ddd/login/consume')(consumeCtx)
+  assert.equal(consumeCtx.status, 200)
+  assert.equal(consumeCtx.body.data.token, 'mock-token-13900139000')
+})
+
 test('checkPrefIx blocks a phone prefix immediately after apply succeeds', async () => {
   const db = { users: [], orders: [], trafficChannels: [], trafficPartners: [], partnerGatewayApplications: [] }
   const state = registerScopedRoutes(db)
 
-  await state.router.routes.get('/open/partners/env-ddd/apply')(makeCtx({ applyNo: 'A-DUP', userPhone: '18800001111' }))
+  await state.router.routes.get('/open/partners/env-ddd/apply')(makeCtx(fullApplyPayload({ applyNo: 'A-DUP', userPhone: '18800001111' })))
   const checkCtx = makeCtx({ phone_pre: '18800001' })
   await state.router.routes.get('/open/partners/env-ddd/checkPrefIx')(checkCtx)
 
@@ -354,6 +565,10 @@ test('uses lightweight mongo refresh plans only for duodiandian read-only endpoi
   assert.deepEqual(
     gateway.resolveDuodiandianMongoRefreshPlan('POST', '/open/partners/env-ddd/getUrl', config),
     { mode: 'partial', keys: ['partnerGatewayApplications'], allowColdPartial: true },
+  )
+  assert.deepEqual(
+    gateway.resolveDuodiandianMongoRefreshPlan('POST', '/open/partners/env-ddd/login/consume', config),
+    { mode: 'partial', keys: ['users', 'partnerGatewayApplications'], allowColdPartial: true },
   )
 })
 
