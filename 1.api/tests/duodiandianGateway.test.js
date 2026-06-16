@@ -579,7 +579,6 @@ test('sandbox apply returns production-shaped success without creating a real ma
     configProvider: () => ({
       ...config,
       sandboxEnabled: true,
-      sandboxApplyPrefix: 'TEST_',
       sandboxPhoneWhitelist: '13900139000',
       sandboxMockRiskPass: true,
     }),
@@ -592,7 +591,7 @@ test('sandbox apply returns production-shaped success without creating a real ma
   })
 
   const ctx = makeCtx({
-    applyNo: 'TEST_A001',
+    applyNo: 'DDD_AUTO_A001',
     applyIp: '203.0.113.1',
     userPhone: '13900139000',
     idNo: '110101199001011234',
@@ -614,7 +613,7 @@ test('sandbox apply returns production-shaped success without creating a real ma
   assert.equal(app.sandboxAutoLogin, true)
   assert.equal(app.riskReviewStatus, 'PASS')
   const returnUrl = new URL(ctx.body.data.returnUrl)
-  assert.equal(returnUrl.searchParams.get('applyNo'), 'TEST_A001')
+  assert.equal(returnUrl.searchParams.get('applyNo'), 'DDD_AUTO_A001')
   assert(returnUrl.searchParams.get('loginTicket'))
   assert.equal(returnUrl.searchParams.get('autoLoginPath'), '/open/partners/env-ddd/autoLogin')
 })
@@ -630,13 +629,12 @@ test('sandbox auto-login consumes ticket using stored sandbox profile only', asy
     configProvider: () => ({
       ...config,
       sandboxEnabled: true,
-      sandboxApplyPrefix: 'TEST_',
       sandboxPhoneWhitelist: '13900139000',
       sandboxMockRiskPass: true,
     }),
   })
   const applyCtx = makeCtx({
-    applyNo: 'TEST_LOGIN',
+    applyNo: 'DDD_AUTO_LOGIN',
     applyIp: '203.0.113.1',
     userPhone: '13900139000',
     idNo: '110101199001011234',
@@ -650,7 +648,7 @@ test('sandbox auto-login consumes ticket using stored sandbox profile only', asy
   await router.routes.get('/open/partners/env-ddd/apply')(applyCtx)
   const ticket = new URL(applyCtx.body.data.returnUrl).searchParams.get('loginTicket')
 
-  const loginCtx = makeRawCtx({ applyNo: 'TEST_LOGIN', loginTicket: ticket })
+  const loginCtx = makeRawCtx({ applyNo: 'DDD_AUTO_LOGIN', loginTicket: ticket })
   await router.routes.get('/open/partners/env-ddd/autoLogin')(loginCtx)
 
   assert.equal(loginCtx.status, 200)
@@ -661,7 +659,7 @@ test('sandbox auto-login consumes ticket using stored sandbox profile only', asy
   assert(db.partnerGatewayApplications[0].autoLoginTicketUsedAt)
 })
 
-test('sandbox apply rejects non-whitelisted test phones without touching real users', async () => {
+test('sandbox ignores non-whitelisted phones without touching real users', async () => {
   const db = { users: [], trafficChannels: [], trafficPartners: [], partnerGatewayApplications: [] }
   const router = makeCapturingRouter()
   gateway.registerDuodiandianGatewayRoutes(router, {
@@ -672,14 +670,13 @@ test('sandbox apply rejects non-whitelisted test phones without touching real us
     configProvider: () => ({
       ...config,
       sandboxEnabled: true,
-      sandboxApplyPrefix: 'TEST_',
       sandboxPhoneWhitelist: '13900139000',
       sandboxMockRiskPass: true,
     }),
   })
 
   const ctx = makeCtx({
-    applyNo: 'TEST_DENY',
+    applyNo: 'DDD_AUTO_DENY',
     applyIp: '203.0.113.1',
     userPhone: '13900139001',
     idNo: '110101199001011234',
@@ -693,10 +690,9 @@ test('sandbox apply rejects non-whitelisted test phones without touching real us
   await router.routes.get('/open/partners/env-ddd/apply')(ctx)
 
   assert.equal(ctx.status, 200)
-  assert.equal(ctx.body.data.approvalStatus, 'REJECT')
+  assert.equal(ctx.body.data.approvalStatus, 'ING')
   assert.equal(db.users.length, 0)
-  assert.equal(db.partnerGatewayApplications[0].sandbox, true)
-  assert.match(db.partnerGatewayApplications[0].riskReviewReason, /sandbox phone not allowed/i)
+  assert.notEqual(db.partnerGatewayApplications[0].sandbox, true)
 })
 
 test('checkPrefIx blocks a phone prefix immediately after apply succeeds', async () => {

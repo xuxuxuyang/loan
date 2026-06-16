@@ -25,6 +25,21 @@ function installmentItemIsPaid(item) {
   return paid === true || paid === 1 || paid === '1' || paid === 'true'
 }
 
+/** 待收统计用有效还款日：协商待支付时以协商还款日为准，否则以当前 dueDate（含延期后）为准 */
+function resolveInstallmentEffectiveDueDateKey(item) {
+  if (!item) {
+    return ''
+  }
+  const pend = item.negotiationPayPending
+  if (pend && Number(pend.negotiatedAmount || 0) > 0) {
+    const negotiatedDue = normalizeInstallmentDueDateKey(pend.remainderDueDate)
+    if (negotiatedDue) {
+      return negotiatedDue
+    }
+  }
+  return normalizeInstallmentDueDateKey(item.dueDate)
+}
+
 function roundMoney(value) {
   return Number(Number(value || 0).toFixed(2))
 }
@@ -46,7 +61,7 @@ function computePendingReceivableStats(orders, dueDate) {
       if (!item) {
         continue
       }
-      const key = normalizeInstallmentDueDateKey(item.dueDate)
+      const key = resolveInstallmentEffectiveDueDateKey(item)
       const paid = installmentItemIsPaid(item)
       if (key === dueDate) {
         const amt = roundMoney(item.amount)
@@ -104,4 +119,5 @@ module.exports = {
   computePendingReceivableStats,
   installmentItemIsPaid,
   normalizeInstallmentDueDateKey,
+  resolveInstallmentEffectiveDueDateKey,
 }

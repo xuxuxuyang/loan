@@ -631,8 +631,10 @@ function csvSet(value) {
 function isDuodiandianSandboxApply(payload, config = {}) {
   const cfg = resolveGatewayConfig(config)
   if (!cfg.sandboxEnabled) return false
-  const applyNo = readTrim(payload && payload.applyNo)
-  return Boolean(applyNo && applyNo.startsWith(cfg.sandboxApplyPrefix))
+  const whitelist = csvSet(cfg.sandboxPhoneWhitelist)
+  if (whitelist.size < 1) return false
+  const phone = normalizePhone(payload && (payload.userPhone || payload.phone))
+  return Boolean(phone && whitelist.has(phone))
 }
 
 function buildSandboxMallUser(profile, app, config = {}) {
