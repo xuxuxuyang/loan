@@ -308,7 +308,7 @@ test('apply still writes application data and keeps apply response fields', asyn
   assert.equal(ctx.status, 200)
   assert.deepEqual(state.counts(), { reads: 1, writes: 1 })
   assert.equal(ctx.body.data.status, '1')
-  assert.equal(ctx.body.data.approvalAmount, '0')
+  assert.equal(ctx.body.data.approvalAmount, '2750')
   assert.equal(ctx.body.data.approvalStatus, 'ING')
   assert.match(ctx.body.data.partnerOrderNo, /^DDD[A-F0-9]{16}$/)
   assert.equal(db.partnerGatewayApplications.length, 1)
@@ -367,7 +367,7 @@ test('apply accepts complete payload quickly and defers risk review to async job
 
   assert.equal(ctx.status, 200)
   assert.equal(ctx.body.data.approvalStatus, 'ING')
-  assert.equal(ctx.body.data.approvalAmount, '0')
+  assert.equal(ctx.body.data.approvalAmount, '2750')
   assert.match(ctx.body.data.returnUrl, /\/login\?/)
   assert.doesNotMatch(ctx.body.data.returnUrl, /\/traffic-login\?/)
   assert.equal(new URL(ctx.body.data.returnUrl).searchParams.get('trafficLogin'), '1')
@@ -391,10 +391,13 @@ test('apply accepts complete payload quickly and defers risk review to async job
     { name: 'Cindy', phone: '13700137000', relation: 'FRIEND' },
   ])
   assert.equal(db.users[0].registerChannelCode, 'env-ddd')
+  assert.equal(db.users[0].quota, 2750)
   assert.equal(db.users[0].duodiandianApplyNo, 'A-ASYNC-PASS')
   const app = db.partnerGatewayApplications[0]
   assert.equal(app.mallUserId, db.users[0].id)
   assert.equal(app.riskReviewStatus, 'PASS')
+  assert.equal(app.riskNotifyPayload.approvalAmount, '2750')
+  assert.equal(app.riskNotifyPayload.availableAmount, '2750')
   assert.equal(app.loginTokenConsumedAt, '')
   assert(app.loginTokenHash)
   assert.equal(app.rawApplyPayload.frontImage, 'https://img.example.com/front.jpg')
@@ -605,8 +608,9 @@ test('builds encrypted outbound notify envelope for replay notify endpoint', () 
 
 test('sends risk, loan and repaid callbacks to the configured status notify url', async () => {
   const db = { partnerGatewayApplications: [] }
-  gateway.upsertDuodiandianApplication(db, { applyNo: 'A001', userPhone: '13900139000' }, config)
+  const app = gateway.upsertDuodiandianApplication(db, { applyNo: 'A001', userPhone: '13900139000' }, config)
   gateway.bindPartnerOrderNo(db, 'A001', 'P001', config)
+  app.mallUserId = 'U-DDD-001'
   const calls = []
   const httpClient = async (url, options) => {
     calls.push({ url, options })
@@ -620,7 +624,7 @@ test('sends risk, loan and repaid callbacks to the configured status notify url'
     db,
     order: {
       id: 'O001',
-      phone: '13900139000',
+      mallUserId: 'U-DDD-001',
       totalAmount: 3000,
       cardPackageAmount: 1200,
       riskReason: '人工审核不通过',
@@ -727,6 +731,8 @@ test('pre-reviews duodiandian apply payload and notifies audit pass without stor
   assert.equal(result.status, 'PASS')
   assert.equal(riskCalls, 1)
   assert.equal(app.riskReviewStatus, 'PASS')
+  assert.equal(app.riskNotifyPayload.approvalAmount, '2750')
+  assert.equal(app.riskNotifyPayload.availableAmount, '2750')
   assert.equal(app.riskReviewSource, 'duodiandian_apply')
   assert.equal(app.riskNotifyStatus, 'SENT')
   assert.equal(typeof app.riskReviewIdentityHash, 'string')

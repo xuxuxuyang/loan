@@ -12,6 +12,7 @@ const outboundNotifySentKeys = new Set()
 const DUODIANDIAN_APPLICATION_WRITE_KEYS = ['partnerGatewayApplications', 'trafficChannels', 'trafficPartners']
 const DUODIANDIAN_ASYNC_REVIEW_WRITE_KEYS = ['partnerGatewayApplications', 'users']
 const DUODIANDIAN_CALLBACK_WRITE_KEYS = ['partnerGatewayApplications']
+const DUODIANDIAN_DEFAULT_USER_QUOTA = 2750
 
 function nonEmpty(value) {
   return value !== undefined && value !== null && value !== ''
@@ -200,6 +201,7 @@ function duodiandianConfigFromEnv() {
     replayNotifyUrl: readTrim(process.env.DUODIANDIAN_REPLAY_NOTIFY_URL || process.env.DUODIANDIAN_CALLBACK_URL),
     statusNotifyUrl: readTrim(process.env.DUODIANDIAN_STATUS_NOTIFY_URL || process.env.DUODIANDIAN_AUDIT_NOTIFY_URL),
     yearlyRate: readTrim(process.env.DUODIANDIAN_YEARLY_RATE),
+    defaultUserQuota: readTrim(process.env.DUODIANDIAN_DEFAULT_USER_QUOTA),
     h5Origin: readTrim(process.env.DUODIANDIAN_H5_ORIGIN || process.env.MALL_H5_ORIGIN).replace(/\/$/, ''),
     timestampSkewMs: readTrim(process.env.DUODIANDIAN_TIMESTAMP_SKEW_MS),
     channelCode,
@@ -229,6 +231,7 @@ function resolveGatewayConfig(config = {}) {
   merged.statusNotifyUrl = readTrim(merged.statusNotifyUrl || merged.auditNotifyUrl)
     || deriveStatusNotifyUrl(merged.replayNotifyUrl)
   merged.yearlyRate = readTrim(merged.yearlyRate) || '0%'
+  merged.defaultUserQuota = resolveDuodiandianDefaultUserQuota(merged)
   merged.h5Origin = readTrim(merged.h5Origin).replace(/\/$/, '')
   merged.portalUsername = readTrim(merged.portalUsername)
   merged.portalPassword = readTrim(merged.portalPassword)
@@ -562,7 +565,7 @@ function makeDuodiandianMallUser(app, payload, config = {}, steps = []) {
     longitude: 0,
     creditStatus: '良好',
     registerAt: now,
-    quota: 0,
+    quota: resolveDuodiandianDefaultUserQuota(cfg),
     adminRemark: '',
     orderBlacklisted: false,
     emergencyContacts: relations,
@@ -682,6 +685,7 @@ async function processDuodiandianApplyRiskJob(options = {}) {
     })
     app.riskNotifyStatus = notify.sent ? 'SENT' : 'FAILED'
     app.riskNotifyReason = notify.reason
+    app.riskNotifyPayload = cloneJsonSafe(notify.payload)
     await persist()
     return { status: 'REJECT', reason: app.riskReviewReason }
   }
@@ -725,6 +729,7 @@ async function processDuodiandianApplyRiskJob(options = {}) {
   })
   app.riskNotifyStatus = notify.sent ? 'SENT' : 'FAILED'
   app.riskNotifyReason = notify.reason
+  app.riskNotifyPayload = cloneJsonSafe(notify.payload)
   await persist()
   return { status: 'PASS', userId: user.id }
 }
@@ -777,8 +782,8 @@ function buildApplyRiskNotifyPayload(app, review, config = {}) {
     return {
       ...base,
       status: 'AUDIT_PASS',
-      approvalAmount: '0',
-      availableAmount: '0',
+      approvalAmount: normalizeMoneyText(cfg.defaultUserQuota),
+      availableAmount: normalizeMoneyText(cfg.defaultUserQuota),
       yearlyRate: cfg.yearlyRate,
     }
   }
@@ -891,6 +896,7 @@ async function runDuodiandianApplyRiskReview(options = {}) {
   })
   app.riskNotifyStatus = notify.sent ? 'SENT' : 'FAILED'
   app.riskNotifyReason = notify.reason
+  app.riskNotifyPayload = cloneJsonSafe(notify.payload)
   if (notify.error) {
     app.riskNotifyLastError = notify.error
   }
@@ -1002,6 +1008,15 @@ function normalizeMoneyText(value) {
   return String(Number(n.toFixed(2)))
 }
 
+function resolveDuodiandianDefaultUserQuota(config = {}) {
+  const configured = nonEmpty(config.defaultUserQuota)
+    ? config.defaultUserQuota
+    : (nonEmpty(config.defaultQuota) ? config.defaultQuota : DUODIANDIAN_DEFAULT_USER_QUOTA)
+  const raw = Number(configured)
+  if (!Number.isFinite(raw) || raw < 0) return DUODIANDIAN_DEFAULT_USER_QUOTA
+  return Math.round(raw)
+}
+
 function orderNotifyAmount(order) {
   if (!order || typeof order !== 'object') return '0'
   const cardPackageAmount = Number(order.cardPackageAmount)
@@ -1015,6 +1030,17 @@ function findDuodiandianApplicationForOrder(db, order, config = {}) {
   const cfg = resolveGatewayConfig(config)
   requireGatewayConfig(cfg, ['partnerCode', 'channelCode'])
   const applications = Array.isArray(db && db.partnerGatewayApplications) ? db.partnerGatewayApplications : []
+  const mallUserId = readTrim(order && order.mallUserId)
+  if (mallUserId) {
+    const byMallUserId = applications.find((app) => {
+      if (!app || typeof app !== 'object') return false
+      if (normalizeCode(app.partnerCode) !== cfg.partnerCode) return false
+      if (normalizeCode(app.channel) !== cfg.channelCode) return false
+      if (!readTrim(app.partnerOrderNo)) return false
+      return readTrim(app.mallUserId) === mallUserId
+    })
+    if (byMallUserId) return byMallUserId
+  }
   const phones = collectOrderPhones(order).map(normalizePhone).filter(Boolean)
   if (!phones.length) return null
   return applications.find((app) => {
@@ -1310,7 +1336,7 @@ function registerDuodiandianGatewayRoutes(router, deps = {}) {
         status: '1',
         partnerOrderNo,
         returnUrl: buildDuodiandianH5Url(db, { applyNo: app.applyNo, loginToken }, config),
-        approvalAmount: '0',
+        approvalAmount: normalizeMoneyText(config.defaultUserQuota),
         approvalStatus: 'ING',
       }
     }, { endpoint: `${prefix}/apply`, persistKeys: DUODIANDIAN_APPLICATION_WRITE_KEYS })
