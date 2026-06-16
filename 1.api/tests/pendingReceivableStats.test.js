@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict')
 const test = require('node:test')
 
-const { computePendingReceivableStats } = require('../src/pendingReceivableStats')
+const { computePendingReceivableStats, resolveInstallmentEffectiveDueDateKey } = require('../src/pendingReceivableStats')
 
 test('counts due-on-date amounts and installment counts by paid state', () => {
   const orders = [
@@ -83,6 +83,65 @@ test('uses statistic-day scope for tomorrow overdue rate', () => {
   assert.equal(stats.overdueBeforeDateCount, 2)
   assert.equal(stats.unpaidDueOnOrBeforeDateCount, 3)
   assert.equal(stats.overdueRateAsOfDate, 66.67)
+})
+
+test('uses negotiated remainder due date instead of original due date when negotiation is pending', () => {
+  const orders = [
+    {
+      id: 'OD-negotiate',
+      installmentPlan: [
+        {
+          period: 1,
+          dueDate: '2026-06-15',
+          amount: 2750,
+          paid: false,
+          negotiationPayPending: {
+            negotiatedAmount: 500,
+            remainderAmount: 2250,
+            remainderDueDate: '2026-06-25',
+          },
+        },
+      ],
+    },
+  ]
+
+  const todayStats = computePendingReceivableStats(orders, '2026-06-15')
+  assert.equal(todayStats.rowRefs.length, 0)
+  assert.equal(todayStats.unpaidDueOnDateCount, 0)
+
+  const negotiatedDayStats = computePendingReceivableStats(orders, '2026-06-25')
+  assert.equal(negotiatedDayStats.rowRefs.length, 1)
+  assert.equal(negotiatedDayStats.rowRefs[0].key, '2026-06-25')
+  assert.equal(negotiatedDayStats.unpaidDueOnDate, 2750)
+})
+
+test('uses deferred due date after admin postpones repayment', () => {
+  const orders = [
+    {
+      id: 'OD-defer',
+      installmentPlan: [
+        { period: 1, dueDate: '2026-06-17', amount: 1000, paid: false },
+      ],
+    },
+  ]
+
+  const originalDayStats = computePendingReceivableStats(orders, '2026-06-15')
+  assert.equal(originalDayStats.rowRefs.length, 0)
+
+  const deferredDayStats = computePendingReceivableStats(orders, '2026-06-17')
+  assert.equal(deferredDayStats.rowRefs.length, 1)
+  assert.equal(deferredDayStats.rowRefs[0].key, '2026-06-17')
+})
+
+test('resolveInstallmentEffectiveDueDateKey prefers negotiated remainder due date', () => {
+  const key = resolveInstallmentEffectiveDueDateKey({
+    dueDate: '2026-06-15',
+    negotiationPayPending: {
+      negotiatedAmount: 500,
+      remainderDueDate: '2026-06-25',
+    },
+  })
+  assert.equal(key, '2026-06-25')
 })
 
 test('returns zero overdue rate when there are no unpaid due installments', () => {

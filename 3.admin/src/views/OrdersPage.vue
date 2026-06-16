@@ -17,6 +17,7 @@ import {
   mallTenantQueryForContractApi,
   normalizeCardPackageContractEmbedUrl,
 } from '../utils/cardPackageContract'
+import { resolveInstallmentEffectiveDueDate, resolveNegotiateRemainderAmountForDisplay } from '../utils/installmentEffectiveDueDate'
 
 const MALL_API_BASE = `${(import.meta.env.VITE_MALL_API_BASE || 'http://localhost:3110/api').replace(/\/$/, '')}`
 
@@ -230,7 +231,7 @@ function orderRepayBucket(order: OrderItem): '已还款' | '待还款' | '已逾
     if (p.paid) {
       continue
     }
-    const dk = dueKey(p.dueDate)
+    const dk = dueKey(resolveInstallmentEffectiveDueDate(p))
     if (dk && dk < t) {
       return '已逾期'
     }
@@ -253,7 +254,7 @@ function periodRepayStatus(plan: InstallmentItem): '已还款' | '待还款' | '
   if (plan.paid) {
     return '已还款'
   }
-  const dk = dueKey(plan.dueDate)
+  const dk = dueKey(resolveInstallmentEffectiveDueDate(plan))
   const t = todayYmd.value
   if (dk && dk < t) {
     return '已逾期'
@@ -367,8 +368,9 @@ function negotiationRowCanMarkUnpaid(plan: InstallmentItem, row: InstallmentNego
   if (plan.negotiationPayPending) {
     return false
   }
-  const rem = Number(row.remainderAmount || 0)
-  return Math.abs(Number(plan.amount || 0) - rem) <= 0.02
+  const dueKey = String(plan.dueDate || '').trim().slice(0, 10)
+  const rowDue = String(row.remainderDueDate || '').trim().slice(0, 10)
+  return Boolean(dueKey && rowDue && dueKey === rowDue)
 }
 
 /** 本期已结清：每条协商历史在操作栏展示「已全额还款」（状态为已还款且无标记按钮时；含多轮协商中的非末条） */
@@ -459,25 +461,17 @@ const negotiateDialogCurrentDueNumber = computed(() => {
   return Number(Number(plan.amount || 0).toFixed(2))
 })
 
-/** 协商还款金额输入上限（须小于应还，与接口 remainder>0 一致） */
-const negotiateDialogMaxNegotiatedAmount = computed(() => {
-  const cur = negotiateDialogCurrentDueNumber.value
-  if (!Number.isFinite(cur) || cur <= 0) {
-    return 0.01
-  }
-  const cap = Number((cur - 0.01).toFixed(2))
-  return Math.max(0.01, cap)
-})
+/** 协商还款金额输入上限（延期费，与本期应还金额独立） */
+const negotiateDialogMaxNegotiatedAmount = computed(() => 99_999_999)
 
 function onNegotiateAmountChange(val: number | undefined) {
   const plan = negotiateDialogPlan.value
   if (!plan || val == null || !Number.isFinite(val)) {
     return
   }
-  const cur = negotiateDialogCurrentDueNumber.value
-  if (val > cur) {
-    ElMessage.warning(`协商还款金额不能大于当前应还金额（¥${cur.toFixed(2)}）`)
-    negotiateFormAmount.value = negotiateDialogMaxNegotiatedAmount.value
+  if (val <= 0) {
+    ElMessage.warning('协商还款金额须大于 0')
+    negotiateFormAmount.value = 0.01
   }
 }
 
@@ -1149,14 +1143,6 @@ async function confirmNegotiateRepay() {
   const cur = negotiateDialogCurrentDueNumber.value
   if (!Number.isFinite(cur) || cur <= 0) {
     ElMessage.warning('当前应还金额无效')
-    return
-  }
-  if (amt > cur) {
-    ElMessage.warning(`协商还款金额不能大于当前应还金额（¥${cur.toFixed(2)}）`)
-    return
-  }
-  if (amt >= cur) {
-    ElMessage.warning(`协商还款金额须小于当前应还金额（¥${cur.toFixed(2)}），协商后未还金额须大于 0`)
     return
   }
   const key = `${order.id}-${plan.period}`
@@ -2083,7 +2069,7 @@ watch(
                       ¥{{ Number(row.negotiatedAmount).toFixed(2) }}
                     </td>
                     <td class="table--negotiation-records__num table--negotiation-records__remainder">
-                      ¥{{ Number(row.remainderAmount).toFixed(2) }}
+                      ¥{{ resolveNegotiateRemainderAmountForDisplay(plan, row.remainderAmount).toFixed(2) }}
                     </td>
                     <td class="table--negotiation-records__due">
                       {{ row.remainderDueDate || '—' }}
@@ -2209,7 +2195,7 @@ watch(
               </div>
               <div class="negotiate-repay-dialog__history-cell">
                 <span class="negotiate-repay-dialog__history-label">剩余未还</span>
-                <span class="negotiate-repay-dialog__history-val negotiate-repay-dialog__history-val--rem">¥ {{ Number(row.remainderAmount).toFixed(2) }}</span>
+                <span class="negotiate-repay-dialog__history-val negotiate-repay-dialog__history-val--rem">¥ {{ resolveNegotiateRemainderAmountForDisplay(negotiateDialogPlan, row.remainderAmount).toFixed(2) }}</span>
               </div>
               <div class="negotiate-repay-dialog__history-cell negotiate-repay-dialog__history-cell--full">
                 <span class="negotiate-repay-dialog__history-label">协商还款日</span>
@@ -2233,7 +2219,7 @@ watch(
             @change="onNegotiateAmountChange"
           />
           <p class="negotiate-repay-dialog__amount-hint">
-            可填范围：0.01 ～ ¥{{ negotiateDialogMaxNegotiatedAmount.toFixed(2) }}（须小于应还 ¥{{ negotiateDialogCurrentDueNumber.toFixed(2) }}）
+            协商还款金额为延期费，不影响本期应还金额（当前应还 ¥{{ negotiateDialogCurrentDueNumber.toFixed(2) }}）
           </p>
         </el-form-item>
         <el-form-item label="协商还款延迟天数">

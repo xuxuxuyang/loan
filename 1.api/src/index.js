@@ -6,7 +6,8 @@ const mongoConfig = require('./mongoConfig')
 const mongo = require('./mongo')
 const adminMongoReadOptimize = require('./adminMongoReadOptimize')
 const { shouldBlockRequestOnMongoRefreshError } = require('./mongoRefreshGuard')
-const { computePendingReceivableStats } = require('./pendingReceivableStats')
+const { computePendingReceivableStats, resolveInstallmentEffectiveDueDateKey } = require('./pendingReceivableStats')
+const { computeOrderRepayBucket, reconcileOverdueUserBlacklistAcrossDb } = require('./overdueUserBlacklist')
 const { buildTrafficPartnerApprovedRowsForChannel } = require('./trafficPartnerApprovedRows')
 
 const Koa = require('koa')
@@ -2345,6 +2346,10 @@ function reconcileInstallmentCompletionAcrossDb(db) {
       changed = true
     }
   }
+  const todayKey = formatDate(new Date().toISOString())
+  if (reconcileOverdueUserBlacklistAcrossDb(db, todayKey)) {
+    writeUsersDb(db)
+  }
   if (changed) {
     writeOrdersDb(db)
   }
@@ -3112,8 +3117,22 @@ function normalizeNegotiateRemainderDueDate(raw) {
   return m ? m[1] : ''
 }
 
+/** 协商部分还款：剩余应还始终等于本期应还（延期费模型，不扣减本金） */
+function negotiateExtensionFeeRemainderAmount(planItem) {
+  return Number(Number(planItem && planItem.amount != null ? planItem.amount : 0).toFixed(2))
+}
+
+/** 对外展示剩余未还：以当前本期应还为准（兼容历史已写入的扣减型 remainderAmount） */
+function resolveNegotiateRemainderAmountForDisplay(planItem, storedRemainder) {
+  const cur = negotiateExtensionFeeRemainderAmount(planItem)
+  if (cur > 0) {
+    return cur
+  }
+  return Number(Number(storedRemainder || 0).toFixed(2))
+}
+
 /**
- * 完成「协商支付」首段：本期应还更新为剩余本金与协商还款日，清除 negotiationPayPending，末条协商记录写入 userPaidAt。
+ * 完成「协商支付」延期费：仅更新还款日与协商完成态，不扣减本期应还金额。
  * @returns {{ ok: true } | { ok: false, msg: string }}
  */
 function applyInstallmentNegotiationPayCompleted(planItem) {
@@ -3121,9 +3140,8 @@ function applyInstallmentNegotiationPayCompleted(planItem) {
   if (!pend || !Number.isFinite(Number(pend.negotiatedAmount)) || Number(pend.negotiatedAmount) <= 0) {
     return { ok: false, msg: '暂无待支付的协商款项' }
   }
-  const remainder = Number(Number(pend.remainderAmount || 0).toFixed(2))
   const remainderDue = normalizeNegotiateRemainderDueDate(pend.remainderDueDate)
-  if (remainder <= 0 || !remainderDue || !/^\d{4}-\d{2}-\d{2}$/.test(remainderDue)) {
+  if (!remainderDue || !/^\d{4}-\d{2}-\d{2}$/.test(remainderDue)) {
     return { ok: false, msg: '协商待支付数据异常，请联系客服' }
   }
   const hist = planItem.negotiationHistory
@@ -3131,8 +3149,6 @@ function applyInstallmentNegotiationPayCompleted(planItem) {
   if (last && !String(last.originalDueDate || '').trim()) {
     last.originalDueDate = String(planItem.dueDate || '').trim()
   }
-  planItem.amount = remainder
-  planItem.principal = remainder
   planItem.dueDate = remainderDue
   planItem.negotiationPayPending = null
   if (last) {
@@ -3142,7 +3158,7 @@ function applyInstallmentNegotiationPayCompleted(planItem) {
 }
 
 /**
- * 撤销末条「协商支付」完成态：恢复 negotiationPayPending 与本期应还总额、还款日（依赖 originalDueDate 或 remainderDueDate）
+ * 撤销末条「协商支付」完成态：恢复 negotiationPayPending 与还款日（不改动本期应还金额）
  * @returns {{ ok: true } | { ok: false, msg: string }}
  */
 function revertLastNegotiationPayCompletion(planItem) {
@@ -3155,20 +3171,13 @@ function revertLastNegotiationPayCompletion(planItem) {
     return { ok: false, msg: '当前仍有待协商支付，无法撤销' }
   }
   const nAmt = Number(Number(last.negotiatedAmount || 0).toFixed(2))
-  const rem = Number(Number(last.remainderAmount || 0).toFixed(2))
-  const curAmt = Number(Number(planItem.amount || 0).toFixed(2))
-  if (Math.abs(curAmt - rem) > 0.02) {
-    return { ok: false, msg: '本期金额与协商记录不一致，无法撤销' }
-  }
+  const rem = negotiateExtensionFeeRemainderAmount(planItem)
   planItem.negotiationPayPending = {
     negotiatedAmount: nAmt,
     remainderAmount: rem,
     remainderDueDate: String(last.remainderDueDate || '').trim(),
     createdAt: String(last.createdAt || new Date().toISOString()),
   }
-  const fullAmt = Number((nAmt + rem).toFixed(2))
-  planItem.amount = fullAmt
-  planItem.principal = fullAmt
   const priorDue = normalizeNegotiateRemainderDueDate(String(last.originalDueDate || '').trim())
   const fallbackDue = normalizeNegotiateRemainderDueDate(String(last.remainderDueDate || '').trim())
   planItem.dueDate = priorDue || fallbackDue
@@ -3212,7 +3221,7 @@ function restoreNegotiationPayPendingFromLastHistoryIfNeeded(planItem) {
   if (!Number.isFinite(negotiatedAmount) || negotiatedAmount <= 0) {
     return
   }
-  const remainderAmount = Number(Number(last.remainderAmount || 0).toFixed(2))
+  const remainderAmount = negotiateExtensionFeeRemainderAmount(planItem)
   planItem.negotiationPayPending = {
     negotiatedAmount,
     remainderAmount,
@@ -8585,7 +8594,7 @@ function buildMallBillingListAndSummaries(db, phone) {
       if (Array.isArray(planItem.negotiationHistory) && planItem.negotiationHistory.length > 0) {
         installmentRow.negotiationHistory = planItem.negotiationHistory.map((h) => ({
           negotiatedAmount: Number(Number(h.negotiatedAmount || 0).toFixed(2)),
-          remainderAmount: Number(Number(h.remainderAmount || 0).toFixed(2)),
+          remainderAmount: resolveNegotiateRemainderAmountForDisplay(planItem, h.remainderAmount),
           remainderDueDate: String(h.remainderDueDate || '').trim(),
           createdAt: String(h.createdAt || '').trim(),
           userPaidAt: String(h.userPaidAt || '').trim(),
@@ -8595,7 +8604,7 @@ function buildMallBillingListAndSummaries(db, phone) {
       if (pend && Number(pend.negotiatedAmount || 0) > 0) {
         installmentRow.negotiationPayPending = {
           negotiatedAmount: Number(Number(pend.negotiatedAmount || 0).toFixed(2)),
-          remainderAmount: Number(Number(pend.remainderAmount || 0).toFixed(2)),
+          remainderAmount: resolveNegotiateRemainderAmountForDisplay(planItem, pend.remainderAmount),
           remainderDueDate: String(pend.remainderDueDate || '').trim(),
           createdAt: String(pend.createdAt || '').trim(),
         }
@@ -9086,9 +9095,8 @@ router.post('/bills/repay-negotiated', async (ctx) => {
     fail(ctx, '暂无待支付的协商款项', 400)
     return
   }
-  const remainder = Number(Number(pend.remainderAmount || 0).toFixed(2))
   const remainderDue = normalizeNegotiateRemainderDueDate(pend.remainderDueDate)
-  if (remainder <= 0 || !remainderDue || !/^\d{4}-\d{2}-\d{2}$/.test(remainderDue)) {
+  if (!remainderDue || !/^\d{4}-\d{2}-\d{2}$/.test(remainderDue)) {
     fail(ctx, '协商待支付数据异常，请联系客服', 400)
     return
   }
@@ -9199,6 +9207,9 @@ router.patch('/users/:id', async (ctx) => {
   }
   if (typeof payload.orderBlacklisted === 'boolean') {
     target.orderBlacklisted = payload.orderBlacklisted
+    /** 人工操作与逾期自动拉黑解耦：永不自动解黑；人工解黑后本逾期周期内不再自动拉黑 */
+    target.orderBlacklistedByOverdue = false
+    target.overdueAutoBlacklistSuppressed = payload.orderBlacklisted === false
   }
   if (typeof payload.signAuthSerialNo === 'string') {
     const s = payload.signAuthSerialNo.trim()
@@ -9282,6 +9293,8 @@ function computeAdminDashboardKpisFromDb(db) {
   let dueTodayAmount = 0
   let dueTomorrowAmount = 0
   let dueIn7DaysAmount = 0
+  let extensionRepaymentAmount = 0
+  let extensionRepaymentPendingAmount = 0
 
   const t = formatDate(new Date().toISOString())
   const tTomorrow = adminDashboardYmdPlusDays(t, 1)
@@ -9338,6 +9351,18 @@ function computeAdminDashboardKpisFromDb(db) {
       if (dk && dk >= t && dk <= tWeekEnd) {
         dueIn7DaysAmount += a
       }
+      const hist = item.negotiationHistory
+      if (Array.isArray(hist)) {
+        for (const row of hist) {
+          if (String(row.userPaidAt || '').trim()) {
+            extensionRepaymentAmount += Number(row.negotiatedAmount || 0)
+          }
+        }
+      }
+      const pend = item.negotiationPayPending
+      if (pend && Number(pend.negotiatedAmount || 0) > 0 && !installmentItemIsPaid(item)) {
+        extensionRepaymentPendingAmount += Number(pend.negotiatedAmount || 0)
+      }
     }
 
     if (orderHasOverdue) {
@@ -9376,6 +9401,8 @@ function computeAdminDashboardKpisFromDb(db) {
     dueTomorrowAmount,
     dueIn7DaysAmount,
     installmentPayOrderCount,
+    extensionRepaymentAmount,
+    extensionRepaymentPendingAmount,
   }
 }
 
@@ -9399,25 +9426,7 @@ function computeAdminOrderSidebarCountsFromDb(db) {
 }
 
 function orderRepayBucketForAdmin(order) {
-  ensureOrderInstallmentPlan(order)
-  const plan = Array.isArray(order.installmentPlan) ? order.installmentPlan : []
-  if (plan.length === 0) {
-    return '已还款'
-  }
-  if (plan.every(p => p && p.paid)) {
-    return '已还款'
-  }
-  const today = formatDate(new Date().toISOString())
-  for (const p of plan) {
-    if (p && p.paid) {
-      continue
-    }
-    const key = normalizeInstallmentDueDateKey(p.dueDate)
-    if (key && key < today) {
-      return '已逾期'
-    }
-  }
-  return '待还款'
+  return computeOrderRepayBucket(order, formatDate(new Date().toISOString()))
 }
 
 function matchesAdminOrderListScope(item, listScope) {
@@ -9492,6 +9501,12 @@ router.get('/orders', async (ctx) => {
     return
   }
   const db = readDb()
+  if (scope === 'card-data') {
+    const todayKey = formatDate(new Date().toISOString())
+    if (reconcileOverdueUserBlacklistAcrossDb(db, todayKey)) {
+      writeUsersDb(db)
+    }
+  }
   const repay = String(repayFilter || '').trim()
   const risk = String(riskStatus || '').trim()
   const usePagination = pageRaw != null && String(pageRaw).trim() !== ''
@@ -10276,7 +10291,7 @@ router.patch('/orders/:id/installments/:period/settle-amount', async (ctx) => {
   ctx.body = success(target)
 })
 
-/** 管理端：协商还款——登记本次协商金额，更新剩余应还本金与还款日，并写入协商历史（用户端账单展示「协商记录」） */
+/** 管理端：协商还款——登记延期费与协商还款日，写入协商历史（不扣减本期应还金额） */
 router.patch('/orders/:id/installments/:period/negotiate', async (ctx) => {
   if (!await requireAdminMarkPaidPermission(ctx, '协商还款', 'negotiateRepayment')) {
     return
@@ -10323,18 +10338,18 @@ router.patch('/orders/:id/installments/:period/negotiate', async (ctx) => {
   }
   const curAmount = Number(Number(planItem.amount || 0).toFixed(2))
   const nAmt = Number(negotiatedAmountRaw.toFixed(2))
-  if (nAmt >= curAmount) {
-    fail(ctx, '协商还款金额须小于当前应还金额')
+  if (nAmt > 99_999_999) {
+    fail(ctx, '协商还款金额过大')
     return
   }
-  const remainder = Number((curAmount - nAmt).toFixed(2))
+  const remainder = negotiateExtensionFeeRemainderAmount(planItem)
   if (remainder <= 0) {
-    fail(ctx, '协商后未还金额须大于 0')
+    fail(ctx, '当前应还金额无效，无法协商')
     return
   }
   const remainderDue = normalizeNegotiateRemainderDueDate(payload.remainderDueDate)
   if (!remainderDue || !/^\d{4}-\d{2}-\d{2}$/.test(remainderDue)) {
-    fail(ctx, '请提供有效的协商后未还金额还款日（YYYY-MM-DD）')
+    fail(ctx, '请提供有效的协商还款日（YYYY-MM-DD）')
     return
   }
   if (!Array.isArray(planItem.negotiationHistory)) {
@@ -10347,7 +10362,7 @@ router.patch('/orders/:id/installments/:period/negotiate', async (ctx) => {
     originalDueDate: String(planItem.dueDate || '').trim(),
     createdAt: new Date().toISOString(),
   })
-  /** 待用户在前台完成「协商支付」后再写入剩余本金与还款日；此前本期应还总额保持不变 */
+  /** 待用户在前台完成「协商支付」后再更新还款日；此前本期应还总额保持不变 */
   planItem.negotiationPayPending = {
     negotiatedAmount: nAmt,
     remainderAmount: remainder,

@@ -131,7 +131,7 @@ async function payNegotiatedSingle(record: MallBillItem) {
     return
   }
   const amt = Number(pend.negotiatedAmount).toFixed(2)
-  const remainderText = Number(pend.remainderAmount).toFixed(2)
+  const remainderText = Math.abs(Number(record.amount || 0)).toFixed(2)
   const negotiatedRepayDateText = formatNegotiationDateOnly(pend.remainderDueDate)
   const emphasisDate = { style: { color: '#2563eb', fontWeight: 700 as const } }
   const emphasisPayAmt = { style: { color: '#059669', fontWeight: 700 as const } }
@@ -145,10 +145,13 @@ async function payNegotiatedSingle(record: MallBillItem) {
           h('strong', emphasisDate, negotiatedRepayDateText),
         ]),
         h('p', { style: { margin: 0 } }, [
-          '确认支付协商金额 ',
+          '确认支付延期费 ',
           h('strong', emphasisPayAmt, `￥${amt}`),
-          '？支付成功后，本期剩余应还金额将更新为 ',
+          '？支付成功后，本期应还金额仍为 ',
           h('strong', emphasisRemain, `￥${remainderText}`),
+          '，还款日将顺延至 ',
+          h('strong', emphasisDate, negotiatedRepayDateText),
+          '。',
         ]),
       ]),
       '协商支付',

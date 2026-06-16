@@ -29,6 +29,8 @@ interface DashboardKpis {
   dueTomorrowAmount: number
   dueIn7DaysAmount: number
   installmentPayOrderCount: number
+  extensionRepaymentAmount: number
+  extensionRepaymentPendingAmount: number
 }
 
 function emptyDashboardKpis(): DashboardKpis {
@@ -54,6 +56,8 @@ function emptyDashboardKpis(): DashboardKpis {
     dueTomorrowAmount: 0,
     dueIn7DaysAmount: 0,
     installmentPayOrderCount: 0,
+    extensionRepaymentAmount: 0,
+    extensionRepaymentPendingAmount: 0,
   }
 }
 
@@ -136,6 +140,18 @@ const kpiBoardRows = computed<BoardItem[]>(() => {
       value: fmtYuan(k.premiumToPrincipal),
       hint: `${scope}成交总额 − 卡包本金合计`,
       tone: 'slateInk',
+    }),
+    card({
+      label: '延期还款金额',
+      value: fmtYuan(k.extensionRepaymentAmount),
+      hint: `${scope}已支付延期费合计`,
+      tone: 'violet',
+    }),
+    card({
+      label: '待支付延期费',
+      value: fmtYuan(k.extensionRepaymentPendingAmount),
+      hint: `${scope}已登记协商、用户尚未完成支付的延期费`,
+      tone: 'amberGold',
     }),
     card({
       label: '分期笔均期数',

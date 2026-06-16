@@ -1,5 +1,6 @@
 import { ref } from 'vue'
 import { apiErrorMessage, readApiErrorMessage, withMallTenantHeaders } from '../composables/useAdminApi'
+import { resolveInstallmentEffectiveDueDate, resolveNegotiateRemainderAmountForDisplay } from '../utils/installmentEffectiveDueDate'
 
 export interface InstallmentNegotiationRecord {
   negotiatedAmount: number
@@ -242,11 +243,12 @@ function parseInstallmentPaid(raw: unknown): boolean {
 function normalizeInstallmentPlan(payload: MallOrderPayload) {
   if (Array.isArray(payload.installmentPlan) && payload.installmentPlan.length > 0) {
     return payload.installmentPlan.map((item) => {
+      const amount = Number(item.amount)
       const rawHist = (item as { negotiationHistory?: unknown }).negotiationHistory
       const negotiationHistory = Array.isArray(rawHist)
         ? rawHist.map((row: Record<string, unknown>) => ({
             negotiatedAmount: Number(row.negotiatedAmount || 0),
-            remainderAmount: Number(row.remainderAmount || 0),
+            remainderAmount: resolveNegotiateRemainderAmountForDisplay({ amount }, Number(row.remainderAmount || 0)),
             remainderDueDate: String(row.remainderDueDate || ''),
             createdAt: String(row.createdAt || ''),
             ...(typeof row.originalDueDate === 'string' && row.originalDueDate.trim()
@@ -264,7 +266,7 @@ function normalizeInstallmentPlan(payload: MallOrderPayload) {
       const negotiationPayPending = pend && Number(pend.negotiatedAmount || 0) > 0
         ? {
             negotiatedAmount: Number(pend.negotiatedAmount || 0),
-            remainderAmount: Number(pend.remainderAmount || 0),
+            remainderAmount: resolveNegotiateRemainderAmountForDisplay({ amount }, Number(pend.remainderAmount || 0)),
             remainderDueDate: String(pend.remainderDueDate || '').trim(),
             createdAt: String(pend.createdAt || '').trim(),
           }
@@ -301,7 +303,7 @@ function mapMallOrderToAdminOrder(order: MallOrderPayload): OrderItem {
   const periods = safePlan.length || fallbackPeriods
   const nextPending = safePlan.find(item => !item.paid)
   const allPaid = safePlan.every(item => item.paid)
-  const nextRepayDue = nextPending?.dueDate?.trim()
+  const nextRepayDue = nextPending ? resolveInstallmentEffectiveDueDate(nextPending) : ''
   const periodAmount = Number(
     ((nextPending || safePlan[0])?.amount ?? 0).toFixed(2),
   )
@@ -728,7 +730,7 @@ function recalculateOrderFields(order: OrderItem) {
   }
   if (nextPending) {
     order.currentPeriod = nextPending.period
-    const due = String(nextPending.dueDate || '').trim()
+    const due = resolveInstallmentEffectiveDueDate(nextPending)
     order.nextRepayDate = order.cardPackageIssued && due ? due : '-'
   }
   if (order.status === '已完成') {
