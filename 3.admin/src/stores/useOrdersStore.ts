@@ -1,5 +1,6 @@
 import { ref } from 'vue'
 import { apiErrorMessage, readApiErrorMessage, withMallTenantHeaders } from '../composables/useAdminApi'
+import { mergePatchedOrder } from '../utils/orderPatchMerge'
 import { resolveInstallmentEffectiveDueDate, resolveNegotiateRemainderAmountForDisplay } from '../utils/installmentEffectiveDueDate'
 
 export interface InstallmentNegotiationRecord {
@@ -363,11 +364,7 @@ function mapMallOrderToAdminOrder(order: MallOrderPayload): OrderItem {
 }
 
 function mergeOrderAfterPatch(prev: OrderItem, mapped: OrderItem): OrderItem {
-  const ur = mapped.userRemark.trim() ? mapped.userRemark : prev.userRemark
-  const ec = mapped.emergencyContactsComplete !== undefined
-    ? mapped.emergencyContactsComplete
-    : prev.emergencyContactsComplete
-  return { ...mapped, userRemark: ur || '', emergencyContactsComplete: ec }
+  return mergePatchedOrder(prev, mapped)
 }
 
 function installmentPayUrl(orderId: string, period: number) {
