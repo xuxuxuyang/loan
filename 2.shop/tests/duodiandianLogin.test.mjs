@@ -34,10 +34,27 @@ test('uses backend supplied consumePath when present', () => {
   )
 })
 
-test('falls back to the production half-flow consume endpoint for old duodiandian links', () => {
+test('falls back to the configured production half-flow consume endpoint for old duodiandian links', () => {
   assert.equal(
-    loginUtils.resolveDuodiandianLoginConsumeUrl('https://wenshuosc.com/api', 'duodiandian'),
-    'https://wenshuosc.com/api/market/halfFlow/447285613150998528/open/login/consume',
+    loginUtils.resolveDuodiandianLoginConsumeUrl(
+      'https://wenshuosc.com/api',
+      'duodiandian',
+      undefined,
+      '/market/halfFlow/590011549263990784/open',
+    ),
+    'https://wenshuosc.com/api/market/halfFlow/590011549263990784/open/login/consume',
+  )
+})
+
+test('lets shop env override the duodiandian half-flow consume endpoint', () => {
+  assert.equal(
+    loginUtils.resolveDuodiandianLoginConsumeUrl(
+      '/api/',
+      'duodiandian',
+      undefined,
+      '/market/halfFlow/custom-partner/open/',
+    ),
+    '/api/market/halfFlow/custom-partner/open/login/consume',
   )
 })
 

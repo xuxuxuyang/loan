@@ -219,7 +219,12 @@ export function useMallAuth() {
       throw new Error('免登链接参数不完整')
     }
     const response = await $fetch<{ success: boolean, data: { token: string, user: MallUserProfile } }>(
-      resolveDuodiandianLoginConsumeUrl(resolveMallApiBase(), channel, payload.consumePath),
+      resolveDuodiandianLoginConsumeUrl(
+        resolveMallApiBase(),
+        channel,
+        payload.consumePath,
+        import.meta.env.VITE_DUODIANDIAN_HALF_FLOW_PREFIX,
+      ),
       {
         method: 'POST',
         body: { applyNo, token },

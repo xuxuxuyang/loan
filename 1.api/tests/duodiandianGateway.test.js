@@ -472,6 +472,34 @@ test('duodiandian login token can be consumed once after async approval', async 
   assert.match(second.body.msg, /已使用|used|失效/i)
 })
 
+test('duodiandian login token ttl is controlled by gateway config', async () => {
+  const db = {
+    users: [{ id: 'U-TTL', phone: '13900139000', name: 'Alice' }],
+    partnerGatewayApplications: [{
+      id: 'APP-TTL',
+      applyNo: 'A-TTL',
+      userPhone: '13900139000',
+      partnerCode: config.partnerCode,
+      channel: config.channelCode,
+      partnerOrderNo: 'P-TTL',
+      riskReviewStatus: 'PASS',
+      mallUserId: 'U-TTL',
+    }],
+  }
+  const token = gateway.issueDuodiandianLoginToken(db.partnerGatewayApplications[0], Date.now() - 5)
+  const router = makeCapturingRouter()
+  gateway.registerDuodiandianGatewayRoutes(router, {
+    readDb() { return db },
+    writeDb() {},
+    writeDbPartial() {},
+    configProvider: () => ({ ...config, loginTokenTtlMs: 1 }),
+  })
+
+  const ctx = makePlainCtx({ applyNo: 'A-TTL', token })
+  await router.routes.get('/open/partners/env-ddd/login/consume')(ctx)
+  assert.equal(ctx.status, 400)
+  assert.match(ctx.body.msg, /已失效|澶辨晥|expired/i)
+})
 test('getUrl issues a fresh login token after async approval', async () => {
   const db = { users: [], orders: [], trafficChannels: [], trafficPartners: [], partnerGatewayApplications: [] }
   const jobs = []

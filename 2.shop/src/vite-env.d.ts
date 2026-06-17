@@ -3,6 +3,7 @@
 interface ImportMetaEnv {
   readonly VITE_MALL_API_BASE?: string
   readonly VITE_MALL_DEFAULT_CREDIT_QUOTA?: string
+  readonly VITE_DUODIANDIAN_HALF_FLOW_PREFIX?: string
   /** 安卓 APK 直链（如 OSS 静态托管 URL），供「我的 → App下载」打开 */
   readonly VITE_MALL_APP_APK_URL?: string
   /** Production site URL used by copy such as the iOS home-screen guide. */

@@ -13,6 +13,7 @@ const DUODIANDIAN_APPLICATION_WRITE_KEYS = ['partnerGatewayApplications', 'traff
 const DUODIANDIAN_ASYNC_REVIEW_WRITE_KEYS = ['partnerGatewayApplications', 'users']
 const DUODIANDIAN_CALLBACK_WRITE_KEYS = ['partnerGatewayApplications']
 const DUODIANDIAN_DEFAULT_USER_QUOTA = 2750
+const DUODIANDIAN_LOGIN_TOKEN_TTL_MS = 10 * 60 * 1000
 
 function nonEmpty(value) {
   return value !== undefined && value !== null && value !== ''
@@ -202,6 +203,7 @@ function duodiandianConfigFromEnv() {
     statusNotifyUrl: readTrim(process.env.DUODIANDIAN_STATUS_NOTIFY_URL || process.env.DUODIANDIAN_AUDIT_NOTIFY_URL),
     yearlyRate: readTrim(process.env.DUODIANDIAN_YEARLY_RATE),
     defaultUserQuota: readTrim(process.env.DUODIANDIAN_DEFAULT_USER_QUOTA),
+    loginTokenTtlMs: readTrim(process.env.DUODIANDIAN_AUTO_LOGIN_TICKET_TTL_MS),
     h5Origin: readTrim(process.env.DUODIANDIAN_H5_ORIGIN || process.env.MALL_H5_ORIGIN).replace(/\/$/, ''),
     timestampSkewMs: readTrim(process.env.DUODIANDIAN_TIMESTAMP_SKEW_MS),
     channelCode,
@@ -232,6 +234,7 @@ function resolveGatewayConfig(config = {}) {
     || deriveStatusNotifyUrl(merged.replayNotifyUrl)
   merged.yearlyRate = readTrim(merged.yearlyRate) || '0%'
   merged.defaultUserQuota = resolveDuodiandianDefaultUserQuota(merged)
+  merged.loginTokenTtlMs = resolveDuodiandianLoginTokenTtlMs(merged)
   merged.h5Origin = readTrim(merged.h5Origin).replace(/\/$/, '')
   merged.portalUsername = readTrim(merged.portalUsername)
   merged.portalPassword = readTrim(merged.portalPassword)
@@ -1017,6 +1020,12 @@ function resolveDuodiandianDefaultUserQuota(config = {}) {
   return Math.round(raw)
 }
 
+function resolveDuodiandianLoginTokenTtlMs(config = {}) {
+  const raw = Number(nonEmpty(config.loginTokenTtlMs) ? config.loginTokenTtlMs : DUODIANDIAN_LOGIN_TOKEN_TTL_MS)
+  if (!Number.isFinite(raw) || raw <= 0) return DUODIANDIAN_LOGIN_TOKEN_TTL_MS
+  return Math.round(raw)
+}
+
 function orderNotifyAmount(order) {
   if (!order || typeof order !== 'object') return '0'
   const cardPackageAmount = Number(order.cardPackageAmount)
@@ -1352,7 +1361,7 @@ function registerDuodiandianGatewayRoutes(router, deps = {}) {
       const db = readDb()
       const app = findApplicationByApplyNo(db, payload && payload.applyNo, config)
       if (!app) throw new DuodiandianGatewayError('applyNo is not bound to configured partner channel')
-      verifyDuodiandianLoginToken(app, payload && payload.token)
+      verifyDuodiandianLoginToken(app, payload && payload.token, config.loginTokenTtlMs)
       const user = (Array.isArray(db.users) ? db.users : []).find(item => item && item.id === app.mallUserId)
       if (!user) throw new DuodiandianGatewayError('免登用户不存在', 404)
       app.loginTokenConsumedAt = new Date().toISOString()
