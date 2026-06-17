@@ -234,19 +234,19 @@ const kpiBoardRows = computed<BoardItem[]>(() => {
     card({
       label: '逾期率（笔数）',
       value: `${k.overdueRate.toFixed(2)}%`,
-      hint: `${scope}逾期订单数 ÷ 订单笔数`,
+      hint: `${scope}截至今日，各应还日「未还笔数÷当日应还笔数」的累计日均`,
       tone: 'redWine',
     }),
     card({
       label: '逾期金额',
       value: fmtYuan(k.overdueAmount),
-      hint: `${scope}已到期仍未还金额合计`,
+      hint: `${scope}截至今日，各应还日未还金额的累计日均`,
       tone: 'redCrimson',
     }),
     card({
       label: '逾期占待收',
       value: `${k.overdueShareOfReceivable.toFixed(2)}%`,
-      hint: `${scope}逾期金额 ÷ 待收金额`,
+      hint: `${scope}截至今日，各应还日「未还金额÷当日应还金额」的累计日均`,
       tone: 'redWine',
     }),
   ]

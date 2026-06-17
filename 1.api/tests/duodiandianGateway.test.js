@@ -646,6 +646,8 @@ test('sends risk, loan and repaid callbacks to the configured status notify url'
   assert.equal(payloads[0].availableAmount, '1200')
   assert.equal(payloads[0].yearlyRate, '0%')
   assert.equal(payloads[1].withdrawAmount, '1200')
+  assert.equal(payloads[2].replayAmount, '1200')
+  assert.equal(payloads[2].replayFeeAmount, '0')
 })
 
 test('skips outbound notify without touching non duodiandian orders', async () => {

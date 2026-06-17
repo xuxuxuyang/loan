@@ -1086,6 +1086,8 @@ function buildDuodiandianOrderNotifyPayload(app, order, event, config = {}) {
     return {
       ...base,
       status: 'REPAID',
+      replayAmount: amount,
+      replayFeeAmount: '0',
     }
   }
   throw new DuodiandianGatewayError(`unsupported notify event: ${event}`, 500)

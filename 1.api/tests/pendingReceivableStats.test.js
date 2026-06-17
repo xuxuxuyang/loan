@@ -1,7 +1,11 @@
 const assert = require('node:assert/strict')
 const test = require('node:test')
 
-const { computePendingReceivableStats, resolveInstallmentEffectiveDueDateKey } = require('../src/pendingReceivableStats')
+const {
+  computePendingReceivableStats,
+  computeDynamicPendingReceivableAverages,
+  resolveInstallmentEffectiveDueDateKey,
+} = require('../src/pendingReceivableStats')
 
 test('counts due-on-date amounts and installment counts by paid state', () => {
   const orders = [
@@ -142,6 +146,42 @@ test('resolveInstallmentEffectiveDueDateKey prefers negotiated remainder due dat
     },
   })
   assert.equal(key, '2026-06-25')
+})
+
+test('averages daily unpaid rate and amount from first due date through end date', () => {
+  const orders = [
+    {
+      id: 'OD-day14',
+      installmentPlan: [
+        { period: 1, dueDate: '2026-06-14', amount: 16500, paid: false },
+        { period: 2, dueDate: '2026-06-14', amount: 0, paid: true },
+      ],
+    },
+    {
+      id: 'OD-day15',
+      installmentPlan: [
+        { period: 1, dueDate: '2026-06-15', amount: 2750, paid: false },
+      ],
+    },
+  ]
+
+  const day14 = computePendingReceivableStats(orders, '2026-06-14')
+  const day15 = computePendingReceivableStats(orders, '2026-06-15')
+  assert.equal(day14.unpaidRateOnDate, 50)
+  assert.equal(day15.unpaidRateOnDate, 100)
+
+  const dynamic = computeDynamicPendingReceivableAverages(orders, '2026-06-15')
+  assert.equal(dynamic.dynamicDayCount, 2)
+  assert.equal(dynamic.dynamicUnpaidRate, 75)
+  assert.equal(dynamic.dynamicUnpaidAmount, 9625)
+  assert.equal(dynamic.dynamicUnpaidShareOfDue, 100)
+})
+
+test('returns zero dynamic metrics when no due installments exist through end date', () => {
+  const dynamic = computeDynamicPendingReceivableAverages([], '2026-06-15')
+  assert.equal(dynamic.dynamicDayCount, 0)
+  assert.equal(dynamic.dynamicUnpaidRate, 0)
+  assert.equal(dynamic.dynamicUnpaidAmount, 0)
 })
 
 test('returns zero overdue rate when there are no unpaid due installments', () => {

@@ -6,7 +6,11 @@ const mongoConfig = require('./mongoConfig')
 const mongo = require('./mongo')
 const adminMongoReadOptimize = require('./adminMongoReadOptimize')
 const { shouldBlockRequestOnMongoRefreshError } = require('./mongoRefreshGuard')
-const { computePendingReceivableStats, resolveInstallmentEffectiveDueDateKey } = require('./pendingReceivableStats')
+const {
+  computePendingReceivableStats,
+  computeDynamicPendingReceivableAverages,
+  resolveInstallmentEffectiveDueDateKey,
+} = require('./pendingReceivableStats')
 const { computeOrderRepayBucket, reconcileOverdueUserBlacklistAcrossDb } = require('./overdueUserBlacklist')
 const { buildTrafficPartnerApprovedRowsForChannel } = require('./trafficPartnerApprovedRows')
 
@@ -9287,7 +9291,6 @@ function computeAdminDashboardKpisFromDb(db) {
   let receivableAmount = 0
   let receivablePrincipal = 0
   let collectedAmount = 0
-  let overdueAmount = 0
   let overdueOrderCount = 0
   let settledOrderCount = 0
   let dueTodayAmount = 0
@@ -9339,7 +9342,6 @@ function computeAdminDashboardKpisFromDb(db) {
       receivableAmount += a
 
       if (dk && dk < t) {
-        overdueAmount += a
         orderHasOverdue = true
       }
       if (dk === t) {
@@ -9370,14 +9372,16 @@ function computeAdminDashboardKpisFromDb(db) {
     }
   }
 
-  const overdueRate = orderCount > 0 ? (overdueOrderCount / orderCount) * 100 : 0
   const contractCashTotal = collectedAmount + receivableAmount
   const collectionRateByAmount = contractCashTotal > 0 ? (collectedAmount / contractCashTotal) * 100 : 0
   const settledRate = orderCount > 0 ? (settledOrderCount / orderCount) * 100 : 0
   const avgTicket = orderCount > 0 ? totalSales / orderCount : 0
   const premiumToPrincipal = totalSales - totalPrincipal
   const avgPeriods = installmentPayOrderCount > 0 ? totalPeriodSum / installmentPayOrderCount : 0
-  const overdueShareOfReceivable = receivableAmount > 0 ? (overdueAmount / receivableAmount) * 100 : 0
+  const dynamicReceivable = computeDynamicPendingReceivableAverages(basis, t)
+  const overdueRate = dynamicReceivable.dynamicUnpaidRate
+  const overdueAmount = dynamicReceivable.dynamicUnpaidAmount
+  const overdueShareOfReceivable = dynamicReceivable.dynamicUnpaidShareOfDue
 
   return {
     orderCount,

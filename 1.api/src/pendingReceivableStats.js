@@ -115,8 +115,60 @@ function computePendingReceivableStats(orders, dueDate) {
   }
 }
 
+/** 收集截至 endDate（含）所有分期有效应还日（去重、升序） */
+function collectReceivableDueDatesUpTo(orders, endDate) {
+  const dates = new Set()
+  for (const order of Array.isArray(orders) ? orders : []) {
+    const plan = Array.isArray(order && order.installmentPlan) ? order.installmentPlan : []
+    for (const item of plan) {
+      if (!item) {
+        continue
+      }
+      const key = resolveInstallmentEffectiveDueDateKey(item)
+      if (key && key <= endDate) {
+        dates.add(key)
+      }
+    }
+  }
+  return Array.from(dates).sort()
+}
+
+/**
+ * 动态待收逾期指标：从首个有应还数据的日期到 endDate，对各日「未还率 / 未还金额 / 未还占当日应还」取算术平均。
+ * 例：14 日未还率 24%、15 日 7.14%，则截至 15 日动态未还率 = (24 + 7.14) / 2。
+ */
+function computeDynamicPendingReceivableAverages(orders, endDate) {
+  const dueDates = collectReceivableDueDatesUpTo(orders, endDate)
+  let rateSum = 0
+  let amountSum = 0
+  let shareSum = 0
+  let dayCount = 0
+
+  for (const d of dueDates) {
+    const stats = computePendingReceivableStats(orders, d)
+    if (stats.totalDueOnDateCount <= 0) {
+      continue
+    }
+    rateSum += stats.unpaidRateOnDate
+    amountSum += stats.unpaidDueOnDate
+    if (stats.totalDueOnDate > 0) {
+      shareSum += (stats.unpaidDueOnDate / stats.totalDueOnDate) * 100
+    }
+    dayCount += 1
+  }
+
+  return {
+    dynamicUnpaidRate: dayCount > 0 ? Number((rateSum / dayCount).toFixed(2)) : 0,
+    dynamicUnpaidAmount: dayCount > 0 ? roundMoney(amountSum / dayCount) : 0,
+    dynamicUnpaidShareOfDue: dayCount > 0 ? Number((shareSum / dayCount).toFixed(2)) : 0,
+    dynamicDayCount: dayCount,
+  }
+}
+
 module.exports = {
   computePendingReceivableStats,
+  computeDynamicPendingReceivableAverages,
+  collectReceivableDueDatesUpTo,
   installmentItemIsPaid,
   normalizeInstallmentDueDateKey,
   resolveInstallmentEffectiveDueDateKey,
