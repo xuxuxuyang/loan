@@ -3,6 +3,9 @@ const test = require('node:test')
 
 const {
   computePendingReceivableStats,
+  computeTotalOverdueAmount,
+  computeOrderSettlementRateOnDate,
+  computeDynamicOrderSettlementRate,
   computeDynamicPendingReceivableAverages,
   resolveInstallmentEffectiveDueDateKey,
 } = require('../src/pendingReceivableStats')
@@ -175,6 +178,113 @@ test('averages daily unpaid rate and amount from first due date through end date
   assert.equal(dynamic.dynamicUnpaidRate, 75)
   assert.equal(dynamic.dynamicUnpaidAmount, 9625)
   assert.equal(dynamic.dynamicUnpaidShareOfDue, 100)
+})
+
+test('averages daily order settlement rate through end date', () => {
+  const orders = [
+    {
+      id: 'settled-14',
+      installmentPlan: [
+        { period: 1, dueDate: '2026-06-14', amount: 100, paid: true },
+      ],
+    },
+    {
+      id: 'unsettled-14',
+      installmentPlan: [
+        { period: 1, dueDate: '2026-06-14', amount: 100, paid: false },
+      ],
+    },
+    {
+      id: 'unsettled-15',
+      installmentPlan: [
+        { period: 1, dueDate: '2026-06-15', amount: 100, paid: false },
+      ],
+    },
+  ]
+
+  const day14 = computeOrderSettlementRateOnDate(orders, '2026-06-14')
+  assert.equal(day14.maturedOrderCount, 2)
+  assert.equal(day14.settledOrderCount, 1)
+  assert.equal(day14.settlementRateOnDate, 50)
+
+  const day15 = computeOrderSettlementRateOnDate(orders, '2026-06-15')
+  assert.equal(day15.maturedOrderCount, 3)
+  assert.equal(day15.settlementRateOnDate, 33.33)
+
+  const dynamic = computeDynamicOrderSettlementRate(orders, '2026-06-15')
+  assert.equal(dynamic.dynamicSettledDayCount, 2)
+  assert.equal(dynamic.dynamicSettledRate, 41.66)
+})
+
+test('excludes end date when computing settlement rate through yesterday only', () => {
+  const orders = [
+    {
+      id: 'today-only',
+      installmentPlan: [
+        { period: 1, dueDate: '2026-06-16', amount: 100, paid: false },
+      ],
+    },
+  ]
+
+  const throughToday = computeDynamicOrderSettlementRate(orders, '2026-06-16')
+  assert.equal(throughToday.dynamicSettledDayCount, 1)
+
+  const throughYesterday = computeDynamicOrderSettlementRate(orders, '2026-06-15')
+  assert.equal(throughYesterday.dynamicSettledDayCount, 0)
+  assert.equal(throughYesterday.dynamicSettledRate, 0)
+})
+
+test('sums all unpaid installments with effective due date before today', () => {
+  const orders = [
+    {
+      id: 'OD-overdue-1',
+      installmentPlan: [
+        { period: 1, dueDate: '2026-06-14', amount: 16500, paid: false },
+        { period: 2, dueDate: '2026-06-14', amount: 0, paid: true },
+      ],
+    },
+    {
+      id: 'OD-overdue-2',
+      installmentPlan: [
+        { period: 1, dueDate: '2026-06-15', amount: 2750, paid: false },
+      ],
+    },
+    {
+      id: 'OD-today-unpaid',
+      installmentPlan: [
+        { period: 1, dueDate: '2026-06-16', amount: 5000, paid: false },
+      ],
+    },
+    {
+      id: 'OD-future',
+      installmentPlan: [
+        { period: 1, dueDate: '2026-06-20', amount: 1000, paid: false },
+      ],
+    },
+  ]
+
+  assert.equal(computeTotalOverdueAmount(orders, '2026-06-16'), 19250)
+  assert.equal(computeTotalOverdueAmount(orders, '2026-06-15'), 16500)
+})
+
+test('excludes end date when computing averages through yesterday only', () => {
+  const orders = [
+    {
+      id: 'OD-today-only',
+      installmentPlan: [
+        { period: 1, dueDate: '2026-06-15', amount: 2750, paid: false },
+      ],
+    },
+  ]
+
+  const throughToday = computeDynamicPendingReceivableAverages(orders, '2026-06-15')
+  assert.equal(throughToday.dynamicDayCount, 1)
+  assert.equal(throughToday.dynamicUnpaidRate, 100)
+
+  const throughYesterday = computeDynamicPendingReceivableAverages(orders, '2026-06-14')
+  assert.equal(throughYesterday.dynamicDayCount, 0)
+  assert.equal(throughYesterday.dynamicUnpaidRate, 0)
+  assert.equal(throughYesterday.dynamicUnpaidAmount, 0)
 })
 
 test('returns zero dynamic metrics when no due installments exist through end date', () => {

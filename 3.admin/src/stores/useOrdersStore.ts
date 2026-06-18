@@ -677,6 +677,25 @@ async function rejectOrderReview(orderId: string, riskReason?: string) {
   orders.value = orders.value.map(item => (item.id === mapped.id ? mergeOrderAfterPatch(item, mapped) : item))
 }
 
+/** 审核页「重新审核」：风控未通过订单恢复为待审核（riskStatus=passed） */
+async function reReviewOrderReview(orderId: string) {
+  const response = await fetch(`${MALL_ORDERS_ENDPOINT}/${encodeURIComponent(orderId)}/status`, {
+    method: 'PATCH',
+    headers: withMallTenantHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ riskStatus: 'passed' }),
+  })
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({})) as { msg?: string }
+    throw new Error(apiErrorMessage(payload, '重新审核失败'))
+  }
+  const payload = await response.json() as { success?: boolean, data?: MallOrderPayload }
+  if (!payload.data) {
+    return
+  }
+  const mapped = mapMallOrderToAdminOrder(payload.data)
+  orders.value = orders.value.map(item => (item.id === mapped.id ? mergeOrderAfterPatch(item, mapped) : item))
+}
+
 async function fetchOrderRiskDetail(orderId: string): Promise<OrderRiskDetail> {
   const response = await fetch(riskDetailUrl(orderId), {
     method: 'GET',
@@ -762,6 +781,7 @@ export function useOrdersStore() {
     updateOrderShipment,
     updateOrderStatus,
     rejectOrderReview,
+    reReviewOrderReview,
     updateOrderCardPackage,
     updateOrderCardPackageContract,
     fetchOrderRiskDetail,

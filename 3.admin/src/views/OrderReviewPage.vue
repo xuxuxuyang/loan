@@ -26,6 +26,7 @@ const totalOrders = ref(0)
 const PAGE_SIZE_OPTIONS = [10, 20, 50, 100] as const
 const reviewingId = ref('')
 const rejectingId = ref('')
+const reReviewingId = ref('')
 const deletingOrderId = ref('')
 const userRiskDialogVisible = ref(false)
 const riskDialogUserId = ref<string | null>(null)
@@ -34,7 +35,7 @@ const riskDetailHideBasicInfoTab = ref(false)
 const resolvingRiskOrderId = ref<string | null>(null)
 const riskFilter = ref<'全部' | OrderItem['riskStatus']>('全部')
 const userFilter = ref('')
-const { orders, fetchOrders, updateOrderStatus, rejectOrderReview, deleteOrder } = useOrdersStore()
+const { orders, fetchOrders, updateOrderStatus, rejectOrderReview, reReviewOrderReview, deleteOrder } = useOrdersStore()
 
 /** 列表预拉：档案内下单七项 + 雷达是否齐全（仅用于弹窗内第二条提示，不拦截审核） */
 type RiskApproveGateState = 'idle' | 'loading' | 'ok' | 'blocked'
@@ -287,7 +288,7 @@ function buildApproveOrderConfirmContent(riskArchiveOk: boolean): VNode {
 }
 
 async function approveOrder(order: OrderItem) {
-  if (reviewingId.value || rejectingId.value) {
+  if (reviewingId.value || rejectingId.value || reReviewingId.value) {
     return
   }
   if (order.riskStatus !== 'passed') {
@@ -324,7 +325,7 @@ async function approveOrder(order: OrderItem) {
 }
 
 async function rejectOrder(order: OrderItem) {
-  if (reviewingId.value || rejectingId.value) {
+  if (reviewingId.value || rejectingId.value || reReviewingId.value) {
     return
   }
   if (order.payType !== '先享后付' || order.riskStatus !== 'passed') {
@@ -332,7 +333,7 @@ async function rejectOrder(order: OrderItem) {
   }
   try {
     await ElMessageBox.confirm(
-      `确定将订单 ${order.id} 标记为审核不通过？提交后该单将视为风控未通过，无法再次审核。`,
+      `确定将订单 ${order.id} 标记为审核不通过？提交后该单将视为风控未通过；若误操作可在「风控未通过」列表中点击「重新审核」恢复。`,
       '审核不通过',
       {
         confirmButtonText: '确定',
@@ -358,8 +359,45 @@ async function rejectOrder(order: OrderItem) {
   }
 }
 
+async function reReviewOrder(order: OrderItem) {
+  if (reviewingId.value || rejectingId.value || reReviewingId.value) {
+    return
+  }
+  if (order.payType !== '先享后付' || order.riskStatus !== 'failed' || !isReviewPageOrder(order)) {
+    return
+  }
+  try {
+    await ElMessageBox.confirm(
+      `确定将订单 ${order.id} 重新放入待审核？恢复后可再次「审核通过」或「审核不通过」。`,
+      '重新审核',
+      {
+        confirmButtonText: '确定重新审核',
+        cancelButtonText: '取消',
+        type: 'warning',
+      },
+    )
+  }
+  catch {
+    return
+  }
+  reReviewingId.value = order.id
+  try {
+    await reReviewOrderReview(order.id)
+    ElMessage.success('已恢复为待审核')
+    void refreshOrdersMenuPendingReview()
+    void loadReviewOrders()
+    void runRiskApproveGateChecks(orders.value.filter(isReviewPageOrder))
+  }
+  catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '重新审核失败，请稍后重试')
+  }
+  finally {
+    reReviewingId.value = ''
+  }
+}
+
 async function handleDeleteOrder(order: OrderItem) {
-  if (!canDeleteOrder.value || deletingOrderId.value || reviewingId.value || rejectingId.value) {
+  if (!canDeleteOrder.value || deletingOrderId.value || reviewingId.value || rejectingId.value || reReviewingId.value) {
     return
   }
   try {
@@ -575,7 +613,7 @@ watch(riskFilter, () => {
                 v-if="canReviewOrder"
                 :class="['btn', item.riskStatus === 'passed' ? 'btn-success' : 'btn-danger']"
                 type="button"
-                :disabled="reviewingId === item.id || rejectingId === item.id || item.riskStatus !== 'passed'"
+                :disabled="reviewingId === item.id || rejectingId === item.id || reReviewingId === item.id || item.riskStatus !== 'passed'"
                 @click="approveOrder(item)"
               >
                 {{
@@ -585,10 +623,19 @@ watch(riskFilter, () => {
                 }}
               </button>
               <button
+                v-if="canReviewOrder && item.payType === '先享后付' && item.riskStatus === 'failed'"
+                class="btn btn-rereview"
+                type="button"
+                :disabled="reviewingId === item.id || rejectingId === item.id || reReviewingId === item.id || deletingOrderId === item.id"
+                @click="reReviewOrder(item)"
+              >
+                {{ reReviewingId === item.id ? '提交中...' : '重新审核' }}
+              </button>
+              <button
                 v-if="canReviewOrder && item.payType === '先享后付' && item.riskStatus === 'passed'"
                 class="btn btn-danger"
                 type="button"
-                :disabled="reviewingId === item.id || rejectingId === item.id || deletingOrderId === item.id"
+                :disabled="reviewingId === item.id || rejectingId === item.id || reReviewingId === item.id || deletingOrderId === item.id"
                 @click="rejectOrder(item)"
               >
                 {{ rejectingId === item.id ? '提交中...' : '审核不通过' }}
@@ -597,7 +644,7 @@ watch(riskFilter, () => {
                 v-if="canDeleteOrder"
                 class="btn btn-outline-danger"
                 type="button"
-                :disabled="deletingOrderId === item.id || reviewingId === item.id || rejectingId === item.id"
+                :disabled="deletingOrderId === item.id || reviewingId === item.id || rejectingId === item.id || reReviewingId === item.id"
                 @click="handleDeleteOrder(item)"
               >
                 {{ deletingOrderId === item.id ? '删除中...' : '删除订单' }}
@@ -682,6 +729,16 @@ watch(riskFilter, () => {
   border-color: #dc2626;
   background: #dc2626;
   color: #fff;
+}
+
+.btn-rereview {
+  border-color: #d97706;
+  background: #fff;
+  color: #b45309;
+}
+
+.btn-rereview:hover:not(:disabled) {
+  background: #fffbeb;
 }
 
 .btn-outline-danger {

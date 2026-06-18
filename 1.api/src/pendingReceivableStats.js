@@ -134,7 +134,100 @@ function collectReceivableDueDatesUpTo(orders, endDate) {
 }
 
 /**
- * 动态待收逾期指标：从首个有应还数据的日期到 endDate，对各日「未还率 / 未还金额 / 未还占当日应还」取算术平均。
+ * 全部逾期金额：有效应还日早于 todayKey、仍未还的分期金额合计（不含当日应还，与订单「已逾期」口径一致）。
+ */
+function computeTotalOverdueAmount(orders, todayKey) {
+  let total = 0
+  for (const order of Array.isArray(orders) ? orders : []) {
+    const plan = Array.isArray(order && order.installmentPlan) ? order.installmentPlan : []
+    for (const item of plan) {
+      if (!item || installmentItemIsPaid(item)) {
+        continue
+      }
+      const key = resolveInstallmentEffectiveDueDateKey(item)
+      if (key && todayKey && key < todayKey) {
+        total += roundMoney(item.amount)
+      }
+    }
+  }
+  return roundMoney(total)
+}
+
+function collectOrderEffectiveDueDateBounds(order) {
+  const plan = Array.isArray(order && order.installmentPlan) ? order.installmentPlan : []
+  let minKey = ''
+  let maxKey = ''
+  for (const item of plan) {
+    if (!item) {
+      continue
+    }
+    const key = resolveInstallmentEffectiveDueDateKey(item)
+    if (!key) {
+      continue
+    }
+    if (!minKey || key < minKey) {
+      minKey = key
+    }
+    if (!maxKey || key > maxKey) {
+      maxKey = key
+    }
+  }
+  return { minKey, maxKey }
+}
+
+function isOrderFullySettled(order) {
+  const plan = Array.isArray(order && order.installmentPlan) ? order.installmentPlan : []
+  return plan.length > 0 && plan.every(item => item && installmentItemIsPaid(item))
+}
+
+/** 截至 asOfDate：末次有效应还日不晚于 asOfDate 的订单中，全额结清订单占比。 */
+function computeOrderSettlementRateOnDate(orders, asOfDate) {
+  let maturedOrderCount = 0
+  let settledOrderCount = 0
+  for (const order of Array.isArray(orders) ? orders : []) {
+    const { maxKey } = collectOrderEffectiveDueDateBounds(order)
+    if (!maxKey || maxKey > asOfDate) {
+      continue
+    }
+    maturedOrderCount += 1
+    if (isOrderFullySettled(order)) {
+      settledOrderCount += 1
+    }
+  }
+  return {
+    maturedOrderCount,
+    settledOrderCount,
+    settlementRateOnDate: maturedOrderCount > 0
+      ? Number(((settledOrderCount / maturedOrderCount) * 100).toFixed(2))
+      : 0,
+  }
+}
+
+/**
+ * 动态订单结清率：从首个有应还数据的日期到 endDate，对各日「已到期订单全额结清率」取算术平均。
+ */
+function computeDynamicOrderSettlementRate(orders, endDate) {
+  const dueDates = collectReceivableDueDatesUpTo(orders, endDate)
+  let rateSum = 0
+  let dayCount = 0
+
+  for (const d of dueDates) {
+    const stats = computeOrderSettlementRateOnDate(orders, d)
+    if (stats.maturedOrderCount <= 0) {
+      continue
+    }
+    rateSum += stats.settlementRateOnDate
+    dayCount += 1
+  }
+
+  return {
+    dynamicSettledRate: dayCount > 0 ? Number((rateSum / dayCount).toFixed(2)) : 0,
+    dynamicSettledDayCount: dayCount,
+  }
+}
+
+/**
+ * 动态待收逾期指标：从首个有应还数据的日期到 endDate，对各日「未还率 / 未还占当日应还」取算术平均。
  * 例：14 日未还率 24%、15 日 7.14%，则截至 15 日动态未还率 = (24 + 7.14) / 2。
  */
 function computeDynamicPendingReceivableAverages(orders, endDate) {
@@ -167,6 +260,9 @@ function computeDynamicPendingReceivableAverages(orders, endDate) {
 
 module.exports = {
   computePendingReceivableStats,
+  computeTotalOverdueAmount,
+  computeOrderSettlementRateOnDate,
+  computeDynamicOrderSettlementRate,
   computeDynamicPendingReceivableAverages,
   collectReceivableDueDatesUpTo,
   installmentItemIsPaid,

@@ -8,6 +8,8 @@ const adminMongoReadOptimize = require('./adminMongoReadOptimize')
 const { shouldBlockRequestOnMongoRefreshError } = require('./mongoRefreshGuard')
 const {
   computePendingReceivableStats,
+  computeTotalOverdueAmount,
+  computeDynamicOrderSettlementRate,
   computeDynamicPendingReceivableAverages,
   resolveInstallmentEffectiveDueDateKey,
 } = require('./pendingReceivableStats')
@@ -9300,6 +9302,7 @@ function computeAdminDashboardKpisFromDb(db) {
   let extensionRepaymentPendingAmount = 0
 
   const t = formatDate(new Date().toISOString())
+  const tYesterday = adminDashboardYmdPlusDays(t, -1)
   const tTomorrow = adminDashboardYmdPlusDays(t, 1)
   const tWeekEnd = adminDashboardYmdPlusDays(t, 6)
 
@@ -9374,14 +9377,18 @@ function computeAdminDashboardKpisFromDb(db) {
 
   const contractCashTotal = collectedAmount + receivableAmount
   const collectionRateByAmount = contractCashTotal > 0 ? (collectedAmount / contractCashTotal) * 100 : 0
-  const settledRate = orderCount > 0 ? (settledOrderCount / orderCount) * 100 : 0
   const avgTicket = orderCount > 0 ? totalSales / orderCount : 0
   const premiumToPrincipal = totalSales - totalPrincipal
   const avgPeriods = installmentPayOrderCount > 0 ? totalPeriodSum / installmentPayOrderCount : 0
-  const dynamicReceivable = computeDynamicPendingReceivableAverages(basis, t)
+  // 订单结清率：不含当日，截至昨日各应还日「已到期订单全额结清率」的累计日均
+  const dynamicSettlement = computeDynamicOrderSettlementRate(basis, tYesterday)
+  const settledRate = dynamicSettlement.dynamicSettledRate
+  // 逾期率/占待收：不含当日（仍在催收），统计截至昨日各应还日的累计日均
+  const dynamicReceivable = computeDynamicPendingReceivableAverages(basis, tYesterday)
   const overdueRate = dynamicReceivable.dynamicUnpaidRate
-  const overdueAmount = dynamicReceivable.dynamicUnpaidAmount
   const overdueShareOfReceivable = dynamicReceivable.dynamicUnpaidShareOfDue
+  // 逾期金额：截至昨日全部逾期未还分期金额合计（非日均）
+  const overdueAmount = computeTotalOverdueAmount(basis, t)
 
   return {
     orderCount,
@@ -10523,6 +10530,38 @@ router.patch('/orders/:id/status', async (ctx) => {
       if (previousRiskStatus !== 'failed') {
         queueDuodiandianOrderNotify('risk_reject', target, readDb())
       }
+      ctx.body = success(target)
+      return
+    }
+
+    /** 风控未通过订单重新审核：恢复为待审核（riskStatus=passed），可再次审核通过/不通过 */
+    if (body.riskStatus === 'passed') {
+      logExtra.operation = 'risk_rereview'
+      ensureOrderRiskState(target)
+      if (target.payType !== 'installment') {
+        fail(ctx, '仅先享后付订单可操作重新审核', 400)
+        return
+      }
+      if (target.status !== 'reviewing') {
+        fail(ctx, '仅待审核中的订单可重新审核', 400)
+        return
+      }
+      if (target.riskStatus !== 'failed') {
+        fail(ctx, '仅风控未通过的订单可重新审核', 400)
+        return
+      }
+      target.riskStatus = 'passed'
+      target.riskReason = ''
+      target.riskCheckedAt = new Date().toISOString()
+      ensureOrderCardPackage(target)
+      marks.businessEnd = reviewPerfNowMs()
+      marks.persistScheduleStart = reviewPerfNowMs()
+      writeOrderDb(db, target)
+      marks.persistScheduleEnd = reviewPerfNowMs()
+      marks.flushStart = reviewPerfNowMs()
+      await flushMongoPersist()
+      ctx.state.mongoPersistFlushed = true
+      marks.flushEnd = reviewPerfNowMs()
       ctx.body = success(target)
       return
     }

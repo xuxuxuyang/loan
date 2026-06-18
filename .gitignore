@@ -12,3 +12,6 @@ beifen
 本地测试开隧道
 * text=auto
 # 1.app更新步骤
+
+# 配置https证书的文件
+letsencrypt/
