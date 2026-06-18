@@ -271,7 +271,6 @@ function latestNegotiationRecord(plan: InstallmentItem): InstallmentNegotiationR
   return h[h.length - 1] ?? null
 }
 
-/** 该期是否已有协商登记（存在协商记录时不可使用「延期还款」，应通过「协商还款」调整） */
 function planHasNegotiationHistory(plan: InstallmentItem): boolean {
   const h = plan.negotiationHistory
   return Array.isArray(h) && h.length > 0
@@ -281,9 +280,6 @@ function planHasNegotiationHistory(plan: InstallmentItem): boolean {
 function deferRepaymentTooltip(plan: InstallmentItem): string {
   if (!selectedOrder.value?.cardPackageIssued) {
     return '卡包未发放'
-  }
-  if (planHasNegotiationHistory(plan)) {
-    return '已有协商记录，不可延期还款'
   }
   return ''
 }
@@ -1034,17 +1030,14 @@ async function deferRepaymentDue(order: OrderItem, plan: InstallmentItem) {
     ElMessage.warning('卡包未发放')
     return
   }
-  if (planHasNegotiationHistory(plan)) {
-    ElMessage.warning('已有协商记录，不可延期还款')
-    return
-  }
+  const baseDue = resolveInstallmentEffectiveDueDate(plan) || plan.dueDate
   const key = `${order.id}-${plan.period}`
   if (deferDueSavingKey.value || negotiateSavingKey.value || negotiationHistorySavingKey.value || settleAmountSavingKey.value) {
     return
   }
   try {
     const { value } = await ElMessageBox.prompt(
-      '请输入延期天数（正整数）。确认后将在当前「还款日」基础上向后顺延该天数。',
+      `请输入延期天数（正整数）。确认后将在当前还款日（${baseDue}）基础上向后顺延该天数。`,
       '延期还款',
       {
         confirmButtonText: '确定',
@@ -1951,7 +1944,7 @@ watch(
                     <button
                       class="btn btn-warning"
                       type="button"
-                      :disabled="!selectedOrder.cardPackageIssued || !!deferDueSavingKey || !!negotiateSavingKey || !!negotiationHistorySavingKey || !!settleAmountSavingKey || planHasNegotiationHistory(plan)"
+                      :disabled="!selectedOrder.cardPackageIssued || !!deferDueSavingKey || !!negotiateSavingKey || !!negotiationHistorySavingKey || !!settleAmountSavingKey"
                       @click="deferRepaymentDue(selectedOrder, plan)"
                     >
                       {{ deferDueSavingKey === `${selectedOrder.id}-${plan.period}` ? '处理中…' : '延期还款' }}

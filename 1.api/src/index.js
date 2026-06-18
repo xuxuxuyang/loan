@@ -15,6 +15,10 @@ const {
 } = require('./pendingReceivableStats')
 const { computeOrderRepayBucket, reconcileOverdueUserBlacklistAcrossDb } = require('./overdueUserBlacklist')
 const { buildTrafficPartnerApprovedRowsForChannel } = require('./trafficPartnerApprovedRows')
+const {
+  resolveDeferRepaymentBaseDueDateKey,
+  applyDeferRepaymentDueDate,
+} = require('./installmentDeferRepayment')
 
 const Koa = require('koa')
 const Router = require('@koa/router')
@@ -10206,16 +10210,8 @@ router.patch('/orders/:id/installments/:period/due-date', async (ctx) => {
     fail(ctx, '已还款期次不可延期')
     return
   }
-  if (Array.isArray(planItem.negotiationHistory) && planItem.negotiationHistory.length > 0) {
-    fail(ctx, '该期已有协商记录，请使用「协商还款」调整，不可延期还款', 400)
-    return
-  }
-  if (planItem.negotiationPayPending && Number(planItem.negotiationPayPending.negotiatedAmount || 0) > 0) {
-    fail(ctx, '本期尚有协商款项待用户完成支付，请先完成后再延期', 400)
-    return
-  }
 
-  const key = normalizeInstallmentDueDateKey(planItem.dueDate)
+  const key = resolveDeferRepaymentBaseDueDateKey(planItem)
   if (!key || !/^\d{4}-\d{2}-\d{2}$/.test(key)) {
     fail(ctx, '当前期还款日无效，无法延期')
     return
@@ -10227,7 +10223,7 @@ router.patch('/orders/:id/installments/:period/due-date', async (ctx) => {
     return
   }
 
-  planItem.dueDate = nextYmd
+  applyDeferRepaymentDueDate(planItem, nextYmd)
   target.installmentScheduleExplicit = true
   applyInstallmentCompletionOrderStatus(target, { ignoreAdminSkip: true })
 
