@@ -277,7 +277,7 @@ function planHasNegotiationHistory(plan: InstallmentItem): boolean {
 }
 
 /** 「延期还款」按钮禁用时的悬停说明（无说明则不展示 tooltip） */
-function deferRepaymentTooltip(plan: InstallmentItem): string {
+function deferRepaymentTooltip(): string {
   if (!selectedOrder.value?.cardPackageIssued) {
     return '卡包未发放'
   }
@@ -1936,9 +1936,9 @@ watch(
                 </el-tooltip>
                 <el-tooltip
                   v-if="!plan.paid && canDelayRepayment"
-                  :content="deferRepaymentTooltip(plan)"
+                  :content="deferRepaymentTooltip()"
                   placement="top"
-                  :disabled="deferRepaymentTooltip(plan) === ''"
+                  :disabled="deferRepaymentTooltip() === ''"
                 >
                   <span class="plan-modal-action-tooltip-host">
                     <button
