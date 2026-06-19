@@ -17,11 +17,21 @@ interface PendingReceivableRow {
   period: number
   dueDate: string
   amount: number
+  /** 该期是否已还款入账 */
+  isPaid?: boolean
   /** 待收期次还款备注（与用户 adminRemark 无关） */
   collectionRemark?: string
   /** 注册用户备注（只读展示，与 collectionRemark 无关） */
   buyerAdminRemark?: string
 }
+
+type RepaymentStatusFilter = 'all' | 'paid' | 'unpaid'
+
+const REPAYMENT_STATUS_OPTIONS: Array<{ label: string, value: RepaymentStatusFilter }> = [
+  { label: '全部', value: 'all' },
+  { label: '已还款', value: 'paid' },
+  { label: '未还款', value: 'unpaid' },
+]
 
 const route = useRoute()
 const { canRemark, canView } = useAdminPagePermission(undefined, true)
@@ -31,6 +41,8 @@ const errorMsg = ref('')
 const rows = ref<PendingReceivableRow[]>([])
 const keyword = ref('')
 const appliedKeyword = ref('')
+const repaymentStatusFilter = ref<RepaymentStatusFilter>('all')
+const appliedRepaymentStatus = ref<RepaymentStatusFilter>('all')
 const page = ref(1)
 const pageSize = ref(50)
 const totalRows = ref(0)
@@ -87,6 +99,13 @@ function normalizePhoneDigits(raw: string): string {
 
 function applySearch() {
   appliedKeyword.value = keyword.value.trim()
+  appliedRepaymentStatus.value = repaymentStatusFilter.value
+  page.value = 1
+  void load()
+}
+
+function applyRepaymentStatusFilter() {
+  appliedRepaymentStatus.value = repaymentStatusFilter.value
   page.value = 1
   void load()
 }
@@ -147,6 +166,7 @@ async function load() {
   errorMsg.value = ''
   try {
     const qs = new URLSearchParams({ dueDate: dueDate.value })
+    qs.set('repaymentStatus', appliedRepaymentStatus.value)
     if (!appliedKeyword.value) {
       qs.set('page', String(page.value))
       qs.set('pageSize', String(pageSize.value))
@@ -225,6 +245,8 @@ watch(
     }
     appliedKeyword.value = ''
     keyword.value = ''
+    repaymentStatusFilter.value = 'all'
+    appliedRepaymentStatus.value = 'all'
     page.value = 1
     void load()
   },
@@ -459,6 +481,20 @@ async function clearCollectionRemark() {
       </template>
 
       <div class="receivable-toolbar">
+        <el-select
+          v-model="repaymentStatusFilter"
+          class="receivable-status-filter"
+          placeholder="还款状态"
+          :disabled="loading"
+          @change="applyRepaymentStatusFilter"
+        >
+          <el-option
+            v-for="opt in REPAYMENT_STATUS_OPTIONS"
+            :key="opt.value"
+            :label="opt.label"
+            :value="opt.value"
+          />
+        </el-select>
         <el-input
           v-model="keyword"
           class="receivable-search-input"
@@ -558,6 +594,21 @@ async function clearCollectionRemark() {
           >
             <template #default="{ row }">
               <span class="amount-cell">{{ Number(row.amount).toFixed(2) }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column
+            label="还款状态"
+            width="110"
+            align="center"
+          >
+            <template #default="{ row }">
+              <el-tag
+                :type="row.isPaid ? 'success' : 'warning'"
+                effect="plain"
+                size="small"
+              >
+                {{ row.isPaid ? '已还款' : '未还款' }}
+              </el-tag>
             </template>
           </el-table-column>
           <el-table-column
@@ -821,6 +872,10 @@ async function clearCollectionRemark() {
 
 .receivable-search-input {
   width: min(100%, 320px);
+}
+
+.receivable-status-filter {
+  width: 132px;
 }
 
 .receivable-table-wrap {

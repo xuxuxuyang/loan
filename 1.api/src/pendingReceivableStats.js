@@ -44,8 +44,21 @@ function roundMoney(value) {
   return Number(Number(value || 0).toFixed(2))
 }
 
+function filterDueOnDateRowRefs(allDueOnDateRowRefs, repaymentStatus = 'unpaid') {
+  const refs = Array.isArray(allDueOnDateRowRefs) ? allDueOnDateRowRefs : []
+  const status = String(repaymentStatus || 'unpaid').trim().toLowerCase()
+  if (status === 'paid') {
+    return refs.filter(ref => ref && ref.paid)
+  }
+  if (status === 'all') {
+    return refs
+  }
+  return refs.filter(ref => ref && !ref.paid)
+}
+
 function computePendingReceivableStats(orders, dueDate) {
   const rowRefs = []
+  const allDueOnDateRowRefs = []
   let totalDueOnDate = 0
   let paidDueOnDate = 0
   let unpaidDueOnDate = 0
@@ -82,8 +95,12 @@ function computePendingReceivableStats(orders, dueDate) {
           overdueBeforeDateCount += 1
         }
       }
-      if (!paid && key === dueDate) {
-        rowRefs.push({ order, item, key })
+      if (key === dueDate) {
+        const ref = { order, item, key, paid }
+        allDueOnDateRowRefs.push(ref)
+        if (!paid) {
+          rowRefs.push(ref)
+        }
       }
     }
   }
@@ -100,6 +117,7 @@ function computePendingReceivableStats(orders, dueDate) {
 
   return {
     rowRefs,
+    allDueOnDateRowRefs,
     totalAmount: roundMoney(unpaidDueOnDate),
     totalDueOnDate: roundMoney(totalDueOnDate),
     paidDueOnDate: roundMoney(paidDueOnDate),
@@ -259,6 +277,7 @@ function computeDynamicPendingReceivableAverages(orders, endDate) {
 }
 
 module.exports = {
+  filterDueOnDateRowRefs,
   computePendingReceivableStats,
   computeTotalOverdueAmount,
   computeOrderSettlementRateOnDate,

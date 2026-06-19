@@ -2,6 +2,7 @@ const assert = require('node:assert/strict')
 const test = require('node:test')
 
 const {
+  filterDueOnDateRowRefs,
   computePendingReceivableStats,
   computeTotalOverdueAmount,
   computeOrderSettlementRateOnDate,
@@ -30,6 +31,28 @@ test('counts due-on-date amounts and installment counts by paid state', () => {
   assert.equal(stats.totalDueOnDateCount, 2)
   assert.equal(stats.paidDueOnDateCount, 1)
   assert.equal(stats.unpaidDueOnDateCount, 1)
+  assert.equal(stats.allDueOnDateRowRefs.length, 2)
+  assert.equal(stats.rowRefs.length, 1)
+})
+
+test('filterDueOnDateRowRefs scopes list rows without changing stats', () => {
+  const orders = [
+    {
+      id: 'OD-filter',
+      installmentPlan: [
+        { period: 1, dueDate: '2026-06-15', amount: 100, paid: true },
+        { period: 2, dueDate: '2026-06-15', amount: 200, paid: false },
+      ],
+    },
+  ]
+
+  const stats = computePendingReceivableStats(orders, '2026-06-15')
+  assert.equal(filterDueOnDateRowRefs(stats.allDueOnDateRowRefs, 'all').length, 2)
+  assert.equal(filterDueOnDateRowRefs(stats.allDueOnDateRowRefs, 'paid').length, 1)
+  assert.equal(filterDueOnDateRowRefs(stats.allDueOnDateRowRefs, 'unpaid').length, 1)
+  assert.equal(filterDueOnDateRowRefs(stats.allDueOnDateRowRefs, 'paid')[0].paid, true)
+  assert.equal(stats.totalDueOnDateCount, 2)
+  assert.equal(stats.paidDueOnDateCount, 1)
 })
 
 test('calculates collection and unpaid rates from due-on-date installment counts', () => {

@@ -7,6 +7,7 @@ const mongo = require('./mongo')
 const adminMongoReadOptimize = require('./adminMongoReadOptimize')
 const { shouldBlockRequestOnMongoRefreshError } = require('./mongoRefreshGuard')
 const {
+  filterDueOnDateRowRefs,
   computePendingReceivableStats,
   computeTotalOverdueAmount,
   computeDynamicOrderSettlementRate,
@@ -9664,6 +9665,14 @@ function normalizeInstallmentCollectionRemark(raw) {
   return String(raw).trim().slice(0, 500)
 }
 
+function parsePendingReceivableRepaymentStatus(raw) {
+  const value = String(raw || 'unpaid').trim().toLowerCase()
+  if (value === 'paid' || value === 'all') {
+    return value
+  }
+  return 'unpaid'
+}
+
 function mapPendingReceivableRow(db, { order, item, key }) {
   const buyer = resolveMallBuyerFromOrder(db, order)
   const buyerName = buyer ? String(buyer.name || '').trim() : ''
@@ -9685,6 +9694,7 @@ function mapPendingReceivableRow(db, { order, item, key }) {
     dueDate: key,
     amount: Number(Number(item.amount || 0).toFixed(2)),
     collectionRemark: readInstallmentCollectionRemark(item),
+    isPaid: installmentItemIsPaid(item),
   }
 }
 
@@ -9710,13 +9720,16 @@ router.get('/orders/pending-receivable', async (ctx) => {
     }
   }
   const receivableStats = computePendingReceivableStats(db.orders, dueDate)
+  const repaymentStatus = parsePendingReceivableRepaymentStatus(ctx.query.repaymentStatus)
+  const listRefs = filterDueOnDateRowRefs(receivableStats.allDueOnDateRowRefs, repaymentStatus)
   const pagination = parseOptionalListPagination(ctx.query, { defaultPageSize: 20, maxPageSize: 200 })
   const pagedRefs = pagination.enabled
-    ? paginateRows(receivableStats.rowRefs, pagination.page, pagination.pageSize)
+    ? paginateRows(listRefs, pagination.page, pagination.pageSize)
     : null
-  const rows = (pagedRefs ? pagedRefs.list : receivableStats.rowRefs).map(ref => mapPendingReceivableRow(db, ref))
+  const rows = (pagedRefs ? pagedRefs.list : listRefs).map(ref => mapPendingReceivableRow(db, ref))
   ctx.body = success({
     dueDate,
+    repaymentStatus,
     rows,
     ...(pagedRefs ? {
       total: pagedRefs.total,
