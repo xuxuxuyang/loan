@@ -3803,6 +3803,7 @@ function resolveApiMongoRefreshPlan(ctx) {
     '/api/admin/traffic-channels/overview': trafficOverviewKeys,
     '/api/admin/traffic-channels/portal-stats': trafficOverviewKeys,
     '/api/admin/traffic-channels/quality': trafficOverviewKeys,
+    '/api/admin/traffic-channels/daily-disbursement': trafficOverviewKeys,
     '/api/traffic-partner/stats': trafficOverviewKeys,
     '/api/admin/traffic-channels': trafficListKeys,
     '/api/admin/cs/sessions': csSessionsWithUsersKeys,
@@ -6703,6 +6704,167 @@ router.get('/admin/traffic-channels/overview', async (ctx) => {
       portalStats: buildTrafficChannelPortalStatsRows(db),
       oldCustomerSummary: buildOldCustomerTrafficSummary(db, todayKey),
     }
+  })
+  ctx.body = success(payload)
+})
+
+/** 卡包发放日（本地 YYYY-MM-DD）；无 cardPackageIssuedAt 时回退 createdAt */
+function orderCardIssueDateKey(order) {
+  ensureOrderCardPackage(order)
+  if (!order.cardPackageIssued) {
+    return ''
+  }
+  const raw = String(order.cardPackageIssuedAt || order.createdAt || '').trim()
+  if (!raw) {
+    return ''
+  }
+  return formatDate(raw)
+}
+
+/**
+ * 指定日全平台放款汇总（按用户注册渠道归因；与财务报表一致仅计已发卡包且非待审核）。
+ * 单次扫描 orders + users 索引，O(订单数)。
+ */
+function buildTrafficDailyDisbursementStats(db, dateKey) {
+  ensureTrafficChannels(db)
+  const channelByCode = new Map()
+  for (const ch of db.trafficChannels || []) {
+    if (!ch) {
+      continue
+    }
+    const code = String(ch.code || '').trim()
+    if (!code) {
+      continue
+    }
+    channelByCode.set(code, {
+      id: String(ch.id || ''),
+      code,
+      name: String(ch.name || code),
+    })
+  }
+
+  const registerChannelByUserId = new Map()
+  for (const u of db.users || []) {
+    if (!u) {
+      continue
+    }
+    const uid = String(u.id || '').trim()
+    if (!uid) {
+      continue
+    }
+    registerChannelByUserId.set(uid, String(u.registerChannelCode || '').trim())
+  }
+
+  const NONE_CODE = '__none__'
+  const bucket = new Map()
+  const ensureBucket = (code) => {
+    let row = bucket.get(code)
+    if (row) {
+      return row
+    }
+    if (code === NONE_CODE) {
+      row = {
+        id: '',
+        code: '',
+        name: '商城注册',
+        orderCount: 0,
+        totalAmount: 0,
+        principal: 0,
+        profit: 0,
+      }
+    }
+    else {
+      const meta = channelByCode.get(code) || { id: '', code, name: code }
+      row = {
+        id: meta.id,
+        code: meta.code,
+        name: meta.name,
+        orderCount: 0,
+        totalAmount: 0,
+        principal: 0,
+        profit: 0,
+      }
+    }
+    bucket.set(code, row)
+    return row
+  }
+
+  let summaryOrderCount = 0
+  let summaryTotalAmount = 0
+  let summaryPrincipal = 0
+  let summaryProfit = 0
+
+  for (const order of db.orders || []) {
+    if (!isTrafficQualityIssuedOrder(order)) {
+      continue
+    }
+    if (orderCardIssueDateKey(order) !== dateKey) {
+      continue
+    }
+    ensureOrderCardPackage(order)
+    const amount = Number(order.totalAmount || 0)
+    const principal = Math.max(0, Math.round(Number(order.cardPackageAmount) || 0))
+    const profit = amount - principal
+
+    const mid = String(order.mallUserId || '').trim()
+    const channelCode = mid ? (registerChannelByUserId.get(mid) || '') : ''
+    const aggKey = channelCode || NONE_CODE
+    const row = ensureBucket(aggKey)
+    row.orderCount += 1
+    row.totalAmount += amount
+    row.principal += principal
+    row.profit += profit
+
+    summaryOrderCount += 1
+    summaryTotalAmount += amount
+    summaryPrincipal += principal
+    summaryProfit += profit
+  }
+
+  const roundMoney = n => Number(Number(n || 0).toFixed(2))
+  const rows = [...bucket.values()]
+    .map((row) => {
+      const orderCount = row.orderCount
+      return {
+        id: row.id,
+        code: row.code,
+        name: row.name,
+        orderCount,
+        totalAmount: roundMoney(row.totalAmount),
+        principal: roundMoney(row.principal),
+        profit: roundMoney(row.profit),
+        avgTicket: orderCount > 0 ? roundMoney(row.totalAmount / orderCount) : 0,
+      }
+    })
+    .sort((a, b) => {
+      if (b.orderCount !== a.orderCount) {
+        return b.orderCount - a.orderCount
+      }
+      return String(a.name).localeCompare(String(b.name), 'zh-CN')
+    })
+
+  const summary = {
+    orderCount: summaryOrderCount,
+    totalAmount: roundMoney(summaryTotalAmount),
+    principal: roundMoney(summaryPrincipal),
+    profit: roundMoney(summaryProfit),
+    avgTicket: summaryOrderCount > 0 ? roundMoney(summaryTotalAmount / summaryOrderCount) : 0,
+  }
+
+  return { date: dateKey, rows, summary }
+}
+
+router.get('/admin/traffic-channels/daily-disbursement', async (ctx) => {
+  if (!await requireAdminPermission(ctx, [ADMIN_ROLES.SUPER], '查看流量渠道', { permissionKey: 'traffic', permissionAction: 'view' })) {
+    return
+  }
+  const rawDate = String(ctx.query.date || '').trim()
+  const dateKey = /^\d{4}-\d{2}-\d{2}$/.test(rawDate)
+    ? rawDate
+    : formatDate(new Date().toISOString())
+  const payload = withAdminReadCache(ctx, `traffic-daily-disbursement:${dateKey}`, () => {
+    const db = readDb()
+    return buildTrafficDailyDisbursementStats(db, dateKey)
   })
   ctx.body = success(payload)
 })

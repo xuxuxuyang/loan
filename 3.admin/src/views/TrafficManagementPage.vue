@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { CirclePlus, CopyDocument, Delete, EditPen, Loading, QuestionFilled } from '@element-plus/icons-vue'
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import TrafficChannelNameTag from '../components/TrafficChannelNameTag.vue'
 import { apiErrorMessage, withMallTenantHeaders } from '../composables/useAdminApi'
@@ -52,6 +52,26 @@ interface OldCustomerSummary {
   approvedAmount: number
   approvalRate: number | null
   overdueRate: number | null
+}
+
+/** 指定日放款统计（按用户注册渠道归因） */
+interface DailyDisbursementRow {
+  id: string
+  code: string
+  name: string
+  orderCount: number
+  totalAmount: number
+  principal: number
+  profit: number
+  avgTicket: number
+}
+
+interface DailyDisbursementSummary {
+  orderCount: number
+  totalAmount: number
+  principal: number
+  profit: number
+  avgTicket: number
 }
 
 /** 列表行 = 渠道基础信息 + 引流统计 */
@@ -145,6 +165,12 @@ const statsErrorMessage = ref('')
 /** 仅展示至少有一笔「通过」（发卡包）订单的流量商 */
 const whitelistStatsPositive = ref(false)
 
+const selectedDisbursementDate = ref(formatLocalYmd(new Date()))
+const dailyDisbursementRows = ref<DailyDisbursementRow[]>([])
+const dailyDisbursementSummary = ref<DailyDisbursementSummary | null>(null)
+const dailyDisbursementLoading = ref(false)
+const dailyDisbursementErrorMessage = ref('')
+
 const statsByChannelId = computed(() => {
   const m = new Map<string, TrafficPortalStatsRow>()
   for (const s of statsRows.value) {
@@ -195,6 +221,21 @@ const OLD_CUSTOMER_SUMMARY_TIPS = {
   approvalRate: '通过数 ÷ 下单数 × 100，保留两位小数。',
   overdueRate: '逾期数 ÷ 通过数 × 100，保留两位小数。',
 } as const
+
+const DAILY_DISBURSEMENT_TIPS = {
+  orderCount: '所选日期内完成卡包发放（放款）的订单笔数；按买家注册渠道归因，含复购。',
+  totalAmount: '上述订单成交金额（totalAmount）合计。',
+  principal: '上述订单卡包本金（cardPackageAmount）合计，与财务报表口径一致。',
+  profit: '利润 = 成交金额 − 本金。',
+  avgTicket: '客单价 = 成交金额 ÷ 订单数。',
+} as const
+
+function formatLocalYmd(d: Date) {
+  const y = d.getFullYear()
+  const m = `${d.getMonth() + 1}`.padStart(2, '0')
+  const day = `${d.getDate()}`.padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
 
 /** 比率展示为两位小数并带 % */
 function formatRate(value: number | null | undefined) {
@@ -365,9 +406,86 @@ async function fetchTrafficOverview() {
   }
 }
 
-async function refreshTrafficPage() {
-  await fetchTrafficOverview()
+async function fetchDailyDisbursement() {
+  const date = selectedDisbursementDate.value
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    return
+  }
+  dailyDisbursementLoading.value = true
+  dailyDisbursementErrorMessage.value = ''
+  try {
+    const qs = new URLSearchParams({ date })
+    const response = await fetch(`${MALL_API_BASE}/admin/traffic-channels/daily-disbursement?${qs}`, {
+      method: 'GET',
+      headers: withMallTenantHeaders(),
+    })
+    const payload = await response.json() as {
+      success?: boolean
+      msg?: string
+      data?: {
+        date?: string
+        rows?: DailyDisbursementRow[]
+        summary?: DailyDisbursementSummary
+      }
+    }
+    if (!response.ok || payload.success === false) {
+      throw new Error(apiErrorMessage(payload, '加载放款统计失败'))
+    }
+    const data = payload.data
+    dailyDisbursementRows.value = Array.isArray(data?.rows) ? data.rows : []
+    dailyDisbursementSummary.value = data?.summary ?? null
+    if (data?.date && /^\d{4}-\d{2}-\d{2}$/.test(data.date)) {
+      selectedDisbursementDate.value = data.date
+    }
+  }
+  catch (error) {
+    dailyDisbursementErrorMessage.value = error instanceof Error ? error.message : '加载放款统计失败'
+    dailyDisbursementRows.value = []
+    dailyDisbursementSummary.value = null
+    ElMessage.error(dailyDisbursementErrorMessage.value)
+  }
+  finally {
+    dailyDisbursementLoading.value = false
+  }
 }
+
+async function refreshTrafficPage() {
+  await Promise.all([fetchTrafficOverview(), fetchDailyDisbursement()])
+}
+
+function dailyDisbursementSummaryMethod(param: { columns: Array<{ property?: string }> }) {
+  const { columns } = param
+  const summary = dailyDisbursementSummary.value
+  const sums: string[] = []
+  columns.forEach((column, index) => {
+    if (index === 0) {
+      sums[index] = '合计'
+      return
+    }
+    const prop = column.property
+    if (!summary || !prop) {
+      sums[index] = ''
+      return
+    }
+    if (prop === 'orderCount') {
+      sums[index] = String(summary.orderCount)
+      return
+    }
+    if (prop === 'totalAmount' || prop === 'principal' || prop === 'profit' || prop === 'avgTicket') {
+      sums[index] = formatAmount(summary[prop as keyof DailyDisbursementSummary] as number)
+      return
+    }
+    sums[index] = ''
+  })
+  return sums
+}
+
+watch(selectedDisbursementDate, (next, prev) => {
+  if (next === prev || !/^\d{4}-\d{2}-\d{2}$/.test(next)) {
+    return
+  }
+  void fetchDailyDisbursement()
+})
 
 function syncPortalUsernameFromCode() {
   const code = createForm.code.trim()
@@ -716,7 +834,7 @@ onMounted(() => {
       <button
         class="btn btn-refresh"
         type="button"
-        :disabled="loading || statsLoading"
+        :disabled="loading || statsLoading || dailyDisbursementLoading"
         @click="refreshTrafficPage"
       >
         刷新
@@ -733,14 +851,222 @@ onMounted(() => {
       {{ errorMessage }}
     </el-alert>
 
-    <el-card
-      class="traffic-table-card traffic-unified-card"
-      shadow="hover"
-    >
-      <template #header>
-        <div class="traffic-table-card-header traffic-unified-card-header">
-          <div class="traffic-unified-card-header__title">
-            <span class="traffic-table-card-title">流量商</span>
+    <div class="traffic-page-body">
+      <section
+        v-loading="dailyDisbursementLoading"
+        class="traffic-section traffic-section--disbursement"
+      >
+        <header class="traffic-section__header">
+          <div class="traffic-section__title-row">
+            <span class="traffic-section__title">当日放款统计</span>
+            <el-tag
+              type="success"
+              effect="plain"
+              size="small"
+            >
+              按卡包发放日
+            </el-tag>
+          </div>
+        </header>
+
+        <div class="traffic-daily-disbursement-toolbar">
+          <span class="traffic-daily-disbursement-toolbar__label">选择统计日期</span>
+          <el-date-picker
+            v-model="selectedDisbursementDate"
+            class="traffic-daily-disbursement-date"
+            type="date"
+            value-format="YYYY-MM-DD"
+            format="YYYY年MM月DD日"
+            placeholder="请选择统计日期"
+            :clearable="false"
+            :disabled="dailyDisbursementLoading"
+          />
+        </div>
+
+        <el-alert
+          v-if="dailyDisbursementErrorMessage && !dailyDisbursementLoading"
+          type="error"
+          :closable="false"
+          show-icon
+          class="traffic-quality-error"
+        >
+          {{ dailyDisbursementErrorMessage }}
+        </el-alert>
+
+        <p class="traffic-section__intro">
+          统计所选日期内<strong>完成卡包发放</strong>的订单，按买家<strong>注册渠道</strong>汇总（含复购，与下方引流首单口径分开；无渠道归属记为「商城注册」）。
+          金额与利润计算与财务报表一致。
+        </p>
+
+        <div class="traffic-table-wrap">
+          <el-table
+            :data="dailyDisbursementRows"
+            stripe
+            border
+            size="default"
+            class="traffic-table traffic-daily-disbursement-table"
+            :header-cell-style="tableHeaderCellStyle"
+            show-summary
+            :summary-method="dailyDisbursementSummaryMethod"
+            empty-text=""
+          >
+            <template #empty>
+              <el-empty
+                description="所选日期暂无放款记录"
+                :image-size="72"
+              />
+            </template>
+
+            <el-table-column
+              label="渠道名称"
+              min-width="140"
+              show-overflow-tooltip
+            >
+              <template #default="{ row }">
+                <TrafficChannelNameTag
+                  v-if="row.code"
+                  :display-key="trafficChannelDisplayKey(undefined, row.name, row.code)"
+                  :color-seed="row.code"
+                  size="default"
+                />
+                <el-tag
+                  v-else
+                  type="info"
+                  effect="plain"
+                  class="traffic-mall-registration-tag"
+                >
+                  商城注册
+                </el-tag>
+              </template>
+            </el-table-column>
+
+            <el-table-column
+              prop="orderCount"
+              width="100"
+              align="center"
+            >
+              <template #header>
+                <span class="traffic-col-header">
+                  订单数
+                  <el-tooltip
+                    :content="DAILY_DISBURSEMENT_TIPS.orderCount"
+                    placement="top"
+                    :show-after="300"
+                  >
+                    <el-icon class="traffic-col-header__tip" aria-label="订单数计算规则">
+                      <QuestionFilled />
+                    </el-icon>
+                  </el-tooltip>
+                </span>
+              </template>
+            </el-table-column>
+
+            <el-table-column
+              prop="totalAmount"
+              min-width="120"
+              align="right"
+            >
+              <template #header>
+                <span class="traffic-col-header">
+                  成交金额
+                  <el-tooltip
+                    :content="DAILY_DISBURSEMENT_TIPS.totalAmount"
+                    placement="top"
+                    :show-after="300"
+                  >
+                    <el-icon class="traffic-col-header__tip" aria-label="成交金额计算规则">
+                      <QuestionFilled />
+                    </el-icon>
+                  </el-tooltip>
+                </span>
+              </template>
+              <template #default="{ row }">
+                {{ formatAmount(row.totalAmount) }}
+              </template>
+            </el-table-column>
+
+            <el-table-column
+              prop="principal"
+              min-width="120"
+              align="right"
+            >
+              <template #header>
+                <span class="traffic-col-header">
+                  本金
+                  <el-tooltip
+                    :content="DAILY_DISBURSEMENT_TIPS.principal"
+                    placement="top"
+                    :show-after="300"
+                  >
+                    <el-icon class="traffic-col-header__tip" aria-label="本金计算规则">
+                      <QuestionFilled />
+                    </el-icon>
+                  </el-tooltip>
+                </span>
+              </template>
+              <template #default="{ row }">
+                {{ formatAmount(row.principal) }}
+              </template>
+            </el-table-column>
+
+            <el-table-column
+              prop="profit"
+              min-width="120"
+              align="right"
+            >
+              <template #header>
+                <span class="traffic-col-header">
+                  利润
+                  <el-tooltip
+                    :content="DAILY_DISBURSEMENT_TIPS.profit"
+                    placement="top"
+                    :show-after="300"
+                  >
+                    <el-icon class="traffic-col-header__tip" aria-label="利润计算规则">
+                      <QuestionFilled />
+                    </el-icon>
+                  </el-tooltip>
+                </span>
+              </template>
+              <template #default="{ row }">
+                {{ formatAmount(row.profit) }}
+              </template>
+            </el-table-column>
+
+            <el-table-column
+              prop="avgTicket"
+              min-width="120"
+              align="right"
+            >
+              <template #header>
+                <span class="traffic-col-header">
+                  客单价
+                  <el-tooltip
+                    :content="DAILY_DISBURSEMENT_TIPS.avgTicket"
+                    placement="top"
+                    :show-after="300"
+                  >
+                    <el-icon class="traffic-col-header__tip" aria-label="客单价计算规则">
+                      <QuestionFilled />
+                    </el-icon>
+                  </el-tooltip>
+                </span>
+              </template>
+              <template #default="{ row }">
+                {{ formatAmount(row.avgTicket) }}
+              </template>
+            </el-table-column>
+          </el-table>
+        </div>
+      </section>
+
+      <section
+        v-loading="loading || statsLoading"
+        class="traffic-section traffic-section--channels"
+      >
+        <header class="traffic-section__header">
+          <div class="traffic-section__title-row">
+            <span class="traffic-section__title">流量商</span>
             <el-checkbox
               v-model="whitelistStatsPositive"
               border
@@ -748,48 +1074,47 @@ onMounted(() => {
             >
               白名单（通过数大于 0）
             </el-checkbox>
+            <el-tag
+              v-if="rows.length"
+              type="info"
+              effect="plain"
+              size="small"
+            >
+              共 {{ displayMergedRows.length }} / {{ rows.length }} 个
+            </el-tag>
           </div>
-          <el-tag
-            v-if="rows.length"
-            type="info"
-            effect="plain"
-            size="small"
+        </header>
+
+        <el-alert
+          v-if="statsErrorMessage && !statsLoading"
+          type="error"
+          :closable="false"
+          show-icon
+          class="traffic-quality-error"
+        >
+          {{ statsErrorMessage }}
+        </el-alert>
+
+        <p class="traffic-section__intro traffic-quality-stats">
+          当前展示 <strong>{{ displayMergedRows.length }}</strong> 家
+          <template v-if="whitelistStatsPositive && rows.length !== displayMergedRows.length">
+            （已过滤 {{ rows.length - displayMergedRows.length }} 家通过数为 0）
+          </template>
+          · 引流转化仅统计各渠道注册用户的<strong>首单</strong>，复购计入下方老客户汇总
+        </p>
+
+        <div class="traffic-table-wrap">
+          <el-table
+            :data="displayMergedRows"
+            stripe
+            border
+            size="default"
+            class="traffic-table traffic-unified-table"
+            :header-cell-style="tableHeaderCellStyle"
+            :highlight-current-row="true"
+            :row-class-name="mergedRowClassName"
+            empty-text=""
           >
-            共 {{ displayMergedRows.length }} / {{ rows.length }} 个
-          </el-tag>
-        </div>
-      </template>
-
-      <el-alert
-        v-if="statsErrorMessage && !statsLoading"
-        type="error"
-        :closable="false"
-        show-icon
-        class="traffic-quality-error"
-      >
-        {{ statsErrorMessage }}
-      </el-alert>
-
-      <p class="traffic-quality-stats">
-        当前展示 <strong>{{ displayMergedRows.length }}</strong> 家
-        <template v-if="whitelistStatsPositive && rows.length !== displayMergedRows.length">
-          （已过滤 {{ rows.length - displayMergedRows.length }} 家通过数为 0）
-        </template>
-        · 引流转化仅统计各渠道注册用户的<strong>首单</strong>，复购计入下方老客户汇总
-      </p>
-
-      <div class="traffic-table-wrap">
-        <el-table
-          v-loading="loading || statsLoading"
-          :data="displayMergedRows"
-          stripe
-          border
-          size="default"
-          class="traffic-table traffic-unified-table"
-          :header-cell-style="tableHeaderCellStyle"
-          :highlight-current-row="true"
-          :row-class-name="mergedRowClassName"
-          empty-text=""
         >
           <template #empty>
             <el-empty
@@ -1293,18 +1618,16 @@ onMounted(() => {
           </template>
         </el-table-column>
       </el-table>
-      </div>
-    </el-card>
+        </div>
+      </section>
 
-    <el-card
-      v-loading="statsLoading"
-      class="traffic-table-card traffic-old-customer-card"
-      shadow="hover"
-    >
-      <template #header>
-        <div class="traffic-table-card-header traffic-unified-card-header">
-          <div class="traffic-unified-card-header__title">
-            <span class="traffic-table-card-title">老客户汇总</span>
+      <section
+        v-loading="statsLoading"
+        class="traffic-section traffic-section--old-customer"
+      >
+        <header class="traffic-section__header">
+          <div class="traffic-section__title-row">
+            <span class="traffic-section__title">老客户汇总</span>
             <el-tag
               type="warning"
               effect="plain"
@@ -1313,18 +1636,17 @@ onMounted(() => {
               全平台 · 与引流首单分开
             </el-tag>
           </div>
-        </div>
-      </template>
+        </header>
 
-      <p class="traffic-old-customer-intro">
-        统计全平台<strong>老客户复购</strong>数据（下单时上一笔订单已发卡包且已全部还清）。
-        不含各渠道注册用户的首单，首单转化见上方流量商表格。
-      </p>
+        <p class="traffic-section__intro">
+          统计全平台<strong>老客户复购</strong>数据（下单时上一笔订单已发卡包且已全部还清）。
+          不含各渠道注册用户的首单，首单转化见上方流量商表格。
+        </p>
 
-      <div
-        v-if="oldCustomerSummary"
-        class="traffic-old-customer-kpis"
-      >
+        <div
+          v-if="oldCustomerSummary"
+          class="traffic-old-customer-kpis"
+        >
         <div class="traffic-old-customer-kpi">
           <span class="traffic-old-customer-kpi__label">
             复购人数
@@ -1431,12 +1753,13 @@ onMounted(() => {
           <strong class="traffic-old-customer-kpi__value">{{ formatRate(oldCustomerSummary.overdueRate) }}</strong>
         </div>
       </div>
-      <el-empty
-        v-else-if="!statsLoading"
-        description="暂无老客户复购数据"
-        :image-size="72"
-      />
-    </el-card>
+        <el-empty
+          v-else-if="!statsLoading"
+          description="暂无老客户复购数据"
+          :image-size="72"
+        />
+      </section>
+    </div>
 
     <el-dialog
       v-model="showCreate"
@@ -1713,6 +2036,45 @@ onMounted(() => {
   max-width: 100%;
 }
 
+.traffic-page-body {
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 8px;
+  background: #fff;
+  overflow: visible;
+}
+
+.traffic-section {
+  padding: 16px 18px 18px;
+}
+
+.traffic-section + .traffic-section {
+  border-top: 1px solid var(--el-border-color-lighter);
+}
+
+.traffic-section__header {
+  margin-bottom: 12px;
+}
+
+.traffic-section__title-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.traffic-section__title {
+  font-weight: 600;
+  font-size: 15px;
+  color: var(--el-text-color-primary);
+}
+
+.traffic-section__intro {
+  margin: 0 0 12px;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--el-text-color-secondary);
+}
+
 .traffic-alert {
   margin-bottom: 16px;
   border-radius: 8px;
@@ -1788,44 +2150,8 @@ onMounted(() => {
   border-radius: 8px;
 }
 
-.traffic-table-card {
-  border-radius: 8px;
-}
-
-.traffic-table-card :deep(.el-card__header) {
-  padding: 14px 18px;
-}
-
-.traffic-table-card :deep(.el-card__body) {
-  padding: 0 18px 18px;
-}
-
-.traffic-unified-card :deep(.el-card__body) {
-  padding-top: 16px;
-}
-
-.traffic-unified-card-header__title {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 10px;
-}
-
-.traffic-table-card-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.traffic-table-card-title {
-  font-weight: 600;
-  font-size: 15px;
-  color: var(--el-text-color-primary);
-}
-
 .traffic-table-wrap {
-  min-height: 120px;
+  min-height: 80px;
   overflow-x: auto;
 }
 
@@ -2036,8 +2362,6 @@ onMounted(() => {
 
 .traffic-quality-stats {
   margin: 0 0 10px;
-  font-size: 13px;
-  color: var(--el-text-color-secondary);
 }
 
 .traffic-quality-stats strong {
@@ -2069,17 +2393,6 @@ onMounted(() => {
 
 .traffic-unified-table :deep(.traffic-quality-row--muted) {
   opacity: 0.78;
-}
-
-.traffic-old-customer-card {
-  margin-top: 16px;
-}
-
-.traffic-old-customer-intro {
-  margin: 0 0 16px;
-  font-size: 13px;
-  line-height: 1.55;
-  color: var(--el-text-color-secondary);
 }
 
 .traffic-old-customer-kpis {
@@ -2114,5 +2427,30 @@ onMounted(() => {
 
 .traffic-old-customer-kpi__value--primary {
   color: var(--el-color-primary);
+}
+
+.traffic-daily-disbursement-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.traffic-daily-disbursement-toolbar__label {
+  font-size: 14px;
+  color: var(--el-text-color-regular);
+}
+
+.traffic-daily-disbursement-date {
+  width: 200px;
+}
+
+.traffic-daily-disbursement-table {
+  min-width: 720px;
+}
+
+.traffic-mall-registration-tag {
+  font-weight: 500;
 }
 </style>
