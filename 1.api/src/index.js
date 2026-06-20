@@ -2016,6 +2016,78 @@ function riskProductRowFromOrderSubmitRiskStep(s) {
   }
 }
 
+/** 管理端手动调取全景雷达时保留的历史条数上限（仅追加，不影响 fourteenRows 最新槽位） */
+const RADAR_V4_MANUAL_HISTORY_MAX = 30
+
+function findRadarV4RowInFourteenRows(fourteenRows) {
+  if (!Array.isArray(fourteenRows)) {
+    return null
+  }
+  const row = fourteenRows.find(r => r && r.slotKey === 'radar_v4_enc')
+  if (!row || row.state === 'skipped') {
+    return null
+  }
+  return row
+}
+
+function radarV4RowContentKey(row) {
+  if (!row || typeof row !== 'object') {
+    return ''
+  }
+  try {
+    return JSON.stringify({
+      state: row.state,
+      error: row.error ?? '',
+      httpStatus: row.httpStatus ?? null,
+      rawResponse: row.rawResponse ?? null,
+    })
+  }
+  catch {
+    return String(row.state || '')
+  }
+}
+
+function cloneRadarV4HistoryEntries(raw) {
+  if (!Array.isArray(raw)) {
+    return []
+  }
+  return raw
+    .filter(item => item && typeof item === 'object' && item.row && item.fetchedAt)
+    .map(item => ({
+      fetchedAt: String(item.fetchedAt),
+      row: { ...item.row },
+    }))
+}
+
+/**
+ * 手动调取 radar_v4_enc 成功后追加一条历史（新条目在前）。
+ * 若 fourteenRows 中仍有本次覆盖前的雷达快照且尚未入库，会先归档一条，避免「仅保留最后一次」。
+ */
+function appendRadarV4ManualHistory(prevSnapshot, row, fetchedAtIso) {
+  const history = cloneRadarV4HistoryEntries(prevSnapshot?.radarV4History)
+  const newEntry = { fetchedAt: fetchedAtIso, row: { ...row } }
+  const prevRow = findRadarV4RowInFourteenRows(prevSnapshot?.fourteenRows)
+  const newKey = radarV4RowContentKey(row)
+  const prevKey = prevRow ? radarV4RowContentKey(prevRow) : ''
+
+  history.unshift(newEntry)
+
+  if (prevRow && prevKey && prevKey !== newKey) {
+    const alreadyArchived = history.some(
+      (item, idx) => idx !== 0 && radarV4RowContentKey(item.row) === prevKey,
+    )
+    if (!alreadyArchived) {
+      const seedAt = String(prevSnapshot?.checkedAt || '').trim() || fetchedAtIso
+      history.splice(1, 0, { fetchedAt: seedAt, row: { ...prevRow } })
+    }
+  }
+
+  if (history.length > RADAR_V4_MANUAL_HISTORY_MAX) {
+    history.length = RADAR_V4_MANUAL_HISTORY_MAX
+  }
+  return history
+}
+
 /**
  * 将本次下单已执行的接口结果合并进商城用户 `riskControlSnapshot`，供管理端风控弹窗与列表复用。
  */
@@ -8040,17 +8112,22 @@ router.post('/users/:id/risk-slot/:slotKey', async (ctx) => {
     fourteenRows[idx] = row
   }
 
+  const fetchedAt = new Date().toISOString()
   const anyFail = fourteenRows.some(r => r.state === 'fail')
-  target.riskControlSnapshot = {
+  const nextSnapshot = {
     ...prev,
     fourteenRows,
     configured: isRiskUpstreamConfigured(),
     simulated: false,
     passed: !anyFail,
-    checkedAt: new Date().toISOString(),
+    checkedAt: fetchedAt,
     summaryMessage: prev.summaryMessage || '',
     userId: target.id,
   }
+  if (slotKey === 'radar_v4_enc') {
+    nextSnapshot.radarV4History = appendRadarV4ManualHistory(prev, row, fetchedAt)
+  }
+  target.riskControlSnapshot = nextSnapshot
   writeUsersDb(db)
 
   ctx.body = success({
@@ -8093,6 +8170,9 @@ router.post('/users/:id/risk-check', async (ctx) => {
     installmentPeriods: 1,
   }, { ...opts, adminManagedBatch: true })
 
+  const prevSnap = target.riskControlSnapshot && typeof target.riskControlSnapshot === 'object'
+    ? target.riskControlSnapshot
+    : {}
   const snapshot = {
     configured: Boolean(pre.configured),
     simulated: Boolean(pre.simulated),
@@ -8107,12 +8187,15 @@ router.post('/users/:id/risk-check', async (ctx) => {
   target.riskControlSnapshot = {
     ...snapshot,
     userId: target.id,
+    ...(Array.isArray(prevSnap.radarV4History) && prevSnap.radarV4History.length > 0
+      ? { radarV4History: prevSnap.radarV4History }
+      : {}),
   }
   writeUsersDb(db)
 
   ctx.body = success({
     user: attachUserOrderStats(db, target, { includeAdminPasswordEcho: true }),
-    snapshot,
+    snapshot: target.riskControlSnapshot,
   })
 })
 

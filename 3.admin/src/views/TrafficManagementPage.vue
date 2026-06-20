@@ -1115,7 +1115,6 @@ onMounted(() => {
             :row-class-name="mergedRowClassName"
             empty-text=""
           >
-        >
           <template #empty>
             <el-empty
               :description="rows.length === 0 ? '暂无流量商，点击「新建流量商」添加' : (whitelistStatsPositive ? '无符合白名单条件的流量商' : '暂无数据')"
@@ -2033,18 +2032,27 @@ onMounted(() => {
 
 <style scoped>
 .traffic-page {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
   max-width: 100%;
+  overflow: hidden;
 }
 
 .traffic-page-body {
+  flex: 1;
+  min-height: 0;
   border: 1px solid var(--el-border-color-lighter);
   border-radius: 8px;
   background: #fff;
-  overflow: visible;
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
 .traffic-section {
   padding: 16px 18px 18px;
+  min-width: 0;
 }
 
 .traffic-section + .traffic-section {
@@ -2152,7 +2160,9 @@ onMounted(() => {
 
 .traffic-table-wrap {
   min-height: 80px;
-  overflow-x: auto;
+  max-width: 100%;
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
 .traffic-table {
@@ -2399,6 +2409,8 @@ onMounted(() => {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
   gap: 12px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .traffic-old-customer-kpi {

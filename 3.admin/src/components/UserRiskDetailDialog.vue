@@ -5,13 +5,13 @@ import { computed, ref, watch } from 'vue'
 import { apiErrorMessage, withMallTenantHeaders } from '../composables/useAdminApi'
 import { getAdminSession, isSuperAdminRole } from '../composables/useAdminAuth'
 import UserRegistrationInfoScroll, { type OrderShippingSnapshot } from './UserRegistrationInfoScroll.vue'
+import RadarV4FactsPanel from './RadarV4FactsPanel.vue'
 import {
   INSTALLMENT_ORDER_RISK_STEP_KEYS,
   INSTALLMENT_ORDER_RISK_STEP_LABELS,
 } from '../constants/installmentOrderRisk'
 import type { OrderRiskDetail, RiskDetailRule } from '../stores/useOrdersStore'
 import { getRiskFactLines, type RiskFactLine } from '../utils/riskRowFactLines'
-import { groupRadarV4FactsForTables, chunkRadarFactPairs } from '../utils/radarV4ReputationFacts'
 import { resolveMallCreditQuota } from '../utils/mallCreditQuota'
 
 export interface RiskProductRow {
@@ -24,6 +24,11 @@ export interface RiskProductRow {
   rawResponse?: unknown
 }
 
+export interface RadarV4HistoryEntry {
+  fetchedAt: string
+  row: RiskProductRow
+}
+
 export interface UserRiskSnapshot {
   configured: boolean
   simulated?: boolean
@@ -31,6 +36,8 @@ export interface UserRiskSnapshot {
   checkedAt: string
   summaryMessage?: string
   fourteenRows: RiskProductRow[]
+  /** 管理端手动调取全景雷达的历史记录（新条目在前） */
+  radarV4History?: RadarV4HistoryEntry[]
 }
 
 export interface ApiRiskView {
@@ -219,6 +226,7 @@ function buildRiskSnapshotFromView(rv: ApiRiskView): UserRiskSnapshot {
     checkedAt: snap?.checkedAt ? String(snap.checkedAt) : '',
     summaryMessage: snap?.summaryMessage ? String(snap.summaryMessage) : '',
     fourteenRows: rowsOrdered,
+    radarV4History: Array.isArray(snap?.radarV4History) ? snap.radarV4History : undefined,
   }
 }
 
@@ -293,13 +301,167 @@ const radarV4CardItem = computed((): RiskSlotCardItem => {
   }
 })
 
-const radarV4FactsGrouped = computed(() => groupRadarV4FactsForTables(radarV4CardItem.value.facts))
+interface RadarV4DisplayEntry {
+  id: string
+  fetchedAt: string
+  fetchedAtLabel: string
+  row: RiskProductRow
+  facts: RiskFactLine[]
+  isLegacy?: boolean
+}
 
-/** 雷达分类表每行并排展示的「指标+取值」组数（减少纵向占用） */
-const RADAR_FACT_PAIR_COLUMNS = 3
+const RADAR_V4_HISTORY_MAX = 30
 
-const RADAR_TABLE_COLSPAN = RADAR_FACT_PAIR_COLUMNS * 2
-const radarPairHeadIndexes = Array.from({ length: RADAR_FACT_PAIR_COLUMNS }, (_, i) => i)
+function radarV4RowContentKey(row: RiskProductRow): string {
+  try {
+    return JSON.stringify({
+      state: row.state,
+      error: row.error ?? '',
+      httpStatus: row.httpStatus ?? null,
+      rawResponse: row.rawResponse ?? null,
+    })
+  }
+  catch {
+    return `${row.state}-${row.error ?? ''}`
+  }
+}
+
+function cloneRadarV4HistoryEntries(entries: RadarV4HistoryEntry[] | undefined): RadarV4HistoryEntry[] {
+  if (!Array.isArray(entries)) {
+    return []
+  }
+  return entries
+    .filter(h => h && h.row && h.fetchedAt)
+    .map(h => ({
+      fetchedAt: String(h.fetchedAt),
+      row: { ...h.row },
+    }))
+}
+
+/** 前端兜底：后端未归档旧快照时，合并本地历史 + 本次结果 */
+function mergeRadarV4HistoryAfterManualFetch(
+  prevSnap: UserRiskSnapshot | null,
+  incoming: UserRiskSnapshot,
+): UserRiskSnapshot {
+  const prevHist = cloneRadarV4HistoryEntries(prevSnap?.radarV4History)
+  const nextHist = cloneRadarV4HistoryEntries(incoming.radarV4History)
+  if (nextHist.length > prevHist.length) {
+    return { ...incoming, radarV4History: nextHist }
+  }
+
+  const latestRow = incoming.fourteenRows.find(r => r.slotKey === 'radar_v4_enc')
+  if (!latestRow) {
+    return incoming
+  }
+
+  const fetchedAt = incoming.checkedAt || new Date().toISOString()
+  const merged = cloneRadarV4HistoryEntries([
+    { fetchedAt, row: { ...latestRow } },
+    ...prevHist,
+  ])
+
+  const prevRow = prevSnap?.fourteenRows?.find(r => r.slotKey === 'radar_v4_enc')
+  const prevKey = prevRow && prevRow.state !== 'skipped' ? radarV4RowContentKey(prevRow) : ''
+  const newKey = radarV4RowContentKey(latestRow)
+  if (prevRow && prevKey && prevKey !== newKey) {
+    const archived = merged.some(item => radarV4RowContentKey(item.row) === prevKey)
+    if (!archived) {
+      const seedAt = prevSnap?.checkedAt || fetchedAt
+      merged.splice(1, 0, { fetchedAt: seedAt, row: { ...prevRow } })
+    }
+  }
+
+  const deduped: RadarV4HistoryEntry[] = []
+  const seen = new Set<string>()
+  for (const item of merged) {
+    const key = `${item.fetchedAt}::${radarV4RowContentKey(item.row)}`
+    if (seen.has(key)) {
+      continue
+    }
+    seen.add(key)
+    deduped.push(item)
+    if (deduped.length >= RADAR_V4_HISTORY_MAX) {
+      break
+    }
+  }
+
+  return { ...incoming, radarV4History: deduped }
+}
+
+/** 雷达历史展示项：读 radarV4History；无历史时回退展示档案最新一条（只读） */
+const radarV4HistoryDisplayItems = computed((): RadarV4DisplayEntry[] => {
+  const snap = userRiskSnapshot.value
+  if (!snap) {
+    return []
+  }
+
+  const items: RadarV4DisplayEntry[] = []
+  const seen = new Set<string>()
+
+  const pushEntry = (
+    fetchedAt: string,
+    row: RiskProductRow,
+    opts?: { isLegacy?: boolean },
+  ) => {
+    const dedupeKey = `${fetchedAt}::${radarV4RowContentKey(row)}`
+    if (seen.has(dedupeKey)) {
+      return
+    }
+    seen.add(dedupeKey)
+    items.push({
+      id: `radar-hist-${items.length}-${dedupeKey.slice(0, 48)}`,
+      fetchedAt,
+      fetchedAtLabel: opts?.isLegacy
+        ? `${formatDateTime(fetchedAt)}（档案快照）`
+        : formatDateTime(fetchedAt),
+      row,
+      facts: getRiskFactLines(row),
+      isLegacy: opts?.isLegacy,
+    })
+  }
+
+  for (const h of cloneRadarV4HistoryEntries(snap.radarV4History)) {
+    pushEntry(h.fetchedAt, h.row)
+  }
+
+  if (items.length === 0) {
+    const latestRow = snap.fourteenRows?.find(r => r.slotKey === 'radar_v4_enc')
+    if (latestRow && latestRow.state !== 'skipped') {
+      pushEntry(snap.checkedAt || '', latestRow, { isLegacy: true })
+    }
+  }
+
+  items.sort((a, b) => {
+    const ta = new Date(a.fetchedAt).getTime()
+    const tb = new Date(b.fetchedAt).getTime()
+    const aValid = Number.isFinite(ta)
+    const bValid = Number.isFinite(tb)
+    if (aValid && bValid && ta !== tb) {
+      return tb - ta
+    }
+    if (aValid !== bValid) {
+      return aValid ? -1 : 1
+    }
+    return 0
+  })
+
+  return items.map((item, index) => ({
+    ...item,
+    id: `radar-hist-${index}-${item.fetchedAt}-${radarV4RowContentKey(item.row).slice(0, 24)}`,
+  }))
+})
+
+const radarHistoryExpanded = ref<string[]>([])
+
+watch(
+  () => radarV4HistoryDisplayItems.value[0]?.id,
+  (id) => {
+    if (id) {
+      radarHistoryExpanded.value = [id]
+    }
+  },
+  { immediate: true },
+)
 
 function findFourteenRowForBasic(rows: RiskProductRow[] | undefined, slotKey: string): RiskProductRow | null {
   if (!Array.isArray(rows)) {
@@ -506,6 +668,7 @@ async function fetchRiskSlotSnapshot(
     checkedAt: snap.checkedAt ? String(snap.checkedAt) : '',
     summaryMessage: snap.summaryMessage ? String(snap.summaryMessage) : '',
     fourteenRows: snap.fourteenRows,
+    radarV4History: Array.isArray(snap.radarV4History) ? snap.radarV4History : undefined,
   }
   return { snapshot, user: payload.data?.user }
 }
@@ -600,10 +763,25 @@ async function invokeManualRiskSlot(row: RiskProductRow) {
     }
   }
   manualRiskSlotLoading.value = row.slotKey
+  const prevSnap = row.slotKey === 'radar_v4_enc' && userRiskSnapshot.value
+    ? {
+        ...userRiskSnapshot.value,
+        fourteenRows: userRiskSnapshot.value.fourteenRows.map(r => ({ ...r })),
+        radarV4History: cloneRadarV4HistoryEntries(userRiskSnapshot.value.radarV4History),
+      }
+    : null
   try {
     const result = await fetchRiskSlotSnapshot(u, row)
+    if (row.slotKey === 'radar_v4_enc') {
+      result.snapshot = mergeRadarV4HistoryAfterManualFetch(prevSnap, result.snapshot)
+    }
     applyRiskSlotFetchResult(u, result)
-    ElMessage.success(`「${row.productLabel}」已调用并更新展示`)
+    const appended = row.slotKey === 'radar_v4_enc'
+    ElMessage.success(
+      appended
+        ? `「${row.productLabel}」已调用，已追加至历史记录（共 ${userRiskSnapshot.value?.radarV4History?.length ?? 1} 条）`
+        : `「${row.productLabel}」已调用并更新展示`,
+    )
   }
   catch (error) {
     ElMessage.error(error instanceof Error ? error.message : '调用失败')
@@ -632,6 +810,7 @@ function onUserRiskDialogClosed() {
   userRiskError.value = ''
   manualRiskSlotLoading.value = null
   riskDialogMainTab.value = 'basic'
+  radarHistoryExpanded.value = []
 }
 function mapApiUser(user: ApiUserItem): UserItem {
   const creditStatus = displayCreditFromSnapshotBasic(user.riskControlSnapshot ?? null)
@@ -943,210 +1122,90 @@ function handleUserRiskDialogClosed() {
               </div>
               <div class="user-risk-radar-card__body">
                 <p
-                  v-if="radarV4CardItem.row.state === 'skipped' && radarV4CardItem.row.skippedReason"
+                  v-if="radarV4HistoryDisplayItems.length === 0 && radarV4CardItem.row.state === 'skipped' && radarV4CardItem.row.skippedReason"
                   class="user-risk-simple-row__note user-risk-radar-note"
                 >
                   {{ radarV4CardItem.row.skippedReason }}
                 </p>
                 <p
-                  v-if="radarV4CardItem.row.error"
-                  class="user-risk-simple-row__err"
+                  v-if="radarV4HistoryDisplayItems.length > 0"
+                  class="user-risk-radar-history-hint"
                 >
-                  {{ radarV4CardItem.row.error }}
+                  共 {{ radarV4HistoryDisplayItems.length }} 次调取记录，按时间折叠展示；展开可对比不同时间的指标。手动调取会追加新记录，不会覆盖历史。
                 </p>
-                <div
-                  v-if="radarV4CardItem.row.state !== 'skipped' && radarV4CardItem.facts.length > 0"
-                  class="user-risk-radar-facts-wrap"
+                <el-collapse
+                  v-if="radarV4HistoryDisplayItems.length > 0"
+                  v-model="radarHistoryExpanded"
+                  accordion
+                  class="user-risk-radar-history-collapse"
                 >
-                  <template
-                    v-if="radarV4FactsGrouped.sections.length > 0 || radarV4FactsGrouped.reportNote"
+                  <el-collapse-item
+                    v-for="(entry, entryIdx) in radarV4HistoryDisplayItems"
+                    :key="entry.id"
+                    :name="entry.id"
                   >
-                  
-                    <div
-                      v-for="(sec, si) in radarV4FactsGrouped.sections"
-                      :key="si"
-                      class="user-risk-radar-sec"
+                    <template #title>
+                      <span class="user-risk-radar-history-title">
+                        <el-icon
+                          v-if="entry.row.state === 'ok'"
+                          class="user-risk-simple-row__icon user-risk-simple-row__icon--ok"
+                          :size="18"
+                        >
+                          <CircleCheck />
+                        </el-icon>
+                        <el-icon
+                          v-else-if="entry.row.state === 'fail'"
+                          class="user-risk-simple-row__icon user-risk-simple-row__icon--fail"
+                          :size="18"
+                        >
+                          <CircleClose />
+                        </el-icon>
+                        <el-icon
+                          v-else
+                          class="user-risk-simple-row__icon user-risk-simple-row__icon--muted"
+                          :size="18"
+                        >
+                          <Minus />
+                        </el-icon>
+                        <span class="user-risk-radar-history-title__time">{{ entry.fetchedAtLabel }}</span>
+                        <el-tag
+                          v-if="entryIdx === 0 && !entry.isLegacy"
+                          size="small"
+                          type="success"
+                          effect="plain"
+                          class="user-risk-radar-history-title__tag"
+                        >
+                          最新
+                        </el-tag>
+                        <el-tag
+                          v-else-if="entry.isLegacy"
+                          size="small"
+                          type="info"
+                          effect="plain"
+                          class="user-risk-radar-history-title__tag"
+                        >
+                          档案快照
+                        </el-tag>
+                      </span>
+                    </template>
+                    <p
+                      v-if="entry.row.error"
+                      class="user-risk-simple-row__err"
                     >
-                      <div class="user-risk-radar-sec__head">
-                        <h4 class="user-risk-radar-sec__title">
-                          {{ sec.title }}
-                        </h4>
-                        <p
-                          v-if="sec.subtitle"
-                          class="user-risk-radar-sec__sub"
-                        >
-                          {{ sec.subtitle }}
-                        </p>
-                      </div>
-                      <div class="user-risk-radar-table-scroll">
-                        <table
-                          class="user-risk-radar-table user-risk-radar-table--multi"
-                          :aria-label="`${sec.title}指标`"
-                        >
-                          <thead>
-                            <tr>
-                              <template
-                                v-for="hi in radarPairHeadIndexes"
-                                :key="hi"
-                              >
-                                <th scope="col">
-                                  指标
-                                </th>
-                                <th scope="col">
-                                  取值
-                                </th>
-                              </template>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            <tr v-if="!sec.rows.length">
-                              <td
-                                :colspan="RADAR_TABLE_COLSPAN"
-                                class="user-risk-radar-table__empty"
-                              >
-                                查询无数据
-                              </td>
-                            </tr>
-                            <template v-else>
-                              <tr
-                                v-for="(chunk, ci) in chunkRadarFactPairs(sec.rows, RADAR_FACT_PAIR_COLUMNS)"
-                                :key="ci"
-                              >
-                                <template
-                                  v-for="(cell, idx) in chunk"
-                                  :key="idx"
-                                >
-                                  <td class="user-risk-radar-table__label">
-                                    {{ cell.label }}
-                                  </td>
-                                  <td
-                                    class="user-risk-radar-table__value"
-                                    :class="{ 'user-risk-radar-table__value--emphasis': cell.emphasis }"
-                                  >
-                                    {{ cell.value }}
-                                  </td>
-                                </template>
-                                <td
-                                  v-if="chunk.length < RADAR_FACT_PAIR_COLUMNS"
-                                  :colspan="(RADAR_FACT_PAIR_COLUMNS - chunk.length) * 2"
-                                  class="user-risk-radar-table__pad"
-                                ></td>
-                              </tr>
-                            </template>
-                          </tbody>
-                        </table>
-                      </div>
-                    </div>
-                    <div
-                      v-if="radarV4FactsGrouped.extras.length"
-                      class="user-risk-radar-sec"
+                      {{ entry.row.error }}
+                    </p>
+                    <RadarV4FactsPanel
+                      v-if="radarHistoryExpanded.includes(entry.id) && entry.row.state !== 'skipped' && entry.facts.length > 0"
+                      :facts="entry.facts"
+                    />
+                    <p
+                      v-else-if="radarHistoryExpanded.includes(entry.id) && entry.row.state === 'skipped'"
+                      class="user-risk-simple-row__note user-risk-radar-note"
                     >
-                      <div class="user-risk-radar-sec__head">
-                        <h4 class="user-risk-radar-sec__title">
-                          其它信息
-                        </h4>
-                      </div>
-                      <div class="user-risk-radar-table-scroll">
-                        <table
-                          class="user-risk-radar-table user-risk-radar-table--multi"
-                          aria-label="其它信息"
-                        >
-                          <thead>
-                            <tr>
-                              <template
-                                v-for="hi in radarPairHeadIndexes"
-                                :key="hi"
-                              >
-                                <th scope="col">
-                                  项目
-                                </th>
-                                <th scope="col">
-                                  内容
-                                </th>
-                              </template>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            <tr
-                              v-for="(chunk, ci) in chunkRadarFactPairs(radarV4FactsGrouped.extras, RADAR_FACT_PAIR_COLUMNS)"
-                              :key="ci"
-                            >
-                              <template
-                                v-for="(ex, idx) in chunk"
-                                :key="idx"
-                              >
-                                <td class="user-risk-radar-table__label">
-                                  {{ ex.label }}
-                                </td>
-                                <td
-                                  class="user-risk-radar-table__value"
-                                  :class="{ 'user-risk-radar-table__value--emphasis': ex.emphasis }"
-                                >
-                                  {{ ex.value }}
-                                </td>
-                              </template>
-                              <td
-                                v-if="chunk.length < RADAR_FACT_PAIR_COLUMNS"
-                                :colspan="(RADAR_FACT_PAIR_COLUMNS - chunk.length) * 2"
-                                class="user-risk-radar-table__pad"
-                              ></td>
-                            </tr>
-                          </tbody>
-                        </table>
-                      </div>
-                    </div>
-                  </template>
-                  <template v-else>
-                    <div class="user-risk-radar-table-scroll">
-                      <table
-                        class="user-risk-radar-table user-risk-radar-table--multi"
-                        aria-label="全景雷达数据"
-                      >
-                        <thead>
-                          <tr>
-                            <template
-                              v-for="hi in radarPairHeadIndexes"
-                              :key="hi"
-                            >
-                              <th scope="col">
-                                项目
-                              </th>
-                              <th scope="col">
-                                内容
-                              </th>
-                            </template>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          <tr
-                            v-for="(chunk, ci) in chunkRadarFactPairs(radarV4CardItem.facts, RADAR_FACT_PAIR_COLUMNS)"
-                            :key="ci"
-                          >
-                            <template
-                              v-for="(fl, idx) in chunk"
-                              :key="idx"
-                            >
-                              <td class="user-risk-radar-table__label">
-                                {{ fl.label }}
-                              </td>
-                              <td
-                                class="user-risk-radar-table__value"
-                                :class="{ 'user-risk-radar-table__value--emphasis': fl.emphasis }"
-                              >
-                                {{ fl.value }}
-                              </td>
-                            </template>
-                            <td
-                              v-if="chunk.length < RADAR_FACT_PAIR_COLUMNS"
-                              :colspan="(RADAR_FACT_PAIR_COLUMNS - chunk.length) * 2"
-                              class="user-risk-radar-table__pad"
-                            ></td>
-                          </tr>
-                        </tbody>
-                      </table>
-                    </div>
-                  </template>
-                </div>
+                      {{ entry.row.skippedReason || '本次调取无有效数据' }}
+                    </p>
+                  </el-collapse-item>
+                </el-collapse>
               </div>
             </div>
           </div>
@@ -1386,6 +1445,53 @@ function handleUserRiskDialogClosed() {
 
 .user-risk-radar-note {
   margin-top: 0;
+}
+
+.user-risk-radar-history-hint {
+  margin: 0 0 10px;
+  font-size: 12px;
+  color: #64748b;
+  line-height: 1.45;
+}
+
+.user-risk-radar-history-collapse {
+  --el-collapse-border-color: transparent;
+}
+
+.user-risk-radar-history-collapse :deep(.el-collapse-item__header) {
+  height: auto;
+  line-height: 1.4;
+  padding: 10px 12px;
+  font-weight: 600;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  margin-bottom: 6px;
+}
+
+.user-risk-radar-history-collapse :deep(.el-collapse-item__wrap) {
+  border-bottom: none;
+}
+
+.user-risk-radar-history-collapse :deep(.el-collapse-item__content) {
+  padding: 0 4px 12px;
+}
+
+.user-risk-radar-history-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.user-risk-radar-history-title__time {
+  font-size: 13px;
+  color: #0f172a;
+}
+
+.user-risk-radar-history-title__tag {
+  font-weight: 500;
 }
 
 .user-risk-radar-facts-wrap {
