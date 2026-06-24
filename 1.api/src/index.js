@@ -26,6 +26,9 @@ const {
   resolveDeferRepaymentBaseDueDateKey,
   applyDeferRepaymentDueDate,
 } = require('./installmentDeferRepayment')
+const {
+  INSTALLMENT_REPAY_DAYS_AFTER_CARD_ISSUE: INSTALLMENT_REPAY_DAYS_AFTER_CARD_ISSUE_FROM_POLICY,
+} = require('./installmentRepaySchedule')
 
 const Koa = require('koa')
 const Router = require('@koa/router')
@@ -555,8 +558,8 @@ function addDays(iso, days) {
   return formatDate(date.toISOString())
 }
 
-/** 先享后付：卡包发放后第 N 天为还款到期日（非下单日） */
-const INSTALLMENT_REPAY_DAYS_AFTER_CARD_ISSUE = 14
+/** 先享后付：含卡包发放当天为第 1 天，第 10 天为还款到期日（非下单日）。 */
+const INSTALLMENT_REPAY_DAYS_AFTER_CARD_ISSUE = INSTALLMENT_REPAY_DAYS_AFTER_CARD_ISSUE_FROM_POLICY
 
 function installmentDueDateFromRepayAnchor(repayAnchorAt) {
   const anchor = String(repayAnchorAt || '').trim()
@@ -2260,7 +2263,7 @@ function buildInstallmentPlan(totalAmount, payType, repayAnchorAt, paid, install
     }]
   }
 
-  /** 仅支持单期：应还总额=订单 totalAmount；还款日为卡包发放后第 14 天，未发放前为空 */
+  /** 仅支持单期：应还总额=订单 totalAmount；还款日为卡包发放后第 10 天，未发放前为空。 */
   const principal = Number(parsedAmount.toFixed(2))
   return [{
     period: 1,
