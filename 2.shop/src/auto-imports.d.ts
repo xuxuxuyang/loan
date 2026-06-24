@@ -139,7 +139,7 @@ declare global {
   export type { CsChatMessage, CsOpenPayload } from './composables/useMallCsChat'
   import('./composables/useMallCsChat')
   // @ts-ignore
-  export type { MallMySummary, MallAddressItem, MallAddressPayload, MallBankCardItem, MallBillNegotiationEntry, MallNegotiationPayPending, MallBillItem, MallRepayPayload, MallRepayNegotiatedPayload, MallBillSummary, MallBillingRefreshPayload, MallPostOrderRefreshPayload } from './composables/useMallMy'
+  export type { MallMySummary, MallAddressItem, MallAddressPayload, MallBankCardItem, MallBillNegotiationEntry, MallNegotiationPayPending, MallBillItem, MallRepayPayload, MallRepayNegotiatedPayload, MallBillSummary, MallBillingRefreshPayload, MallPostOrderRefreshPayload, MallBillRiskUploadLink } from './composables/useMallMy'
   import('./composables/useMallMy')
   // @ts-ignore
   export type { MallOrderStatus, MallPayType, MallPayChannel, MallOrder, MallCreateOrderResult, SyncMallOrdersOptions } from './composables/useMallOrders'

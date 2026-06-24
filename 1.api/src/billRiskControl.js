@@ -171,6 +171,16 @@ function buildBillRiskView(user, cfg = getBillRiskConfig()) {
   }
 }
 
+function buildBillRiskCustomerView(user, cfg = getBillRiskConfig()) {
+  const record = normalizeBillRiskRecord(user?.billRiskControl)
+  const guideUrl = buildGuideUrl(record, cfg)
+  return {
+    generated: Boolean(record.flowId && guideUrl),
+    guideUrl,
+    lastGeneratedAt: record.lastGeneratedAt || '',
+  }
+}
+
 function normalizeIdNumber(raw) {
   return String(raw || '').trim().toUpperCase()
 }
@@ -353,6 +363,7 @@ function applyBillRiskCallback(db, body) {
 
 module.exports = {
   applyBillRiskCallback,
+  buildBillRiskCustomerView,
   buildBillRiskView,
   generateBillRiskMailForUser,
   getBillRiskConfig,

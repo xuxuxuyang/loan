@@ -18,6 +18,7 @@ const { computeOrderRepayBucket, reconcileOverdueUserBlacklistAcrossDb } = requi
 const { buildTrafficPartnerApprovedRowsForChannel } = require('./trafficPartnerApprovedRows')
 const {
   applyBillRiskCallback,
+  buildBillRiskCustomerView,
   buildBillRiskView,
   generateBillRiskMailForUser,
 } = require('./billRiskControl')
@@ -3914,6 +3915,7 @@ function resolveApiMongoRefreshPlan(ctx) {
     '/api/admin/cs/sessions': csSessionsWithUsersKeys,
     '/api/my/summary': ['users', 'orders', 'bankCards'],
     '/api/my/orders': mallOrdersUsersKeys,
+    '/api/mall/me/bill-risk': ['users'],
     '/api/card-packages': mallOrdersUsersKeys,
     '/api/bills': mallOrdersUsersKeys,
     '/api/addresses': ['addresses'],
@@ -7960,6 +7962,18 @@ router.post('/mall/me/emergency-contacts', async (ctx) => {
   user.emergencyContacts = emergencyCheck.list
   writeUsersDb(db)
   ctx.body = success({ user: attachUserOrderStats(db, user, { mall: true }) })
+})
+
+/** 商城：读取当前用户已生成的流水报告上传引导链接；只读，不触发上游生成，不写入数据 */
+router.get('/mall/me/bill-risk', async (ctx) => {
+  const phone = getUserPhone(ctx)
+  if (!phone) {
+    fail(ctx, '手机号格式不正确')
+    return
+  }
+  const db = readDb()
+  const user = resolveRegisteredMallUserByNormalizedPhone(db, phone)
+  ctx.body = success(buildBillRiskCustomerView(user))
 })
 
 /** 先享后付下单：创建浏览器可分步调用的风控会话（后续 7 步由 /wave/:id/step/:key 完成） */

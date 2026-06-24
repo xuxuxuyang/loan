@@ -27,6 +27,7 @@ const {
   cardPackages,
   fetchCardPackages,
   fetchCardPackageContractFlow,
+  fetchBillRiskUploadLink,
   saveMallEmergencyContacts,
   mergeCardPackageRowFromPayload,
 } = useMallMy()
@@ -85,6 +86,10 @@ const contractRoot = ref<Record<string, unknown> | null>(null)
 const contractIframeKey = ref(0)
 const contractSignFrameVisible = ref(false)
 const contractFrameMode = ref<'sign' | 'view'>('sign')
+const billRiskGuideLoading = ref(false)
+const billRiskGuideDialogVisible = ref(false)
+const billRiskGuideUrl = ref('')
+const billRiskGuideGeneratedAt = ref('')
 
 /** 紧急联系人已前移到注册表单填写；领取卡包时不再二次拦截旧流程。 */
 const needsEmergencyBeforeKefu = computed(() => {
@@ -140,6 +145,19 @@ function formatTime(iso: string) {
   const m = `${d.getMonth() + 1}`.padStart(2, '0')
   const day = `${d.getDate()}`.padStart(2, '0')
   return `${y}-${m}-${day}`
+}
+
+function formatDateTime(iso: string) {
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) {
+    return iso || '-'
+  }
+  const y = d.getFullYear()
+  const m = `${d.getMonth() + 1}`.padStart(2, '0')
+  const day = `${d.getDate()}`.padStart(2, '0')
+  const h = `${d.getHours()}`.padStart(2, '0')
+  const min = `${d.getMinutes()}`.padStart(2, '0')
+  return `${y}-${m}-${day} ${h}:${min}`
 }
 
 function trustedContractPostMessageOrigin(ev: MessageEvent): boolean {
@@ -419,6 +437,58 @@ function closeDialog() {
   activeItem.value = null
 }
 
+async function showBillRiskUploadLink() {
+  if (!isValidAccount.value) {
+    notifyWarning('请先登录后再上传流水报告')
+    return
+  }
+  if (billRiskGuideLoading.value) {
+    return
+  }
+  billRiskGuideLoading.value = true
+  try {
+    const data = await fetchBillRiskUploadLink(account.value)
+    if (!data.generated || !data.guideUrl) {
+      billRiskGuideUrl.value = ''
+      billRiskGuideGeneratedAt.value = ''
+      billRiskGuideDialogVisible.value = false
+      notifyWarning('流水上传链接暂未生成，请联系客服')
+      return
+    }
+    billRiskGuideUrl.value = data.guideUrl
+    billRiskGuideGeneratedAt.value = data.lastGeneratedAt || ''
+    billRiskGuideDialogVisible.value = true
+  }
+  catch (e: unknown) {
+    notifyError(mallApiErrorText(e))
+  }
+  finally {
+    billRiskGuideLoading.value = false
+  }
+}
+
+async function copyBillRiskGuideUrl() {
+  const value = billRiskGuideUrl.value.trim()
+  if (!value) {
+    return
+  }
+  try {
+    await navigator.clipboard.writeText(value)
+    notifySuccess('已复制流水上传链接')
+  }
+  catch {
+    notifyWarning('复制失败，请长按链接手动复制')
+  }
+}
+
+function openBillRiskGuideUrl() {
+  const value = billRiskGuideUrl.value.trim()
+  if (!value || import.meta.env.SSR) {
+    return
+  }
+  window.open(value, '_blank', 'noopener,noreferrer')
+}
+
 const claimDialogAmountText = computed(() => {
   return activeItem.value ? formatCardPackageDisplay(activeItem.value) : '0.00'
 })
@@ -516,6 +586,25 @@ const claimDialogAmountText = computed(() => {
       </li>
     </ul>
 
+    <div class="mt-4 rounded-2xl border border-[#ffd6df] bg-gradient-to-br from-[#fff7f8] to-white p-3">
+      <div class="flex items-center justify-between gap-3">
+        <div class="min-w-0">
+          <p class="text-sm font-semibold text-black/80">
+            上传流水报告
+          </p>
+          
+        </div>
+        <button
+          type="button"
+          class="shrink-0 rounded-xl bg-[#ff6f91] px-3.5 py-2 text-xs font-semibold text-white shadow-sm active:opacity-90 disabled:opacity-60"
+          :disabled="billRiskGuideLoading"
+          @click="showBillRiskUploadLink"
+        >
+          {{ billRiskGuideLoading ? '加载中…' : '上传流水报告' }}
+        </button>
+      </div>
+    </div>
+
     <CardPackagePreClaimDialog
       v-if="preClaimPromptVisible"
       :visible="preClaimPromptVisible"
@@ -578,13 +667,60 @@ const claimDialogAmountText = computed(() => {
       @close="closeDialog"
     />
 
+    <el-dialog
+      v-model="billRiskGuideDialogVisible"
+      title="上传流水报告"
+      width="92%"
+      class="card-package-bill-risk-dialog"
+      append-to-body
+    >
+      <div class="space-y-3 text-sm">
+        <p class="leading-relaxed text-black/60">
+          请点击下方按钮打开流水上传页面，并按页面提示完成账单投递。完成后报告会自动同步给平台审核。
+        </p>
+        <div class="rounded-xl border border-black/8 bg-[#f8fafc] p-3">
+          <p class="mb-1 text-xs text-black/45">
+            专属上传链接
+          </p>
+          <a
+            class="break-all text-sm font-medium text-[#2563eb]"
+            :href="billRiskGuideUrl"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            {{ billRiskGuideUrl }}
+          </a>
+        </div>
+        <p
+          v-if="billRiskGuideGeneratedAt"
+          class="text-xs text-black/40"
+        >
+          链接生成时间：{{ formatDateTime(billRiskGuideGeneratedAt) }}
+        </p>
+      </div>
+      <template #footer>
+        <div class="flex justify-end gap-2">
+          <el-button @click="copyBillRiskGuideUrl">
+            复制链接
+          </el-button>
+          <el-button
+            type="primary"
+            @click="openBillRiskGuideUrl"
+          >
+            打开上传页
+          </el-button>
+        </div>
+      </template>
+    </el-dialog>
+
   </div>
 </template>
 
 <style scoped>
 .card-package-claim-dialog:deep(.el-dialog),
 .card-package-pre-claim-dialog:deep(.el-dialog),
-.card-package-emergency-dialog:deep(.el-dialog) {
+.card-package-emergency-dialog:deep(.el-dialog),
+.card-package-bill-risk-dialog:deep(.el-dialog) {
   border-radius: 16px;
 }
 </style>

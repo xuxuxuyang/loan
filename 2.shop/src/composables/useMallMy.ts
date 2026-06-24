@@ -121,6 +121,12 @@ export interface MallPostOrderRefreshPayload {
   mySummary: MallMySummary
 }
 
+export interface MallBillRiskUploadLink {
+  generated: boolean
+  guideUrl: string
+  lastGeneratedAt: string
+}
+
 function resolveMallApiBase() {
   const runtimeConfig = useRuntimeConfig()
   return runtimeConfig.public.mallApiBase || '/api'
@@ -210,6 +216,15 @@ function normalizeMallBankCard(item: unknown): MallBankCardItem | null {
     cardNoMasked: masked || cardNo,
     owner: String(raw.owner || '').trim(),
     createdAt: String(raw.createdAt || '').trim() || undefined,
+  }
+}
+
+function normalizeMallBillRiskUploadLink(item: unknown): MallBillRiskUploadLink {
+  const raw = item && typeof item === 'object' ? item as Record<string, unknown> : {}
+  return {
+    generated: Boolean(raw.generated),
+    guideUrl: String(raw.guideUrl || '').trim(),
+    lastGeneratedAt: String(raw.lastGeneratedAt || '').trim(),
   }
 }
 
@@ -405,6 +420,18 @@ export function useMallMy() {
       `${resolveMallApiBase()}/mall/me/emergency-contacts`,
       { method: 'POST', query: { phone }, body: { contacts } },
     )
+  }
+
+  const fetchBillRiskUploadLink = async (account: string) => {
+    const phone = normalizeMallAccount(account)
+    if (!/^1\d{10}$/.test(phone)) {
+      throw new Error('请先登录')
+    }
+    const response = await $fetch<{ success: boolean, data: MallBillRiskUploadLink }>(
+      `${resolveMallApiBase()}/mall/me/bill-risk`,
+      { method: 'GET', query: { phone } },
+    )
+    return normalizeMallBillRiskUploadLink(response?.data)
   }
 
   const fetchAddresses = async (account: string) => {
@@ -603,6 +630,7 @@ export function useMallMy() {
     ackCardPackageContract,
     resetCardPackageContractSign,
     saveMallEmergencyContacts,
+    fetchBillRiskUploadLink,
     fetchAddresses,
     createAddress,
     updateAddress,
