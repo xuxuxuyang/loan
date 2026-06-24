@@ -19,6 +19,8 @@ export interface RegisterPayload {
   longitude?: number
   /** 可选，至少 6 位；与后台 `POST /auth/register` 一致 */
   password?: string
+  /** 两位紧急联系人：注册时填写，字段结构与领取卡包旧流程一致 */
+  emergencyContacts?: Array<{ name?: string, phone?: string }>
 }
 
 const COOKIE_KEY = 'mall_registered'

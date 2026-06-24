@@ -19,6 +19,7 @@ const MallOrderCreateView = () => import('../views/MallOrderCreateView.vue')
 const MallOrdersView = () => import('../views/MallOrdersView.vue')
 const MallBankCardView = () => import('../views/MallBankCardView.vue')
 const MallBillView = () => import('../views/MallBillView.vue')
+const MallBillRiskResultView = () => import('../views/MallBillRiskResultView.vue')
 const MallAddressView = () => import('../views/MallAddressView.vue')
 const MallCardPackageView = () => import('../views/MallCardPackageView.vue')
 const MallCsChatView = () => import('../views/MallCsChatView.vue')
@@ -41,6 +42,7 @@ const router = createRouter({
     { path: '/orders', name: 'orders', component: MallOrdersView },
     { path: '/bank-card', name: 'bank-card', component: MallBankCardView },
     { path: '/bill', name: 'bill', component: MallBillView },
+    { path: '/bill-risk-result', name: 'bill-risk-result', component: MallBillRiskResultView },
     { path: '/address', name: 'address', component: MallAddressView },
     { path: '/card-package', name: 'card-package', component: MallCardPackageView },
     { path: '/cs-chat', name: 'cs-chat', component: MallCsChatView },

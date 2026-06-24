@@ -2,6 +2,7 @@
 import { CircleCheck, CircleClose, DataAnalysis, Minus } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { computed, ref, watch } from 'vue'
+import { generateBillRiskMail, getBillRiskView } from '../api/billRiskControl.js'
 import { apiErrorMessage, withMallTenantHeaders } from '../composables/useAdminApi'
 import { getAdminSession, isSuperAdminRole } from '../composables/useAdminAuth'
 import UserRegistrationInfoScroll, { type OrderShippingSnapshot } from './UserRegistrationInfoScroll.vue'
@@ -44,6 +45,46 @@ export interface ApiRiskView {
   snapshot: UserRiskSnapshot | null
   templateRows: RiskProductRow[]
   upstreamConfigured: boolean
+}
+
+interface BillRiskReport {
+  mailId?: string
+  type?: string
+  name?: string
+  idcard?: string
+  subject?: string
+  from?: string
+  receiver?: string
+  account?: string
+  nickname?: string
+  url?: string
+  reportURL?: string
+  orderNumber?: string
+  sendTime?: number | null
+  startTime?: number | null
+  endTime?: number | null
+  receivedAt?: string
+  isCost?: boolean
+}
+
+interface BillRiskRecord {
+  flowId: string
+  userId: string
+  email: string
+  userName: string
+  expireTime: number | null
+  lastGeneratedAt: string
+  reports: BillRiskReport[]
+}
+
+interface BillRiskView {
+  configured: boolean
+  processType: string
+  backUrlConfigured: boolean
+  callbackConfigured: boolean
+  callbackSignEnabled: boolean
+  record: BillRiskRecord
+  guideUrl: string
 }
 
 /** 与 api/src/riskControl/RISK_FOURTEEN_SLOTS.md 一致：管理端卡片分组与排序 */
@@ -194,8 +235,12 @@ const fullRiskCheckLoading = ref(false)
 const userRiskError = ref('')
 const manualRiskSlotLoading = ref<string | null>(null)
 const userRiskSnapshot = ref<UserRiskSnapshot | null>(null)
-type RiskDialogMainTab = 'basic' | 'order7' | 'radar'
+type RiskDialogMainTab = 'basic' | 'order7' | 'radar' | 'bill'
 const riskDialogMainTab = ref<RiskDialogMainTab>('basic')
+const billRiskView = ref<BillRiskView | null>(null)
+const billRiskLoading = ref(false)
+const billRiskGenerating = ref(false)
+const billRiskError = ref('')
 
 function buildRiskSnapshotFromView(rv: ApiRiskView): UserRiskSnapshot {
   const snap = rv.snapshot
@@ -463,6 +508,15 @@ watch(
   { immediate: true },
 )
 
+watch(
+  () => riskDialogMainTab.value,
+  (tab) => {
+    if (tab === 'bill') {
+      void loadBillRiskView()
+    }
+  },
+)
+
 function findFourteenRowForBasic(rows: RiskProductRow[] | undefined, slotKey: string): RiskProductRow | null {
   if (!Array.isArray(rows)) {
     return null
@@ -589,6 +643,8 @@ async function loadUserRiskDialogById(userId: string) {
   userRiskSnapshot.value = null
   displayedUserRiskDetail.value = null
   userRiskError.value = ''
+  billRiskView.value = null
+  billRiskError.value = ''
   riskDialogBootLoading.value = true
   try {
     const response = await fetch(`${MALL_API_BASE}/users/${encodeURIComponent(userId)}`, {
@@ -795,6 +851,83 @@ async function invokeRadarSlotManual() {
   await invokeManualRiskSlot(radarV4CardItem.value.row)
 }
 
+function formatBillRiskTime(value?: string | number | null) {
+  if (value === undefined || value === null || value === '') {
+    return '-'
+  }
+  const date = typeof value === 'number' ? new Date(value) : new Date(String(value))
+  if (Number.isNaN(date.getTime())) {
+    return String(value)
+  }
+  return formatDateTime(date.toISOString())
+}
+
+function billRiskTypeLabel(type?: string) {
+  const key = String(type || '').trim()
+  const map: Record<string, string> = {
+    WECHAT: '微信账单',
+    ALIPAY: '支付宝账单',
+    BANK_CMB: '招商银行',
+    BANK_ICBC: '工商银行',
+    BANK_ABC: '农业银行',
+    BANK_CCB: '建设银行',
+    BANK_BOC: '中国银行',
+    BANK_BCM: '交通银行',
+  }
+  return map[key] || key || '-'
+}
+
+async function copyBillRiskText(text?: string) {
+  const value = String(text || '').trim()
+  if (!value) {
+    return
+  }
+  try {
+    await navigator.clipboard.writeText(value)
+    ElMessage.success('已复制')
+  }
+  catch {
+    ElMessage.warning('复制失败，请手动复制')
+  }
+}
+
+async function loadBillRiskView(force = false) {
+  const u = selectedUserForRisk.value
+  if (!u || billRiskLoading.value || (!force && billRiskView.value)) {
+    return
+  }
+  billRiskLoading.value = true
+  billRiskError.value = ''
+  try {
+    billRiskView.value = await getBillRiskView(u.id) as BillRiskView
+  }
+  catch (error) {
+    billRiskError.value = error instanceof Error ? error.message : '加载流水风控失败'
+  }
+  finally {
+    billRiskLoading.value = false
+  }
+}
+
+async function generateBillRiskDynamicMail() {
+  const u = selectedUserForRisk.value
+  if (!u || billRiskGenerating.value) {
+    return
+  }
+  billRiskGenerating.value = true
+  billRiskError.value = ''
+  try {
+    billRiskView.value = await generateBillRiskMail(u.id) as BillRiskView
+    ElMessage.success('流水风控动态邮箱已生成')
+  }
+  catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '生成流水风控动态邮箱失败')
+  }
+  finally {
+    billRiskGenerating.value = false
+  }
+}
+
 async function retryUserRiskCheck() {
   const id = props.userId || selectedUserForRisk.value?.id
   if (!id) {
@@ -811,6 +944,10 @@ function onUserRiskDialogClosed() {
   manualRiskSlotLoading.value = null
   riskDialogMainTab.value = 'basic'
   radarHistoryExpanded.value = []
+  billRiskView.value = null
+  billRiskError.value = ''
+  billRiskLoading.value = false
+  billRiskGenerating.value = false
 }
 function mapApiUser(user: ApiUserItem): UserItem {
   const creditStatus = displayCreditFromSnapshotBasic(user.riskControlSnapshot ?? null)
@@ -1207,6 +1344,176 @@ function handleUserRiskDialogClosed() {
                   </el-collapse-item>
                 </el-collapse>
               </div>
+            </div>
+          </div>
+        </el-tab-pane>
+        <el-tab-pane label="流水风控" name="bill">
+          <div class="user-risk-tab-pane-inner user-risk-bill-tab">
+            <div
+              v-if="billRiskLoading"
+              class="user-risk-state user-risk-state--muted"
+            >
+              <el-icon class="is-loading user-risk-state__spin">
+                <DataAnalysis />
+              </el-icon>
+              正在加载流水风控数据…
+            </div>
+            <div
+              v-else-if="billRiskError"
+              class="user-risk-state user-risk-state--error"
+            >
+              <span>{{ billRiskError }}</span>
+              <el-button
+                size="small"
+                @click="loadBillRiskView(true)"
+              >
+                重试
+              </el-button>
+            </div>
+            <div
+              v-else-if="billRiskView"
+              class="user-risk-bill-card"
+            >
+              <header class="user-risk-bill-card__head">
+                <div>
+                  <div class="user-risk-bill-card__title">流水风控</div>
+                  <p class="user-risk-bill-card__subtitle">
+                    仅在点击生成动态邮箱时调用上游接口；报告数据来自异步回调入库，不会自动轮询，避免影响后台性能。
+                  </p>
+                </div>
+                <el-button
+                  type="primary"
+                  :loading="billRiskGenerating"
+                  :disabled="!billRiskView.configured"
+                  @click="generateBillRiskDynamicMail"
+                >
+                  生成动态邮箱
+                </el-button>
+              </header>
+
+              <el-alert
+                v-if="!billRiskView.configured"
+                type="warning"
+                :closable="false"
+                show-icon
+                class="user-risk-config-hint"
+              >
+                当前未配置流水风控上游（<code>BILL_RISK_*</code>）。请在 API 环境变量中配置账号、密码和 RSA 公钥后重启服务。
+              </el-alert>
+
+              <section class="user-risk-bill-info">
+                <div class="user-risk-bill-info__item">
+                  <span class="user-risk-bill-info__label">动态邮箱</span>
+                  <span class="user-risk-bill-info__value">{{ billRiskView.record.email || '暂未生成' }}</span>
+                  <el-button
+                    v-if="billRiskView.record.email"
+                    link
+                    type="primary"
+                    @click="copyBillRiskText(billRiskView.record.email)"
+                  >
+                    复制
+                  </el-button>
+                </div>
+                <div class="user-risk-bill-info__item">
+                  <span class="user-risk-bill-info__label">引导页链接</span>
+                  <span class="user-risk-bill-info__value user-risk-bill-info__value--url">{{ billRiskView.guideUrl || '生成动态邮箱后自动生成' }}</span>
+                  <el-button
+                    v-if="billRiskView.guideUrl"
+                    link
+                    type="primary"
+                    @click="copyBillRiskText(billRiskView.guideUrl)"
+                  >
+                    复制
+                  </el-button>
+                </div>
+                <div class="user-risk-bill-info__item">
+                  <span class="user-risk-bill-info__label">flowId</span>
+                  <span class="user-risk-bill-info__value">{{ billRiskView.record.flowId || '-' }}</span>
+                </div>
+                <div class="user-risk-bill-info__item">
+                  <span class="user-risk-bill-info__label">生成时间</span>
+                  <span class="user-risk-bill-info__value">{{ formatBillRiskTime(billRiskView.record.lastGeneratedAt) }}</span>
+                </div>
+              </section>
+
+              <section class="user-risk-bill-reports">
+                <div class="user-risk-bill-reports__head">
+                  <span class="user-risk-bill-reports__title">流水报告回调记录</span>
+                  <el-tag
+                    size="small"
+                    type="info"
+                    effect="plain"
+                  >
+                    {{ billRiskView.record.reports.length }} 条
+                  </el-tag>
+                </div>
+                <el-empty
+                  v-if="billRiskView.record.reports.length === 0"
+                  description="暂无报告回调记录"
+                  :image-size="72"
+                />
+                <div
+                  v-else
+                  class="user-risk-bill-report-list"
+                >
+                  <article
+                    v-for="(report, idx) in billRiskView.record.reports"
+                    :key="`${report.mailId || idx}-${report.reportURL || report.url || idx}`"
+                    class="user-risk-bill-report"
+                  >
+                    <div class="user-risk-bill-report__top">
+                      <span class="user-risk-bill-report__title">{{ billRiskTypeLabel(report.type) }}</span>
+                      <el-tag
+                        v-if="idx === 0"
+                        size="small"
+                        type="success"
+                        effect="plain"
+                      >
+                        最新
+                      </el-tag>
+                      <el-tag
+                        v-if="report.isCost"
+                        size="small"
+                        type="warning"
+                        effect="plain"
+                      >
+                        已计费
+                      </el-tag>
+                    </div>
+                    <div class="user-risk-bill-report__grid">
+                      <span>姓名：{{ report.name || '-' }}</span>
+                      <span>身份证：{{ report.idcard || '-' }}</span>
+                      <span>账号：{{ report.account || report.nickname || '-' }}</span>
+                      <span>回调时间：{{ formatBillRiskTime(report.receivedAt) }}</span>
+                      <span>账单开始：{{ formatBillRiskTime(report.startTime) }}</span>
+                      <span>账单结束：{{ formatBillRiskTime(report.endTime) }}</span>
+                    </div>
+                    <div class="user-risk-bill-report__actions">
+                      <el-button
+                        v-if="report.reportURL"
+                        type="primary"
+                        size="small"
+                        tag="a"
+                        :href="report.reportURL"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      >
+                        查看报告
+                      </el-button>
+                      <el-button
+                        v-if="report.url"
+                        size="small"
+                        tag="a"
+                        :href="report.url"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      >
+                        下载原账单
+                      </el-button>
+                    </div>
+                  </article>
+                </div>
+              </section>
             </div>
           </div>
         </el-tab-pane>
@@ -2039,6 +2346,151 @@ function handleUserRiskDialogClosed() {
 .user-risk-order7-card__btn {
   width: 100%;
   font-weight: 600;
+}
+
+.user-risk-bill-tab {
+  gap: 14px;
+}
+
+.user-risk-bill-card {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 14px;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+}
+
+.user-risk-bill-card__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.user-risk-bill-card__title {
+  font-size: 15px;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.user-risk-bill-card__subtitle {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: #64748b;
+  line-height: 1.5;
+}
+
+.user-risk-bill-info {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+@media (max-width: 640px) {
+  .user-risk-bill-info {
+    grid-template-columns: 1fr;
+  }
+}
+
+.user-risk-bill-info__item {
+  min-width: 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid #e2e8f0;
+  background: #fff;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.user-risk-bill-info__label {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: #64748b;
+}
+
+.user-risk-bill-info__value {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: #0f172a;
+  word-break: break-word;
+}
+
+.user-risk-bill-info__value--url {
+  font-weight: 500;
+  color: #1d4ed8;
+}
+
+.user-risk-bill-reports {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.user-risk-bill-reports__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.user-risk-bill-reports__title {
+  font-size: 14px;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.user-risk-bill-report-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.user-risk-bill-report {
+  padding: 12px 14px;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #fff;
+}
+
+.user-risk-bill-report__top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.user-risk-bill-report__title {
+  font-size: 14px;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.user-risk-bill-report__grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px 12px;
+  font-size: 12px;
+  color: #475569;
+}
+
+@media (max-width: 640px) {
+  .user-risk-bill-report__grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.user-risk-bill-report__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
 }
 
 .user-risk-simple-list {

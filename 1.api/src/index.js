@@ -17,6 +17,11 @@ const {
 const { computeOrderRepayBucket, reconcileOverdueUserBlacklistAcrossDb } = require('./overdueUserBlacklist')
 const { buildTrafficPartnerApprovedRowsForChannel } = require('./trafficPartnerApprovedRows')
 const {
+  applyBillRiskCallback,
+  buildBillRiskView,
+  generateBillRiskMailForUser,
+} = require('./billRiskControl')
+const {
   resolveDeferRepaymentBaseDueDateKey,
   applyDeferRepaymentDueDate,
 } = require('./installmentDeferRepayment')
@@ -296,6 +301,32 @@ function normalizeEmergencyContactsList(raw) {
 
 function isEmergencyContactsComplete(list) {
   return Array.isArray(list) && list.length === 2 && list.every(c => c && c.name && /^1\d{10}$/.test(String(c.phone || '')))
+}
+
+function validateEmergencyContactsInput(rawList, ownerPhone) {
+  const arr = Array.isArray(rawList) ? rawList : []
+  const list = []
+  for (let i = 0; i < 2; i++) {
+    const it = arr[i]
+    if (!it || typeof it !== 'object') {
+      return { ok: false, msg: `请完整填写第 ${i + 1} 位紧急联系人的姓名与手机号` }
+    }
+    if (!isValidEmergencyContactPersonName(it.name)) {
+      return { ok: false, msg: `第 ${i + 1} 位紧急联系人姓名须为汉字或英文字母，不可含数字、标点及其它符号（姓名中仅允许间隔符「·」与空格）` }
+    }
+    const ph = normalizePhone(it.phone != null ? it.phone : '')
+    if (!/^1\d{10}$/.test(ph)) {
+      return { ok: false, msg: `第 ${i + 1} 位紧急联系人手机号须为以 1 开头的 11 位大陆号码` }
+    }
+    if (ph === ownerPhone) {
+      return { ok: false, msg: '请填写真实紧急联系人，否则会影响审核结果' }
+    }
+    list.push({ name: normalizeEmergencyContactPersonName(it.name), phone: ph })
+  }
+  if (list[0].phone === list[1].phone) {
+    return { ok: false, msg: '两位紧急联系人手机号不能相同' }
+  }
+  return { ok: true, list }
 }
 
 /** 按 users 中已登记的手机号解析商城注册账号 */
@@ -3730,7 +3761,9 @@ function createMallUserFromRegisterPayload(db, payload) {
     nextUser.passwordHash = hashMallUserPassword(payload.password)
     nextUser.adminPasswordPlain = String(payload.password)
   }
-  nextUser.emergencyContacts = []
+  nextUser.emergencyContacts = Array.isArray(payload.emergencyContacts)
+    ? payload.emergencyContacts.map(item => ({ name: item.name, phone: item.phone })).slice(0, 2)
+    : []
   db.users.unshift(nextUser)
   return nextUser
 }
@@ -4835,6 +4868,13 @@ router.post('/auth/register', async (ctx) => {
     return
   }
   payload.password = pwdRaw
+
+  const emergencyCheck = validateEmergencyContactsInput(payload.emergencyContacts, phone)
+  if (!emergencyCheck.ok) {
+    fail(ctx, emergencyCheck.msg, 400)
+    return
+  }
+  payload.emergencyContacts = emergencyCheck.list
 
   const existing = db.users.find(item => item.phone === phone)
   if (existing) {
@@ -7912,29 +7952,12 @@ router.post('/mall/me/emergency-contacts', async (ctx) => {
   const arr = Array.isArray(body.contacts)
     ? body.contacts
     : (Array.isArray(body.emergencyContacts) ? body.emergencyContacts : [])
-  const list = []
-  for (let i = 0; i < 2; i++) {
-    const it = arr[i]
-    if (!it || typeof it !== 'object') {
-      fail(ctx, `请完整填写第 ${i + 1} 位紧急联系人的姓名与手机号`, 400)
-      return
-    }
-    if (!isValidEmergencyContactPersonName(it.name)) {
-      fail(ctx, `第 ${i + 1} 位紧急联系人姓名须为汉字或英文字母，不可含数字、标点及其它符号（姓名中仅允许间隔符「·」与空格）`, 400)
-      return
-    }
-    const ph = normalizePhone(it.phone != null ? it.phone : '')
-    if (!/^1\d{10}$/.test(ph)) {
-      fail(ctx, `第 ${i + 1} 位紧急联系人手机号须为以 1 开头的 11 位大陆号码`, 400)
-      return
-    }
-    list.push({ name: normalizeEmergencyContactPersonName(it.name), phone: ph })
-  }
-  if (list[0].phone === list[1].phone) {
-    fail(ctx, '两位紧急联系人手机号不能相同', 400)
+  const emergencyCheck = validateEmergencyContactsInput(arr, phone)
+  if (!emergencyCheck.ok) {
+    fail(ctx, emergencyCheck.msg, 400)
     return
   }
-  user.emergencyContacts = list
+  user.emergencyContacts = emergencyCheck.list
   writeUsersDb(db)
   ctx.body = success({ user: attachUserOrderStats(db, user, { mall: true }) })
 })
@@ -8061,6 +8084,55 @@ router.get('/users/:id', async (ctx) => {
       upstreamConfigured: isRiskUpstreamConfigured(),
     },
   })
+})
+
+router.get('/users/:id/bill-risk', async (ctx) => {
+  if (!await requireAdminUsersActionOnAny(ctx, 'view', '查看用户流水风控')) {
+    return
+  }
+  const db = readDb()
+  const { id } = ctx.params
+  const target = db.users.find(item => item.id === id)
+  if (!target) {
+    fail(ctx, '用户不存在', 404)
+    return
+  }
+  ctx.body = success(buildBillRiskView(target))
+})
+
+router.post('/users/:id/bill-risk/mail', async (ctx) => {
+  if (!await requireAdminUsersActionOnAny(ctx, 'riskCheck', '生成流水风控动态邮箱')) {
+    return
+  }
+  const db = readDb()
+  const { id } = ctx.params
+  const target = db.users.find(item => item.id === id)
+  if (!target) {
+    fail(ctx, '用户不存在', 404)
+    return
+  }
+  try {
+    const result = await generateBillRiskMailForUser(target)
+    writeUsersDb(db)
+    ctx.body = success(result.view)
+  }
+  catch (err) {
+    fail(ctx, err && err.message ? String(err.message) : '生成流水风控动态邮箱失败', 400)
+  }
+})
+
+router.post('/bill-risk/callback', async (ctx) => {
+  const db = readDb()
+  const result = applyBillRiskCallback(db, ctx.request.body || {})
+  if (!result.ok) {
+    ctx.status = result.status || 400
+    ctx.body = { success: false }
+    return
+  }
+  if (!result.ignored) {
+    writeUsersDb(db)
+  }
+  ctx.body = { success: true }
 })
 
 /** 管理端：手动调用单条风控产品（按次计费） */

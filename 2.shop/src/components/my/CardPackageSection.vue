@@ -86,16 +86,9 @@ const contractIframeKey = ref(0)
 const contractSignFrameVisible = ref(false)
 const contractFrameMode = ref<'sign' | 'view'>('sign')
 
-/** 已下单用户：签署合同后须先登记两位紧急联系人，方可打开客服二维码 */
+/** 紧急联系人已前移到注册表单填写；领取卡包时不再二次拦截旧流程。 */
 const needsEmergencyBeforeKefu = computed(() => {
-  const p = profile.value
-  if (!p) {
-    return false
-  }
-  if (Number(p.orderCount || 0) < 1) {
-    return false
-  }
-  return !p.emergencyContactsComplete
+  return false
 })
 
 /** API 返回中含上游对接提示时，展示简要运维说明 */

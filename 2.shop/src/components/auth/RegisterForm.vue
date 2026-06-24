@@ -1,6 +1,11 @@
 <script setup lang="ts">
 import type { UploadProps } from 'element-plus'
 import { captureRegisterChannelFromRoute } from '../../composables/useRegisterChannel'
+import {
+  isValidEmergencyContactPersonName,
+  isValidEmergencyContactPhoneDigits,
+  normalizeEmergencyContactPersonName,
+} from '~/utils/emergencyContactValidate'
 import { notifyError, notifySuccess, notifyWarning } from '~/utils/epFeedback'
 
 interface RegisterFormModel {
@@ -13,6 +18,10 @@ interface RegisterFormModel {
   idCardFront: string
   idCardBack: string
   idCardHandheld: string
+  emergencyContact1Name: string
+  emergencyContact1Phone: string
+  emergencyContact2Name: string
+  emergencyContact2Phone: string
 }
 
 const route = useRoute()
@@ -44,6 +53,10 @@ const form = ref<RegisterFormModel>({
   idCardFront: '',
   idCardBack: '',
   idCardHandheld: '',
+  emergencyContact1Name: '',
+  emergencyContact1Phone: '',
+  emergencyContact2Name: '',
+  emergencyContact2Phone: '',
 })
 
 const uploadTips = '请上传身份证正面、反面及手持身份证照片；仅用于实名核验'
@@ -248,6 +261,35 @@ function validateForm() {
     notifyWarning('请上传手持身份证照片')
     return false
   }
+  const registerPhone = form.value.phone.trim()
+  const emergencyPairs = [
+    { idx: 1, nameRaw: form.value.emergencyContact1Name, phoneRaw: form.value.emergencyContact1Phone },
+    { idx: 2, nameRaw: form.value.emergencyContact2Name, phoneRaw: form.value.emergencyContact2Phone },
+  ] as const
+  for (const { idx, nameRaw, phoneRaw } of emergencyPairs) {
+    if (!String(nameRaw || '').trim()) {
+      notifyWarning(`请填写第 ${idx} 位紧急联系人的姓名`)
+      return false
+    }
+    if (!isValidEmergencyContactPersonName(nameRaw)) {
+      notifyWarning(`第 ${idx} 位紧急联系人姓名须为汉字或英文字母，不可含数字、标点及其它符号（仅允许「·」与空格）`)
+      return false
+    }
+    if (!isValidEmergencyContactPhoneDigits(phoneRaw)) {
+      notifyWarning(`第 ${idx} 位紧急联系人手机号须为以 1 开头的 11 位大陆号码`)
+      return false
+    }
+  }
+  const emergencyPhone1 = form.value.emergencyContact1Phone.trim().replace(/\D/g, '')
+  const emergencyPhone2 = form.value.emergencyContact2Phone.trim().replace(/\D/g, '')
+  if (emergencyPhone1 === emergencyPhone2) {
+    notifyWarning('两位紧急联系人手机号不能相同')
+    return false
+  }
+  if (emergencyPhone1 === registerPhone || emergencyPhone2 === registerPhone) {
+    notifyWarning('请填写真实紧急联系人，否则会影响审核结果')
+    return false
+  }
   return true
 }
 
@@ -271,6 +313,16 @@ async function handleSubmit() {
     idCardFront: form.value.idCardFront,
     idCardBack: form.value.idCardBack,
     idCardHandheld: form.value.idCardHandheld,
+    emergencyContacts: [
+      {
+        name: normalizeEmergencyContactPersonName(form.value.emergencyContact1Name),
+        phone: form.value.emergencyContact1Phone.trim().replace(/\D/g, ''),
+      },
+      {
+        name: normalizeEmergencyContactPersonName(form.value.emergencyContact2Name),
+        phone: form.value.emergencyContact2Phone.trim().replace(/\D/g, ''),
+      },
+    ],
   }
 
   try {
@@ -476,8 +528,6 @@ async function openPrivacyPolicy() {
           </div>
         </div>
 
-        <div class="my-4 h-px bg-black/8" />
-
         <div>
           <div class="mb-1 flex items-center justify-center gap-2">
             <p class="text-sm font-medium text-black/75">
@@ -569,6 +619,63 @@ async function openPrivacyPolicy() {
             </el-upload>
           </div>
         </div>
+
+        <div class="my-4 h-px bg-black/8" />
+
+        <div class="space-y-4">
+          <div>
+            <div class="mb-2 flex items-center justify-between gap-2">
+              <p class="text-sm font-medium text-black/75">
+                紧急联系人
+              </p>
+              <span class="text-xs text-[#e87b8f]">审核资料</span>
+            </div>
+            <p class="mb-3 rounded-xl bg-[#fff7f8] px-3 py-2 text-xs leading-relaxed text-[#9b4b5e]">
+              请填写真实紧急联系人和号码，虚假填写会影响审核结果。
+            </p>
+          </div>
+
+          <div class="grid grid-cols-1 gap-3 rounded-2xl border border-black/8 bg-[#fafafa] p-3">
+            <p class="text-xs font-medium text-black/55">
+              紧急联系人 1
+            </p>
+            <el-input
+              v-model="form.emergencyContact1Name"
+              placeholder="请输入联系人姓名"
+              clearable
+              size="large"
+            />
+            <el-input
+              v-model="form.emergencyContact1Phone"
+              placeholder="请输入联系人手机号"
+              maxlength="11"
+              clearable
+              size="large"
+            />
+          </div>
+
+          <div class="grid grid-cols-1 gap-3 rounded-2xl border border-black/8 bg-[#fafafa] p-3">
+            <p class="text-xs font-medium text-black/55">
+              紧急联系人 2
+            </p>
+            <el-input
+              v-model="form.emergencyContact2Name"
+              placeholder="请输入联系人姓名"
+              clearable
+              size="large"
+            />
+            <el-input
+              v-model="form.emergencyContact2Phone"
+              placeholder="请输入联系人手机号"
+              maxlength="11"
+              clearable
+              size="large"
+            />
+          </div>
+        </div>
+
+        <div class="my-4 h-px bg-black/8" />
+
       </div>
 
       <div class="mt-5 flex items-start gap-2 text-sm text-black/55">
