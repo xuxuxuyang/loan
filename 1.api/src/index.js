@@ -12,6 +12,7 @@ const {
   computeTotalOverdueAmount,
   computeDynamicOrderSettlementRate,
   computeDynamicPendingReceivableAverages,
+  computeDynamicUnpaidRateThroughDate,
   resolveInstallmentEffectiveDueDateKey,
 } = require('./pendingReceivableStats')
 const { computeOrderRepayBucket, reconcileOverdueUserBlacklistAcrossDb } = require('./overdueUserBlacklist')
@@ -26,6 +27,7 @@ const {
   resolveDeferRepaymentBaseDueDateKey,
   applyDeferRepaymentDueDate,
   recordDeferRepaymentDisplayEvent,
+  recordNegotiationDeferAsCollectedEvent,
 } = require('./installmentDeferRepayment')
 const {
   applyNegotiatedRepaymentDueDate,
@@ -7358,10 +7360,11 @@ function resolveTrafficPartnerFromAuthHeader(ctx) {
   return partner
 }
 
-/** 流量商门户：渠道注册用户仅计首单（注册率=注册/点击，申请率=首单申请用户/注册，通过率=首单通过用户/申请用户，逾期率=首单逾期/首单通过，注册转化率=首单通过/注册） */
+/** 流量商门户：渠道注册用户仅计首单；逾期率按该渠道首单集合截至昨日的每日未还率动态日均计算 */
 function buildTrafficPartnerPortalStatsRow(db, ch, todayKey, ordersByUserId = null) {
   const code = String(ch.code || '')
   const clickCount = Math.max(0, Number(ch.clickCount) || 0)
+  const endDate = adminDashboardYmdPlusDays(todayKey, -1)
   const users = db.users.filter(
     u => u && String(u.registerChannelCode || '').trim() === code,
   )
@@ -7369,6 +7372,7 @@ function buildTrafficPartnerPortalStatsRow(db, ch, todayKey, ordersByUserId = nu
   let applicationCount = 0
   let approvedCount = 0
   let overdueCount = 0
+  const approvedOrders = []
   for (const u of users) {
     const orders = ordersForRegisteredMallUserIndexed(db, u, ordersByUserId)
     const firstOrder = pickUserFirstOrder(orders)
@@ -7380,6 +7384,7 @@ function buildTrafficPartnerPortalStatsRow(db, ch, todayKey, ordersByUserId = nu
       continue
     }
     approvedCount += 1
+    approvedOrders.push(firstOrder)
     if (
       firstOrder.payType === 'installment'
       && trafficInstallmentOrderHasUnpaidOverdue(firstOrder, todayKey)
@@ -7388,6 +7393,7 @@ function buildTrafficPartnerPortalStatsRow(db, ch, todayKey, ordersByUserId = nu
     }
   }
   const pct = (num, den) => (den > 0 ? Number(((num / den) * 100).toFixed(2)) : null)
+  const dynamicOverdue = computeDynamicUnpaidRateThroughDate(approvedOrders, endDate)
   return {
     id: ch.id,
     code,
@@ -7400,7 +7406,7 @@ function buildTrafficPartnerPortalStatsRow(db, ch, todayKey, ordersByUserId = nu
     registerRate: pct(registerCount, clickCount),
     applicationRate: pct(applicationCount, registerCount),
     approvalRate: pct(approvedCount, applicationCount),
-    overdueRate: pct(overdueCount, approvedCount),
+    overdueRate: approvedCount > 0 ? dynamicOverdue.dynamicUnpaidRate : null,
     registrationConversionRate: pct(approvedCount, registerCount),
     applicationConversionRate: pct(approvedCount, applicationCount),
   }
@@ -10776,6 +10782,7 @@ router.patch('/orders/:id/installments/:period/negotiate', async (ctx) => {
     fail(ctx, '请提供有效的协商还款日（YYYY-MM-DD）')
     return
   }
+  const originalEffectiveDue = resolveDeferRepaymentBaseDueDateKey(planItem)
   if (!Array.isArray(planItem.negotiationHistory)) {
     planItem.negotiationHistory = []
   }
@@ -10793,6 +10800,12 @@ router.patch('/orders/:id/installments/:period/negotiate', async (ctx) => {
     remainderDueDate: remainderDue,
     createdAt: new Date().toISOString(),
   }
+  recordNegotiationDeferAsCollectedEvent(planItem, {
+    orderId: target.id,
+    period: periodNumber,
+    fromDueDate: originalEffectiveDue,
+    toDueDate: remainderDue,
+  })
   target.installmentScheduleExplicit = true
   applyInstallmentCompletionOrderStatus(target, { ignoreAdminSkip: true })
   writeOrdersDb(db)

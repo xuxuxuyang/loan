@@ -8,6 +8,7 @@ const {
   computeOrderSettlementRateOnDate,
   computeDynamicOrderSettlementRate,
   computeDynamicPendingReceivableAverages,
+  computeDynamicUnpaidRateThroughDate,
   resolveInstallmentEffectiveDueDateKey,
 } = require('../src/pendingReceivableStats')
 
@@ -245,6 +246,63 @@ test('averages daily unpaid rate and amount from first due date through end date
   assert.equal(dynamic.dynamicUnpaidRate, 75)
   assert.equal(dynamic.dynamicUnpaidAmount, 9625)
   assert.equal(dynamic.dynamicUnpaidShareOfDue, 100)
+})
+
+test('computes dynamic unpaid rate through yesterday for a channel order subset', () => {
+  const channelOrders = [
+    {
+      id: 'OD-channel-23',
+      installmentPlan: [
+        { period: 1, dueDate: '2026-06-23', amount: 100, paid: false },
+      ],
+    },
+    {
+      id: 'OD-channel-24',
+      installmentPlan: [
+        { period: 1, dueDate: '2026-06-24', amount: 100, paid: true },
+      ],
+    },
+    {
+      id: 'OD-channel-today',
+      installmentPlan: [
+        { period: 1, dueDate: '2026-06-25', amount: 100, paid: false },
+      ],
+    },
+  ]
+
+  const throughYesterday = computeDynamicUnpaidRateThroughDate(channelOrders, '2026-06-24')
+  assert.equal(throughYesterday.dynamicDayCount, 2)
+  assert.equal(throughYesterday.dynamicUnpaidRate, 50)
+})
+
+test('dynamic unpaid rate treats deferred display events as paid on original due date', () => {
+  const channelOrders = [
+    {
+      id: 'OD-channel-deferred',
+      installmentPlan: [
+        {
+          period: 1,
+          dueDate: '2026-06-25',
+          amount: 100,
+          paid: false,
+          repaymentDisplayEvents: [{
+            type: 'defer_as_collected',
+            orderId: 'OD-channel-deferred',
+            period: 1,
+            statsDate: '2026-06-24',
+            fromDueDate: '2026-06-24',
+            toDueDate: '2026-06-25',
+            amountAtAction: 100,
+            createdAt: '2026-06-24T15:00:00.000Z',
+          }],
+        },
+      ],
+    },
+  ]
+
+  const dynamic = computeDynamicUnpaidRateThroughDate(channelOrders, '2026-06-24')
+  assert.equal(dynamic.dynamicDayCount, 1)
+  assert.equal(dynamic.dynamicUnpaidRate, 0)
 })
 
 test('averages daily order settlement rate through end date', () => {

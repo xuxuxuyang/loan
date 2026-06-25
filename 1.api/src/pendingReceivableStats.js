@@ -336,6 +336,66 @@ function computeDynamicPendingReceivableAverages(orders, endDate, options = {}) 
   }
 }
 
+/** 单次聚合每日未还率，适合按渠道/小集合复用，口径与 dynamicUnpaidRate 一致 */
+function computeDynamicUnpaidRateThroughDate(orders, endDate, options = {}) {
+  const endKey = normalizeInstallmentDueDateKey(endDate)
+  if (!endKey) {
+    return { dynamicUnpaidRate: 0, dynamicDayCount: 0 }
+  }
+  const byDate = new Map()
+  const ensureBucket = (key) => {
+    if (!byDate.has(key)) {
+      byDate.set(key, { total: 0, unpaid: 0 })
+    }
+    return byDate.get(key)
+  }
+
+  for (const order of Array.isArray(orders) ? orders : []) {
+    const plan = Array.isArray(order && order.installmentPlan) ? order.installmentPlan : []
+    for (const item of plan) {
+      if (!item) {
+        continue
+      }
+      const key = resolveInstallmentEffectiveDueDateKey(item)
+      if (!key || key > endKey) {
+        continue
+      }
+      const bucket = ensureBucket(key)
+      bucket.total += 1
+      if (!installmentItemIsPaid(item)) {
+        bucket.unpaid += 1
+      }
+    }
+  }
+
+  const deferredAsCollectedEvents = collectRepaymentDisplayEvents(orders, options.deferredAsCollectedEvents)
+  for (const event of deferredAsCollectedEvents) {
+    if (!event || event.type !== DEFER_AS_COLLECTED_EVENT_TYPE) {
+      continue
+    }
+    const statsDate = normalizeInstallmentDueDateKey(event.statsDate)
+    if (!statsDate || statsDate > endKey) {
+      continue
+    }
+    ensureBucket(statsDate).total += 1
+  }
+
+  let rateSum = 0
+  let dayCount = 0
+  for (const bucket of byDate.values()) {
+    if (!bucket || bucket.total <= 0) {
+      continue
+    }
+    rateSum += (bucket.unpaid / bucket.total) * 100
+    dayCount += 1
+  }
+
+  return {
+    dynamicUnpaidRate: dayCount > 0 ? Number((rateSum / dayCount).toFixed(2)) : 0,
+    dynamicDayCount: dayCount,
+  }
+}
+
 module.exports = {
   filterDueOnDateRowRefs,
   DEFER_AS_COLLECTED_EVENT_TYPE,
@@ -344,6 +404,7 @@ module.exports = {
   computeOrderSettlementRateOnDate,
   computeDynamicOrderSettlementRate,
   computeDynamicPendingReceivableAverages,
+  computeDynamicUnpaidRateThroughDate,
   collectReceivableDueDatesUpTo,
   installmentItemIsPaid,
   normalizeInstallmentDueDateKey,

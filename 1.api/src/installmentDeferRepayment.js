@@ -81,10 +81,21 @@ function recordDeferRepaymentDisplayEvent(planItem, options = {}) {
   return true
 }
 
+/** 协商还款也属于延期：只在新协商还款日晚于原有效还款日时，写入视同回款展示事件 */
+function recordNegotiationDeferAsCollectedEvent(planItem, options = {}) {
+  const fromDueDate = normalizeYmd(options.fromDueDate)
+  const toDueDate = normalizeYmd(options.toDueDate)
+  if (!fromDueDate || !toDueDate || toDueDate <= fromDueDate) {
+    return false
+  }
+  return recordDeferRepaymentDisplayEvent(planItem, options)
+}
+
 module.exports = {
   DEFER_AS_COLLECTED_EVENT_TYPE,
   resolveDeferRepaymentBaseDueDateKey,
   applyDeferRepaymentDueDate,
   buildDeferRepaymentDisplayEvent,
   recordDeferRepaymentDisplayEvent,
+  recordNegotiationDeferAsCollectedEvent,
 }

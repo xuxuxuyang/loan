@@ -207,7 +207,7 @@ const TRAFFIC_PORTAL_STAT_HEADER_TIPS = {
   registerRate: '注册数 ÷ 点击数 × 100，保留两位小数；点击数为 0 时显示 —。',
   applicationRate: '申请数 ÷ 注册数 × 100，保留两位小数；注册数为 0 时显示 —。',
   approvalRate: '通过数 ÷ 申请数 × 100，保留两位小数；申请数为 0 时显示 —。',
-  overdueRate: '逾期数 ÷ 通过数 × 100，保留两位小数；通过数为 0 时显示 —。',
+  overdueRate: '按本渠道首单集合动态计算：截至昨日（不含当日），各应还日未还笔数占比的每日平均值；通过数为 0 时显示 —。',
   registrationConversionRate: '通过数 ÷ 注册数 × 100，保留两位小数；注册数为 0 时显示 —。',
   applicationConversionRate: '通过数 ÷ 申请数 × 100，保留两位小数；申请数为 0 时显示 —。',
 } as const

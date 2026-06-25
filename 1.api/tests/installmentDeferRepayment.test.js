@@ -6,6 +6,7 @@ const {
   applyDeferRepaymentDueDate,
   buildDeferRepaymentDisplayEvent,
   recordDeferRepaymentDisplayEvent,
+  recordNegotiationDeferAsCollectedEvent,
 } = require('../src/installmentDeferRepayment')
 
 test('uses negotiation pending remainder due date as defer base', () => {
@@ -113,4 +114,58 @@ test('records defer-as-collected display event without changing repayment state'
     amountAtAction: 2750,
     createdAt: '2026-06-15T09:30:00.000Z',
   })
+})
+
+test('records negotiation defer as collected when negotiation due date moves later', () => {
+  const planItem = {
+    dueDate: '2026-06-25',
+    amount: 2750,
+    paid: false,
+  }
+
+  const recorded = recordNegotiationDeferAsCollectedEvent(planItem, {
+    orderId: 'OD-negotiate-defer',
+    period: 1,
+    fromDueDate: '2026-06-25',
+    toDueDate: '2026-06-26',
+    nowIso: '2026-06-25T15:28:00.000Z',
+  })
+
+  assert.equal(recorded, true)
+  assert.equal(planItem.paid, false)
+  assert.deepEqual(planItem.repaymentDisplayEvents[0], {
+    type: 'defer_as_collected',
+    orderId: 'OD-negotiate-defer',
+    period: 1,
+    statsDate: '2026-06-25',
+    fromDueDate: '2026-06-25',
+    toDueDate: '2026-06-26',
+    amountAtAction: 2750,
+    createdAt: '2026-06-25T15:28:00.000Z',
+  })
+})
+
+test('does not record negotiation defer display event when due date is not later', () => {
+  const planItem = {
+    dueDate: '2026-06-25',
+    amount: 2750,
+    paid: false,
+  }
+
+  const sameDay = recordNegotiationDeferAsCollectedEvent(planItem, {
+    orderId: 'OD-negotiate-same-day',
+    period: 1,
+    fromDueDate: '2026-06-25',
+    toDueDate: '2026-06-25',
+  })
+  const earlier = recordNegotiationDeferAsCollectedEvent(planItem, {
+    orderId: 'OD-negotiate-earlier',
+    period: 1,
+    fromDueDate: '2026-06-25',
+    toDueDate: '2026-06-24',
+  })
+
+  assert.equal(sameDay, false)
+  assert.equal(earlier, false)
+  assert.equal(planItem.repaymentDisplayEvents, undefined)
 })
