@@ -229,6 +229,11 @@ const editForm = reactive({
   idNumber: '',
   /** 留空则不修改；填写则更新商城登录密码，至少 6 位 */
   newPassword: '',
+  /** 两位紧急联系人：姓名 + 11 位大陆手机号；不足两条时补空对象，编辑态始终展示两行 */
+  emergencyContact1Name: '',
+  emergencyContact1Phone: '',
+  emergencyContact2Name: '',
+  emergencyContact2Phone: '',
 })
 
 watch(
@@ -711,6 +716,10 @@ function closePreview() {
   previewUser.value = null
   editingUserId.value = null
   editPasswordBaseline.value = ''
+  editForm.emergencyContact1Name = ''
+  editForm.emergencyContact1Phone = ''
+  editForm.emergencyContact2Name = ''
+  editForm.emergencyContact2Phone = ''
 }
 
 function startEdit(user: ListedUser) {
@@ -724,6 +733,13 @@ function startEdit(user: ListedUser) {
   const echo = typeof user.adminPasswordPlain === 'string' ? user.adminPasswordPlain : ''
   editForm.newPassword = echo
   editPasswordBaseline.value = echo
+  const ec = Array.isArray(user.emergencyContacts) ? user.emergencyContacts.slice(0, 2) : []
+  const c1 = ec[0]
+  const c2 = ec[1]
+  editForm.emergencyContact1Name = c1 ? c1.name : ''
+  editForm.emergencyContact1Phone = c1 ? c1.phone : ''
+  editForm.emergencyContact2Name = c2 ? c2.name : ''
+  editForm.emergencyContact2Phone = c2 ? c2.phone : ''
 }
 
 function openCreateDialog() {
@@ -809,6 +825,36 @@ async function saveEdit() {
     return
   }
 
+  /** 紧急联系人：编辑态固定两行；前端仅做基本规整，强校验交给后端 validateEmergencyContactsInput */
+  const emergencyContacts = canUpdateUser.value
+    ? [
+        { name: editForm.emergencyContact1Name.trim(), phone: editForm.emergencyContact1Phone.trim().replace(/\D/g, '') },
+        { name: editForm.emergencyContact2Name.trim(), phone: editForm.emergencyContact2Phone.trim().replace(/\D/g, '') },
+      ]
+    : null
+  if (emergencyContacts) {
+    const ownerPhone = editForm.phone.trim().replace(/\D/g, '')
+    for (let i = 0; i < 2; i++) {
+      const c = emergencyContacts[i]
+      if (!c.name || !c.phone) {
+        ElMessage.warning(`请完整填写第 ${i + 1} 位紧急联系人的姓名与手机号`)
+        return
+      }
+      if (!/^1\d{10}$/.test(c.phone)) {
+        ElMessage.warning(`第 ${i + 1} 位紧急联系人手机号须为 11 位大陆号码`)
+        return
+      }
+      if (c.phone === ownerPhone) {
+        ElMessage.warning('紧急联系人手机号不能与本人手机号相同')
+        return
+      }
+    }
+    if (emergencyContacts[0].phone === emergencyContacts[1].phone) {
+      ElMessage.warning('两位紧急联系人手机号不能相同')
+      return
+    }
+  }
+
   const target = users.value.find(item => item.id === previewUser.value?.id)
   if (!target) {
     return
@@ -823,6 +869,7 @@ async function saveEdit() {
           ? { name: editForm.name.trim(), phone: editForm.phone.trim(), idNumber: idRaw }
           : {}),
         ...(pwd.length >= 6 && pwd !== editPasswordBaseline.value ? { newPassword: pwd } : {}),
+        ...(emergencyContacts ? { emergencyContacts } : {}),
       }),
     })
     const payload = await response.json() as { success?: boolean, msg?: string, data?: ApiUserItem }
@@ -1798,6 +1845,48 @@ async function toggleBlacklist(user: ListedUser) {
                 clearable
                 placeholder="留空不修改；填写至少 6 位以重置商城密码登录"
                 autocomplete="new-password"
+              />
+            </label>
+            <label class="user-preview-field">
+              <span class="user-preview-field__label">紧急联系人一</span>
+              <el-input
+                v-model="editForm.emergencyContact1Name"
+                class="form-input"
+                clearable
+                maxlength="32"
+                placeholder="请输入姓名"
+              />
+            </label>
+            <label class="user-preview-field">
+              <span class="user-preview-field__label">手机号</span>
+              <el-input
+                v-model="editForm.emergencyContact1Phone"
+                class="form-input"
+                clearable
+                maxlength="11"
+                inputmode="numeric"
+                placeholder="请输入手机号"
+              />
+            </label>
+            <label class="user-preview-field">
+              <span class="user-preview-field__label">紧急联系人二</span>
+              <el-input
+                v-model="editForm.emergencyContact2Name"
+                class="form-input"
+                clearable
+                maxlength="32"
+                placeholder="请输入姓名"
+              />
+            </label>
+            <label class="user-preview-field">
+              <span class="user-preview-field__label">手机号</span>
+              <el-input
+                v-model="editForm.emergencyContact2Phone"
+                class="form-input"
+                clearable
+                maxlength="11"
+                inputmode="numeric"
+                placeholder="请输入手机号"
               />
             </label>
             <div class="user-preview-edit-readonly">

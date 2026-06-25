@@ -9472,7 +9472,7 @@ router.patch('/users/:id', async (ctx) => {
   const { id } = ctx.params
   const payload = ctx.request.body || {}
   const requiredActions = new Set()
-  const profileFields = ['phone', 'name', 'locationText', 'idCardFront', 'idCardBack', 'idCardHandheld', 'idNumber', 'latitude', 'longitude', 'signAuthSerialNo']
+  const profileFields = ['phone', 'name', 'locationText', 'idCardFront', 'idCardBack', 'idCardHandheld', 'idNumber', 'latitude', 'longitude', 'signAuthSerialNo', 'emergencyContacts']
   if (profileFields.some(field => Object.prototype.hasOwnProperty.call(payload, field))) requiredActions.add('update')
   if (Object.prototype.hasOwnProperty.call(payload, 'quota')) requiredActions.add('setQuota')
   if (Object.prototype.hasOwnProperty.call(payload, 'newPassword')) requiredActions.add('resetPassword')
@@ -9559,6 +9559,14 @@ router.patch('/users/:id', async (ctx) => {
   if (typeof payload.signAuthSerialNo === 'string') {
     const s = payload.signAuthSerialNo.trim()
     target.signAuthSerialNo = s
+  }
+  if (Array.isArray(payload.emergencyContacts)) {
+    const emergencyCheck = validateEmergencyContactsInput(payload.emergencyContacts, target.phone)
+    if (!emergencyCheck.ok) {
+      fail(ctx, emergencyCheck.msg, 400)
+      return
+    }
+    target.emergencyContacts = emergencyCheck.list
   }
 
   writeUsersDb(db)
