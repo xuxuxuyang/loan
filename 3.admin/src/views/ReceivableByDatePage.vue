@@ -115,6 +115,26 @@ function applyRepaymentStatusFilter() {
   void load()
 }
 
+function repaymentStatusTagType(row: PendingReceivableRow): 'success' | 'warning' | 'primary' {
+  if (row.deferredAsCollected) {
+    return 'primary'
+  }
+  if (row.isPaid) {
+    return 'success'
+  }
+  return 'warning'
+}
+
+function repaymentStatusLabel(row: PendingReceivableRow): string {
+  if (row.deferredAsCollected) {
+    return '已延期'
+  }
+  if (row.isPaid) {
+    return '已还款'
+  }
+  return '未还款'
+}
+
 const filteredRows = computed(() => {
   const kw = appliedKeyword.value
   if (!kw) {
@@ -617,18 +637,13 @@ async function clearCollectionRemark() {
           >
             <template #default="{ row }">
               <el-tag
-                :type="row.deferredAsCollected ? 'info' : (row.isPaid ? 'success' : 'warning')"
+                :type="repaymentStatusTagType(row)"
                 effect="plain"
                 size="small"
+                :class="{ 'repay-status-tag--deferred': row.deferredAsCollected }"
               >
-                {{ row.deferredAsCollected ? '已协商延期' : (row.isPaid ? '已还款' : '未还款') }}
+                {{ repaymentStatusLabel(row) }}
               </el-tag>
-              <div
-                v-if="row.deferredAsCollected"
-                class="status-sub"
-              >
-                视同回款，非真实入账
-              </div>
             </template>
           </el-table-column>
           <el-table-column
@@ -918,6 +933,18 @@ async function clearCollectionRemark() {
   font-size: 11px;
   line-height: 1.2;
   color: var(--el-text-color-secondary);
+}
+
+/* 已延期：与未还款(橙)、已还款(绿)区分，与订单页 primary 标签色系统一 */
+.receivable-table :deep(.repay-status-tag--deferred.el-tag--primary) {
+  --el-tag-bg-color: #eff6ff;
+  --el-tag-border-color: #93c5fd;
+  --el-tag-text-color: #1d4ed8;
+  font-weight: 600;
+}
+
+.status-sub--deferred {
+  color: #2563eb;
 }
 
 .receivable-pagination {

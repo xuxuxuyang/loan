@@ -510,6 +510,24 @@ async function updateInstallmentDueDate(orderId: string, period: number, addDays
   orders.value = orders.value.map(item => (item.id === mapped.id ? mergeOrderAfterPatch(item, mapped) : item))
 }
 
+async function setInstallmentRepaymentDueDate(orderId: string, period: number, dueDate: string) {
+  const response = await fetch(installmentDueDateUrl(orderId, period), {
+    method: 'PATCH',
+    headers: withMallTenantHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ dueDate }),
+  })
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({})) as { msg?: string }
+    throw new Error(apiErrorMessage(payload, '修改协商还款日失败'))
+  }
+  const payload = await response.json() as { success?: boolean, data?: MallOrderPayload }
+  if (!payload.data) {
+    return
+  }
+  const mapped = mapMallOrderToAdminOrder(payload.data)
+  orders.value = orders.value.map(item => (item.id === mapped.id ? mergeOrderAfterPatch(item, mapped) : item))
+}
+
 async function updateInstallmentSettleAmount(orderId: string, period: number, amount: number) {
   const response = await fetch(installmentSettleAmountUrl(orderId, period), {
     method: 'PATCH',
@@ -775,6 +793,7 @@ export function useOrdersStore() {
     recalculateOrderFields,
     updateInstallmentPaid,
     updateInstallmentDueDate,
+    setInstallmentRepaymentDueDate,
     updateInstallmentSettleAmount,
     updateInstallmentNegotiate,
     updateInstallmentNegotiationHistoryPaid,

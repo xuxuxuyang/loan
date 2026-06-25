@@ -234,7 +234,7 @@ const kpiBoardRows = computed<BoardItem[]>(() => {
     card({
       label: '逾期率（笔数）',
       value: `${k.overdueRate.toFixed(2)}%`,
-      hint: `${scope}默认截至昨日；今日有协商延期视同回款时，展示口径临时含今日`,
+      hint: `${scope}动态累计日均，截至昨日（不含当日），各应还日未还笔数占比`,
       tone: 'redWine',
     }),
     card({
@@ -246,7 +246,7 @@ const kpiBoardRows = computed<BoardItem[]>(() => {
     card({
       label: '逾期占待收',
       value: `${k.overdueShareOfReceivable.toFixed(2)}%`,
-      hint: `${scope}默认截至昨日；今日有协商延期视同回款时，展示口径临时含今日`,
+      hint: `${scope}动态累计日均，截至昨日（不含当日），各应还日未还笔数占比`,
       tone: 'redWine',
     }),
   ]

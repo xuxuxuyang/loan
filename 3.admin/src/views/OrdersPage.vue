@@ -60,7 +60,7 @@ const riskDialogUserId = ref<string | null>(null)
 /** 从订单打开风控时带入该单收货人信息，关闭弹窗后清空 */
 const riskContextOrderShipping = ref<OrderShippingSnapshot | undefined>(undefined)
 const resolvingRiskUserOrderId = ref<string | null>(null)
-const { orders, recalculateOrderFields, fetchOrders, fetchOrderById, updateInstallmentPaid, updateInstallmentDueDate, updateInstallmentSettleAmount, updateInstallmentNegotiate, updateInstallmentNegotiationHistoryPaid, updateOrderStatus, updateOrderShipment, updateOrderCardPackage, updateOrderCardPackageContract, deleteOrder } = useOrdersStore()
+const { orders, recalculateOrderFields, fetchOrders, fetchOrderById, updateInstallmentPaid, updateInstallmentDueDate, setInstallmentRepaymentDueDate, updateInstallmentSettleAmount, updateInstallmentNegotiate, updateInstallmentNegotiationHistoryPaid, updateOrderStatus, updateOrderShipment, updateOrderCardPackage, updateOrderCardPackageContract, deleteOrder } = useOrdersStore()
 const {
   canUpdateStatus,
   canUpdateContract,
@@ -271,6 +271,28 @@ function latestNegotiationRecord(plan: InstallmentItem): InstallmentNegotiationR
   return h[h.length - 1] ?? null
 }
 
+/** 还款详情首列：展示登记协商时的原订单还款日 */
+function resolveOriginalRepaymentDueDate(plan: InstallmentItem): string {
+  const latest = latestNegotiationRecord(plan)
+  if (latest?.originalDueDate) {
+    return dueKey(latest.originalDueDate)
+  }
+  return dueKey(plan.dueDate)
+}
+
+/** 当前协商还款日（修改还款日弹窗默认值） */
+function resolveNegotiatedRepaymentDueDate(plan: InstallmentItem): string {
+  const latest = latestNegotiationRecord(plan)
+  if (latest?.remainderDueDate) {
+    return dueKey(latest.remainderDueDate)
+  }
+  const pend = plan.negotiationPayPending
+  if (pend?.remainderDueDate) {
+    return dueKey(pend.remainderDueDate)
+  }
+  return ''
+}
+
 function planHasNegotiationHistory(plan: InstallmentItem): boolean {
   const h = plan.negotiationHistory
   return Array.isArray(h) && h.length > 0
@@ -402,9 +424,14 @@ const selectedOrderHasNegotiationHistory = computed(() => {
 })
 
 const deferDueSavingKey = ref('')
+const modifyDueDateSavingKey = ref('')
 const negotiateSavingKey = ref('')
 const settleAmountSavingKey = ref('')
 const negotiationHistorySavingKey = ref('')
+const modifyDueDateDialogOpen = ref(false)
+const modifyDueDateDialogOrder = ref<OrderItem | null>(null)
+const modifyDueDateDialogPlan = ref<InstallmentItem | null>(null)
+const modifyDueDateFormValue = ref('')
 const negotiateDialogOpen = ref(false)
 const negotiateDialogOrder = ref<OrderItem | null>(null)
 const negotiateDialogPlan = ref<InstallmentItem | null>(null)
@@ -506,7 +533,7 @@ async function toggleNegotiationHistoryPaid(order: OrderItem, plan: InstallmentI
   if ((paid && !canMarkPaid.value) || (!paid && !canRevokePaid.value)) {
     return
   }
-  if (deferDueSavingKey.value || negotiateSavingKey.value || negotiationHistorySavingKey.value || settleAmountSavingKey.value) {
+  if (deferDueSavingKey.value || modifyDueDateSavingKey.value || negotiateSavingKey.value || negotiationHistorySavingKey.value || settleAmountSavingKey.value) {
     return
   }
   if (!order.cardPackageIssued) {
@@ -557,7 +584,7 @@ async function toggleRepay(order: OrderItem, period: InstallmentItem) {
   const nextPaid = !period.paid
   if ((nextPaid && !canMarkPaid.value) || (!nextPaid && !canRevokePaid.value))
     return
-  if (deferDueSavingKey.value || negotiateSavingKey.value || negotiationHistorySavingKey.value || settleAmountSavingKey.value) {
+  if (deferDueSavingKey.value || modifyDueDateSavingKey.value || negotiateSavingKey.value || negotiationHistorySavingKey.value || settleAmountSavingKey.value) {
     return
   }
   if (nextPaid && !order.cardPackageIssued) {
@@ -1032,7 +1059,7 @@ async function deferRepaymentDue(order: OrderItem, plan: InstallmentItem) {
   }
   const baseDue = resolveInstallmentEffectiveDueDate(plan) || plan.dueDate
   const key = `${order.id}-${plan.period}`
-  if (deferDueSavingKey.value || negotiateSavingKey.value || negotiationHistorySavingKey.value || settleAmountSavingKey.value) {
+  if (deferDueSavingKey.value || modifyDueDateSavingKey.value || negotiateSavingKey.value || negotiationHistorySavingKey.value || settleAmountSavingKey.value) {
     return
   }
   try {
@@ -1075,6 +1102,87 @@ async function deferRepaymentDue(order: OrderItem, plan: InstallmentItem) {
   }
 }
 
+function disableModifyDueDateBeforeToday(time: Date) {
+  const pick = new Date(time)
+  pick.setHours(0, 0, 0, 0)
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+  return pick.getTime() < today.getTime()
+}
+
+function openModifyDueDateDialog(order: OrderItem, plan: InstallmentItem) {
+  if (!canDelayRepayment.value || plan.paid) {
+    return
+  }
+  if (!order.cardPackageIssued) {
+    ElMessage.warning('卡包未发放')
+    return
+  }
+  if (!planHasNegotiationHistory(plan)) {
+    ElMessage.warning('当前期无协商记录，请使用「延期还款」')
+    return
+  }
+  if (deferDueSavingKey.value || modifyDueDateSavingKey.value || negotiateSavingKey.value || negotiationHistorySavingKey.value || settleAmountSavingKey.value) {
+    return
+  }
+  const currentNegotiatedDue = resolveNegotiatedRepaymentDueDate(plan)
+  modifyDueDateDialogOrder.value = order
+  modifyDueDateDialogPlan.value = plan
+  modifyDueDateFormValue.value = currentNegotiatedDue && currentNegotiatedDue >= todayYmd.value
+    ? currentNegotiatedDue
+    : todayYmd.value
+  modifyDueDateDialogOpen.value = true
+}
+
+function onModifyDueDateDialogClosed() {
+  modifyDueDateDialogOrder.value = null
+  modifyDueDateDialogPlan.value = null
+  modifyDueDateFormValue.value = ''
+}
+
+async function confirmModifyDueDate() {
+  const order = modifyDueDateDialogOrder.value
+  const plan = modifyDueDateDialogPlan.value
+  if (!order || !plan || !canDelayRepayment.value) {
+    return
+  }
+  const due = String(modifyDueDateFormValue.value || '').trim()
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(due)) {
+    ElMessage.warning('请选择还款日')
+    return
+  }
+  if (due < todayYmd.value) {
+    ElMessage.warning('还款日须为今天或之后的日期')
+    return
+  }
+  const currentNegotiatedDue = resolveNegotiatedRepaymentDueDate(plan)
+  if (due === currentNegotiatedDue) {
+    ElMessage.info('协商还款日未变更')
+    modifyDueDateDialogOpen.value = false
+    return
+  }
+  const key = `${order.id}-${plan.period}`
+  modifyDueDateSavingKey.value = key
+  try {
+    await setInstallmentRepaymentDueDate(order.id, plan.period, due)
+    ElMessage.success('协商还款日已更新')
+    modifyDueDateDialogOpen.value = false
+    const id = selectedOrder.value?.id
+    if (id) {
+      const fresh = orders.value.find(o => o.id === id)
+      if (fresh) {
+        selectedOrder.value = fresh
+      }
+    }
+  }
+  catch (e) {
+    ElMessage.error(e instanceof Error ? e.message : '修改失败')
+  }
+  finally {
+    modifyDueDateSavingKey.value = ''
+  }
+}
+
 function openNegotiateRepayDialog(order: OrderItem, plan: InstallmentItem) {
   if (!canNegotiateRepayment.value || plan.paid) {
     return
@@ -1087,7 +1195,7 @@ function openNegotiateRepayDialog(order: OrderItem, plan: InstallmentItem) {
     ElMessage.warning('本期尚有协商款项待用户在前台完成支付，请待完成后再协商')
     return
   }
-  if (deferDueSavingKey.value || negotiateSavingKey.value || negotiationHistorySavingKey.value || settleAmountSavingKey.value) {
+  if (deferDueSavingKey.value || modifyDueDateSavingKey.value || negotiateSavingKey.value || negotiationHistorySavingKey.value || settleAmountSavingKey.value) {
     return
   }
   negotiateDialogOrder.value = order
@@ -1179,7 +1287,7 @@ async function promptSettleRepayAmount(order: OrderItem, plan: InstallmentItem) 
     ElMessage.warning('本期已有协商记录，请通过「协商还款」或协商记录处理，不可直接修改应还金额')
     return
   }
-  if (deferDueSavingKey.value || negotiateSavingKey.value || negotiationHistorySavingKey.value || settleAmountSavingKey.value) {
+  if (deferDueSavingKey.value || modifyDueDateSavingKey.value || negotiateSavingKey.value || negotiationHistorySavingKey.value || settleAmountSavingKey.value) {
     return
   }
   let value: string
@@ -1877,7 +1985,7 @@ watch(
             v-for="plan in selectedOrder.installmentPlan"
             :key="plan.period"
           >
-            <td>{{ plan.dueDate }}</td>
+            <td>{{ resolveOriginalRepaymentDueDate(plan) || '—' }}</td>
             <td>¥ {{ selectedOrder.totalAmount }}</td>
             <td>
               ¥ {{ plan.amount }}
@@ -1911,7 +2019,7 @@ watch(
                   <button
                     class="btn btn-warning"
                     type="button"
-                    :disabled="!!deferDueSavingKey || !!negotiateSavingKey || !!negotiationHistorySavingKey || !!settleAmountSavingKey"
+                    :disabled="!!deferDueSavingKey || !!modifyDueDateSavingKey || !!negotiateSavingKey || !!negotiationHistorySavingKey || !!settleAmountSavingKey"
                     @click="toggleRepay(selectedOrder, plan)"
                   >
                     标记未还
@@ -1927,7 +2035,7 @@ watch(
                     <button
                       class="btn btn-success"
                       type="button"
-                      :disabled="!selectedOrder.cardPackageIssued || !!deferDueSavingKey || !!negotiateSavingKey || !!negotiationHistorySavingKey || !!settleAmountSavingKey"
+                      :disabled="!selectedOrder.cardPackageIssued || !!deferDueSavingKey || !!modifyDueDateSavingKey || !!negotiateSavingKey || !!negotiationHistorySavingKey || !!settleAmountSavingKey"
                       @click="toggleRepay(selectedOrder, plan)"
                     >
                       标记已还
@@ -1944,7 +2052,7 @@ watch(
                     <button
                       class="btn btn-warning"
                       type="button"
-                      :disabled="!selectedOrder.cardPackageIssued || !!deferDueSavingKey || !!negotiateSavingKey || !!negotiationHistorySavingKey || !!settleAmountSavingKey"
+                      :disabled="!selectedOrder.cardPackageIssued || !!deferDueSavingKey || !!modifyDueDateSavingKey || !!negotiateSavingKey || !!negotiationHistorySavingKey || !!settleAmountSavingKey"
                       @click="deferRepaymentDue(selectedOrder, plan)"
                     >
                       {{ deferDueSavingKey === `${selectedOrder.id}-${plan.period}` ? '处理中…' : '延期还款' }}
@@ -1961,7 +2069,7 @@ watch(
                     <button
                       class="btn btn-danger"
                       type="button"
-                      :disabled="!selectedOrder.cardPackageIssued || !!deferDueSavingKey || !!negotiateSavingKey || !!negotiationHistorySavingKey || !!settleAmountSavingKey || !!plan.negotiationPayPending"
+                      :disabled="!selectedOrder.cardPackageIssued || !!deferDueSavingKey || !!modifyDueDateSavingKey || !!negotiateSavingKey || !!negotiationHistorySavingKey || !!settleAmountSavingKey || !!plan.negotiationPayPending"
                       @click="openNegotiateRepayDialog(selectedOrder, plan)"
                     >
                       {{ negotiateSavingKey === `${selectedOrder.id}-${plan.period}` ? '处理中…' : '协商部分还款' }}
@@ -1978,10 +2086,27 @@ watch(
                     <button
                       class="btn btn-danger-settle"
                       type="button"
-                      :disabled="!selectedOrder.cardPackageIssued || !!deferDueSavingKey || !!negotiateSavingKey || !!negotiationHistorySavingKey || !!settleAmountSavingKey || !!plan.negotiationPayPending || planHasNegotiationHistory(plan)"
+                      :disabled="!selectedOrder.cardPackageIssued || !!deferDueSavingKey || !!modifyDueDateSavingKey || !!negotiateSavingKey || !!negotiationHistorySavingKey || !!settleAmountSavingKey || !!plan.negotiationPayPending || planHasNegotiationHistory(plan)"
                       @click="promptSettleRepayAmount(selectedOrder, plan)"
                     >
                       {{ settleAmountSavingKey === `${selectedOrder.id}-${plan.period}` ? '处理中…' : '协商结清还款' }}
+                    </button>
+                  </span>
+                </el-tooltip>
+                <el-tooltip
+                  v-if="!plan.paid && canDelayRepayment && planHasNegotiationHistory(plan)"
+                  :content="!selectedOrder.cardPackageIssued ? '卡包未发放' : ''"
+                  placement="top"
+                  :disabled="selectedOrder.cardPackageIssued"
+                >
+                  <span class="plan-modal-action-tooltip-host">
+                    <button
+                      class="btn btn-defer-modify"
+                      type="button"
+                      :disabled="!selectedOrder.cardPackageIssued || !!deferDueSavingKey || !!modifyDueDateSavingKey || !!negotiateSavingKey || !!negotiationHistorySavingKey || !!settleAmountSavingKey"
+                      @click="openModifyDueDateDialog(selectedOrder, plan)"
+                    >
+                      {{ modifyDueDateSavingKey === `${selectedOrder.id}-${plan.period}` ? '处理中…' : '修改延期还款日' }}
                     </button>
                   </span>
                 </el-tooltip>
@@ -2092,7 +2217,7 @@ watch(
                           v-if="canMarkPaid && negotiationRowCanMarkPaid(plan, row, idx)"
                           class="btn btn-success"
                           type="button"
-                          :disabled="!selectedOrder.cardPackageIssued || !!deferDueSavingKey || !!negotiateSavingKey || !!negotiationHistorySavingKey || !!settleAmountSavingKey"
+                          :disabled="!selectedOrder.cardPackageIssued || !!deferDueSavingKey || !!modifyDueDateSavingKey || !!negotiateSavingKey || !!negotiationHistorySavingKey || !!settleAmountSavingKey"
                           @click="toggleNegotiationHistoryPaid(selectedOrder, plan, idx, true)"
                         >
                           {{ negotiationHistorySavingKey === `${selectedOrder.id}-${plan.period}-${idx}` ? '处理中…' : '标记已还' }}
@@ -2101,7 +2226,7 @@ watch(
                           v-if="canRevokePaid && negotiationRowCanMarkUnpaid(plan, row, idx)"
                           class="btn btn-warning"
                           type="button"
-                          :disabled="!selectedOrder.cardPackageIssued || !!deferDueSavingKey || !!negotiateSavingKey || !!negotiationHistorySavingKey || !!settleAmountSavingKey"
+                          :disabled="!selectedOrder.cardPackageIssued || !!deferDueSavingKey || !!modifyDueDateSavingKey || !!negotiateSavingKey || !!negotiationHistorySavingKey || !!settleAmountSavingKey"
                           @click="toggleNegotiationHistoryPaid(selectedOrder, plan, idx, false)"
                         >
                           {{ negotiationHistorySavingKey === `${selectedOrder.id}-${plan.period}-${idx}` ? '处理中…' : '标记未还' }}
@@ -2242,6 +2367,50 @@ watch(
         type="primary"
         :loading="!!negotiateSavingKey"
         @click="confirmNegotiateRepay"
+      >
+        确定
+      </el-button>
+    </template>
+  </el-dialog>
+
+  <el-dialog
+    v-model="modifyDueDateDialogOpen"
+    title="修改还款日"
+    width="420px"
+    align-center
+    destroy-on-close
+    class="modify-due-date-dialog"
+    @closed="onModifyDueDateDialogClosed"
+  >
+    <template v-if="modifyDueDateDialogOrder && modifyDueDateDialogPlan">
+      <p class="modify-due-date-dialog__summary">
+        订单 {{ modifyDueDateDialogOrder.id }} · 第 {{ modifyDueDateDialogPlan.period }} 期<br>
+        原还款日 {{ resolveOriginalRepaymentDueDate(modifyDueDateDialogPlan) || '—' }}
+        · 当前协商还款日 {{ resolveNegotiatedRepaymentDueDate(modifyDueDateDialogPlan) || '—' }}
+      </p>
+      <el-form label-position="top">
+        <el-form-item label="新协商还款日">
+          <el-date-picker
+            v-model="modifyDueDateFormValue"
+            type="date"
+            value-format="YYYY-MM-DD"
+            format="YYYY-MM-DD"
+            placeholder="请选择还款日"
+            :clearable="false"
+            :disabled-date="disableModifyDueDateBeforeToday"
+            class="modify-due-date-dialog__picker"
+          />
+        </el-form-item>
+      </el-form>
+    </template>
+    <template #footer>
+      <el-button @click="modifyDueDateDialogOpen = false">
+        取消
+      </el-button>
+      <el-button
+        type="primary"
+        :loading="!!modifyDueDateSavingKey"
+        @click="confirmModifyDueDate"
       >
         确定
       </el-button>
@@ -2468,6 +2637,17 @@ watch(
 }
 
 .negotiate-repay-dialog__delay-days {
+  width: 100%;
+}
+
+.modify-due-date-dialog__summary {
+  margin: 0 0 12px;
+  font-size: 13px;
+  color: #64748b;
+  line-height: 1.5;
+}
+
+.modify-due-date-dialog__picker {
   width: 100%;
 }
 
@@ -2858,6 +3038,20 @@ watch(
   border-color: #d97706;
   background: #d97706;
   color: #fff;
+}
+
+/* 修改延期还款日：与待收页「已延期」标签蓝色系统一 */
+.btn-defer-modify {
+  border-color: #2563eb;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-weight: 600;
+}
+
+.btn-defer-modify:hover:not(:disabled) {
+  border-color: #1d4ed8;
+  background: #dbeafe;
+  color: #1e40af;
 }
 
 .btn-danger {

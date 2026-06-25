@@ -28,6 +28,11 @@ const {
   recordDeferRepaymentDisplayEvent,
 } = require('./installmentDeferRepayment')
 const {
+  applyNegotiatedRepaymentDueDate,
+  hasNegotiatedRepaymentDueDateTarget,
+  isDueDateOnOrAfterToday,
+} = require('./installmentSetDueDate')
+const {
   INSTALLMENT_REPAY_DAYS_AFTER_CARD_ISSUE: INSTALLMENT_REPAY_DAYS_AFTER_CARD_ISSUE_FROM_POLICY,
 } = require('./installmentRepaySchedule')
 
@@ -9731,16 +9736,8 @@ function computeAdminDashboardKpisFromDb(db) {
   // 订单结清率：不含当日，截至昨日各应还日「已到期订单全额结清率」的累计日均
   const dynamicSettlement = computeDynamicOrderSettlementRate(basis, tYesterday)
   const settledRate = dynamicSettlement.dynamicSettledRate
-  // 逾期率/占待收：默认截至昨日；今日有延期视同回款展示标记时，展示口径临时含今日。
-  const hasTodayDeferredDisplayEvent = basis.some(order => {
-    const plan = Array.isArray(order && order.installmentPlan) ? order.installmentPlan : []
-    return plan.some(item => Array.isArray(item && item.repaymentDisplayEvents)
-      && item.repaymentDisplayEvents.some(event => event
-        && event.type === 'defer_as_collected'
-        && normalizeInstallmentDueDateKey(event.statsDate) === t))
-  })
-  const dynamicReceivableEndDate = hasTodayDeferredDisplayEvent ? t : tYesterday
-  const dynamicReceivable = computeDynamicPendingReceivableAverages(basis, dynamicReceivableEndDate)
+  // 逾期率/占待收：不含当日（仍在催收），动态累计日均截至昨日
+  const dynamicReceivable = computeDynamicPendingReceivableAverages(basis, tYesterday)
   const overdueRate = dynamicReceivable.dynamicUnpaidRate
   const overdueShareOfReceivable = dynamicReceivable.dynamicUnpaidShareOfDue
   // 逾期金额：截至昨日全部逾期未还分期金额合计（非日均）
@@ -9841,21 +9838,9 @@ router.get('/admin/dashboard/kpis', async (ctx) => {
   if (!await requireAdminPermission(ctx, [ADMIN_ROLES.SUPER], '查看财务报表', { permissionKey: 'dashboard', permissionAction: 'view' })) {
     return
   }
-  const todayKey = formatDate(new Date().toISOString())
-  const dbForDisplayCheck = readDb()
-  const hasTodayDisplayEvent = (dbForDisplayCheck.orders || []).some(order => {
-    const plan = Array.isArray(order && order.installmentPlan) ? order.installmentPlan : []
-    return plan.some(item => Array.isArray(item && item.repaymentDisplayEvents)
-      && item.repaymentDisplayEvents.some(event => event
-        && event.type === 'defer_as_collected'
-        && normalizeInstallmentDueDateKey(event.statsDate) === todayKey))
-  })
-  if (hasTodayDisplayEvent) {
-    ctx.body = success(computeAdminDashboardKpisFromDb(dbForDisplayCheck))
-    return
-  }
   const data = withAdminReadCache(ctx, 'dashboard-kpis', () => {
-    return computeAdminDashboardKpisFromDb(dbForDisplayCheck)
+    const db = readDb()
+    return computeAdminDashboardKpisFromDb(db)
   })
   ctx.body = success(data)
 })
@@ -10554,14 +10539,34 @@ router.patch('/orders/:id/installments/:period/pay', async (ctx) => {
   ctx.body = success(target)
 })
 
-/** 管理端：将指定期次的还款日在原日期基础上顺延若干天 */
+/** 管理端：修改指定期次还款日——支持顺延若干天（addDays）或直接指定协商还款日（dueDate） */
 router.patch('/orders/:id/installments/:period/due-date', async (ctx) => {
-  if (!await requireAdminMarkPaidPermission(ctx, '延期还款', 'delayRepayment')) {
-    return
-  }
   const db = readDb()
   const { id, period } = ctx.params
   const payload = ctx.request.body || {}
+  const dueDateRaw = String(payload.dueDate || '').trim()
+  const addDaysRaw = payload.addDays
+  const isSetDueDate = dueDateRaw !== ''
+  const isDeferByDays = addDaysRaw != null && addDaysRaw !== ''
+
+  if (isSetDueDate && isDeferByDays) {
+    fail(ctx, 'addDays 与 dueDate 不可同时提交')
+    return
+  }
+  if (!isSetDueDate && !isDeferByDays) {
+    fail(ctx, '请提供 addDays 或 dueDate')
+    return
+  }
+
+  if (isSetDueDate) {
+    if (!await requireAdminMarkPaidPermission(ctx, '修改还款日', 'delayRepayment')) {
+      return
+    }
+  }
+  else if (!await requireAdminMarkPaidPermission(ctx, '延期还款', 'delayRepayment')) {
+    return
+  }
+
   const target = db.orders.find(item => String(item.id) === String(id))
   if (!target) {
     fail(ctx, '订单不存在', 404)
@@ -10574,12 +10579,6 @@ router.patch('/orders/:id/installments/:period/due-date', async (ctx) => {
     return
   }
 
-  const addDaysNum = Number(payload.addDays)
-  if (!Number.isInteger(addDaysNum) || addDaysNum < 1 || addDaysNum > 3650) {
-    fail(ctx, 'addDays 须为 1～3650 的整数')
-    return
-  }
-
   ensureOrderInstallmentPlan(target)
   const planItem = findInstallmentPlanItemByPeriod(target.installmentPlan, periodNumber)
   if (!planItem) {
@@ -10588,7 +10587,35 @@ router.patch('/orders/:id/installments/:period/due-date', async (ctx) => {
   }
 
   if (installmentItemIsPaid(planItem)) {
-    fail(ctx, '已还款期次不可延期')
+    fail(ctx, isSetDueDate ? '已还款期次不可修改还款日' : '已还款期次不可延期')
+    return
+  }
+
+  if (isSetDueDate) {
+    const todayKey = formatDate(new Date().toISOString())
+    if (!isDueDateOnOrAfterToday(dueDateRaw, todayKey)) {
+      fail(ctx, '还款日须为今天或之后的日期')
+      return
+    }
+    if (!hasNegotiatedRepaymentDueDateTarget(planItem)) {
+      fail(ctx, '当前期无协商记录，无法修改协商还款日')
+      return
+    }
+    const applied = applyNegotiatedRepaymentDueDate(planItem, dueDateRaw)
+    if (!applied.ok) {
+      fail(ctx, applied.error || '还款日无效')
+      return
+    }
+    target.installmentScheduleExplicit = true
+    writeOrdersDb(db)
+    await flushMongoPersist()
+    ctx.body = success(target)
+    return
+  }
+
+  const addDaysNum = Number(addDaysRaw)
+  if (!Number.isInteger(addDaysNum) || addDaysNum < 1 || addDaysNum > 3650) {
+    fail(ctx, 'addDays 须为 1～3650 的整数')
     return
   }
 
