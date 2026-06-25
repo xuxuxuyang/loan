@@ -4,6 +4,8 @@ const test = require('node:test')
 const {
   resolveDeferRepaymentBaseDueDateKey,
   applyDeferRepaymentDueDate,
+  buildDeferRepaymentDisplayEvent,
+  recordDeferRepaymentDisplayEvent,
 } = require('../src/installmentDeferRepayment')
 
 test('uses negotiation pending remainder due date as defer base', () => {
@@ -46,4 +48,69 @@ test('defers plain installment by updating dueDate only', () => {
   assert.equal(resolveDeferRepaymentBaseDueDateKey(planItem), '2026-06-15')
   applyDeferRepaymentDueDate(planItem, '2026-06-29')
   assert.equal(planItem.dueDate, '2026-06-29')
+})
+
+test('builds defer-as-collected display event without mutating installment data', () => {
+  const planItem = {
+    dueDate: '2026-06-15',
+    amount: 2750,
+  }
+
+  const event = buildDeferRepaymentDisplayEvent(planItem, {
+    orderId: 'OD-preview',
+    period: 1,
+    fromDueDate: '2026-06-15',
+    toDueDate: '2026-06-16',
+    nowIso: '2026-06-15T09:30:00.000Z',
+  })
+
+  assert.equal(Object.prototype.hasOwnProperty.call(planItem, 'repaymentRateEvents'), false)
+  assert.deepEqual(event, {
+    type: 'defer_as_collected',
+    orderId: 'OD-preview',
+    period: 1,
+    statsDate: '2026-06-15',
+    fromDueDate: '2026-06-15',
+    toDueDate: '2026-06-16',
+    amountAtAction: 2750,
+    createdAt: '2026-06-15T09:30:00.000Z',
+  })
+})
+
+test('records defer-as-collected display event without changing repayment state', () => {
+  const planItem = {
+    dueDate: '2026-06-15',
+    amount: 2750,
+    paid: false,
+  }
+
+  const first = recordDeferRepaymentDisplayEvent(planItem, {
+    orderId: 'OD-display',
+    period: 1,
+    fromDueDate: '2026-06-15',
+    toDueDate: '2026-06-16',
+    nowIso: '2026-06-15T09:30:00.000Z',
+  })
+  const second = recordDeferRepaymentDisplayEvent(planItem, {
+    orderId: 'OD-display',
+    period: 1,
+    fromDueDate: '2026-06-15',
+    toDueDate: '2026-06-16',
+    nowIso: '2026-06-15T09:31:00.000Z',
+  })
+
+  assert.equal(first, true)
+  assert.equal(second, false)
+  assert.equal(planItem.paid, false)
+  assert.equal(planItem.repaymentDisplayEvents.length, 1)
+  assert.deepEqual(planItem.repaymentDisplayEvents[0], {
+    type: 'defer_as_collected',
+    orderId: 'OD-display',
+    period: 1,
+    statsDate: '2026-06-15',
+    fromDueDate: '2026-06-15',
+    toDueDate: '2026-06-16',
+    amountAtAction: 2750,
+    createdAt: '2026-06-15T09:30:00.000Z',
+  })
 })

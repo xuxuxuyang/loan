@@ -25,6 +25,7 @@ const {
 const {
   resolveDeferRepaymentBaseDueDateKey,
   applyDeferRepaymentDueDate,
+  recordDeferRepaymentDisplayEvent,
 } = require('./installmentDeferRepayment')
 const {
   INSTALLMENT_REPAY_DAYS_AFTER_CARD_ISSUE: INSTALLMENT_REPAY_DAYS_AFTER_CARD_ISSUE_FROM_POLICY,
@@ -9730,8 +9731,16 @@ function computeAdminDashboardKpisFromDb(db) {
   // 订单结清率：不含当日，截至昨日各应还日「已到期订单全额结清率」的累计日均
   const dynamicSettlement = computeDynamicOrderSettlementRate(basis, tYesterday)
   const settledRate = dynamicSettlement.dynamicSettledRate
-  // 逾期率/占待收：不含当日（仍在催收），统计截至昨日各应还日的累计日均
-  const dynamicReceivable = computeDynamicPendingReceivableAverages(basis, tYesterday)
+  // 逾期率/占待收：默认截至昨日；今日有延期视同回款展示标记时，展示口径临时含今日。
+  const hasTodayDeferredDisplayEvent = basis.some(order => {
+    const plan = Array.isArray(order && order.installmentPlan) ? order.installmentPlan : []
+    return plan.some(item => Array.isArray(item && item.repaymentDisplayEvents)
+      && item.repaymentDisplayEvents.some(event => event
+        && event.type === 'defer_as_collected'
+        && normalizeInstallmentDueDateKey(event.statsDate) === t))
+  })
+  const dynamicReceivableEndDate = hasTodayDeferredDisplayEvent ? t : tYesterday
+  const dynamicReceivable = computeDynamicPendingReceivableAverages(basis, dynamicReceivableEndDate)
   const overdueRate = dynamicReceivable.dynamicUnpaidRate
   const overdueShareOfReceivable = dynamicReceivable.dynamicUnpaidShareOfDue
   // 逾期金额：截至昨日全部逾期未还分期金额合计（非日均）
@@ -9832,9 +9841,21 @@ router.get('/admin/dashboard/kpis', async (ctx) => {
   if (!await requireAdminPermission(ctx, [ADMIN_ROLES.SUPER], '查看财务报表', { permissionKey: 'dashboard', permissionAction: 'view' })) {
     return
   }
+  const todayKey = formatDate(new Date().toISOString())
+  const dbForDisplayCheck = readDb()
+  const hasTodayDisplayEvent = (dbForDisplayCheck.orders || []).some(order => {
+    const plan = Array.isArray(order && order.installmentPlan) ? order.installmentPlan : []
+    return plan.some(item => Array.isArray(item && item.repaymentDisplayEvents)
+      && item.repaymentDisplayEvents.some(event => event
+        && event.type === 'defer_as_collected'
+        && normalizeInstallmentDueDateKey(event.statsDate) === todayKey))
+  })
+  if (hasTodayDisplayEvent) {
+    ctx.body = success(computeAdminDashboardKpisFromDb(dbForDisplayCheck))
+    return
+  }
   const data = withAdminReadCache(ctx, 'dashboard-kpis', () => {
-    const db = readDb()
-    return computeAdminDashboardKpisFromDb(db)
+    return computeAdminDashboardKpisFromDb(dbForDisplayCheck)
   })
   ctx.body = success(data)
 })
@@ -10015,7 +10036,8 @@ function parsePendingReceivableRepaymentStatus(raw) {
   return 'unpaid'
 }
 
-function mapPendingReceivableRow(db, { order, item, key }) {
+function mapPendingReceivableRow(db, ref) {
+  const { order, item, key } = ref
   const buyer = resolveMallBuyerFromOrder(db, order)
   const buyerName = buyer ? String(buyer.name || '').trim() : ''
   let buyerPhoneDigits = buyer ? normalizePhone(buyer.phone || '') : ''
@@ -10037,6 +10059,8 @@ function mapPendingReceivableRow(db, { order, item, key }) {
     amount: Number(Number(item.amount || 0).toFixed(2)),
     collectionRemark: readInstallmentCollectionRemark(item),
     isPaid: installmentItemIsPaid(item),
+    repaymentDisplayStatus: ref.repaymentDisplayStatus || (installmentItemIsPaid(item) ? 'paid' : 'unpaid'),
+    deferredAsCollected: Boolean(ref.deferredAsCollected),
   }
 }
 
@@ -10085,6 +10109,8 @@ router.get('/orders/pending-receivable', async (ctx) => {
     totalDueOnDateCount: receivableStats.totalDueOnDateCount,
     paidDueOnDateCount: receivableStats.paidDueOnDateCount,
     unpaidDueOnDateCount: receivableStats.unpaidDueOnDateCount,
+    deferredAsCollectedAmount: receivableStats.deferredAsCollectedAmount,
+    deferredAsCollectedCount: receivableStats.deferredAsCollectedCount,
     collectionRateOnDate: receivableStats.collectionRateOnDate,
     unpaidRateOnDate: receivableStats.unpaidRateOnDate,
     overdueRateAsOfDate: receivableStats.overdueRateAsOfDate,
@@ -10578,6 +10604,15 @@ router.patch('/orders/:id/installments/:period/due-date', async (ctx) => {
     return
   }
 
+  const todayKeyForDisplay = formatDate(new Date().toISOString())
+  if (key === todayKeyForDisplay) {
+    recordDeferRepaymentDisplayEvent(planItem, {
+      orderId: target.id,
+      period: periodNumber,
+      fromDueDate: key,
+      toDueDate: nextYmd,
+    })
+  }
   applyDeferRepaymentDueDate(planItem, nextYmd)
   target.installmentScheduleExplicit = true
   applyInstallmentCompletionOrderStatus(target, { ignoreAdminSkip: true })

@@ -4,6 +4,8 @@ function normalizeYmd(raw) {
   return m ? m[1] : ''
 }
 
+const DEFER_AS_COLLECTED_EVENT_TYPE = 'defer_as_collected'
+
 /** 延期基准日：协商待支付时用协商还款日，否则用当前 dueDate（与待收/逾期有效还款日一致） */
 function resolveDeferRepaymentBaseDueDateKey(planItem) {
   if (!planItem) {
@@ -36,7 +38,53 @@ function applyDeferRepaymentDueDate(planItem, nextYmd) {
   planItem.dueDate = nextYmd
 }
 
+function buildDeferRepaymentDisplayEvent(planItem, { orderId, period, fromDueDate, toDueDate, nowIso } = {}) {
+  if (!planItem) {
+    return null
+  }
+  const statsDate = normalizeYmd(fromDueDate)
+  const nextDueDate = normalizeYmd(toDueDate)
+  if (!statsDate || !nextDueDate || statsDate === nextDueDate) {
+    return null
+  }
+  return {
+    type: DEFER_AS_COLLECTED_EVENT_TYPE,
+    orderId: String(orderId || '').trim(),
+    period: Number(period),
+    statsDate,
+    fromDueDate: statsDate,
+    toDueDate: nextDueDate,
+    amountAtAction: Number(Number(planItem.amount || 0).toFixed(2)),
+    createdAt: String(nowIso || new Date().toISOString()),
+  }
+}
+
+function recordDeferRepaymentDisplayEvent(planItem, options = {}) {
+  const event = buildDeferRepaymentDisplayEvent(planItem, options)
+  if (!event) {
+    return false
+  }
+  if (!Array.isArray(planItem.repaymentDisplayEvents)) {
+    planItem.repaymentDisplayEvents = []
+  }
+  const exists = planItem.repaymentDisplayEvents.some(row => row
+    && row.type === DEFER_AS_COLLECTED_EVENT_TYPE
+    && normalizeYmd(row.statsDate) === event.statsDate
+    && normalizeYmd(row.fromDueDate) === event.fromDueDate
+    && normalizeYmd(row.toDueDate) === event.toDueDate
+    && String(row.orderId || '').trim() === event.orderId
+    && Number(row.period) === event.period)
+  if (exists) {
+    return false
+  }
+  planItem.repaymentDisplayEvents.push(event)
+  return true
+}
+
 module.exports = {
+  DEFER_AS_COLLECTED_EVENT_TYPE,
   resolveDeferRepaymentBaseDueDateKey,
   applyDeferRepaymentDueDate,
+  buildDeferRepaymentDisplayEvent,
+  recordDeferRepaymentDisplayEvent,
 }

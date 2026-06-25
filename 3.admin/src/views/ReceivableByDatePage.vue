@@ -19,6 +19,8 @@ interface PendingReceivableRow {
   amount: number
   /** 该期是否已还款入账 */
   isPaid?: boolean
+  repaymentDisplayStatus?: 'paid' | 'unpaid' | 'deferred_as_collected'
+  deferredAsCollected?: boolean
   /** 待收期次还款备注（与用户 adminRemark 无关） */
   collectionRemark?: string
   /** 注册用户备注（只读展示，与 collectionRemark 无关） */
@@ -55,6 +57,9 @@ const paidDueOnDateCount = ref(0)
 /** 应还日 = 统计日 且未还（与明细合计一致） */
 const unpaidDueOnDate = ref(0)
 const unpaidDueOnDateCount = ref(0)
+/** 今日到期后延期，统计上视同已回款但不是真实入账 */
+const deferredAsCollectedAmount = ref(0)
+const deferredAsCollectedCount = ref(0)
 /** 应还日 = 统计日 的已还/未还笔数占比 */
 const collectionRateOnDate = ref(0)
 const unpaidRateOnDate = ref(0)
@@ -189,6 +194,8 @@ async function load() {
         totalDueOnDateCount?: number
         paidDueOnDateCount?: number
         unpaidDueOnDateCount?: number
+        deferredAsCollectedAmount?: number
+        deferredAsCollectedCount?: number
         collectionRateOnDate?: number
         unpaidRateOnDate?: number
       }
@@ -212,6 +219,8 @@ async function load() {
     totalDueOnDateCount.value = Number(payload.data?.totalDueOnDateCount ?? 0)
     paidDueOnDateCount.value = Number(payload.data?.paidDueOnDateCount ?? 0)
     unpaidDueOnDateCount.value = Number(payload.data?.unpaidDueOnDateCount ?? totalRows.value)
+    deferredAsCollectedAmount.value = Number(payload.data?.deferredAsCollectedAmount ?? 0)
+    deferredAsCollectedCount.value = Number(payload.data?.deferredAsCollectedCount ?? 0)
     collectionRateOnDate.value = Number(payload.data?.collectionRateOnDate ?? 0)
     unpaidRateOnDate.value = Number(payload.data?.unpaidRateOnDate ?? 0)
   }
@@ -225,6 +234,8 @@ async function load() {
     totalDueOnDateCount.value = 0
     paidDueOnDateCount.value = 0
     unpaidDueOnDateCount.value = 0
+    deferredAsCollectedAmount.value = 0
+    deferredAsCollectedCount.value = 0
     collectionRateOnDate.value = 0
     unpaidRateOnDate.value = 0
   }
@@ -392,7 +403,7 @@ async function clearCollectionRemark() {
             :value-style="statisticAmountStyle"
           />
           <p class="stat-sub">
-            应还日=统计日，已还+未还（{{ totalDueOnDateCount }} 笔）
+            应还日=统计日，已还/视同+未还（{{ totalDueOnDateCount }} 笔）
           </p>
         </el-col>
         <el-col
@@ -401,12 +412,15 @@ async function clearCollectionRemark() {
           :lg="6"
         >
           <el-statistic
-            title="已还款金额（元）"
+            title="已回款/视同金额（元）"
             :value="paidDueOnDate"
             :precision="2"
           />
           <p class="stat-sub">
-            应还日=统计日且已入账（{{ paidDueOnDateCount }} 笔）
+            真实已入账 + 协商延期视同（{{ paidDueOnDateCount }} 笔）
+            <template v-if="deferredAsCollectedCount > 0">
+              ，其中视同 {{ deferredAsCollectedCount }} 笔 / {{ deferredAsCollectedAmount.toFixed(2) }} 元
+            </template>
           </p>
         </el-col>
         <el-col
@@ -447,7 +461,7 @@ async function clearCollectionRemark() {
             </div>
           </div>
           <p class="stat-sub">
-            回款率=已还笔数÷总笔数；未还率=未还笔数÷总笔数
+            回款率=真实已还+协商延期视同÷总笔数；未还率=未还笔数÷总笔数
           </p>
         </el-col>
       </el-row>
@@ -603,12 +617,18 @@ async function clearCollectionRemark() {
           >
             <template #default="{ row }">
               <el-tag
-                :type="row.isPaid ? 'success' : 'warning'"
+                :type="row.deferredAsCollected ? 'info' : (row.isPaid ? 'success' : 'warning')"
                 effect="plain"
                 size="small"
               >
-                {{ row.isPaid ? '已还款' : '未还款' }}
+                {{ row.deferredAsCollected ? '已协商延期' : (row.isPaid ? '已还款' : '未还款') }}
               </el-tag>
+              <div
+                v-if="row.deferredAsCollected"
+                class="status-sub"
+              >
+                视同回款，非真实入账
+              </div>
             </template>
           </el-table-column>
           <el-table-column
@@ -891,6 +911,13 @@ async function clearCollectionRemark() {
 
 .receivable-table :deep(.el-table__row:hover > td) {
   background-color: var(--el-fill-color-lighter) !important;
+}
+
+.status-sub {
+  margin-top: 4px;
+  font-size: 11px;
+  line-height: 1.2;
+  color: var(--el-text-color-secondary);
 }
 
 .receivable-pagination {

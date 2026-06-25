@@ -44,6 +44,32 @@ function roundMoney(value) {
   return Number(Number(value || 0).toFixed(2))
 }
 
+const DEFER_AS_COLLECTED_EVENT_TYPE = 'defer_as_collected'
+
+function collectDeferAsCollectedEventsForDate(events, order, item, dueDate) {
+  const orderId = String(order && order.id ? order.id : '').trim()
+  const period = Number(item && item.period)
+  return events.filter(event => event
+    && event.type === DEFER_AS_COLLECTED_EVENT_TYPE
+    && normalizeInstallmentDueDateKey(event.statsDate) === dueDate
+    && String(event.orderId || '').trim() === orderId
+    && Number(event.period) === period)
+}
+
+function collectRepaymentDisplayEvents(orders, extraEvents = []) {
+  const events = Array.isArray(extraEvents) ? [...extraEvents] : []
+  for (const order of Array.isArray(orders) ? orders : []) {
+    const plan = Array.isArray(order && order.installmentPlan) ? order.installmentPlan : []
+    for (const item of plan) {
+      const displayEvents = Array.isArray(item && item.repaymentDisplayEvents) ? item.repaymentDisplayEvents : []
+      for (const event of displayEvents) {
+        events.push(event)
+      }
+    }
+  }
+  return events
+}
+
 function filterDueOnDateRowRefs(allDueOnDateRowRefs, repaymentStatus = 'unpaid') {
   const refs = Array.isArray(allDueOnDateRowRefs) ? allDueOnDateRowRefs : []
   const status = String(repaymentStatus || 'unpaid').trim().toLowerCase()
@@ -56,7 +82,8 @@ function filterDueOnDateRowRefs(allDueOnDateRowRefs, repaymentStatus = 'unpaid')
   return refs.filter(ref => ref && !ref.paid)
 }
 
-function computePendingReceivableStats(orders, dueDate) {
+function computePendingReceivableStats(orders, dueDate, options = {}) {
+  const deferredAsCollectedEvents = collectRepaymentDisplayEvents(orders, options.deferredAsCollectedEvents)
   const rowRefs = []
   const allDueOnDateRowRefs = []
   let totalDueOnDate = 0
@@ -65,6 +92,8 @@ function computePendingReceivableStats(orders, dueDate) {
   let totalDueOnDateCount = 0
   let paidDueOnDateCount = 0
   let unpaidDueOnDateCount = 0
+  let deferredAsCollectedAmount = 0
+  let deferredAsCollectedCount = 0
   let overdueBeforeDateCount = 0
   let unpaidDueOnOrBeforeDateCount = 0
 
@@ -102,6 +131,25 @@ function computePendingReceivableStats(orders, dueDate) {
           rowRefs.push(ref)
         }
       }
+      const deferEvents = collectDeferAsCollectedEventsForDate(deferredAsCollectedEvents, order, item, dueDate)
+      for (const event of deferEvents) {
+        const amt = roundMoney(event.amountAtAction || item.amount)
+        totalDueOnDate += amt
+        paidDueOnDate += amt
+        totalDueOnDateCount += 1
+        paidDueOnDateCount += 1
+        deferredAsCollectedAmount += amt
+        deferredAsCollectedCount += 1
+        allDueOnDateRowRefs.push({
+          order,
+          item,
+          key: dueDate,
+          paid: true,
+          repaymentDisplayStatus: 'deferred_as_collected',
+          deferredAsCollected: true,
+          deferEvent: event,
+        })
+      }
     }
   }
 
@@ -125,6 +173,8 @@ function computePendingReceivableStats(orders, dueDate) {
     totalDueOnDateCount,
     paidDueOnDateCount,
     unpaidDueOnDateCount,
+    deferredAsCollectedAmount: roundMoney(deferredAsCollectedAmount),
+    deferredAsCollectedCount,
     collectionRateOnDate,
     unpaidRateOnDate,
     overdueRateAsOfDate,
@@ -134,7 +184,8 @@ function computePendingReceivableStats(orders, dueDate) {
 }
 
 /** 收集截至 endDate（含）所有分期有效应还日（去重、升序） */
-function collectReceivableDueDatesUpTo(orders, endDate) {
+function collectReceivableDueDatesUpTo(orders, endDate, options = {}) {
+  const deferredAsCollectedEvents = collectRepaymentDisplayEvents(orders, options.deferredAsCollectedEvents)
   const dates = new Set()
   for (const order of Array.isArray(orders) ? orders : []) {
     const plan = Array.isArray(order && order.installmentPlan) ? order.installmentPlan : []
@@ -146,6 +197,15 @@ function collectReceivableDueDatesUpTo(orders, endDate) {
       if (key && key <= endDate) {
         dates.add(key)
       }
+    }
+  }
+  for (const event of deferredAsCollectedEvents) {
+    if (!event || event.type !== DEFER_AS_COLLECTED_EVENT_TYPE) {
+      continue
+    }
+    const statsDate = normalizeInstallmentDueDateKey(event.statsDate)
+    if (statsDate && statsDate <= endDate) {
+      dates.add(statsDate)
     }
   }
   return Array.from(dates).sort()
@@ -248,15 +308,15 @@ function computeDynamicOrderSettlementRate(orders, endDate) {
  * 动态待收逾期指标：从首个有应还数据的日期到 endDate，对各日「未还率 / 未还占当日应还」取算术平均。
  * 例：14 日未还率 24%、15 日 7.14%，则截至 15 日动态未还率 = (24 + 7.14) / 2。
  */
-function computeDynamicPendingReceivableAverages(orders, endDate) {
-  const dueDates = collectReceivableDueDatesUpTo(orders, endDate)
+function computeDynamicPendingReceivableAverages(orders, endDate, options = {}) {
+  const dueDates = collectReceivableDueDatesUpTo(orders, endDate, options)
   let rateSum = 0
   let amountSum = 0
   let shareSum = 0
   let dayCount = 0
 
   for (const d of dueDates) {
-    const stats = computePendingReceivableStats(orders, d)
+    const stats = computePendingReceivableStats(orders, d, options)
     if (stats.totalDueOnDateCount <= 0) {
       continue
     }
@@ -278,6 +338,7 @@ function computeDynamicPendingReceivableAverages(orders, endDate) {
 
 module.exports = {
   filterDueOnDateRowRefs,
+  DEFER_AS_COLLECTED_EVENT_TYPE,
   computePendingReceivableStats,
   computeTotalOverdueAmount,
   computeOrderSettlementRateOnDate,

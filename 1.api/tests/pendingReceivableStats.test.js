@@ -163,6 +163,50 @@ test('uses deferred due date after admin postpones repayment', () => {
   assert.equal(deferredDayStats.rowRefs[0].key, '2026-06-17')
 })
 
+test('counts deferred due installment as collected on original stats date without changing real future receivable', () => {
+  const orders = [
+    {
+      id: 'OD-defer-rate',
+      installmentPlan: [
+        {
+          period: 1,
+          dueDate: '2026-06-16',
+          amount: 2750,
+          paid: false,
+          repaymentDisplayEvents: [{
+            type: 'defer_as_collected',
+            orderId: 'OD-defer-rate',
+            period: 1,
+            statsDate: '2026-06-15',
+            fromDueDate: '2026-06-15',
+            toDueDate: '2026-06-16',
+            amountAtAction: 2750,
+            createdAt: '2026-06-15T09:30:00.000Z',
+          }],
+        },
+      ],
+    },
+  ]
+
+  const originalDayStats = computePendingReceivableStats(orders, '2026-06-15')
+  assert.equal(originalDayStats.totalDueOnDateCount, 1)
+  assert.equal(originalDayStats.paidDueOnDateCount, 1)
+  assert.equal(originalDayStats.unpaidDueOnDateCount, 0)
+  assert.equal(originalDayStats.collectionRateOnDate, 100)
+  assert.equal(originalDayStats.deferredAsCollectedCount, 1)
+  assert.equal(originalDayStats.deferredAsCollectedAmount, 2750)
+  assert.equal(originalDayStats.allDueOnDateRowRefs.length, 1)
+  assert.equal(originalDayStats.allDueOnDateRowRefs[0].paid, true)
+  assert.equal(originalDayStats.allDueOnDateRowRefs[0].repaymentDisplayStatus, 'deferred_as_collected')
+
+  const futureStats = computePendingReceivableStats(orders, '2026-06-16')
+  assert.equal(futureStats.totalDueOnDateCount, 1)
+  assert.equal(futureStats.paidDueOnDateCount, 0)
+  assert.equal(futureStats.unpaidDueOnDateCount, 1)
+  assert.equal(futureStats.rowRefs.length, 1)
+  assert.equal(futureStats.rowRefs[0].paid, false)
+})
+
 test('resolveInstallmentEffectiveDueDateKey prefers negotiated remainder due date', () => {
   const key = resolveInstallmentEffectiveDueDateKey({
     dueDate: '2026-06-15',
@@ -308,6 +352,70 @@ test('excludes end date when computing averages through yesterday only', () => {
   assert.equal(throughYesterday.dynamicDayCount, 0)
   assert.equal(throughYesterday.dynamicUnpaidRate, 0)
   assert.equal(throughYesterday.dynamicUnpaidAmount, 0)
+})
+
+test('dynamic receivable averages ignore legacy repaymentRateEvents on order data', () => {
+  const orders = [
+    {
+      id: 'OD-defer-dynamic',
+      installmentPlan: [
+        {
+          period: 1,
+          dueDate: '2026-06-16',
+          amount: 100,
+          paid: false,
+          repaymentRateEvents: [{
+            type: 'defer_as_collected',
+            orderId: 'OD-defer-dynamic',
+            period: 1,
+            statsDate: '2026-06-15',
+            fromDueDate: '2026-06-15',
+            toDueDate: '2026-06-16',
+            amountAtAction: 100,
+            createdAt: '2026-06-15T09:30:00.000Z',
+          }],
+        },
+      ],
+    },
+  ]
+
+  const dynamic = computeDynamicPendingReceivableAverages(orders, '2026-06-15')
+  assert.equal(dynamic.dynamicDayCount, 0)
+  assert.equal(dynamic.dynamicUnpaidRate, 0)
+  assert.equal(dynamic.dynamicUnpaidAmount, 0)
+  assert.equal(dynamic.dynamicUnpaidShareOfDue, 0)
+})
+
+test('dynamic receivable averages read persisted display events for dashboard display calculations', () => {
+  const orders = [
+    {
+      id: 'OD-defer-dynamic-preview',
+      installmentPlan: [
+        {
+          period: 1,
+          dueDate: '2026-06-16',
+          amount: 100,
+          paid: false,
+          repaymentDisplayEvents: [{
+            type: 'defer_as_collected',
+            orderId: 'OD-defer-dynamic-preview',
+            period: 1,
+            statsDate: '2026-06-15',
+            fromDueDate: '2026-06-15',
+            toDueDate: '2026-06-16',
+            amountAtAction: 100,
+            createdAt: '2026-06-15T09:30:00.000Z',
+          }],
+        },
+      ],
+    },
+  ]
+
+  const dynamic = computeDynamicPendingReceivableAverages(orders, '2026-06-15')
+  assert.equal(dynamic.dynamicDayCount, 1)
+  assert.equal(dynamic.dynamicUnpaidRate, 0)
+  assert.equal(dynamic.dynamicUnpaidAmount, 0)
+  assert.equal(dynamic.dynamicUnpaidShareOfDue, 0)
 })
 
 test('returns zero dynamic metrics when no due installments exist through end date', () => {
