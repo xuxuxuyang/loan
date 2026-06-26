@@ -18,6 +18,14 @@ interface ImportMetaEnv {
   readonly VITE_MALL_KEFU_QR_URL?: string
   /** Display name shown below the customer-service QR code. */
   readonly VITE_MALL_KEFU_DISPLAY_NAME?: string
+  /** Minimum allowed age for mall order pre-risk validation. */
+  readonly VITE_MALL_ORDER_MIN_AGE?: string
+  /** Maximum allowed age for mall order pre-risk validation. */
+  readonly VITE_MALL_ORDER_MAX_AGE?: string
+  /** Comma-separated region names blocked by mall order pre-risk validation. */
+  readonly VITE_MALL_ORDER_RESTRICTED_REGION_NAMES?: string
+  /** Comma-separated ID-card prefixes blocked by mall order pre-risk validation. */
+  readonly VITE_MALL_ORDER_RESTRICTED_ID_PREFIXES?: string
   /** OTA upload base URL used by build:ota; runtime code does not read it directly. */
   readonly VITE_APP_OTA_BASE_URL?: string
   /** 原生 App OTA：latest.json 地址（仅 Capacitor Android/iOS 启动时读取） */

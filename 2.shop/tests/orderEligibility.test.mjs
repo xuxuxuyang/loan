@@ -23,12 +23,27 @@ function loadTsModule(relativePath) {
 
 const eligibility = loadTsModule('src/utils/orderEligibility.ts')
 
+const policy = eligibility.resolveMallOrderEligibilityPolicyFromEnv({
+  VITE_MALL_ORDER_MIN_AGE: '22',
+  VITE_MALL_ORDER_MAX_AGE: '49',
+  VITE_MALL_ORDER_RESTRICTED_REGION_NAMES: '新疆,西藏,内蒙古,青海,宁波',
+  VITE_MALL_ORDER_RESTRICTED_ID_PREFIXES: '65,54,15,63,3302',
+})
+
 const baseInput = {
   idNumber: '110101199001010011',
   phone: '13800138000',
   addressParts: ['浙江省', '杭州市', '西湖区', '文三路'],
   today: new Date('2026-06-09T00:00:00+08:00'),
+  policy,
 }
+
+test('resolves order eligibility policy from env values', () => {
+  assert.equal(policy.minAge, 22)
+  assert.equal(policy.maxAge, 49)
+  assert.deepEqual(Array.from(policy.restrictedRegionNames), ['新疆', '西藏', '内蒙古', '青海', '宁波'])
+  assert.deepEqual(Array.from(policy.restrictedIdPrefixes), ['65', '54', '15', '63', '3302'])
+})
 
 test('allows ages 22 and 49 inclusively', () => {
   assert.equal(eligibility.validateMallOrderBeforeRisk({ ...baseInput, idNumber: '110101200406090011' }).ok, true)

@@ -40,14 +40,14 @@ test('resolves production-facing values from env without changing configured val
   assert.equal(result.kefuQrUrl, 'https://cdn.example.com/kefu.png')
   assert.equal(result.kefuDisplayName, '示例客服 · 示例公司')})
 
-test('uses non-business fallbacks when optional env values are omitted', () => {
+test('does not hardcode configurable env values when optional env values are omitted', () => {
   const result = config.resolveMallRuntimeConfigFromEnv({}, { bundledKefuQrUrl: '/assets/kefu.png' })
 
   assert.equal(result.siteUrl, '')
   assert.equal(result.icpText, '')
-  assert.equal(result.icpLink, 'https://beian.miit.gov.cn/')
+  assert.equal(result.icpLink, '')
   assert.equal(result.trackingLookupUrl, '')
   assert.equal(result.kefuQrUrl, '/assets/kefu.png')
-  assert.equal(result.kefuDisplayName, '在线客服')
+  assert.equal(result.kefuDisplayName, '')
 })
 

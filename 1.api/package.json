@@ -4,6 +4,7 @@
   "description": "",
   "main": "src/index.js",
   "scripts": {
+    "check:mojibake": "node ../scripts/check-mojibake.js ..",
     "test": "node ../scripts/check-mojibake.js .. && node --test tests/*.test.js",
     "dev": "cross-env NODE_ENV=development nodemon --watch src --ext js,json src/index.js",
     "start": "cross-env NODE_ENV=production node src/index.js",

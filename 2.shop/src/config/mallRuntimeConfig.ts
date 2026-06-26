@@ -20,9 +20,6 @@ export interface MallRuntimeConfig {
   readonly kefuDisplayName: string
 }
 
-const DEFAULT_ICP_LINK = 'https://beian.miit.gov.cn/'
-const DEFAULT_KEFU_DISPLAY_NAME = '在线客服'
-
 function cleanEnvValue(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
 }
@@ -34,9 +31,9 @@ export function resolveMallRuntimeConfigFromEnv(
   return {
     siteUrl: cleanEnvValue(env.VITE_MALL_SITE_URL),
     icpText: cleanEnvValue(env.VITE_MALL_ICP_TEXT),
-    icpLink: cleanEnvValue(env.VITE_MALL_ICP_LINK) || DEFAULT_ICP_LINK,
+    icpLink: cleanEnvValue(env.VITE_MALL_ICP_LINK),
     trackingLookupUrl: cleanEnvValue(env.VITE_MALL_TRACKING_LOOKUP_URL),
     kefuQrUrl: cleanEnvValue(env.VITE_MALL_KEFU_QR_URL) || cleanEnvValue(fallbacks.bundledKefuQrUrl),
-    kefuDisplayName: cleanEnvValue(env.VITE_MALL_KEFU_DISPLAY_NAME) || DEFAULT_KEFU_DISPLAY_NAME,
+    kefuDisplayName: cleanEnvValue(env.VITE_MALL_KEFU_DISPLAY_NAME),
   }
 }

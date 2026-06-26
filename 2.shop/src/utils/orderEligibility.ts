@@ -4,6 +4,7 @@ export interface MallOrderEligibilityInput {
   phoneLocationText?: string
   addressParts?: Array<string | undefined | null>
   today?: Date
+  policy: MallOrderEligibilityPolicy
 }
 
 export interface MallOrderEligibilityResult {
@@ -11,14 +12,48 @@ export interface MallOrderEligibilityResult {
   message: string
 }
 
-const MIN_ORDER_AGE = 22
-const MAX_ORDER_AGE = 49
+export interface MallOrderEligibilityConfigEnv {
+  readonly VITE_MALL_ORDER_MIN_AGE?: string
+  readonly VITE_MALL_ORDER_MAX_AGE?: string
+  readonly VITE_MALL_ORDER_RESTRICTED_REGION_NAMES?: string
+  readonly VITE_MALL_ORDER_RESTRICTED_ID_PREFIXES?: string
+}
 
-const RESTRICTED_REGION_NAMES = ['新疆', '西藏', '内蒙古', '青海', '宁波']
-const RESTRICTED_ID_PREFIXES = ['65', '54', '15', '63', '3302']
+export interface MallOrderEligibilityPolicy {
+  minAge: number
+  maxAge: number
+  restrictedRegionNames: string[]
+  restrictedIdPrefixes: string[]
+}
 
 function normalizeText(value: unknown) {
   return String(value || '').trim()
+}
+
+function parsePositiveInteger(value: unknown): number | null {
+  const n = Number(normalizeText(value))
+  return Number.isInteger(n) && n > 0 ? n : null
+}
+
+function parseCsvList(value: unknown): string[] {
+  return normalizeText(value)
+    .split(',')
+    .map(item => item.trim())
+    .filter(Boolean)
+}
+
+export function resolveMallOrderEligibilityPolicyFromEnv(env: MallOrderEligibilityConfigEnv): MallOrderEligibilityPolicy {
+  const minAge = parsePositiveInteger(env.VITE_MALL_ORDER_MIN_AGE)
+  const maxAge = parsePositiveInteger(env.VITE_MALL_ORDER_MAX_AGE)
+  if (minAge === null || maxAge === null || minAge > maxAge) {
+    throw new Error('Invalid mall order age policy env: VITE_MALL_ORDER_MIN_AGE/VITE_MALL_ORDER_MAX_AGE')
+  }
+  return {
+    minAge,
+    maxAge,
+    restrictedRegionNames: parseCsvList(env.VITE_MALL_ORDER_RESTRICTED_REGION_NAMES),
+    restrictedIdPrefixes: parseCsvList(env.VITE_MALL_ORDER_RESTRICTED_ID_PREFIXES),
+  }
 }
 
 function normalizeIdNumber(value: unknown) {
@@ -43,13 +78,24 @@ function parseBirthDateFromId(idNumber: string): Date | null {
   return date
 }
 
+function normalizeDate(value: unknown): Date {
+  const maybeDate = value as { getTime?: () => number } | null | undefined
+  if (maybeDate && typeof maybeDate.getTime === 'function') {
+    const time = maybeDate.getTime()
+    if (Number.isFinite(time)) {
+      return new Date(time)
+    }
+  }
+  return new Date()
+}
+
 export function calculateAgeFromIdNumber(idNumberRaw: unknown, todayRaw: Date = new Date()): number | null {
   const idNumber = normalizeIdNumber(idNumberRaw)
   const birthDate = parseBirthDateFromId(idNumber)
   if (!birthDate) {
     return null
   }
-  const today = todayRaw instanceof Date && !Number.isNaN(todayRaw.getTime()) ? todayRaw : new Date()
+  const today = normalizeDate(todayRaw)
   let age = today.getFullYear() - birthDate.getFullYear()
   const hasHadBirthday = today.getMonth() > birthDate.getMonth()
     || (today.getMonth() === birthDate.getMonth() && today.getDate() >= birthDate.getDate())
@@ -59,29 +105,30 @@ export function calculateAgeFromIdNumber(idNumberRaw: unknown, todayRaw: Date = 
   return age
 }
 
-export function isRestrictedIdCardRegion(idNumberRaw: unknown): boolean {
+export function isRestrictedIdCardRegion(idNumberRaw: unknown, restrictedIdPrefixes: string[]): boolean {
   const idNumber = normalizeIdNumber(idNumberRaw)
-  return RESTRICTED_ID_PREFIXES.some(prefix => idNumber.startsWith(prefix))
+  return restrictedIdPrefixes.some(prefix => idNumber.startsWith(prefix))
 }
 
-export function isRestrictedRegionText(value: unknown): boolean {
+export function isRestrictedRegionText(value: unknown, restrictedRegionNames: string[]): boolean {
   const text = normalizeText(value)
   if (!text) {
     return false
   }
-  return RESTRICTED_REGION_NAMES.some(name => text.includes(name))
+  return restrictedRegionNames.some(name => text.includes(name))
 }
 
 export function validateMallOrderBeforeRisk(input: MallOrderEligibilityInput): MallOrderEligibilityResult {
+  const policy = input.policy
   const idNumber = normalizeIdNumber(input.idNumber)
   const age = calculateAgeFromIdNumber(idNumber, input.today)
   if (age === null) {
     return { ok: false, message: '身份证号码格式不正确，请核对后再下单' }
   }
-  if (age < MIN_ORDER_AGE || age > MAX_ORDER_AGE) {
-    return { ok: false, message: '当前年龄暂不支持下单' }
+  if (age < policy.minAge || age > policy.maxAge) {
+    return { ok: false, message: `申请年龄需为${policy.minAge}周岁到${policy.maxAge}周岁，请核对后再下单` }
   }
-  if (isRestrictedIdCardRegion(idNumber)) {
+  if (isRestrictedIdCardRegion(idNumber, policy.restrictedIdPrefixes)) {
     return { ok: false, message: '所属地区暂不支持下单' }
   }
 
@@ -89,7 +136,7 @@ export function validateMallOrderBeforeRisk(input: MallOrderEligibilityInput): M
     ...(Array.isArray(input.addressParts) ? input.addressParts : []),
     input.phoneLocationText,
   ].map(normalizeText).filter(Boolean).join(' ')
-  if (isRestrictedRegionText(locationText)) {
+  if (isRestrictedRegionText(locationText, policy.restrictedRegionNames)) {
     return { ok: false, message: '当前收货地址暂不支持下单' }
   }
 

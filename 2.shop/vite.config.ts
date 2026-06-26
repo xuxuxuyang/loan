@@ -5,7 +5,7 @@ import tailwindcss from '@tailwindcss/vite'
 import AutoImport from 'unplugin-auto-import/vite'
 import Components from 'unplugin-vue-components/vite'
 import { ElementPlusResolver } from 'unplugin-vue-components/resolvers'
-import { defineConfig } from 'vite'
+import { defineConfig, loadEnv } from 'vite'
 
 const epResolver = ElementPlusResolver({ importStyle: 'sass' })
 const elementPlusFormKeys = [
@@ -33,26 +33,33 @@ const { viteDefineForMallDefaultQuota } = require('../1.api/readMallDefaultQuota
 }
 
 // https://vite.dev/config/
-export default defineConfig(({ mode }) => ({
-  define: viteDefineForMallDefaultQuota(apiRoot, mode),
-  /** Capacitor WebView 以相对路径加载 dist 资源 */
-  base: './',
-  server: {
-    /** 与 admin 错开端口；流量推广链接本地默认同主机此端口 */
-    port: 5173,
-    strictPort: false,
-    proxy: {
-      '/api': {
-        target: process.env.SHOP_API_PROXY_TARGET || 'http://127.0.0.1:3110',
-        changeOrigin: true,
-      },
-      /** 客服图片等静态资源由 mall-api 提供（与 /api 同源部署时生产环境走网关即可） */
-      '/static': {
-        target: process.env.SHOP_API_PROXY_TARGET || 'http://127.0.0.1:3110',
-        changeOrigin: true,
-      },
+export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, fileURLToPath(new URL('.', import.meta.url)), '')
+  const shopApiProxyTarget = env.SHOP_API_PROXY_TARGET || process.env.SHOP_API_PROXY_TARGET || ''
+  const shopApiProxy = shopApiProxyTarget
+    ? {
+        '/api': {
+          target: shopApiProxyTarget,
+          changeOrigin: true,
+        },
+        /** 客服图片等静态资源由 mall-api 提供（与 /api 同源部署时生产环境走网关即可） */
+        '/static': {
+          target: shopApiProxyTarget,
+          changeOrigin: true,
+        },
+      }
+    : undefined
+
+  return {
+    define: viteDefineForMallDefaultQuota(apiRoot, mode),
+    /** Capacitor WebView 以相对路径加载 dist 资源 */
+    base: './',
+    server: {
+      /** 与 admin 错开端口；流量推广链接本地默认同主机此端口 */
+      port: 5173,
+      strictPort: false,
+      ...(shopApiProxy ? { proxy: shopApiProxy } : {}),
     },
-  },
   plugins: [
     vue(),
     tailwindcss(),
@@ -147,4 +154,5 @@ export default defineConfig(({ mode }) => ({
       },
     },
   },
-}))
+  }
+})

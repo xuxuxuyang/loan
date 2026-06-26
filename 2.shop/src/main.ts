@@ -5,6 +5,7 @@ import tablerIcons from '@iconify-json/tabler/icons.json'
 import App from './App.vue'
 import router from './router'
 import { runAppOtaCheck } from './composables/useAppOtaUpdate'
+import { checkNativeMallPendingContract } from './composables/useMallContractPending'
 import { captureRegisterChannelFromRoute } from './composables/useRegisterChannel'
 import { installTenantFetchInterceptor } from './utils/tenant'
 
@@ -33,13 +34,14 @@ function registerMallServiceWorker() {
 
 async function bootstrap() {
   if (!import.meta.env.SSR) {
-    await runAppOtaCheck()
+    void runAppOtaCheck()
   }
 
   const app = createApp(App)
   app.use(router)
   installTenantFetchInterceptor()
   app.mount('#app')
+  void checkNativeMallPendingContract(router)
 }
 
 registerMallServiceWorker()

@@ -4,6 +4,7 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
+    "check:mojibake": "node ../scripts/check-mojibake.js ..",
     "dev": "vite",
     "build": "vue-tsc -b && vite build",
     "preview": "vite preview",

@@ -1,6 +1,7 @@
 import { normalizeMallAccount } from '~/composables/useMallAuth'
 import type { MallCardPackageDTO, MallCardPackageContractFlowData } from '~/api/modules/mall'
 import type { MallOrderStatus } from '~/composables/useMallOrders'
+import { currentMallContractClientPlatform } from '~/utils/mallContacts'
 import { resolveTenantId } from '~/utils/tenant'
 
 /** mall 租户：与 x-tenant-id 一致；iframe 打不开合同时依赖 URL query 也需此口径 */
@@ -376,7 +377,7 @@ export function useMallMy() {
     }
     const response = await $fetch<{ success: boolean, data: MallCardPackageContractFlowData }>(
       `${resolveMallApiBase()}/card-packages/${encodeURIComponent(orderId)}/contract-flow`,
-      { method: 'GET', query: { phone, ...mallTenantQueryProps() } },
+      { method: 'GET', query: { phone, clientPlatform: currentMallContractClientPlatform(), ...mallTenantQueryProps() } },
     )
     if (!response?.data) {
       throw new Error('合同数据为空')
@@ -391,7 +392,7 @@ export function useMallMy() {
     }
     const res = await $fetch<{ success: boolean, data: { signed?: boolean, cardPackageRow?: unknown } }>(
       `${resolveMallApiBase()}/card-packages/${encodeURIComponent(orderId)}/contract-ack`,
-      { method: 'POST', query: { phone, ...mallTenantQueryProps() } },
+      { method: 'POST', query: { phone, clientPlatform: currentMallContractClientPlatform(), ...mallTenantQueryProps() } },
     )
     mergeCardPackageRowFromPayload(res.data?.cardPackageRow)
     return res

@@ -157,7 +157,7 @@ function isGarbledText(value: string) {
   if (!text) {
     return true
   }
-  return text.includes('�')
+  return text.includes(String.fromCharCode(0xfffd))
 }
 
 function getFallbackProduct(productId: number) {

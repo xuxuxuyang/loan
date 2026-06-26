@@ -9,3 +9,6 @@ npm run build:ota
 进 bucket 的 app-ota/，上传 ota-out/ 里这两个文件：
 新的 wenshuo-mall-x.x.x.zip
 覆盖 latest.json
+
+4.如果改了原生能力
+需要上传新的APK，用户也需要重新下载更新

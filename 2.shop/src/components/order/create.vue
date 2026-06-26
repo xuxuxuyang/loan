@@ -15,6 +15,7 @@ import LakalaPaySheet from '~/components/payment/LakalaPaySheet.vue'
 import { notifyError, notifySuccess, notifyWarning } from '~/utils/epFeedback'
 import { installmentRiskRejectToast } from '~/utils/installmentRiskMessage'
 import { validateMallOrderBeforeRisk } from '~/utils/orderEligibility'
+import { MALL_ORDER_ELIGIBILITY_POLICY } from '~/config/mallOrderEligibility'
 
 const route = useRoute()
 const router = useRouter()
@@ -320,6 +321,7 @@ async function submitOrder() {
       shippingAddress.value.district,
       shippingAddress.value.detail,
     ],
+    policy: MALL_ORDER_ELIGIBILITY_POLICY,
   })
   if (!preRiskEligibility.ok) {
     notifyWarning(preRiskEligibility.message)

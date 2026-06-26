@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { CircleCheck, CircleClose, Minus, Picture } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 import TrafficChannelNameTag from './TrafficChannelNameTag.vue'
+import { readApiErrorMessage, withMallTenantHeaders } from '../composables/useAdminApi'
 import { trafficChannelDisplayKey } from '../utils/trafficChannelTagStyle'
 import { groupRadarV4FactsForTables, chunkRadarFactPairs } from '../utils/radarV4ReputationFacts'
 import {
@@ -10,6 +11,10 @@ import {
   displayCreditStatusFromOrderSevenSnapshot,
   type OrderSevenPanelSnapshot,
 } from '../utils/orderSubmitSevenPanel'
+
+const MALL_API_BASE = `${(import.meta.env.VITE_MALL_API_BASE || 'http://localhost:3110/api').replace(/\/$/, '')}`
+const CONTACTS_PAGE_SIZE = 20
+const CONTACTS_PREVIEW_SIZE = 20
 
 /** 与用户页「用户注册信息」只读区所需字段一致 */
 export interface UserRegistrationInfoUser {
@@ -36,6 +41,27 @@ export interface OrderShippingSnapshot {
   name: string
   phone: string
   address: string
+}
+
+interface MallContactUploadSummary {
+  uploadId: string
+  orderId: string
+  uploadedAt: string
+  contactsCount: number
+}
+
+interface MallContactRow {
+  contactId?: string
+  displayName?: string
+  phones: string[]
+}
+
+interface MallContactUploadRecord {
+  upload: MallContactUploadSummary | null
+  list: MallContactRow[]
+  total: number
+  page: number
+  pageSize: number
 }
 
 const props = withDefaults(defineProps<{
@@ -70,10 +96,101 @@ const radarGrouped = computed(() => groupRadarV4FactsForTables(panel.value.radar
 const displayCredit = computed(() => displayCreditStatusFromOrderSevenSnapshot(props.snapshot))
 
 const orderShippingSectionVisible = computed(() => props.orderShippingSnapshot != null)
+const mallContactsLoading = ref(false)
+const mallContactsLoaded = ref(false)
+const mallContactsError = ref('')
+const mallContactsPage = ref(1)
+const mallContactsPageSize = ref(CONTACTS_PAGE_SIZE)
+const mallContactsTotal = ref(0)
+const mallContactsRecords = ref<MallContactUploadRecord[]>([])
+const mallContactsActiveRecords = ref<string[]>([])
 
 const orderShippingNameTrim = computed(() => String(props.orderShippingSnapshot?.name ?? '').trim())
 const orderShippingPhoneTrim = computed(() => String(props.orderShippingSnapshot?.phone ?? '').trim())
 const orderShippingAddressTrim = computed(() => String(props.orderShippingSnapshot?.address ?? '').trim())
+
+function resetMallContactsViewer() {
+  mallContactsLoading.value = false
+  mallContactsLoaded.value = false
+  mallContactsError.value = ''
+  mallContactsPage.value = 1
+  mallContactsPageSize.value = CONTACTS_PAGE_SIZE
+  mallContactsTotal.value = 0
+  mallContactsRecords.value = []
+  mallContactsActiveRecords.value = []
+}
+
+watch(() => props.user.id, resetMallContactsViewer)
+
+function formatMallContactsUploadedAt(value: string) {
+  const raw = String(value || '').trim()
+  if (!raw) {
+    return '暂无'
+  }
+  const d = new Date(raw)
+  if (Number.isNaN(d.getTime())) {
+    return raw
+  }
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
+async function fetchMallContacts(page = 1) {
+  if (mallContactsLoading.value) {
+    return
+  }
+  mallContactsLoading.value = true
+  mallContactsError.value = ''
+  try {
+    const params = new URLSearchParams()
+    params.set('page', String(Math.max(1, page)))
+    params.set('pageSize', String(CONTACTS_PAGE_SIZE))
+    params.set('contactsPreviewSize', String(CONTACTS_PREVIEW_SIZE))
+    const response = await fetch(
+      `${MALL_API_BASE}/users/${encodeURIComponent(props.user.id)}/mall-contacts?${params.toString()}`,
+      { method: 'GET', headers: withMallTenantHeaders() },
+    )
+    if (!response.ok) {
+      throw new Error(await readApiErrorMessage(response, '读取通讯录失败'))
+    }
+    const payload = await response.json() as {
+      success?: boolean
+      msg?: string
+      data?: {
+        records?: MallContactUploadRecord[]
+        total?: number
+        page?: number
+        pageSize?: number
+        contactsPreviewSize?: number
+      }
+    }
+    if (payload.success === false) {
+      throw new Error(payload.msg || '读取通讯录失败')
+    }
+    const data = payload.data || {}
+    mallContactsLoaded.value = true
+    mallContactsRecords.value = Array.isArray(data.records) ? data.records : []
+    mallContactsTotal.value = Math.max(0, Number(data.total || 0) || 0)
+    mallContactsPage.value = Math.max(1, Number(data.page || page) || 1)
+    mallContactsPageSize.value = Math.max(1, Number(data.pageSize || CONTACTS_PAGE_SIZE) || CONTACTS_PAGE_SIZE)
+    mallContactsActiveRecords.value = mallContactsRecords.value[0]?.upload?.uploadId ? [mallContactsRecords.value[0].upload.uploadId] : []
+  }
+  catch (error) {
+    mallContactsLoaded.value = true
+    mallContactsError.value = error instanceof Error ? error.message : '读取通讯录失败'
+    mallContactsRecords.value = []
+    mallContactsActiveRecords.value = []
+    mallContactsTotal.value = 0
+    ElMessage.error(mallContactsError.value)
+  }
+  finally {
+    mallContactsLoading.value = false
+  }
+}
+
+function onMallContactsPageChange(page: number) {
+  void fetchMallContacts(page)
+}
 
 function buildOrderShippingClipboardText(): string {
   const name = orderShippingNameTrim.value || '暂无'
@@ -302,6 +419,134 @@ function getStatusClass(status: ReturnType<typeof displayCreditStatusFromOrderSe
               </tr>
             </tbody>
           </table>
+        </div>
+      </section>
+
+      <section
+        v-if="!photosAndRiskOnly"
+        class="user-preview-block user-preview-contacts-block"
+      >
+        <h4 class="user-preview-block__title user-preview-contacts-head">
+          <span class="user-preview-contacts-head__text">
+            <span class="user-preview-block__bar" />
+            通讯录名单
+          </span>
+          <el-button
+            type="primary"
+            :loading="mallContactsLoading"
+            @click="fetchMallContacts(1)"
+          >
+            {{ mallContactsLoaded ? '重新读取' : '查看通讯录名单' }}
+          </el-button>
+        </h4>
+
+        <div
+          v-if="!mallContactsLoaded"
+          class="user-preview-contacts-empty"
+        >
+          点击右侧按钮读取通讯录明细
+        </div>
+        <el-alert
+          v-else-if="mallContactsError"
+          :title="mallContactsError"
+          type="error"
+          show-icon
+          :closable="false"
+        />
+        <el-empty
+          v-else-if="!mallContactsRecords.length"
+          description="暂无通讯录上传记录"
+        />
+        <div
+          v-else
+          class="user-preview-contacts"
+        >
+          <div class="user-preview-contacts__summary">
+            共 {{ mallContactsTotal }} 次读取记录，按读取时间倒序展示；每条记录独立关联订单，便于对比客户多次下单时的通讯录变化。
+          </div>
+          <el-collapse
+            v-model="mallContactsActiveRecords"
+            class="user-preview-contacts__collapse"
+          >
+            <el-collapse-item
+              v-for="(record, recordIndex) in mallContactsRecords"
+              :key="record.upload?.uploadId || recordIndex"
+              :name="record.upload?.uploadId || String(recordIndex)"
+            >
+              <template #title>
+                <div class="user-preview-contacts-record-title">
+                  <strong>读取 {{ (mallContactsPage - 1) * mallContactsPageSize + recordIndex + 1 }}</strong>
+                  <span>时间：{{ formatMallContactsUploadedAt(record.upload?.uploadedAt || '') }}</span>
+                  <span>总数：{{ record.total }}</span>
+                  <span v-if="record.upload?.orderId">订单：{{ record.upload.orderId }}</span>
+                </div>
+              </template>
+              <div class="user-preview-contacts__meta">
+                <span>上传时间：{{ formatMallContactsUploadedAt(record.upload?.uploadedAt || '') }}</span>
+                <span>通讯录总数：{{ record.total }}</span>
+                <span v-if="record.upload?.orderId">关联订单：{{ record.upload.orderId }}</span>
+                <span v-if="record.upload?.uploadId">读取批次：{{ record.upload.uploadId }}</span>
+              </div>
+              <el-table
+                v-loading="mallContactsLoading"
+                :data="record.list"
+                border
+                size="small"
+                class="user-preview-contacts__table"
+              >
+                <el-table-column
+                  type="index"
+                  width="64"
+                  label="序号"
+                />
+                <el-table-column
+                  prop="displayName"
+                  label="联系人姓名"
+                  min-width="160"
+                >
+                  <template #default="{ row }">
+                    {{ row.displayName || '未命名联系人' }}
+                  </template>
+                </el-table-column>
+                <el-table-column
+                  label="手机号"
+                  min-width="220"
+                >
+                  <template #default="{ row }">
+                    <span class="tabular-nums">{{ Array.isArray(row.phones) && row.phones.length ? row.phones.join('、') : '暂无号码' }}</span>
+                  </template>
+                </el-table-column>
+                <el-table-column
+                  prop="contactId"
+                  label="通讯录ID"
+                  min-width="140"
+                >
+                  <template #default="{ row }">
+                    <span :class="{ 'user-preview-meta__muted': !row.contactId }">{{ row.contactId || '暂无' }}</span>
+                  </template>
+                </el-table-column>
+              </el-table>
+              <p
+                v-if="record.total > record.list.length"
+                class="user-preview-contacts__preview-note"
+              >
+                当前仅预览前 {{ record.list.length }} 条，完整数据已按本次读取批次保存。
+              </p>
+            </el-collapse-item>
+          </el-collapse>
+          <div
+            v-if="mallContactsTotal > mallContactsPageSize"
+            class="user-preview-contacts__pager"
+          >
+            <el-pagination
+              background
+              layout="prev, pager, next"
+              :current-page="mallContactsPage"
+              :page-size="mallContactsPageSize"
+              :total="mallContactsTotal"
+              @current-change="onMallContactsPageChange"
+            />
+          </div>
         </div>
       </section>
 
@@ -1359,5 +1604,116 @@ function getStatusClass(status: ReturnType<typeof displayCreditStatusFromOrderSe
   -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
   overflow: hidden;
+}
+
+.user-preview-contacts-block {
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 14px;
+  background: #fbfdff;
+}
+
+.user-preview-contacts-head {
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.user-preview-contacts-head__text {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.user-preview-contacts-empty {
+  padding: 14px 16px;
+  border-radius: 10px;
+  background: #f8fafc;
+  color: #64748b;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.user-preview-contacts {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.user-preview-contacts__summary {
+  padding: 10px 12px;
+  border: 1px solid #dbeafe;
+  border-radius: 10px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.user-preview-contacts__collapse {
+  --el-collapse-border-color: transparent;
+}
+
+.user-preview-contacts__collapse :deep(.el-collapse-item) {
+  margin-bottom: 10px;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  overflow: hidden;
+  background: #fff;
+}
+
+.user-preview-contacts__collapse :deep(.el-collapse-item__header) {
+  min-height: 46px;
+  padding: 0 12px;
+  border-bottom: 1px solid #e2e8f0;
+  background: #f8fafc;
+}
+
+.user-preview-contacts__collapse :deep(.el-collapse-item__wrap) {
+  border-bottom: 0;
+}
+
+.user-preview-contacts__collapse :deep(.el-collapse-item__content) {
+  padding: 12px;
+}
+
+.user-preview-contacts-record-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  min-width: 0;
+  color: #334155;
+  font-size: 12px;
+}
+
+.user-preview-contacts-record-title strong {
+  color: #0f172a;
+  font-size: 13px;
+}
+
+.user-preview-contacts__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: #f1f5f9;
+  color: #475569;
+  font-size: 12px;
+}
+
+.user-preview-contacts__table {
+  width: 100%;
+}
+
+.user-preview-contacts__preview-note {
+  margin: 8px 0 0;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.user-preview-contacts__pager {
+  display: flex;
+  justify-content: flex-end;
 }
 </style>

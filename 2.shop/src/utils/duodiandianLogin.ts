@@ -1,5 +1,4 @@
 const FALLBACK_TRAFFIC_LOGIN_MESSAGE = '正在为您进入商城，请稍候重试'
-const DUODIANDIAN_HALF_FLOW_PREFIX = '/open/partners/duodiandian'
 
 function normalizeApiBase(mallApiBase: string) {
   return String(mallApiBase || '/api').trim().replace(/\/+$/, '') || '/api'
@@ -13,10 +12,10 @@ function normalizeConsumePath(path: string) {
   return value
 }
 
-function normalizeHalfFlowPrefix(prefix: string) {
+function normalizeHalfFlowPrefix(prefix: string | undefined, fallbackPrefix: string) {
   const value = String(prefix || '').trim().replace(/\/+$/, '')
-  if (!value || value.startsWith('//') || /^https?:\/\//i.test(value)) return DUODIANDIAN_HALF_FLOW_PREFIX
-  if (!value.startsWith('/')) return DUODIANDIAN_HALF_FLOW_PREFIX
+  if (!value || value.startsWith('//') || /^https?:\/\//i.test(value)) return fallbackPrefix
+  if (!value.startsWith('/')) return fallbackPrefix
   return value
 }
 
@@ -31,10 +30,10 @@ export function resolveDuodiandianLoginConsumeUrl(
   if (configuredPath) {
     return configuredPath.startsWith('/api/') ? configuredPath : `${apiBase}${configuredPath}`
   }
-  if (String(channel || '').trim() === 'duodiandian') {
-    return `${apiBase}${normalizeHalfFlowPrefix(duodiandianHalfFlowPrefix || DUODIANDIAN_HALF_FLOW_PREFIX)}/login/consume`
-  }
   const safeChannel = String(channel || '').replace(/[^a-zA-Z0-9_-]/g, '')
+  if (String(channel || '').trim() === 'duodiandian') {
+    return `${apiBase}${normalizeHalfFlowPrefix(duodiandianHalfFlowPrefix, `/open/partners/${safeChannel}`)}/login/consume`
+  }
   return `${apiBase}/open/partners/${safeChannel}/login/consume`
 }
 

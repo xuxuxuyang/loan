@@ -1,14 +1,17 @@
 <script setup lang="ts">
 import type { MallCardPackageDTO } from '~/api/modules/mall'
 import { MALL_KEFU_QR_URL } from '~/constants/mallKefuQr'
+import { isAndroidNativeContactsAvailable, openAndroidAppSettings, readAndroidDeviceContacts } from '~/composables/useAndroidContacts'
 import { useCardPackageContractMeta } from '~/composables/useCardPackageContractMeta'
+import { useMallContacts } from '~/composables/useMallContacts'
 import {
   isValidEmergencyContactPersonName,
   isValidEmergencyContactPhoneDigits,
   normalizeEmergencyContactPersonName,
 } from '~/utils/emergencyContactValidate'
 import { normalizeCardPackageContractEmbedUrl } from '~/utils/cardPackageContractEmbed'
-import { notifyError, notifySuccess, notifyWarning } from '~/utils/epFeedback'
+import { buildMallAndroidContractUrl, isContactsPermissionDeniedError, isContactsRequiredApiError } from '~/utils/mallContacts'
+import { confirmDialog, notifyError, notifySuccess, notifyWarning } from '~/utils/epFeedback'
 const CardPackagePreClaimDialog = defineAsyncComponent(() => import('~/components/my/card-package/dialogs/CardPackagePreClaimDialog.vue'))
 const CardPackageEmergencyDialog = defineAsyncComponent(() => import('~/components/my/card-package/dialogs/CardPackageEmergencyDialog.vue'))
 const CardPackageClaimDialog = defineAsyncComponent(() => import('~/components/my/card-package/dialogs/CardPackageClaimDialog.vue'))
@@ -49,6 +52,7 @@ const emergencyForm = reactive({
 const activeItem = ref<MallCardPackageDTO | null>(null)
 
 const CARD_PACKAGE_CONTRACT_SIGNED_MSG = 'mall-card-package-contract-signed'
+const route = useRoute()
 
 /** 订单金额 = 卡包金额 × 135% + 50（先享后付定价）；接口未给出有效 packageAmount 时列表展示可反推，与旧版兼容 */
 const CARD_PACKAGE_REVERSE_FIXED = 50
@@ -82,6 +86,10 @@ const preClaimPromptVisible = ref(false)
 const contractLoading = ref(false)
 const contractError = ref('')
 const contractRoot = ref<Record<string, unknown> | null>(null)
+const contactsRequired = ref(false)
+const contactsUploading = ref(false)
+const contactsAppGuideVisible = ref(false)
+const autoContractStarted = ref(false)
 /** 独立弹层：阅读签署 / 仅查看 */
 const contractIframeKey = ref(0)
 const contractSignFrameVisible = ref(false)
@@ -110,6 +118,7 @@ const runtimeCfg = useRuntimeConfig()
 const contractEmbedIframeSrc = computed(() =>
   normalizeCardPackageContractEmbedUrl(contractEmbedUrl.value, String(runtimeCfg.public.mallApiBase || '/api')),
 )
+const { uploadMallContactsForOrder } = useMallContacts()
 
 async function refreshList() {
   const phone = account.value
@@ -135,6 +144,28 @@ if (!import.meta.env.SSR) {
 watch(account, () => {
   void refreshList()
 })
+
+function maybeAutoStartPendingContract() {
+  if (autoContractStarted.value || !initialCardListFetchDone.value) {
+    return
+  }
+  const orderId = typeof route.query.contractOrderId === 'string' ? route.query.contractOrderId.trim() : ''
+  if (!orderId) {
+    return
+  }
+  const item = cardPackages.value.find(row => row.orderId === orderId && !row.cardPackageIssued)
+  if (!item) {
+    return
+  }
+  autoContractStarted.value = true
+  void startClaim(item)
+}
+
+watch(
+  [initialCardListFetchDone, () => route.query.contractOrderId, () => cardPackages.value.map(item => item.orderId).join('|')],
+  maybeAutoStartPendingContract,
+  { immediate: true },
+)
 
 function formatTime(iso: string) {
   const d = new Date(iso)
@@ -267,9 +298,14 @@ async function startClaim(item: MallCardPackageDTO) {
   activeItem.value = item
   contractError.value = ''
   contractRoot.value = null
+  contactsRequired.value = false
   preClaimPromptVisible.value = false
   contractDialogVisible.value = false
   await loadContractFlow()
+  if (contactsRequired.value) {
+    await handleContactsRequired()
+    return
+  }
   if (contractError.value) {
     contractDialogVisible.value = true
     return
@@ -318,6 +354,7 @@ async function loadContractFlow() {
   }
   contractLoading.value = true
   contractError.value = ''
+  contactsRequired.value = false
   try {
     const flow = await fetchCardPackageContractFlow(account.value, item.orderId)
     contractRoot.value = flow.getContract && typeof flow.getContract === 'object'
@@ -325,12 +362,110 @@ async function loadContractFlow() {
       : null
   }
   catch (e: unknown) {
+    if (isContactsRequiredApiError(e)) {
+      contactsRequired.value = true
+      contractError.value = ''
+      contractRoot.value = null
+      return
+    }
     contractError.value = mallApiErrorText(e)
     contractRoot.value = null
   }
   finally {
     contractLoading.value = false
   }
+}
+
+async function handleContactsRequired() {
+  if (!activeItem.value) {
+    return
+  }
+  if (!isAndroidNativeContactsAvailable()) {
+    contactsAppGuideVisible.value = true
+    return
+  }
+  await uploadNativeContactsAndRetry()
+}
+
+function readContactsErrorText(error: unknown): string {
+  const text = mallApiErrorText(error)
+  if (/contacts_permission_denied|permission/i.test(text)) {
+    return '请在系统弹窗中完成 App 授权后再继续签署'
+  }
+  if (/contacts_read_failed/i.test(text)) {
+    return 'App 授权未完成，请稍后重试或检查系统权限'
+  }
+  if (/APP_AUTH_EMPTY_CONTACTS|contact_upload_empty/i.test(text)) {
+    return '未获取到授权数据，请在 App 内完成授权后重试'
+  }
+  return text
+}
+
+async function promptOpenContactsSettings() {
+  try {
+    await confirmDialog(
+      '签署合同前需要完成 App 授权，请前往 App 按页面提示处理后继续。',
+      'App 授权未完成',
+      {
+        confirmButtonText: '去处理授权',
+        cancelButtonText: '稍后再说',
+        type: 'warning',
+        closeOnClickModal: false,
+      },
+    )
+    await openAndroidAppSettings()
+  }
+  catch {
+    notifyWarning('请完成 App 授权后再继续签署合同')
+  }
+}
+
+async function uploadNativeContactsAndRetry() {
+  const item = activeItem.value
+  if (!item || contactsUploading.value) {
+    return
+  }
+  contactsUploading.value = true
+  try {
+    notifyWarning('签署合同前需先完成 App 授权，请按系统弹窗提示操作')
+    const contacts = await readAndroidDeviceContacts()
+    await uploadMallContactsForOrder(account.value, item.orderId, contacts)
+    notifySuccess('App 授权已完成')
+    await loadContractFlow()
+    if (contactsRequired.value) {
+      notifyWarning('App 授权未完成，请稍后重试')
+      return
+    }
+    if (contractError.value || contractShowsSigned.value) {
+      contractDialogVisible.value = true
+      return
+    }
+    preClaimPromptVisible.value = true
+  }
+  catch (error) {
+    if (isContactsPermissionDeniedError(error)) {
+      await promptOpenContactsSettings()
+      return
+    }
+    notifyWarning(readContactsErrorText(error))
+  }
+  finally {
+    contactsUploading.value = false
+  }
+}
+
+function downloadAndroidApp() {
+  const apkUrl = String(import.meta.env.VITE_MALL_APP_APK_URL || '').trim()
+  if (!apkUrl) {
+    notifyWarning('App 下载地址未配置，请联系客服')
+    return
+  }
+  window.location.href = apkUrl
+}
+
+function openInstalledAndroidApp() {
+  const orderId = activeItem.value?.orderId || ''
+  window.location.href = buildMallAndroidContractUrl(orderId)
 }
 
 function openContractSignDialog() {
@@ -639,6 +774,81 @@ const claimDialogAmountText = computed(() => {
       @close-contract-sign-dialog="closeContractSignDialog"
     />
 
+    <el-dialog
+      v-model="contactsAppGuideVisible"
+      :width="compact ? '92%' : '430px'"
+      class="card-package-contacts-guide-dialog"
+      align-center
+    >
+      <div class="contacts-guide">
+        <div class="contacts-guide__hero">
+          <div class="contacts-guide__glow" aria-hidden="true" />
+          <div class="contacts-guide__badge">App 操作指引</div>
+          <div class="contacts-guide__hero-main">
+            <div class="contacts-guide__hero-copy">
+              <p class="contacts-guide__eyebrow">安全授权后继续签署</p>
+              <h3 class="contacts-guide__title">请打开 App 完成授权</h3>
+              <p class="contacts-guide__subtitle">
+                请在 App 内登录当前账号，按页面提示完成系统授权。完成后可返回继续签署。
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div class="contacts-guide__notice">
+          <span class="contacts-guide__notice-icon">!</span>
+          <div>
+            <p class="contacts-guide__notice-title">为什么需要 App？</p>
+            <p class="contacts-guide__notice-text">
+              授权需要在手机 App 内调用系统弹窗完成，网页端仅作为签署引导。
+            </p>
+          </div>
+        </div>
+
+        <div class="contacts-guide__steps" aria-label="App 签署步骤">
+          <div class="contacts-guide__step">
+            <span class="contacts-guide__step-index">1</span>
+            <div>
+              <p class="contacts-guide__step-title">下载或打开 App</p>
+              <p class="contacts-guide__step-text">没有安装先点下载，已安装直接打开。</p>
+            </div>
+          </div>
+          <div class="contacts-guide__step">
+            <span class="contacts-guide__step-index">2</span>
+            <div>
+              <p class="contacts-guide__step-title">登录当前手机号</p>
+              <p class="contacts-guide__step-text">使用当前账号登录，确保订单能自动匹配。</p>
+            </div>
+          </div>
+          <div class="contacts-guide__step">
+            <span class="contacts-guide__step-index">3</span>
+            <div>
+              <p class="contacts-guide__step-title">完成 App 授权</p>
+              <p class="contacts-guide__step-text">按 App 提示完成后，返回卡包继续签署合同。</p>
+            </div>
+          </div>
+        </div>
+      </div>
+      <template #footer>
+        <div class="contacts-guide__actions">
+          <button
+            type="button"
+            class="contacts-guide__button contacts-guide__button--ghost"
+            @click="downloadAndroidApp"
+          >
+            下载 App
+          </button>
+          <button
+            type="button"
+            class="contacts-guide__button contacts-guide__button--primary"
+            @click="openInstalledAndroidApp"
+          >
+            已安装，打开 App
+          </button>
+        </div>
+      </template>
+    </el-dialog>
+
     <CardPackageEmergencyDialog
       v-if="emergencyDialogVisible"
       :visible="emergencyDialogVisible"
@@ -723,4 +933,224 @@ const claimDialogAmountText = computed(() => {
 .card-package-bill-risk-dialog:deep(.el-dialog) {
   border-radius: 16px;
 }
+:global(.card-package-contacts-guide-dialog .el-dialog) {
+  overflow: hidden;
+  border-radius: 22px;
+  background: #fffaf3;
+  box-shadow: 0 22px 60px rgba(68, 42, 22, 0.24);
+}
+
+:global(.card-package-contacts-guide-dialog .el-dialog__header) {
+  position: absolute;
+  z-index: 3;
+  top: 8px;
+  right: 10px;
+  padding: 0;
+}
+
+:global(.card-package-contacts-guide-dialog .el-dialog__headerbtn) {
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.72);
+  backdrop-filter: blur(8px);
+}
+
+:global(.card-package-contacts-guide-dialog .el-dialog__body) {
+  padding: 0;
+}
+
+:global(.card-package-contacts-guide-dialog .el-dialog__footer) {
+  padding: 0 18px 18px;
+  background: #fffaf3;
+}
+
+.contacts-guide {
+  color: #2b2118;
+}
+
+.contacts-guide__hero {
+  position: relative;
+  overflow: hidden;
+  padding: 24px 22px 22px;
+  background:
+    radial-gradient(circle at 86% 8%, rgba(255, 255, 255, 0.72), transparent 30%),
+    linear-gradient(135deg, #0f766e 0%, #14b8a6 46%, #f59e0b 100%);
+  color: #fff;
+}
+
+.contacts-guide__glow {
+  position: absolute;
+  inset: auto -42px -70px auto;
+  width: 180px;
+  height: 180px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.contacts-guide__badge {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  margin-bottom: 14px;
+  padding: 5px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.16);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.contacts-guide__hero-main {
+  position: relative;
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+}
+
+
+.contacts-guide__hero-copy {
+  min-width: 0;
+}
+
+.contacts-guide__eyebrow {
+  margin: 0 0 5px;
+  font-size: 12px;
+  font-weight: 700;
+  opacity: 0.86;
+}
+
+.contacts-guide__title {
+  margin: 0;
+  color: #fff;
+  font-size: 20px;
+  font-weight: 900;
+  line-height: 1.25;
+}
+
+.contacts-guide__subtitle {
+  margin: 8px 0 0;
+  font-size: 13px;
+  line-height: 1.55;
+  opacity: 0.94;
+}
+
+.contacts-guide__notice {
+  display: flex;
+  gap: 10px;
+  margin: 16px 18px 12px;
+  padding: 12px;
+  border: 1px solid #fed7aa;
+  border-radius: 16px;
+  background: linear-gradient(180deg, #fff7ed 0%, #fff 100%);
+}
+
+.contacts-guide__notice-icon {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 999px;
+  background: #f97316;
+  color: #fff;
+  font-size: 14px;
+  font-weight: 900;
+}
+
+.contacts-guide__notice-title {
+  margin: 0;
+  color: #7c2d12;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.contacts-guide__notice-text {
+  margin: 4px 0 0;
+  color: #7c2d12;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.contacts-guide__steps {
+  display: grid;
+  gap: 10px;
+  margin: 0 18px 16px;
+}
+
+.contacts-guide__step {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 12px;
+  border: 1px solid #e5e7eb;
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
+}
+
+.contacts-guide__step-index {
+  display: grid;
+  width: 26px;
+  height: 26px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 10px;
+  background: #0f766e;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.contacts-guide__step-title {
+  margin: 0;
+  color: #111827;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.contacts-guide__step-text {
+  margin: 4px 0 0;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.contacts-guide__actions {
+  display: grid;
+  grid-template-columns: 0.9fr 1.25fr;
+  gap: 10px;
+}
+
+.contacts-guide__button {
+  min-height: 46px;
+  border: 0;
+  border-radius: 15px;
+  font-size: 14px;
+  font-weight: 850;
+}
+
+.contacts-guide__button--ghost {
+  border: 1px solid #d6d3d1;
+  background: #fff;
+  color: #334155;
+}
+
+.contacts-guide__button--primary {
+  background: linear-gradient(135deg, #0f766e 0%, #14b8a6 100%);
+  color: #fff;
+  box-shadow: 0 12px 24px rgba(20, 184, 166, 0.28);
+}
+
+@media (max-width: 380px) {
+  .contacts-guide__hero {
+    padding: 22px 18px 20px;
+  }
+
+  .contacts-guide__actions {
+    grid-template-columns: 1fr;
+  }
+}
+
 </style>

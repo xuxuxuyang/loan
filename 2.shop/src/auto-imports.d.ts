@@ -13,6 +13,7 @@ declare global {
   const MALL_BILL_CARD_PACKAGE_REPAY_MSG: typeof import('./composables/useMallMy').MALL_BILL_CARD_PACKAGE_REPAY_MSG
   const MALL_DEFAULT_CREDIT_QUOTA: typeof import('./composables/mallCreditQuota').MALL_DEFAULT_CREDIT_QUOTA
   const captureRegisterChannelFromRoute: typeof import('./composables/useRegisterChannel').captureRegisterChannelFromRoute
+  const checkNativeMallPendingContract: typeof import('./composables/useMallContractPending').checkNativeMallPendingContract
   const clearPendingRegisterChannel: typeof import('./composables/useRegisterChannel').clearPendingRegisterChannel
   const computeMallCreditOrderPrincipal: typeof import('./composables/mallCreditQuota').computeMallCreditOrderPrincipal
   const computeMallInstallmentRepayTotal: typeof import('./composables/mallCreditQuota').computeMallInstallmentRepayTotal
@@ -38,6 +39,7 @@ declare global {
   const h: typeof import('vue').h
   const inject: typeof import('vue').inject
   const isAddressPickForOrderRoute: typeof import('./composables/useMallMy').isAddressPickForOrderRoute
+  const isAndroidNativeContactsAvailable: typeof import('./composables/useAndroidContacts').isAndroidNativeContactsAvailable
   const isMallCategoryKey: typeof import('./composables/useTeaProducts').isMallCategoryKey
   const isProductWithinMallCredit: typeof import('./composables/mallCreditQuota').isProductWithinMallCredit
   const isProxy: typeof import('vue').isProxy
@@ -71,10 +73,12 @@ declare global {
   const onUnmounted: typeof import('vue').onUnmounted
   const onUpdated: typeof import('vue').onUpdated
   const onWatcherCleanup: typeof import('vue').onWatcherCleanup
+  const openAndroidAppSettings: typeof import('./composables/useAndroidContacts').openAndroidAppSettings
   const orderCreateProductIdFromAddressRoute: typeof import('./composables/useMallMy').orderCreateProductIdFromAddressRoute
   const orderHasShippedTracking: typeof import('./composables/useMallOrders').orderHasShippedTracking
   const provide: typeof import('vue').provide
   const reactive: typeof import('vue').reactive
+  const readAndroidDeviceContacts: typeof import('./composables/useAndroidContacts').readAndroidDeviceContacts
   const readonly: typeof import('vue').readonly
   const ref: typeof import('vue').ref
   const resetMallProductsFetchState: typeof import('./composables/useTeaProducts').resetMallProductsFetchState
@@ -104,6 +108,7 @@ declare global {
   const useLink: typeof import('vue-router').useLink
   const useMallAuth: typeof import('./composables/useMallAuth').useMallAuth
   const useMallCategories: typeof import('./composables/useTeaProducts').useMallCategories
+  const useMallContacts: typeof import('./composables/useMallContacts').useMallContacts
   const useMallCsChat: typeof import('./composables/useMallCsChat').useMallCsChat
   const useMallMy: typeof import('./composables/useMallMy').useMallMy
   const useMallOrders: typeof import('./composables/useMallOrders').useMallOrders
@@ -161,6 +166,7 @@ declare module 'vue' {
     readonly MALL_BILL_CARD_PACKAGE_REPAY_MSG: UnwrapRef<typeof import('./composables/useMallMy')['MALL_BILL_CARD_PACKAGE_REPAY_MSG']>
     readonly MALL_DEFAULT_CREDIT_QUOTA: UnwrapRef<typeof import('./composables/mallCreditQuota')['MALL_DEFAULT_CREDIT_QUOTA']>
     readonly captureRegisterChannelFromRoute: UnwrapRef<typeof import('./composables/useRegisterChannel')['captureRegisterChannelFromRoute']>
+    readonly checkNativeMallPendingContract: UnwrapRef<typeof import('./composables/useMallContractPending')['checkNativeMallPendingContract']>
     readonly clearPendingRegisterChannel: UnwrapRef<typeof import('./composables/useRegisterChannel')['clearPendingRegisterChannel']>
     readonly computeMallCreditOrderPrincipal: UnwrapRef<typeof import('./composables/mallCreditQuota')['computeMallCreditOrderPrincipal']>
     readonly computeMallInstallmentRepayTotal: UnwrapRef<typeof import('./composables/mallCreditQuota')['computeMallInstallmentRepayTotal']>
@@ -186,6 +192,7 @@ declare module 'vue' {
     readonly h: UnwrapRef<typeof import('vue')['h']>
     readonly inject: UnwrapRef<typeof import('vue')['inject']>
     readonly isAddressPickForOrderRoute: UnwrapRef<typeof import('./composables/useMallMy')['isAddressPickForOrderRoute']>
+    readonly isAndroidNativeContactsAvailable: UnwrapRef<typeof import('./composables/useAndroidContacts')['isAndroidNativeContactsAvailable']>
     readonly isMallCategoryKey: UnwrapRef<typeof import('./composables/useTeaProducts')['isMallCategoryKey']>
     readonly isProductWithinMallCredit: UnwrapRef<typeof import('./composables/mallCreditQuota')['isProductWithinMallCredit']>
     readonly isProxy: UnwrapRef<typeof import('vue')['isProxy']>
@@ -219,10 +226,12 @@ declare module 'vue' {
     readonly onUnmounted: UnwrapRef<typeof import('vue')['onUnmounted']>
     readonly onUpdated: UnwrapRef<typeof import('vue')['onUpdated']>
     readonly onWatcherCleanup: UnwrapRef<typeof import('vue')['onWatcherCleanup']>
+    readonly openAndroidAppSettings: UnwrapRef<typeof import('./composables/useAndroidContacts')['openAndroidAppSettings']>
     readonly orderCreateProductIdFromAddressRoute: UnwrapRef<typeof import('./composables/useMallMy')['orderCreateProductIdFromAddressRoute']>
     readonly orderHasShippedTracking: UnwrapRef<typeof import('./composables/useMallOrders')['orderHasShippedTracking']>
     readonly provide: UnwrapRef<typeof import('vue')['provide']>
     readonly reactive: UnwrapRef<typeof import('vue')['reactive']>
+    readonly readAndroidDeviceContacts: UnwrapRef<typeof import('./composables/useAndroidContacts')['readAndroidDeviceContacts']>
     readonly readonly: UnwrapRef<typeof import('vue')['readonly']>
     readonly ref: UnwrapRef<typeof import('vue')['ref']>
     readonly resetMallProductsFetchState: UnwrapRef<typeof import('./composables/useTeaProducts')['resetMallProductsFetchState']>
@@ -252,6 +261,7 @@ declare module 'vue' {
     readonly useLink: UnwrapRef<typeof import('vue-router')['useLink']>
     readonly useMallAuth: UnwrapRef<typeof import('./composables/useMallAuth')['useMallAuth']>
     readonly useMallCategories: UnwrapRef<typeof import('./composables/useTeaProducts')['useMallCategories']>
+    readonly useMallContacts: UnwrapRef<typeof import('./composables/useMallContacts')['useMallContacts']>
     readonly useMallCsChat: UnwrapRef<typeof import('./composables/useMallCsChat')['useMallCsChat']>
     readonly useMallMy: UnwrapRef<typeof import('./composables/useMallMy')['useMallMy']>
     readonly useMallOrders: UnwrapRef<typeof import('./composables/useMallOrders')['useMallOrders']>

@@ -151,10 +151,17 @@ const {
   findReusableDuodiandianApplyRiskReview,
   registerDuodiandianGatewayRoutes,
 } = require('./duodiandianGateway')
+const { createMallContactsStore } = require('./mallContacts/store')
+const {
+  markMallContactsRequiredForOrder,
+  shouldBlockContractForMallContacts,
+} = require('./mallContacts/policy')
+const { registerMallContactsRoutes } = require('./mallContacts/router')
 
 const app = new Koa()
 const router = new Router({ prefix: '/api' })
 const duodiandianPublicRouter = new Router()
+const mallContactsStore = createMallContactsStore()
 const PORT = Number(process.env.PORT || 3110)
 function positiveIntegerFromEnv(key, fallback) {
   const raw = String(process.env[key] || '').trim()
@@ -2948,6 +2955,39 @@ function fail(ctx, msg, code = 400) {
   ctx.body = { success: false, code, msg, data: null }
 }
 
+function shouldRequireMallContactsForClient(ctx) {
+  const queryPlatform = String(ctx.query && ctx.query.clientPlatform || '').trim().toLowerCase()
+  const body = ctx.request && ctx.request.body && typeof ctx.request.body === 'object' ? ctx.request.body : {}
+  const bodyPlatform = String(body.clientPlatform || '').trim().toLowerCase()
+  const platform = queryPlatform || bodyPlatform
+  if (platform) {
+    return platform === 'android'
+  }
+  const ua = String(ctx.headers && ctx.headers['user-agent'] || '')
+  return /Android/i.test(ua)
+}
+
+function failMallContactsRequired(ctx, order) {
+  if (!shouldRequireMallContactsForClient(ctx)) {
+    return false
+  }
+  const blocked = shouldBlockContractForMallContacts(order)
+  if (!blocked.block) {
+    return false
+  }
+  ctx.status = 409
+  ctx.body = {
+    success: false,
+    code: 409,
+    msg: blocked.msg,
+    data: {
+      errorCode: blocked.code,
+      orderId: order && order.id ? String(order.id) : '',
+    },
+  }
+  return true
+}
+
 async function platformAuditRecord(ctx, action, detail = {}) {
   try {
     const account = await resolveAdminAccount(ctx)
@@ -3927,6 +3967,10 @@ function resolveApiMongoRefreshPlan(ctx) {
     '/api/my/summary': ['users', 'orders', 'bankCards'],
     '/api/my/orders': mallOrdersUsersKeys,
     '/api/mall/me/bill-risk': ['users'],
+    '/api/mall/contacts/status': mallOrdersUsersKeys,
+    '/api/mall/contacts/upload/start': mallOrdersUsersKeys,
+    '/api/mall/contacts/upload/complete': mallOrdersUsersKeys,
+    '/api/mall/contract-pending': mallOrdersUsersKeys,
     '/api/card-packages': mallOrdersUsersKeys,
     '/api/bills': mallOrdersUsersKeys,
     '/api/addresses': ['addresses'],
@@ -3941,6 +3985,9 @@ function resolveApiMongoRefreshPlan(ctx) {
   }
   if (/^\/api\/admin\/cs\/sessions\/[^/]+$/.test(path)) {
     return { mode: 'partial', keys: csSessionsWithUsersKeys, allowColdPartial: true }
+  }
+  if (path === '/api/mall/contacts/upload/batch') {
+    return { mode: 'skip' }
   }
   if (/^\/api\/orders\/[^/]+$/.test(path)) {
     return { mode: 'partial', keys: adminOrdersUsersAuthKeys, allowColdPartial: true }
@@ -8115,6 +8162,24 @@ router.get('/users/:id', async (ctx) => {
   })
 })
 
+router.get('/users/:id/mall-contacts', async (ctx) => {
+  if (!await requireAdminUsersActionOnAny(ctx, 'view', 'view user contacts')) {
+    return
+  }
+  const db = readDb()
+  const { id } = ctx.params
+  const target = db.users.find(item => item.id === id)
+  if (!target) {
+    fail(ctx, 'user_not_found', 404)
+    return
+  }
+  const page = Math.max(1, parseInt(String(ctx.query.page || '1'), 10) || 1)
+  const pageSize = Math.min(20, Math.max(1, parseInt(String(ctx.query.pageSize || '10'), 10) || 10))
+  const contactsPreviewSize = Math.min(50, Math.max(1, parseInt(String(ctx.query.contactsPreviewSize || '20'), 10) || 20))
+  const phone = normalizePhone(target.phone)
+  ctx.body = success(await mallContactsStore.listCompletedContactUploads({ phone, page, pageSize, contactsPreviewSize }))
+})
+
 router.get('/users/:id/bill-risk', async (ctx) => {
   if (!await requireAdminUsersActionOnAny(ctx, 'view', '查看用户流水风控')) {
     return
@@ -8496,6 +8561,9 @@ router.get('/card-packages/:orderId/contract-flow', async (ctx) => {
     fail(ctx, '订单不存在或不可查看合同', 404)
     return
   }
+  if (failMallContactsRequired(ctx, order)) {
+    return
+  }
 
   if (isMallCardPackageContractMock()) {
     try {
@@ -8623,6 +8691,9 @@ router.post('/card-packages/:orderId/contract-ack', async (ctx) => {
   const order = findMallCardPackageClaimOrder(db, phone, orderId)
   if (!order) {
     fail(ctx, '订单不存在或不可领取卡包', 404)
+    return
+  }
+  if (failMallContactsRequired(ctx, order)) {
     return
   }
 
@@ -9233,6 +9304,16 @@ registerLakalaRoutes(router, {
   success,
   readDb,
   resolvePlacingMallUserFromBearer,
+})
+
+registerMallContactsRoutes(router, {
+  contactsStore: mallContactsStore,
+  fail,
+  flushMongoPersist,
+  normalizePhone,
+  readDb,
+  success,
+  writeDbPartial,
 })
 
 registerDuodiandianGatewayRoutes(router, {
@@ -11032,6 +11113,9 @@ router.patch('/orders/:id/status', async (ctx) => {
       }
     }
     ensureOrderCardPackage(target)
+    if (status === 'shipping' && previousStatus !== 'shipping' && target.payType === 'installment') {
+      markMallContactsRequiredForOrder(target)
+    }
     marks.businessEnd = reviewPerfNowMs()
     marks.persistScheduleStart = reviewPerfNowMs()
     writeOrderDb(db, target)

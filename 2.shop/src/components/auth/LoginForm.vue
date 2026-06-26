@@ -1,8 +1,10 @@
 <script setup lang="ts">
+import { checkNativeMallPendingContract } from '~/composables/useMallContractPending'
 import { normalizeMallAccount } from '~/composables/useMallAuth'
 import { notifyError, notifySuccess, notifyWarning } from '~/utils/epFeedback'
 
 const route = useRoute()
+const router = useRouter()
 const { smartNavigate } = useCustomRouting(route)
 const { syncFromStorage, loginByPhone, loginByPassword, sendLoginSms } = useMallAuth()
 
@@ -162,6 +164,9 @@ async function submitLogin() {
       await loginByPassword(normalizedPhone, password.value.trim())
     }
     notifySuccess('登录成功')
+    if (await checkNativeMallPendingContract(router)) {
+      return
+    }
     await smartNavigate(redirect)
   }
   catch (error) {

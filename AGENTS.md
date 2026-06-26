@@ -11,6 +11,13 @@
   - 验证是否通过。
 - 如果当前 Codex 会话没有自动列出 `superpowers` skill，需要先检查本机 `C:\Users\xu\.codex\superpowers\skills` 下的相关 skill 说明，并按其工作流执行。
 
+## 乱码检查默认规则
+
+- 每次修改任何文件后，必须从项目根目录运行 `node scripts/check-mojibake.js .`。
+- 如果只在某个子项目内工作，也必须在最终回复前运行根目录乱码检查；可以使用子项目脚本 `npm run check:mojibake` 作为快捷入口。
+- 乱码检查失败时，不得声明修改完成；必须先修复 UTF-8/中文乱码问题，再重新验证。
+- 使用 PowerShell 写入包含中文的文件时，优先使用 Node.js/Python 以 UTF-8 写入，避免终端编码导致 连续问号或类似乱码落盘。
+
 ## 上线项目保护原则
 
 - 不得重置、删除、迁移或覆盖线上业务数据，除非用户明确要求。
