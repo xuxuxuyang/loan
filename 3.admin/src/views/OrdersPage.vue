@@ -12,12 +12,14 @@ import type { UserItem } from '../components/UserRiskDetailDialog.vue'
 import type { OrderShippingSnapshot } from '../components/UserRegistrationInfoScroll.vue'
 import { donePageProgress, startPageProgress } from '../utils/progress'
 import CardPackageContractViewDialog from '../components/CardPackageContractViewDialog.vue'
+import TrafficChannelNameTag from '../components/TrafficChannelNameTag.vue'
 import {
   contractEmbedUrlFromRoot,
   mallTenantQueryForContractApi,
   normalizeCardPackageContractEmbedUrl,
 } from '../utils/cardPackageContract'
 import { resolveInstallmentEffectiveDueDate, resolveNegotiateRemainderAmountForDisplay } from '../utils/installmentEffectiveDueDate'
+import { trafficChannelDisplayKey } from '../utils/trafficChannelTagStyle'
 
 const MALL_API_BASE = `${(import.meta.env.VITE_MALL_API_BASE || 'http://localhost:3110/api').replace(/\/$/, '')}`
 
@@ -95,6 +97,10 @@ const canManageRepayment = computed(() =>
 
 function normalizePhone(raw: string): string {
   return String(raw || '').replace(/\D/g, '')
+}
+
+function registerChannelDisplayForOrder(order: OrderItem): string {
+  return trafficChannelDisplayKey(order.registerChannelLabel, order.registerChannelName, order.registerChannelCode)
 }
 
 /** 订单状态展示口径：卡包已发放即视为已完成（唯一标准） */
@@ -510,7 +516,7 @@ function customerTypeLabel(order: OrderItem): '老客户' | '新客户' {
   return isOldCustomer(order) ? '老客户' : '新客户'
 }
 
-const orderTableColspan = computed(() => (isCardPackageDataPage.value ? 15 : 14))
+const orderTableColspan = computed(() => (isCardPackageDataPage.value ? 16 : 15))
 
 async function openPlan(order: OrderItem) {
   if (openingPlanOrderId.value) {
@@ -1496,6 +1502,7 @@ watch(
       <thead>
         <tr>
           <th>用户</th>
+          <th>注册渠道</th>
           <th>备注</th>
           <th>新老客户</th>
           <th>商品</th>
@@ -1530,6 +1537,12 @@ watch(
             >
               {{ item.user }}
             </el-tag>
+          </td>
+          <td class="td-register-channel">
+            <TrafficChannelNameTag
+              :display-key="registerChannelDisplayForOrder(item)"
+              :color-seed="item.registerChannelCode || undefined"
+            />
           </td>
           <td class="td-user-remark">
             <p
@@ -2720,20 +2733,30 @@ watch(
 
 .orders-page-table th:nth-child(2),
 .orders-page-table td:nth-child(2) {
-  min-width: 4.5rem;
-  white-space: nowrap;
+  min-width: 7rem;
+  max-width: 10rem;
 }
 
 .orders-page-table th:nth-child(3),
 .orders-page-table td:nth-child(3) {
-  min-width: 5rem;
-  max-width: 7.5rem;
+  min-width: 4.5rem;
+  white-space: nowrap;
 }
 
 .orders-page-table th:nth-child(4),
 .orders-page-table td:nth-child(4) {
+  min-width: 5rem;
+  max-width: 7.5rem;
+}
+
+.orders-page-table th:nth-child(5),
+.orders-page-table td:nth-child(5) {
   width: 9rem;
   max-width: 9rem;
+}
+
+.td-register-channel {
+  vertical-align: middle;
 }
 
 .orders-page-table .td-product {

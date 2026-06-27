@@ -3143,6 +3143,32 @@ function orderMatchesAdminKeyword(db, order, keywordRaw) {
   return false
 }
 
+const MALL_SELF_REGISTER_CHANNEL_LABEL = '商城注册'
+
+function resolveOrderRegisterChannelView(db, buyer) {
+  if (!buyer) {
+    return {
+      registerChannelCode: '',
+      registerChannelName: '',
+      registerChannelLabel: '',
+    }
+  }
+  const code = String(buyer.registerChannelCode || '').trim()
+  if (!code) {
+    return {
+      registerChannelCode: '',
+      registerChannelName: '',
+      registerChannelLabel: MALL_SELF_REGISTER_CHANNEL_LABEL,
+    }
+  }
+  const name = String(buyer.registerChannelName || '').trim()
+  return {
+    registerChannelCode: code,
+    registerChannelName: name,
+    registerChannelLabel: resolveUserRegisterChannelLabel(db, buyer) || code,
+  }
+}
+
 /** GET /orders、详情等：附带注册买家快照字段（列表「用户」须展示注册信息，非收货人） */
 function enrichMallOrderWithBuyerFields(db, order) {
   const buyer = resolveMallBuyerFromOrder(db, order)
@@ -3157,6 +3183,7 @@ function enrichMallOrderWithBuyerFields(db, order) {
   const emergencyContactsComplete = buyer
     ? isEmergencyContactsComplete(normalizeEmergencyContactsList(buyer.emergencyContacts))
     : null
+  const registerChannelView = resolveOrderRegisterChannelView(db, buyer)
   return {
     ...order,
     buyerName: buyerName || '',
@@ -3164,6 +3191,7 @@ function enrichMallOrderWithBuyerFields(db, order) {
     buyerAdminRemark: rawRemark,
     manualRejectReason: rawManualRejectReason,
     emergencyContactsComplete,
+    ...registerChannelView,
   }
 }
 
@@ -3947,6 +3975,7 @@ function resolveApiMongoRefreshPlan(ctx) {
       scope: ctx.query.listScope,
       repay: ctx.query.repayFilter,
       risk: ctx.query.riskStatus,
+      registerChannel: ctx.query.registerChannel,
     })
     if (safeOrderFilter) {
       return { mode: 'skip' }
@@ -4194,6 +4223,22 @@ function adminPendingListMatchesRiskFilter(item, risk) {
   return rs !== 'failed'
 }
 
+function adminOrderMatchesRegisterChannel(db, item, registerChannelRaw) {
+  const registerChannel = String(registerChannelRaw || '').trim()
+  if (!registerChannel || registerChannel === '__all__') {
+    return true
+  }
+  const buyer = resolveMallBuyerFromOrder(db, item)
+  if (!buyer) {
+    return false
+  }
+  const code = String(buyer.registerChannelCode || '').trim()
+  if (registerChannel === '__none__') {
+    return !code
+  }
+  return code === registerChannel
+}
+
 function adminOrderPassesListFilters(db, item, filters) {
   const {
     keyword = '',
@@ -4204,6 +4249,7 @@ function adminOrderPassesListFilters(db, item, filters) {
     scope = '',
     repay = '',
     risk = '',
+    registerChannel = '',
   } = filters
   if (scope && !matchesAdminOrderListScope(item, scope)) {
     return false
@@ -4215,6 +4261,9 @@ function adminOrderPassesListFilters(db, item, filters) {
     if (orderRepayBucketForAdmin(item) !== repay) {
       return false
     }
+  }
+  if (!adminOrderMatchesRegisterChannel(db, item, registerChannel)) {
+    return false
   }
   if (!orderMatchesAdminKeyword(db, item, keyword)) {
     return false
@@ -9953,6 +10002,7 @@ router.get('/orders', async (ctx) => {
     listScope = '',
     repayFilter = '',
     riskStatus = '',
+    registerChannel = '',
     page: pageRaw,
     pageSize: pageSizeRaw,
   } = ctx.query
@@ -9971,6 +10021,7 @@ router.get('/orders', async (ctx) => {
   }
   const repay = String(repayFilter || '').trim()
   const risk = String(riskStatus || '').trim()
+  const registerChannelFilter = String(registerChannel || '').trim()
   const usePagination = pageRaw != null && String(pageRaw).trim() !== ''
 
   if (usePagination && isAdminReadOptimizeEnabled()) {
@@ -9990,6 +10041,7 @@ router.get('/orders', async (ctx) => {
           scope,
           repay,
           risk,
+          registerChannel: registerChannelFilter,
         },
         page,
         pageSize,
@@ -10023,6 +10075,7 @@ router.get('/orders', async (ctx) => {
       scope,
       repay,
       risk,
+      registerChannel: registerChannelFilter,
     }, page, pageSize))
     return
   }
@@ -10047,6 +10100,9 @@ router.get('/orders', async (ctx) => {
       if (orderRepayBucketForAdmin(item) !== repay) {
         return false
       }
+    }
+    if (!adminOrderMatchesRegisterChannel(db, item, registerChannelFilter)) {
+      return false
     }
     const byKeyword = orderMatchesAdminKeyword(db, item, keyword)
     const byStatus = !status || item.status === status
@@ -10122,6 +10178,7 @@ function parsePendingReceivableRepaymentStatus(raw) {
 function mapPendingReceivableRow(db, ref) {
   const { order, item, key } = ref
   const buyer = resolveMallBuyerFromOrder(db, order)
+  const registerChannelView = resolveOrderRegisterChannelView(db, buyer)
   const buyerName = buyer ? String(buyer.name || '').trim() : ''
   let buyerPhoneDigits = buyer ? normalizePhone(buyer.phone || '') : ''
   if (buyerPhoneDigits.startsWith('86') && buyerPhoneDigits.length === 13) {
@@ -10135,6 +10192,7 @@ function mapPendingReceivableRow(db, ref) {
     buyerName,
     buyerPhone,
     buyerAdminRemark: rawRemark,
+    ...registerChannelView,
     receiverPhone: String(order.receiverPhone || '').trim(),
     productName: String(order.name || '').trim(),
     period: Number(item.period),
@@ -10278,6 +10336,7 @@ router.get('/orders/:id', async (ctx) => {
     target.paid = true
   }
   const buyer = resolveMallBuyerFromOrder(db, target)
+  const registerChannelView = resolveOrderRegisterChannelView(db, buyer)
   const rawRemark = buyer && typeof buyer.adminRemark === 'string' ? buyer.adminRemark.trim() : ''
   const emergencyContactsComplete = buyer
     ? isEmergencyContactsComplete(normalizeEmergencyContactsList(buyer.emergencyContacts))
@@ -10294,6 +10353,7 @@ router.get('/orders/:id', async (ctx) => {
     buyerPhone,
     buyerAdminRemark: rawRemark,
     emergencyContactsComplete,
+    ...registerChannelView,
     isOldCustomer: isOldCustomerAtOrder(db, target),
   })
 })

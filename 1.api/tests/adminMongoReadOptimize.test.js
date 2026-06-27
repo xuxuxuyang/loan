@@ -48,8 +48,13 @@ function matches(doc, filter) {
     const actual = doc[key]
     if (expected && typeof expected === 'object' && !Array.isArray(expected)) {
       if ('$ne' in expected && actual === expected.$ne) return false
+      if ('$in' in expected && !expected.$in.includes(actual)) return false
       if ('$gte' in expected && !(String(actual || '') >= expected.$gte)) return false
       if ('$lt' in expected && !(String(actual || '') < expected.$lt)) return false
+      if ('$exists' in expected) {
+        const exists = Object.prototype.hasOwnProperty.call(doc, key)
+        if (Boolean(expected.$exists) !== exists) return false
+      }
       continue
     }
     if (actual !== expected) return false
@@ -100,6 +105,77 @@ test('reads a paginated pending order page from Mongo without loading all orders
   assert.equal(result.total, 2)
   assert.deepEqual(result.orders.map(o => o.id), ['new'])
   assert.deepEqual(orders.lastFind, { status: 'reviewing', payType: 'installment', riskStatus: { $ne: 'failed' } })
+})
+
+test('reads paginated orders from Mongo filtered by register channel code', async () => {
+  const orders = fakeCollection([
+    { id: 'channel-old', mallUserId: 'u-channel-1', status: 'reviewing', payType: 'installment', riskStatus: 'failed', createdAt: '2026-01-01T00:00:00.000Z' },
+    { id: 'channel-new', mallUserId: 'u-channel-2', status: 'reviewing', payType: 'installment', riskStatus: 'failed', createdAt: '2026-01-02T00:00:00.000Z' },
+    { id: 'other', mallUserId: 'u-other', status: 'reviewing', payType: 'installment', riskStatus: 'failed', createdAt: '2026-01-03T00:00:00.000Z' },
+  ])
+  const users = fakeCollection([
+    { id: 'u-channel-1', registerChannelCode: 'traffic-a' },
+    { id: 'u-channel-2', registerChannelCode: 'traffic-a' },
+    { id: 'u-other', registerChannelCode: 'traffic-b' },
+  ])
+  const result = await opt.readAdminOrdersPageFromMongoScoped(
+    name => (name === 'users' ? users : orders),
+    { scope: 'pending', risk: 'failed', registerChannel: 'traffic-a' },
+    1,
+    1,
+  )
+  assert.equal(result.total, 2)
+  assert.deepEqual(result.orders.map(o => o.id), ['channel-new'])
+  assert.deepEqual(users.lastFind, { registerChannelCode: 'traffic-a' })
+  assert.deepEqual(orders.lastFind, {
+    status: 'reviewing',
+    payType: 'installment',
+    riskStatus: 'failed',
+    mallUserId: { $in: ['u-channel-1', 'u-channel-2'] },
+  })
+})
+
+test('reads paginated orders from Mongo filtered to mall self registrations', async () => {
+  const orders = fakeCollection([
+    { id: 'mall-a', mallUserId: 'u-mall-a', status: 'reviewing', payType: 'installment', riskStatus: 'passed', createdAt: '2026-01-01T00:00:00.000Z' },
+    { id: 'mall-b', mallUserId: 'u-mall-b', status: 'reviewing', payType: 'installment', riskStatus: 'passed', createdAt: '2026-01-02T00:00:00.000Z' },
+    { id: 'traffic', mallUserId: 'u-traffic', status: 'reviewing', payType: 'installment', riskStatus: 'passed', createdAt: '2026-01-03T00:00:00.000Z' },
+  ])
+  const users = fakeCollection([
+    { id: 'u-mall-a' },
+    { id: 'u-mall-b', registerChannelCode: '' },
+    { id: 'u-traffic', registerChannelCode: 'traffic-a' },
+  ])
+  const result = await opt.readAdminOrdersPageFromMongoScoped(
+    name => (name === 'users' ? users : orders),
+    { scope: 'pending', registerChannel: '__none__' },
+    1,
+    10,
+  )
+  assert.equal(result.total, 2)
+  assert.deepEqual(result.orders.map(o => o.id), ['mall-b', 'mall-a'])
+  assert.deepEqual(users.lastFind, {
+    $or: [
+      { registerChannelCode: { $exists: false } },
+      { registerChannelCode: '' },
+      { registerChannelCode: null },
+    ],
+  })
+})
+
+test('returns an empty Mongo page when register channel has no matching users', async () => {
+  const orders = fakeCollection([
+    { id: 'order-a', mallUserId: 'u-a', status: 'reviewing', payType: 'installment', riskStatus: 'passed', createdAt: '2026-01-01T00:00:00.000Z' },
+  ])
+  const users = fakeCollection([{ id: 'u-a', registerChannelCode: 'traffic-a' }])
+  const result = await opt.readAdminOrdersPageFromMongoScoped(
+    name => (name === 'users' ? users : orders),
+    { scope: 'pending', registerChannel: 'missing-channel' },
+    3,
+    20,
+  )
+  assert.deepEqual(result, { orders: [], total: 0, page: 3, pageSize: 20 })
+  assert.equal(orders.lastFind, null)
 })
 
 test('counts sidebar badges in Mongo', async () => {

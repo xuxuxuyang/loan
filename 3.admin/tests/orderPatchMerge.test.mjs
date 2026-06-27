@@ -28,6 +28,9 @@ test('patched order merge keeps current buyer display fields when patch response
     mallUserId: 'U1',
     userRemark: 'keep remark',
     emergencyContactsComplete: true,
+    registerChannelCode: 'traffic-a',
+    registerChannelName: 'Traffic A',
+    registerChannelLabel: 'Traffic A Label',
   }
   const mapped = {
     id: 'OD1',
@@ -44,6 +47,9 @@ test('patched order merge keeps current buyer display fields when patch response
   assert.equal(merged.mallUserId, 'U1')
   assert.equal(merged.userRemark, 'keep remark')
   assert.equal(merged.emergencyContactsComplete, true)
+  assert.equal(merged.registerChannelCode, 'traffic-a')
+  assert.equal(merged.registerChannelName, 'Traffic A')
+  assert.equal(merged.registerChannelLabel, 'Traffic A Label')
 })
 
 

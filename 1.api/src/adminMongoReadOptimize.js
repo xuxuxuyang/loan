@@ -14,6 +14,35 @@ function normalizeDateFilter(date) {
   return { $gte: `${raw}T00:00:00.000Z`, $lt: `${raw}T23:59:59.999Z` }
 }
 
+function normalizeRegisterChannelFilter(value) {
+  const raw = String(value || '').trim()
+  return raw && raw !== '__all__' ? raw : ''
+}
+
+function mongoDocId(doc) {
+  return String((doc && (doc.id || doc._id)) || '').trim()
+}
+
+function buildRegisterChannelUserFilter(registerChannel) {
+  if (registerChannel === '__none__') {
+    return {
+      $or: [
+        { registerChannelCode: { $exists: false } },
+        { registerChannelCode: '' },
+        { registerChannelCode: null },
+      ],
+    }
+  }
+  return { registerChannelCode: registerChannel }
+}
+
+async function resolveUserIdsByRegisterChannel(getCollection, registerChannel) {
+  const users = getCollection('users')
+  if (!users) return null
+  const rows = await users.find(buildRegisterChannelUserFilter(registerChannel)).toArray()
+  return [...new Set(rows.map(mongoDocId).filter(Boolean))]
+}
+
 function buildAdminOrderMongoFilter(filters = {}) {
   const keyword = String(filters.keyword || '').trim()
   const repay = String(filters.repay || '').trim()
@@ -65,6 +94,13 @@ async function readAdminOrdersPageFromMongoScoped(getCollection, filters, pageRa
     if (!filter) return null
     const page = normalizePage(pageRaw)
     const pageSize = normalizePageSize(pageSizeRaw)
+    const registerChannel = normalizeRegisterChannelFilter(filters.registerChannel)
+    if (registerChannel) {
+      const userIds = await resolveUserIdsByRegisterChannel(getCollection, registerChannel)
+      if (!Array.isArray(userIds)) return null
+      if (!userIds.length) return { orders: [], total: 0, page, pageSize }
+      filter.mallUserId = { $in: userIds }
+    }
     const orders = getCollection('orders')
     if (!orders) return null
     const [total, list] = await Promise.all([

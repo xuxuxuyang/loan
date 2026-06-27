@@ -8,9 +8,11 @@ import { adminHasConfiguredPermissions } from '../composables/useAdminPermission
 import { useAdminPagePermission } from '../composables/useAdminPagePermission'
 import { useOrdersStore } from '../stores/useOrdersStore'
 import { readApiErrorMessage, withMallTenantHeaders } from '../composables/useAdminApi'
+import TrafficChannelNameTag from '../components/TrafficChannelNameTag.vue'
 import UserRiskDetailDialog, { type UserItem } from '../components/UserRiskDetailDialog.vue'
 import { refreshOrdersMenuPendingReview } from '../composables/useAdminOrderReviewBadge'
 import { donePageProgress, startPageProgress } from '../utils/progress'
+import { trafficChannelDisplayKey } from '../utils/trafficChannelTagStyle'
 import {
   mergeApiRiskViewToOrderSevenSnapshot,
   orderRiskDataReadyForAdminApprove,
@@ -18,6 +20,14 @@ import {
 } from '../utils/userRiskApproveReadiness'
 
 const MALL_API_BASE = `${(import.meta.env.VITE_MALL_API_BASE || 'http://localhost:3110/api').replace(/\/$/, '')}`
+const REGISTER_CHANNEL_FILTER_ALL = '__all__'
+
+interface AdminTrafficChannelRow {
+  id: string
+  code: string
+  name: string
+  disabled?: boolean
+}
 
 const loading = ref(false)
 const currentPage = ref(1)
@@ -35,6 +45,16 @@ const riskDetailHideBasicInfoTab = ref(false)
 const resolvingRiskOrderId = ref<string | null>(null)
 const riskFilter = ref<'全部' | OrderItem['riskStatus']>('全部')
 const showRejectReasonColumn = computed(() => riskFilter.value === 'failed')
+const orderTableColspan = computed(() => (showRejectReasonColumn.value ? 10 : 9))
+const registerChannelFilter = ref<string>(REGISTER_CHANNEL_FILTER_ALL)
+const trafficChannelsForFilter = ref<AdminTrafficChannelRow[]>([])
+const registerChannelOptions = computed(() => trafficChannelsForFilter.value
+  .filter(ch => ch && String(ch.code || '').trim())
+  .map(ch => ({
+    code: String(ch.code || '').trim(),
+    name: String(ch.name || ch.code || '').trim(),
+  }))
+  .sort((a, b) => a.name.localeCompare(b.name, 'zh-CN')))
 const userFilter = ref('')
 const { orders, fetchOrders, updateOrderStatus, rejectOrderReview, reReviewOrderReview, deleteOrder } = useOrdersStore()
 
@@ -61,6 +81,28 @@ const canDeleteOrder = computed(() => {
 
 function normalizePhone(raw: string): string {
   return String(raw || '').replace(/\D/g, '')
+}
+
+function registerChannelDisplayForOrder(order: OrderItem): string {
+  return trafficChannelDisplayKey(order.registerChannelLabel, order.registerChannelName, order.registerChannelCode)
+}
+
+async function fetchTrafficChannelsForFilter() {
+  try {
+    const response = await fetch(`${MALL_API_BASE}/admin/traffic-channels`, {
+      method: 'GET',
+      headers: withMallTenantHeaders(),
+    })
+    const payload = await response.json() as { success?: boolean; data?: AdminTrafficChannelRow[] }
+    if (!response.ok || payload.success === false) {
+      trafficChannelsForFilter.value = []
+      return
+    }
+    trafficChannelsForFilter.value = Array.isArray(payload.data) ? payload.data : []
+  }
+  catch {
+    trafficChannelsForFilter.value = []
+  }
 }
 
 watch(userRiskDialogVisible, (open) => {
@@ -167,6 +209,7 @@ async function loadReviewOrders() {
         keyword: userFilter.value.trim(),
         listScope: 'pending',
         riskStatus: riskFilter.value === '全部' ? undefined : riskFilter.value,
+        registerChannel: registerChannelFilter.value,
         page,
         pageSize: pageSize.value,
       })
@@ -518,9 +561,15 @@ async function openRiskDetail(order: OrderItem, entry: 'user' | 'risk') {
 
 onMounted(() => {
   void loadReviewOrders()
+  void fetchTrafficChannelsForFilter()
 })
 
 watch(riskFilter, () => {
+  currentPage.value = 1
+  void loadReviewOrders()
+})
+
+watch(registerChannelFilter, () => {
   currentPage.value = 1
   void loadReviewOrders()
 })
@@ -545,6 +594,27 @@ watch(riskFilter, () => {
         <el-option
           label="风控未通过"
           value="failed"
+        />
+      </el-select>
+      <el-select
+        v-model="registerChannelFilter"
+        class="toolbar-select"
+        placeholder="注册渠道"
+        filterable
+      >
+        <el-option
+          label="全部渠道"
+          :value="REGISTER_CHANNEL_FILTER_ALL"
+        />
+        <el-option
+          label="商城注册"
+          value="__none__"
+        />
+        <el-option
+          v-for="ch in registerChannelOptions"
+          :key="ch.code"
+          :label="ch.name"
+          :value="ch.code"
         />
       </el-select>
       <el-input
@@ -576,6 +646,7 @@ watch(riskFilter, () => {
       <thead>
         <tr>
           <th>用户</th>
+          <th>注册渠道</th>
           <th>备注</th>
           <th>商品</th>
           <th>下单时间</th>
@@ -603,6 +674,12 @@ watch(riskFilter, () => {
             >
               {{ item.user }}
             </el-tag>
+          </td>
+          <td class="td-register-channel">
+            <TrafficChannelNameTag
+              :display-key="registerChannelDisplayForOrder(item)"
+              :color-seed="item.registerChannelCode || undefined"
+            />
           </td>
           <td class="td-user-remark">
             <p
@@ -689,7 +766,7 @@ watch(riskFilter, () => {
         </tr>
         <tr v-if="!loading && orders.length === 0">
           <td
-            :colspan="showRejectReasonColumn ? 9 : 8"
+            :colspan="orderTableColspan"
             style="text-align: center; color: #9ca3af;"
           >
             {{ totalOrders === 0 ? '暂无待审核订单' : '暂无符合筛选条件的订单' }}
@@ -852,6 +929,11 @@ watch(riskFilter, () => {
 }
 
 .td-user-risk {
+  vertical-align: middle;
+}
+
+.td-register-channel {
+  min-width: 110px;
   vertical-align: middle;
 }
 

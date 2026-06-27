@@ -5,12 +5,17 @@ import { ElMessage } from 'element-plus'
 import { useRoute } from 'vue-router'
 import { apiErrorMessage, withMallTenantHeaders } from '../composables/useAdminApi'
 import { useAdminPagePermission } from '../composables/useAdminPagePermission'
+import TrafficChannelNameTag from '../components/TrafficChannelNameTag.vue'
+import { trafficChannelDisplayKey } from '../utils/trafficChannelTagStyle'
 
 interface PendingReceivableRow {
   orderId: string
   /** 注册用户信息（待收维度与账号一致） */
   buyerName: string
   buyerPhone: string
+  registerChannelCode?: string
+  registerChannelName?: string
+  registerChannelLabel?: string
   receiverName: string
   receiverPhone: string
   productName: string
@@ -133,6 +138,10 @@ function repaymentStatusLabel(row: PendingReceivableRow): string {
     return '已还款'
   }
   return '未还款'
+}
+
+function registerChannelDisplayForRow(row: PendingReceivableRow): string {
+  return trafficChannelDisplayKey(row.registerChannelLabel, row.registerChannelName, row.registerChannelCode)
 }
 
 const filteredRows = computed(() => {
@@ -568,6 +577,20 @@ async function clearCollectionRemark() {
           >
             <template #default="{ row }">
               {{ (row.buyerName || '').trim() || '—' }}
+            </template>
+          </el-table-column>
+          <el-table-column
+            label="注册渠道"
+            min-width="120"
+            show-overflow-tooltip
+          >
+            <template #default="{ row }">
+              <span class="td-register-channel">
+                <TrafficChannelNameTag
+                  :display-key="registerChannelDisplayForRow(row)"
+                  :color-seed="row.registerChannelCode || undefined"
+                />
+              </span>
             </template>
           </el-table-column>
           <el-table-column
@@ -1052,6 +1075,11 @@ async function clearCollectionRemark() {
   font-weight: 700;
   color: #2563eb;
   letter-spacing: 0.01em;
+}
+
+.td-register-channel {
+  display: inline-flex;
+  max-width: 100%;
 }
 
 .remark-dialog-meta {

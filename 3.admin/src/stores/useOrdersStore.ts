@@ -47,6 +47,9 @@ export interface OrderItem {
   buyerPhone: string
   /** 下单用户 id（商城 users.id），用于优先打开档案 */
   mallUserId?: string
+  registerChannelCode?: string
+  registerChannelName?: string
+  registerChannelLabel?: string
   product: string
   /** 卡包金额（元）：下单时商品卡包 × 数量快照；对账回填后随 GET 订单返回 */
   cardPackageAmount: number
@@ -130,6 +133,9 @@ interface MallOrderPayload {
   buyerName?: string
   /** 注册账号手机号 */
   buyerPhone?: string
+  registerChannelCode?: string
+  registerChannelName?: string
+  registerChannelLabel?: string
   installmentPlan?: Array<InstallmentItem & Record<string, unknown>>
   /** 卡包金额（元），与商品卡包配置一致并对账落库 */
   cardPackageAmount?: number
@@ -178,6 +184,7 @@ interface OrderFilterParams {
   listScope?: 'pending' | 'reviewed' | 'card-data'
   repayFilter?: '全部' | '待还款' | '已还款' | '已逾期'
   riskStatus?: 'passed' | 'failed'
+  registerChannel?: string
 }
 
 const MALL_ORDERS_ENDPOINT = `${(import.meta.env.VITE_MALL_API_BASE || 'http://localhost:3110/api').replace(/\/$/, '')}/orders`
@@ -338,6 +345,9 @@ function mapMallOrderToAdminOrder(order: MallOrderPayload): OrderItem {
     receiverPhone: recvPhone,
     buyerPhone,
     mallUserId,
+    registerChannelCode: typeof order.registerChannelCode === 'string' ? order.registerChannelCode.trim() : '',
+    registerChannelName: typeof order.registerChannelName === 'string' ? order.registerChannelName.trim() : '',
+    registerChannelLabel: typeof order.registerChannelLabel === 'string' ? order.registerChannelLabel.trim() : '',
     product: order.name,
     cardPackageAmount: Math.max(0, Math.round(Number(order.cardPackageAmount ?? 0))),
     totalAmount: Number(order.totalAmount.toFixed(2)),
@@ -443,6 +453,9 @@ async function fetchOrders(params: OrderFilterParams = {}): Promise<number> {
     query.set('repayFilter', params.repayFilter)
   }
   if (params.riskStatus) query.set('riskStatus', params.riskStatus)
+  if (params.registerChannel && params.registerChannel !== '__all__') {
+    query.set('registerChannel', params.registerChannel)
+  }
   const page = Math.max(1, Number(params.page) || 1)
   const pageSize = Math.min(100, Math.max(1, Number(params.pageSize) || 20))
   query.set('page', String(page))
