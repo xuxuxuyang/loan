@@ -101,6 +101,7 @@ const EXPORT_FIELD_OPTIONS = [
   { key: 'quota', label: '额度' },
   { key: 'orderCount', label: '订单数' },
   { key: 'remark', label: '备注' },
+  { key: 'manualRejectReason', label: '不通过原因' },
 ] as const
 
 const DEFAULT_EXPORT_FIELDS = ['name', 'phone'] as const

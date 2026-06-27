@@ -440,114 +440,110 @@ function getStatusClass(status: ReturnType<typeof displayCreditStatusFromOrderSe
           </el-button>
         </h4>
 
-        <div
-          v-if="!mallContactsLoaded"
-          class="user-preview-contacts-empty"
-        >
-          点击右侧按钮读取通讯录明细
-        </div>
-        <el-alert
-          v-else-if="mallContactsError"
-          :title="mallContactsError"
-          type="error"
-          show-icon
-          :closable="false"
-        />
-        <el-empty
-          v-else-if="!mallContactsRecords.length"
-          description="暂无通讯录上传记录"
-        />
-        <div
-          v-else
-          class="user-preview-contacts"
-        >
-          <div class="user-preview-contacts__summary">
-            共 {{ mallContactsTotal }} 次读取记录，按读取时间倒序展示；每条记录独立关联订单，便于对比客户多次下单时的通讯录变化。
-          </div>
-          <el-collapse
-            v-model="mallContactsActiveRecords"
-            class="user-preview-contacts__collapse"
-          >
-            <el-collapse-item
-              v-for="(record, recordIndex) in mallContactsRecords"
-              :key="record.upload?.uploadId || recordIndex"
-              :name="record.upload?.uploadId || String(recordIndex)"
-            >
-              <template #title>
-                <div class="user-preview-contacts-record-title">
-                  <strong>读取 {{ (mallContactsPage - 1) * mallContactsPageSize + recordIndex + 1 }}</strong>
-                  <span>时间：{{ formatMallContactsUploadedAt(record.upload?.uploadedAt || '') }}</span>
-                  <span>总数：{{ record.total }}</span>
-                  <span v-if="record.upload?.orderId">订单：{{ record.upload.orderId }}</span>
-                </div>
-              </template>
-              <div class="user-preview-contacts__meta">
-                <span>上传时间：{{ formatMallContactsUploadedAt(record.upload?.uploadedAt || '') }}</span>
-                <span>通讯录总数：{{ record.total }}</span>
-                <span v-if="record.upload?.orderId">关联订单：{{ record.upload.orderId }}</span>
-                <span v-if="record.upload?.uploadId">读取批次：{{ record.upload.uploadId }}</span>
-              </div>
-              <el-table
-                v-loading="mallContactsLoading"
-                :data="record.list"
-                border
-                size="small"
-                class="user-preview-contacts__table"
-              >
-                <el-table-column
-                  type="index"
-                  width="64"
-                  label="序号"
-                />
-                <el-table-column
-                  prop="displayName"
-                  label="联系人姓名"
-                  min-width="160"
-                >
-                  <template #default="{ row }">
-                    {{ row.displayName || '未命名联系人' }}
-                  </template>
-                </el-table-column>
-                <el-table-column
-                  label="手机号"
-                  min-width="220"
-                >
-                  <template #default="{ row }">
-                    <span class="tabular-nums">{{ Array.isArray(row.phones) && row.phones.length ? row.phones.join('、') : '暂无号码' }}</span>
-                  </template>
-                </el-table-column>
-                <el-table-column
-                  prop="contactId"
-                  label="通讯录ID"
-                  min-width="140"
-                >
-                  <template #default="{ row }">
-                    <span :class="{ 'user-preview-meta__muted': !row.contactId }">{{ row.contactId || '暂无' }}</span>
-                  </template>
-                </el-table-column>
-              </el-table>
-              <p
-                v-if="record.total > record.list.length"
-                class="user-preview-contacts__preview-note"
-              >
-                当前仅预览前 {{ record.list.length }} 条，完整数据已按本次读取批次保存。
-              </p>
-            </el-collapse-item>
-          </el-collapse>
+        <template v-if="mallContactsLoaded">
+          <el-alert
+            v-if="mallContactsError"
+            :title="mallContactsError"
+            type="error"
+            show-icon
+            :closable="false"
+          />
+          <el-empty
+            v-else-if="!mallContactsRecords.length"
+            description="暂无通讯录上传记录"
+          />
           <div
-            v-if="mallContactsTotal > mallContactsPageSize"
-            class="user-preview-contacts__pager"
+            v-else
+            class="user-preview-contacts"
           >
-            <el-pagination
-              background
-              layout="prev, pager, next"
-              :current-page="mallContactsPage"
-              :page-size="mallContactsPageSize"
-              :total="mallContactsTotal"
-              @current-change="onMallContactsPageChange"
-            />
+            <div class="user-preview-contacts__summary">
+              共 {{ mallContactsTotal }} 次读取记录，按读取时间倒序展示；每条记录独立关联订单，便于对比客户多次下单时的通讯录变化。
+            </div>
+            <el-collapse
+              v-model="mallContactsActiveRecords"
+              class="user-preview-contacts__collapse"
+            >
+              <el-collapse-item
+                v-for="(record, recordIndex) in mallContactsRecords"
+                :key="record.upload?.uploadId || recordIndex"
+                :name="record.upload?.uploadId || String(recordIndex)"
+              >
+                <template #title>
+                  <div class="user-preview-contacts-record-title">
+                    <strong>读取 {{ (mallContactsPage - 1) * mallContactsPageSize + recordIndex + 1 }}</strong>
+                    <span>时间：{{ formatMallContactsUploadedAt(record.upload?.uploadedAt || '') }}</span>
+                    <span>总数：{{ record.total }}</span>
+                    <span v-if="record.upload?.orderId">订单：{{ record.upload.orderId }}</span>
+                  </div>
+                </template>
+                <div class="user-preview-contacts__meta">
+                  <span>上传时间：{{ formatMallContactsUploadedAt(record.upload?.uploadedAt || '') }}</span>
+                  <span>通讯录总数：{{ record.total }}</span>
+                  <span v-if="record.upload?.orderId">关联订单：{{ record.upload.orderId }}</span>
+                  <span v-if="record.upload?.uploadId">读取批次：{{ record.upload.uploadId }}</span>
+                </div>
+                <el-table
+                  v-loading="mallContactsLoading"
+                  :data="record.list"
+                  border
+                  size="small"
+                  class="user-preview-contacts__table"
+                >
+                  <el-table-column
+                    type="index"
+                    width="64"
+                    label="序号"
+                  />
+                  <el-table-column
+                    prop="displayName"
+                    label="联系人姓名"
+                    min-width="160"
+                  >
+                    <template #default="{ row }">
+                      {{ row.displayName || '未命名联系人' }}
+                    </template>
+                  </el-table-column>
+                  <el-table-column
+                    label="手机号"
+                    min-width="220"
+                  >
+                    <template #default="{ row }">
+                      <span class="tabular-nums">{{ Array.isArray(row.phones) && row.phones.length ? row.phones.join('、') : '暂无号码' }}</span>
+                    </template>
+                  </el-table-column>
+                  <el-table-column
+                    prop="contactId"
+                    label="通讯录ID"
+                    min-width="140"
+                  >
+                    <template #default="{ row }">
+                      <span :class="{ 'user-preview-meta__muted': !row.contactId }">{{ row.contactId || '暂无' }}</span>
+                    </template>
+                  </el-table-column>
+                </el-table>
+                <p
+                  v-if="record.total > record.list.length"
+                  class="user-preview-contacts__preview-note"
+                >
+                  当前仅预览前 {{ record.list.length }} 条，完整数据已按本次读取批次保存。
+                </p>
+              </el-collapse-item>
+            </el-collapse>
+            <div
+              v-if="mallContactsTotal > mallContactsPageSize"
+              class="user-preview-contacts__pager"
+            >
+              <el-pagination
+                background
+                layout="prev, pager, next"
+                :current-page="mallContactsPage"
+                :page-size="mallContactsPageSize"
+                :total="mallContactsTotal"
+                @current-change="onMallContactsPageChange"
+              />
+            </div>
           </div>
-        </div>
+        </template>
       </section>
 
       <section class="user-preview-block">
@@ -1622,15 +1618,6 @@ function getStatusClass(status: ReturnType<typeof displayCreditStatusFromOrderSe
   display: inline-flex;
   align-items: center;
   gap: 8px;
-}
-
-.user-preview-contacts-empty {
-  padding: 14px 16px;
-  border-radius: 10px;
-  background: #f8fafc;
-  color: #64748b;
-  font-size: 13px;
-  line-height: 1.6;
 }
 
 .user-preview-contacts {

@@ -3153,6 +3153,7 @@ function enrichMallOrderWithBuyerFields(db, order) {
   }
   const buyerPhone = /^1\d{10}$/.test(buyerPhoneDigits) ? buyerPhoneDigits : ''
   const rawRemark = buyer && typeof buyer.adminRemark === 'string' ? buyer.adminRemark.trim() : ''
+  const rawManualRejectReason = buyer && typeof buyer.manualRejectReason === 'string' ? buyer.manualRejectReason.trim() : ''
   const emergencyContactsComplete = buyer
     ? isEmergencyContactsComplete(normalizeEmergencyContactsList(buyer.emergencyContacts))
     : null
@@ -3161,6 +3162,7 @@ function enrichMallOrderWithBuyerFields(db, order) {
     buyerName: buyerName || '',
     buyerPhone,
     buyerAdminRemark: rawRemark,
+    manualRejectReason: rawManualRejectReason,
     emergencyContactsComplete,
   }
 }
@@ -3621,6 +3623,11 @@ function writeOrdersDb(db) {
 /** 审核状态变更仅持久化当前订单 */
 function writeOrderDb(db, order) {
   writeDbEntity(db, 'orders', order)
+}
+
+/** 审核不通过原因仅持久化绑定用户，避免写全量 users 集合 */
+function writeUserDb(db, user) {
+  writeDbEntity(db, 'users', user)
 }
 
 function reviewPerfNowMs() {
@@ -4445,6 +4452,9 @@ function pickRegisteredUserExportValues(user, db, fields, statsIndex, opts = {})
       case 'remark':
         values.remark = String(user.adminRemark || '').trim() || '暂无备注'
         break
+      case 'manualRejectReason':
+        values.manualRejectReason = String(user.manualRejectReason || '').trim()
+        break
       default:
         break
     }
@@ -4461,6 +4471,7 @@ const REGISTERED_USER_EXPORT_FIELDS = Object.freeze({
   quota: '额度',
   orderCount: '订单数',
   remark: '备注',
+  manualRejectReason: '不通过原因',
 })
 
 const REGISTERED_USER_EXPORT_FIELD_KEYS = Object.freeze(Object.keys(REGISTERED_USER_EXPORT_FIELDS))
@@ -11026,9 +11037,16 @@ router.patch('/orders/:id/status', async (ctx) => {
       target.riskReason = customReason || '人工审核不通过'
       target.riskCheckedAt = new Date().toISOString()
       ensureOrderCardPackage(target)
+      const buyer = resolveMallBuyerFromOrder(db, target)
+      if (buyer) {
+        buyer.manualRejectReason = target.riskReason
+      }
       marks.businessEnd = reviewPerfNowMs()
       marks.persistScheduleStart = reviewPerfNowMs()
       writeOrderDb(db, target)
+      if (buyer) {
+        writeUserDb(db, buyer)
+      }
       marks.persistScheduleEnd = reviewPerfNowMs()
       marks.flushStart = reviewPerfNowMs()
       await flushMongoPersist()
@@ -11037,7 +11055,10 @@ router.patch('/orders/:id/status', async (ctx) => {
       if (previousRiskStatus !== 'failed') {
         queueDuodiandianOrderNotify('risk_reject', target, readDb())
       }
-      ctx.body = success(target)
+      ctx.body = success({
+        ...target,
+        manualRejectReason: buyer ? String(buyer.manualRejectReason || '').trim() : '',
+      })
       return
     }
 

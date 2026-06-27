@@ -58,6 +58,7 @@ export interface OrderItem {
   status: '待付款' | '待审核' | '风控未通过' | '待发货' | '待收货' | '已完成'
   riskStatus: 'passed' | 'failed'
   riskReason: string
+  manualRejectReason: string
   payType: '先享后付' | '全款'
   createdAt: string
   cardPackageIssuedAt: string
@@ -118,6 +119,7 @@ interface MallOrderPayload {
   status: 'reviewing' | 'shipping' | 'receiving' | 'enjoying'
   riskStatus?: 'passed' | 'failed'
   riskReason?: string
+  manualRejectReason?: string
   paid: boolean
   payType: 'installment' | 'full'
   receiverName: string
@@ -346,6 +348,7 @@ function mapMallOrderToAdminOrder(order: MallOrderPayload): OrderItem {
     status,
     riskStatus,
     riskReason: order.riskReason || '',
+    manualRejectReason: order.manualRejectReason || '',
     payType: order.payType === 'installment' ? '先享后付' : '全款',
     createdAt: formatDateTime(order.createdAt),
     cardPackageIssuedAt: formatDateTime(order.cardPackageIssuedAt || ''),
@@ -674,13 +677,17 @@ async function updateOrderStatus(orderId: string, status: MallOrderPayload['stat
 }
 
 /** 审核页「审核不通过」：订单仍为 reviewing，仅 riskStatus 置为 failed */
-async function rejectOrderReview(orderId: string, riskReason?: string) {
+async function rejectOrderReview(orderId: string, riskReason: string) {
+  const reason = riskReason.trim()
+  if (!reason) {
+    throw new Error('请填写审核不通过原因')
+  }
   const response = await fetch(`${MALL_ORDERS_ENDPOINT}/${encodeURIComponent(orderId)}/status`, {
     method: 'PATCH',
     headers: withMallTenantHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({
       riskStatus: 'failed',
-      ...(typeof riskReason === 'string' && riskReason.trim() ? { riskReason: riskReason.trim() } : {}),
+      riskReason: reason,
     }),
   })
   if (!response.ok) {

@@ -34,6 +34,7 @@ const riskDialogUserId = ref<string | null>(null)
 const riskDetailHideBasicInfoTab = ref(false)
 const resolvingRiskOrderId = ref<string | null>(null)
 const riskFilter = ref<'全部' | OrderItem['riskStatus']>('全部')
+const showRejectReasonColumn = computed(() => riskFilter.value === 'failed')
 const userFilter = ref('')
 const { orders, fetchOrders, updateOrderStatus, rejectOrderReview, reReviewOrderReview, deleteOrder } = useOrdersStore()
 
@@ -324,6 +325,38 @@ async function approveOrder(order: OrderItem) {
   }
 }
 
+async function promptManualRejectReason(order: OrderItem): Promise<string | null> {
+  try {
+    const { value } = await ElMessageBox.prompt(
+      `请填写订单 ${order.id} 审核不通过的原因，后续导出名单时会带出该原因。`,
+      '审核不通过原因',
+      {
+        confirmButtonText: '确认不通过',
+        cancelButtonText: '取消',
+        inputType: 'textarea',
+        inputPlaceholder: '例如：身份信息不一致、资料异常、人工复核不通过等',
+        inputValidator(value) {
+          const text = String(value || '').trim()
+          if (!text) {
+            return '请填写审核不通过原因'
+          }
+          if (text.length > 200) {
+            return '不通过原因不能超过 200 个字'
+          }
+          return true
+        },
+        inputErrorMessage: '请填写审核不通过原因',
+        type: 'warning',
+      },
+    )
+    const reason = String(value || '').trim()
+    return reason || null
+  }
+  catch {
+    return null
+  }
+}
+
 async function rejectOrder(order: OrderItem) {
   if (reviewingId.value || rejectingId.value || reReviewingId.value) {
     return
@@ -331,23 +364,13 @@ async function rejectOrder(order: OrderItem) {
   if (order.payType !== '先享后付' || order.riskStatus !== 'passed') {
     return
   }
-  try {
-    await ElMessageBox.confirm(
-      `确定将订单 ${order.id} 标记为审核不通过？提交后该单将视为风控未通过；若误操作可在「风控未通过」列表中点击「重新审核」恢复。`,
-      '审核不通过',
-      {
-        confirmButtonText: '确定',
-        cancelButtonText: '取消',
-        type: 'warning',
-      },
-    )
-  }
-  catch {
+  const reason = await promptManualRejectReason(order)
+  if (!reason) {
     return
   }
   rejectingId.value = order.id
   try {
-    await rejectOrderReview(order.id)
+    await rejectOrderReview(order.id, reason)
     ElMessage.success('已标记审核不通过')
     void refreshOrdersMenuPendingReview()
   }
@@ -558,6 +581,7 @@ watch(riskFilter, () => {
           <th>下单时间</th>
           <th>总金额</th>
           <th>风控结果</th>
+          <th v-if="showRejectReasonColumn">不通过原因</th>
           <th>还款到期日</th>
           <th>操作</th>
         </tr>
@@ -604,6 +628,17 @@ watch(riskFilter, () => {
             >
               {{ item.riskStatus === 'passed' ? '风控通过' : '风控未通过' }}
             </el-tag>
+          </td>
+          <td
+            v-if="showRejectReasonColumn"
+            class="td-reject-reason"
+          >
+            <p
+              class="order-reject-reason-text"
+              :title="(item.manualRejectReason || item.riskReason || '').trim()"
+            >
+              {{ (item.manualRejectReason || item.riskReason || '').trim() || '-' }}
+            </p>
           </td>
           <td>{{ item.nextRepayDate }}</td>
           
@@ -654,7 +689,7 @@ watch(riskFilter, () => {
         </tr>
         <tr v-if="!loading && orders.length === 0">
           <td
-            colspan="9"
+            :colspan="showRejectReasonColumn ? 9 : 8"
             style="text-align: center; color: #9ca3af;"
           >
             {{ totalOrders === 0 ? '暂无待审核订单' : '暂无符合筛选条件的订单' }}
@@ -824,6 +859,12 @@ watch(riskFilter, () => {
   vertical-align: middle;
 }
 
+.td-reject-reason {
+  min-width: 160px;
+  max-width: 260px;
+  vertical-align: middle;
+}
+
 .order-user-remark-text {
   margin: 0;
   line-height: 1.45;
@@ -844,6 +885,19 @@ watch(riskFilter, () => {
   font-size: 12px;
   font-weight: 400;
   color: #a8a1a1;
+}
+
+.order-reject-reason-text {
+  display: -webkit-box;
+  margin: 0;
+  color: #b91c1c;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.45;
+  overflow: hidden;
+  word-break: break-word;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
 }
 
 .order-user-risk-tag {
