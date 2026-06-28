@@ -27,6 +27,7 @@ const MallPrivacyPolicyView = () => import('../views/MallPrivacyPolicyView.vue')
 const MallUserAgreementView = () => import('../views/MallUserAgreementView.vue')
 const MallSearchView = () => import('../views/MallSearchView.vue')
 const MallTrafficLoginView = () => import('../views/MallTrafficLoginView.vue')
+const MallAppDownloadView = () => import('../views/MallAppDownloadView.vue')
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -50,6 +51,7 @@ const router = createRouter({
     { path: '/user-agreement', name: 'user-agreement', component: MallUserAgreementView },
     { path: '/search', name: 'search', component: MallSearchView },
     { path: '/traffic-login', name: 'traffic-login', component: MallTrafficLoginView },
+    { path: '/app-download', name: 'app-download', component: MallAppDownloadView },
     // 兜底：未知路径交给首页底部 Tab 的体验更一致（亦可改为 404）
     { path: '/:pathMatch(.*)*', name: 'not-found', redirect: '/' },
   ],

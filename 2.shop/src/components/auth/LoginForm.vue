@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useGuardedAppDownload } from '~/composables/useGuardedAppDownload'
 import { checkNativeMallPendingContract } from '~/composables/useMallContractPending'
 import { normalizeMallAccount } from '~/composables/useMallAuth'
 import { notifyError, notifySuccess, notifyWarning } from '~/utils/epFeedback'
@@ -7,6 +8,7 @@ const route = useRoute()
 const router = useRouter()
 const { smartNavigate } = useCustomRouting(route)
 const { syncFromStorage, loginByPhone, loginByPassword, sendLoginSms } = useMallAuth()
+const { openGuardedAppDownload } = useGuardedAppDownload()
 
 type LoginMode = 'sms' | 'password'
 const loginMode = ref<LoginMode>('sms')
@@ -88,6 +90,7 @@ async function handleSendLoginSms() {
     const text = (e as Error).message || '发送失败，请稍后重试'
     if (text.includes('未注册')) {
       notifyWarning(text)
+      await goRegister()
     }
     else {
       notifyError(text)
@@ -99,11 +102,20 @@ async function handleSendLoginSms() {
 }
 
 async function goRegister() {
+  const downloadAfterAuth = typeof route.query.downloadAfterAuth === 'string'
+    ? route.query.downloadAfterAuth
+    : undefined
+  const channel = typeof route.query.channel === 'string'
+    ? route.query.channel
+    : undefined
+
   await smartNavigate({
     path: '/register',
     query: {
       redirect: typeof route.query.redirect === 'string' ? route.query.redirect : '/my',
       phone: phone.value.trim(),
+      ...(downloadAfterAuth ? { downloadAfterAuth } : {}),
+      ...(channel ? { channel } : {}),
     },
   })
 }
@@ -162,6 +174,13 @@ async function submitLogin() {
     }
     else {
       await loginByPassword(normalizedPhone, password.value.trim())
+    }
+    if (route.query.downloadAfterAuth === '1') {
+      await openGuardedAppDownload({
+        successMessage: '登录成功，正在下载APP。',
+        skipAuthSync: true,
+      })
+      return
     }
     notifySuccess('登录成功')
     if (await checkNativeMallPendingContract(router)) {

@@ -3,12 +3,14 @@ import { h } from 'vue'
 import type { TeaProduct } from '~/composables/useTeaProducts'
 import mallDefaultAvatarUrl from '~/assets/mall-default-avatar.png?url'
 import { MALL_RUNTIME_CONFIG } from '~/config/mallRuntime'
+import { useGuardedAppDownload } from '~/composables/useGuardedAppDownload'
 import { alertDialog, notifyInfo, notifySuccess } from '~/utils/epFeedback'
 
 const route = useRoute()
 const mallSiteUrl = MALL_RUNTIME_CONFIG.siteUrl || (typeof window !== 'undefined' ? window.location.origin : '')
 const { smartNavigate } = useCustomRouting(route)
 const { isLoggedIn, loginPhone, profile, syncFromStorage, logout } = useMallAuth()
+const { openGuardedAppDownload } = useGuardedAppDownload()
 const { summary, fetchSummary, cardPackages, fetchCardPackages } = useMallMy()
 const recommendProducts = useTeaProducts()
 
@@ -147,25 +149,12 @@ function handleLogout() {
   notifySuccess('已退出登录')
 }
 
-function isAppleMobileBrowser() {
-  if (typeof navigator === 'undefined') {
-    return false
-  }
-  const ua = navigator.userAgent || ''
-  return /iPhone|iPad|iPod/i.test(ua)
-    || (navigator.platform === 'MacIntel' && Number(navigator.maxTouchPoints || 0) > 1)
-}
-
 function isSafariBrowser() {
   if (typeof navigator === 'undefined') {
     return false
   }
   const ua = navigator.userAgent || ''
   return /Safari/i.test(ua) && !/CriOS|FxiOS|EdgiOS|Chrome|Android/i.test(ua)
-}
-
-function isAndroidBrowser() {
-  return typeof navigator !== 'undefined' && /Android/i.test(navigator.userAgent || '')
 }
 
 async function showIosPwaGuide() {
@@ -233,16 +222,7 @@ async function handleService(key: string) {
     return
   }
   if (key === 'download') {
-    if (isAppleMobileBrowser()) {
-      await showIosPwaGuide()
-      return
-    }
-    const apkUrl = String(import.meta.env.VITE_MALL_APP_APK_URL || '').trim()
-    if (!apkUrl) {
-      notifyInfo(isAndroidBrowser() ? '暂未配置 APK 下载链接' : 'iPhone 请使用 Safari 添加到主屏幕，安卓请下载 APK')
-      return
-    }
-    window.open(apkUrl, '_blank', 'noopener,noreferrer')
+    await openGuardedAppDownload({ iosGuide: showIosPwaGuide })
     return
   }
   notifyInfo('该功能开发中')

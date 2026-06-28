@@ -69,7 +69,10 @@ const {
 } = require('./tenantContext')
 const { resolveTenantIdFromRequest, resolveWorkspaceTypeFromRequest } = require('./tenantResolver')
 const { DEFAULT_SUPER_ADMIN_USERNAME, BOOTSTRAP_ADMIN_ACCOUNTS } = require('./defaultBootstrap')
-const { applyUserRegisterChannel } = require('./userRegisterChannel')
+const {
+  applyUserRegisterChannel,
+  resolveRegisterChannelForRegistration,
+} = require('./userRegisterChannel')
 const {
   ADMIN_PERMISSION_ACTIONS,
   ADMIN_PERMISSION_ACTION_LABELS,
@@ -3796,24 +3799,8 @@ function ensureTrafficChannels(db) {
 
 function resolveRegisterChannelForUser(db, payload) {
   ensureTrafficChannels(db)
-  const raw = String(
-    payload.channel != null
-      ? payload.channel
-      : (payload.registerChannelCode != null ? payload.registerChannelCode : ''),
-  ).trim()
-  if (!raw || !TRAFFIC_CHANNEL_CODE_RE.test(raw)) {
-    return null
-  }
-  const ch = db.trafficChannels.find(
-    c => c && String(c.code) === raw && !c.disabled,
-  )
-  if (!ch) {
-    return null
-  }
-  return {
-    code: String(ch.code),
-    name: String(ch.name || '').trim(),
-  }
+  const result = resolveRegisterChannelForRegistration(db, payload)
+  return result.channel
 }
 
 function createMallUserFromRegisterPayload(db, payload) {
@@ -4999,6 +4986,12 @@ router.post('/auth/register', async (ctx) => {
   const existing = db.users.find(item => item.phone === phone)
   if (existing) {
     fail(ctx, '该手机号已注册，请直接登录', 409)
+    return
+  }
+
+  const channelCheck = resolveRegisterChannelForRegistration(db, payload)
+  if (channelCheck.error) {
+    fail(ctx, channelCheck.error.msg || '推广链接失效，请重新打开', 400)
     return
   }
 

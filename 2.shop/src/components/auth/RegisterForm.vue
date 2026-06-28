@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { UploadProps } from 'element-plus'
+import { useGuardedAppDownload } from '../../composables/useGuardedAppDownload'
 import { captureRegisterChannelFromRoute } from '../../composables/useRegisterChannel'
 import {
   isValidEmergencyContactPersonName,
@@ -27,6 +28,7 @@ interface RegisterFormModel {
 const route = useRoute()
 const { smartNavigate } = useCustomRouting(route)
 const { register, sendRegisterSms } = useMallAuth()
+const { openGuardedAppDownload } = useGuardedAppDownload()
 const runtimeConfig = useRuntimeConfig()
 const mallApiBase = String(runtimeConfig.public.mallApiBase || '/api').replace(/\/+$/, '')
 
@@ -327,6 +329,17 @@ async function handleSubmit() {
 
   try {
     await register(payload)
+    const shouldDownloadAfterAuth = route.query.downloadAfterAuth === '1'
+      || route.query.downloadAfterRegister === '1'
+    if (shouldDownloadAfterAuth) {
+      await openGuardedAppDownload({
+        successMessage: '注册完成，正在下载APP。',
+        skipAuthSync: true,
+      })
+      await smartNavigate('/my')
+      return
+    }
+
     notifySuccess('注册成功')
 
     const raw = typeof route.query.redirect === 'string' ? route.query.redirect.trim() : ''
@@ -390,11 +403,20 @@ async function handleSendSms() {
 }
 
 async function goLogin() {
+  const downloadAfterAuth = typeof route.query.downloadAfterAuth === 'string'
+    ? route.query.downloadAfterAuth
+    : undefined
+  const channel = typeof route.query.channel === 'string'
+    ? route.query.channel
+    : undefined
+
   await smartNavigate({
     path: '/login',
     query: {
       phone: form.value.phone.trim(),
       redirect: typeof route.query.redirect === 'string' ? route.query.redirect : '/my',
+      ...(downloadAfterAuth ? { downloadAfterAuth } : {}),
+      ...(channel ? { channel } : {}),
     },
   })
 }

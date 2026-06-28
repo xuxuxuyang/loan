@@ -103,6 +103,7 @@ declare global {
   const useCssModule: typeof import('vue').useCssModule
   const useCssVars: typeof import('vue').useCssVars
   const useCustomRouting: typeof import('./composables/useCustomRouting').useCustomRouting
+  const useGuardedAppDownload: typeof import('./composables/useGuardedAppDownload').useGuardedAppDownload
   const useId: typeof import('vue').useId
   const useLakalaPayment: typeof import('./composables/useLakalaPayment').useLakalaPayment
   const useLink: typeof import('vue-router').useLink
@@ -134,6 +135,9 @@ declare global {
   // @ts-ignore
   export type { OtaManifest } from './composables/useAppOtaUpdate'
   import('./composables/useAppOtaUpdate')
+  // @ts-ignore
+  export type { GuardedAppDownloadOptions } from './composables/useGuardedAppDownload'
+  import('./composables/useGuardedAppDownload')
   // @ts-ignore
   export type { LakalaPayBizType, LakalaPreorderPayload, LakalaPreorderResult, LakalaPayStatusResult } from './composables/useLakalaPayment'
   import('./composables/useLakalaPayment')
@@ -256,6 +260,7 @@ declare module 'vue' {
     readonly useCssModule: UnwrapRef<typeof import('vue')['useCssModule']>
     readonly useCssVars: UnwrapRef<typeof import('vue')['useCssVars']>
     readonly useCustomRouting: UnwrapRef<typeof import('./composables/useCustomRouting')['useCustomRouting']>
+    readonly useGuardedAppDownload: UnwrapRef<typeof import('./composables/useGuardedAppDownload')['useGuardedAppDownload']>
     readonly useId: UnwrapRef<typeof import('vue')['useId']>
     readonly useLakalaPayment: UnwrapRef<typeof import('./composables/useLakalaPayment')['useLakalaPayment']>
     readonly useLink: UnwrapRef<typeof import('vue-router')['useLink']>

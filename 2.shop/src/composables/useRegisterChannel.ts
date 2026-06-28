@@ -1,8 +1,9 @@
 /**
- * 注册渠道：仅从 URL `?channel=` 读取，写入 sessionStorage，仅在注册成功提交后清除。
+ * 注册渠道：仅从 URL `?channel=` 读取，持久化到本地缓存，仅在注册成功提交后清除。
  * 采用「首次有效参数为准」，避免后续跳转覆盖归因。
  */
 const STORAGE_KEY = 'mall_pending_register_channel'
+const PENDING_REGISTER_CHANNEL_TTL_MS = 30 * 24 * 60 * 60 * 1000
 
 function safeTrimChannel(raw: unknown): string {
   if (typeof raw !== 'string') {
@@ -16,6 +17,83 @@ function safeTrimChannel(raw: unknown): string {
     return ''
   }
   return s
+}
+
+function readStoredChannelValue(raw: string | null): string {
+  const text = String(raw || '').trim()
+  if (!text) {
+    return ''
+  }
+  if (!text.startsWith('{')) {
+    return safeTrimChannel(text)
+  }
+  try {
+    const parsed = JSON.parse(text) as { code?: unknown, expiresAt?: unknown }
+    const expiresAt = Number(parsed.expiresAt || 0)
+    if (expiresAt > 0 && expiresAt < Date.now()) {
+      return ''
+    }
+    return safeTrimChannel(parsed.code)
+  }
+  catch {
+    return ''
+  }
+}
+
+function removeStoredChannel() {
+  try {
+    localStorage?.removeItem(STORAGE_KEY)
+  }
+  catch {
+    /* ignore */
+  }
+  try {
+    sessionStorage?.removeItem(STORAGE_KEY)
+  }
+  catch {
+    /* ignore */
+  }
+}
+
+function readStoredChannel(): string {
+  try {
+    const fromLocal = readStoredChannelValue(localStorage?.getItem(STORAGE_KEY) || null)
+    if (fromLocal) {
+      return fromLocal
+    }
+    if (localStorage?.getItem(STORAGE_KEY)) {
+      localStorage.removeItem(STORAGE_KEY)
+    }
+  }
+  catch {
+    /* ignore */
+  }
+  try {
+    return readStoredChannelValue(sessionStorage?.getItem(STORAGE_KEY) || null)
+  }
+  catch {
+    return ''
+  }
+}
+
+function writeStoredChannel(code: string) {
+  const payload = JSON.stringify({
+    code,
+    expiresAt: Date.now() + PENDING_REGISTER_CHANNEL_TTL_MS,
+  })
+  try {
+    localStorage?.setItem(STORAGE_KEY, payload)
+    return
+  }
+  catch {
+    /* fall back to sessionStorage below */
+  }
+  try {
+    sessionStorage?.setItem(STORAGE_KEY, code)
+  }
+  catch {
+    /* ignore quota / private mode */
+  }
 }
 
 /** 单次解析 URL query（支持 string | string[]），用于注册提交时兜底 */
@@ -61,9 +139,9 @@ function reportChannelClickOnce(code: string) {
   })
 }
 
-/** 路由进入时调用：若 URL 含合法 channel 且尚未锁定，则写入 sessionStorage */
+/** 路由进入时调用：若 URL 含合法 channel 且尚未锁定，则写入本地缓存 */
 export function captureRegisterChannelFromRoute(query: Record<string, unknown>) {
-  if (import.meta.env.SSR || typeof sessionStorage === 'undefined') {
+  if (import.meta.env.SSR) {
     return
   }
   const code = resolveChannelFromRouteQuery(query)
@@ -71,36 +149,21 @@ export function captureRegisterChannelFromRoute(query: Record<string, unknown>) 
     return
   }
   reportChannelClickOnce(code)
-  try {
-    if (!sessionStorage.getItem(STORAGE_KEY)) {
-      sessionStorage.setItem(STORAGE_KEY, code)
-    }
-  }
-  catch {
-    /* ignore quota / private mode */
+  if (!getPendingRegisterChannel()) {
+    writeStoredChannel(code)
   }
 }
 
 export function getPendingRegisterChannel(): string {
-  if (import.meta.env.SSR || typeof sessionStorage === 'undefined') {
+  if (import.meta.env.SSR) {
     return ''
   }
-  try {
-    return safeTrimChannel(sessionStorage.getItem(STORAGE_KEY))
-  }
-  catch {
-    return ''
-  }
+  return readStoredChannel()
 }
 
 export function clearPendingRegisterChannel() {
-  if (typeof sessionStorage === 'undefined') {
+  if (typeof window === 'undefined') {
     return
   }
-  try {
-    sessionStorage.removeItem(STORAGE_KEY)
-  }
-  catch {
-    /* ignore */
-  }
+  removeStoredChannel()
 }

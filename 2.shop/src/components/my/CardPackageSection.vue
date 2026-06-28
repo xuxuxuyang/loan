@@ -3,6 +3,7 @@ import type { MallCardPackageDTO } from '~/api/modules/mall'
 import { MALL_KEFU_QR_URL } from '~/constants/mallKefuQr'
 import { isAndroidNativeContactsAvailable, openAndroidAppSettings, readAndroidDeviceContacts } from '~/composables/useAndroidContacts'
 import { useCardPackageContractMeta } from '~/composables/useCardPackageContractMeta'
+import { useGuardedAppDownload } from '~/composables/useGuardedAppDownload'
 import { useMallContacts } from '~/composables/useMallContacts'
 import {
   isValidEmergencyContactPersonName,
@@ -26,6 +27,7 @@ defineProps<{
 }>()
 
 const { loginPhone, profile, syncFromStorage } = useMallAuth()
+const { openGuardedAppDownload } = useGuardedAppDownload()
 const {
   cardPackages,
   fetchCardPackages,
@@ -454,13 +456,8 @@ async function uploadNativeContactsAndRetry() {
   }
 }
 
-function downloadAndroidApp() {
-  const apkUrl = String(import.meta.env.VITE_MALL_APP_APK_URL || '').trim()
-  if (!apkUrl) {
-    notifyWarning('App 下载地址未配置，请联系客服')
-    return
-  }
-  window.location.href = apkUrl
+async function downloadAndroidApp() {
+  await openGuardedAppDownload()
 }
 
 function openInstalledAndroidApp() {
