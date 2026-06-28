@@ -48,6 +48,7 @@ test('login and registration can complete the app download auth flow directly', 
   assert.match(loginSource, /route\.query\.downloadAfterAuth === '1'/)
   assert.match(loginSource, /successMessage: '登录成功，正在下载APP。'/)
   assert.match(loginSource, /skipAuthSync: true/)
+  assert.match(loginSource, /if \(route\.query\.downloadAfterAuth === '1'\) \{[\s\S]*?await openGuardedAppDownload\([\s\S]*?\)[\s\S]*?await smartNavigate\('\/my'\)[\s\S]*?return/)
   assert.match(loginSource, /const downloadAfterAuth = typeof route\.query\.downloadAfterAuth === 'string'[\s\S]*\.\.\.\(downloadAfterAuth \? \{ downloadAfterAuth \} : \{\}\)/)
   assert.match(registerSource, /useGuardedAppDownload/)
   assert.match(registerSource, /route\.query\.downloadAfterAuth === '1'/)

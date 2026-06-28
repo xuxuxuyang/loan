@@ -180,6 +180,7 @@ async function submitLogin() {
         successMessage: '登录成功，正在下载APP。',
         skipAuthSync: true,
       })
+      await smartNavigate('/my')
       return
     }
     notifySuccess('登录成功')
