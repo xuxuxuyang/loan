@@ -302,6 +302,41 @@ function computePrincipalSettlementThroughDate(orders, endDate) {
   }
 }
 
+function computeRiskAdjustedRevenueThroughDate(orders, endDate) {
+  const endKey = normalizeInstallmentDueDateKey(endDate)
+  if (!endKey) {
+    return { collectedAmount: 0, duePrincipal: 0, riskAdjustedRevenue: 0 }
+  }
+
+  let collectedAmount = 0
+  let duePrincipal = 0
+
+  for (const order of Array.isArray(orders) ? orders : []) {
+    const plan = Array.isArray(order && order.installmentPlan) ? order.installmentPlan : []
+    for (const item of plan) {
+      if (!item) {
+        continue
+      }
+      const key = resolveInstallmentEffectiveDueDateKey(item, order)
+      if (!key || key > endKey) {
+        continue
+      }
+      duePrincipal += resolveInstallmentPrincipalAmount(item, order)
+      if (installmentItemIsPaid(item)) {
+        collectedAmount += roundMoney(item.amount)
+      }
+    }
+  }
+
+  const collected = roundMoney(collectedAmount)
+  const principal = roundMoney(duePrincipal)
+  return {
+    collectedAmount: collected,
+    duePrincipal: principal,
+    riskAdjustedRevenue: roundMoney(collected - principal),
+  }
+}
+
 function collectOrderEffectiveDueDateBounds(order) {
   const plan = Array.isArray(order && order.installmentPlan) ? order.installmentPlan : []
   let minKey = ''
@@ -473,6 +508,7 @@ module.exports = {
   computePendingReceivableStats,
   computeTotalOverdueAmount,
   computePrincipalSettlementThroughDate,
+  computeRiskAdjustedRevenueThroughDate,
   computeOrderSettlementRateOnDate,
   computeDynamicOrderSettlementRate,
   computeDynamicPendingReceivableAverages,

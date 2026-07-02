@@ -2,6 +2,7 @@
 import { Refresh } from '@element-plus/icons-vue'
 import { computed, onMounted, ref } from 'vue'
 import { withMallTenantHeaders } from '../composables/useAdminApi'
+import { adminSessionRevision, getAdminSession } from '../composables/useAdminAuth'
 
 const MALL_API_BASE = `${(import.meta.env.VITE_MALL_API_BASE || 'http://localhost:3110/api').replace(/\/$/, '')}`
 
@@ -67,6 +68,10 @@ function emptyDashboardKpis(): DashboardKpis {
 
 /** 服务端聚合 KPI，不再全量 GET /orders */
 const kpis = ref<DashboardKpis>(emptyDashboardKpis())
+const canViewActualRevenue = computed(() => {
+  void adminSessionRevision.value
+  return getAdminSession()?.role === 'super_admin'
+})
 
 function fmtYuan(n: number) {
   return `¥${Number(n || 0).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
@@ -146,12 +151,14 @@ const kpiBoardRows = computed<BoardItem[]>(() => {
       hint: `${scope}成交总额 − 卡包本金合计`,
       tone: 'slateInk',
     }),
-    card({
-      label: '实际利润',
-      value: fmtYuan(k.principalProfit),
-      hint: `${scope}截至昨日，已收本金 − 逾期本金`,
-      tone: 'cyanSky',
-    }),
+    ...(canViewActualRevenue.value
+      ? [card({
+          label: '实际营收',
+          value: fmtYuan(k.principalProfit),
+          hint: `${scope}截至昨日，已收金额 − 到期应还本金`,
+          tone: 'cyanSky',
+        })]
+      : []),
     card({
       label: '延期还款金额',
       value: fmtYuan(k.extensionRepaymentAmount),

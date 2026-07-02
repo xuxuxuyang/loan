@@ -10,7 +10,7 @@ const {
   filterDueOnDateRowRefs,
   computePendingReceivableStats,
   computeTotalOverdueAmount,
-  computePrincipalSettlementThroughDate,
+  computeRiskAdjustedRevenueThroughDate,
   computeDynamicOrderSettlementRate,
   computeDynamicPendingReceivableAverages,
   computeDynamicUnpaidRateThroughDate,
@@ -9972,8 +9972,8 @@ function computeAdminDashboardKpisFromDb(db) {
   const dynamicReceivable = computeDynamicPendingReceivableAverages(basis, tYesterday)
   const overdueRate = dynamicReceivable.dynamicUnpaidRate
   const overdueShareOfReceivable = dynamicReceivable.dynamicUnpaidShareOfDue
-  const principalSettlement = computePrincipalSettlementThroughDate(basis, tYesterday)
-  const principalProfit = principalSettlement.principalProfit
+  const riskAdjustedRevenue = computeRiskAdjustedRevenueThroughDate(basis, tYesterday)
+  const principalProfit = riskAdjustedRevenue.riskAdjustedRevenue
   // 逾期金额：截至昨日全部逾期未还分期金额合计（非日均）
   const overdueAmount = computeTotalOverdueAmount(basis, t)
   const overduePrincipalAmount = computeTotalOverdueAmount(basis, t, { principalOnly: true })
@@ -10079,7 +10079,7 @@ router.get('/admin/dashboard/kpis', async (ctx) => {
     const db = readDb()
     return computeAdminDashboardKpisFromDb(db)
   })
-  ctx.body = success(data)
+  ctx.body = success(ctx.state.adminRole === ADMIN_ROLES.SUPER ? data : { ...data, principalProfit: 0 })
 })
 
 router.get('/orders', async (ctx) => {

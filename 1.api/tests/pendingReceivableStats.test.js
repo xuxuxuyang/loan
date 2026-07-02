@@ -6,6 +6,7 @@ const {
   computePendingReceivableStats,
   computeTotalOverdueAmount,
   computePrincipalSettlementThroughDate,
+  computeRiskAdjustedRevenueThroughDate,
   resolveInstallmentPrincipalAmount,
   computeOrderSettlementRateOnDate,
   computeDynamicOrderSettlementRate,
@@ -536,6 +537,46 @@ test('calculates overdue principal amount from unpaid overdue installments only'
 
   assert.equal(computeTotalOverdueAmount(orders, '2026-06-15'), 2750)
   assert.equal(computeTotalOverdueAmount(orders, '2026-06-15', { principalOnly: true }), 2000)
+})
+
+test('calculates risk-adjusted revenue from collected amount minus due principal', () => {
+  const orders = [
+    {
+      id: 'OD-revenue-paid',
+      cardPackageIssued: true,
+      cardPackageIssuedAt: '2026-06-01T10:00:00.000Z',
+      cardPackageAmount: 2000,
+      periods: 1,
+      installmentPlan: [
+        { period: 1, dueDate: '2026-06-10', amount: 2750, paid: true },
+      ],
+    },
+    {
+      id: 'OD-revenue-overdue',
+      cardPackageIssued: true,
+      cardPackageIssuedAt: '2026-06-01T10:00:00.000Z',
+      cardPackageAmount: 2000,
+      periods: 1,
+      installmentPlan: [
+        { period: 1, dueDate: '2026-06-10', amount: 2750, paid: false },
+      ],
+    },
+    {
+      id: 'OD-revenue-not-due-ignored',
+      cardPackageIssued: true,
+      cardPackageIssuedAt: '2026-06-12T10:00:00.000Z',
+      cardPackageAmount: 2000,
+      periods: 1,
+      installmentPlan: [
+        { period: 1, dueDate: '2026-06-20', amount: 2750, paid: false },
+      ],
+    },
+  ]
+
+  const stats = computeRiskAdjustedRevenueThroughDate(orders, '2026-06-14')
+  assert.equal(stats.collectedAmount, 2750)
+  assert.equal(stats.duePrincipal, 4000)
+  assert.equal(stats.riskAdjustedRevenue, -1250)
 })
 
 test('calculates actual profit through yesterday from collected principal minus overdue principal', () => {
