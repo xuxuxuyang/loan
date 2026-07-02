@@ -59,6 +59,7 @@ const ADMIN_PERMISSION_TREE = [
     actions: ['view'],
     children: [
       { key: 'users.registered', label: '注册用户', actions: ['view', 'create', 'update', 'setQuota', 'remark', 'blacklist', 'riskCheck', 'resetPassword', 'delete', 'export'] },
+      { key: 'users.registeredWhitelist', label: '注册白名单', actions: ['view'] },
       { key: 'users.noOrder', label: '未下单用户', actions: ['view', 'update', 'setQuota', 'remark', 'blacklist', 'riskCheck', 'resetPassword', 'delete'] },
       { key: 'users.ordering', label: '下单用户', actions: ['view', 'update', 'setQuota', 'remark', 'blacklist', 'riskCheck', 'resetPassword', 'delete'] },
       { key: 'users.cardPackageIssued', label: '已发放卡包客户', actions: ['view', 'update', 'setQuota', 'remark', 'blacklist', 'riskCheck', 'resetPassword', 'delete', 'export'] },
@@ -234,12 +235,15 @@ function hasAdminPermissionOnAny(accountOrRole, permissionKeys, action = 'view')
   return keys.some((key) => hasAdminPermission(accountOrRole, key, action))
 }
 
-const ADMIN_USERS_PAGE_PERMISSION_KEYS = ['users.registered', 'users.noOrder', 'users.ordering', 'users.cardPackageIssued']
+const ADMIN_USERS_PAGE_PERMISSION_KEYS = ['users.registered', 'users.registeredWhitelist', 'users.noOrder', 'users.ordering', 'users.cardPackageIssued']
 
 function normalizeAdminUsersListView(raw) {
   const view = String(raw || '').trim()
   if (view === 'ordering') {
     return 'ordering'
+  }
+  if (view === 'registered-whitelist') {
+    return 'registered-whitelist'
   }
   if (view === 'no-order') {
     return 'no-order'
@@ -254,6 +258,9 @@ function adminUsersPermissionKeyForView(view) {
   const normalized = normalizeAdminUsersListView(view)
   if (normalized === 'ordering') {
     return 'users.ordering'
+  }
+  if (normalized === 'registered-whitelist') {
+    return 'users.registeredWhitelist'
   }
   if (normalized === 'no-order') {
     return 'users.noOrder'

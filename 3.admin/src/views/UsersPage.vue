@@ -201,12 +201,6 @@ const {
   canDelete: canDeleteUser,
   canExport: canExportUsers,
 } = useAdminPagePermission(undefined, () => isSuperAdminRole(getAdminSession()?.role))
-const canEditUsers = computed(() => canUpdateUser.value || canResetPassword.value)
-const canManageRegisterChannel = computed(() => {
-  void adminSessionRevision.value
-  const role = getAdminSession()?.role
-  return role === 'super_admin' || role === 'boss'
-})
 
 /** 下单用户页：仅展示订单数大于 0 的用户 */
 const isOrderingUsersView = computed(() => route.path === '/users/ordering')
@@ -214,6 +208,21 @@ const isOrderingUsersView = computed(() => route.path === '/users/ordering')
 const isCardPackageIssuedUsersView = computed(() => route.path === '/users/card-package-issued')
 /** 未下单用户页：仅展示已注册且订单数为 0 的用户 */
 const isNoOrderUsersView = computed(() => route.path === '/users/no-order')
+/** 注册白名单页：注册后未提交订单、未触发 shop 先享后付风控、未被标记无效的只读用户 */
+const isRegisteredWhitelistUsersView = computed(() => route.path === '/users/registered-whitelist')
+const canEditUsers = computed(() => !isRegisteredWhitelistUsersView.value && (canUpdateUser.value || canResetPassword.value))
+const canManageRegisterChannel = computed(() => {
+  if (isRegisteredWhitelistUsersView.value)
+    return false
+  void adminSessionRevision.value
+  const role = getAdminSession()?.role
+  return role === 'super_admin' || role === 'boss'
+})
+const readOnlyListView = computed(() => isRegisteredWhitelistUsersView.value)
+const canSetQuotaInCurrentView = computed(() => canSetQuota.value && !readOnlyListView.value)
+const canRemarkInCurrentView = computed(() => canRemark.value && !readOnlyListView.value)
+const canBlacklistInCurrentView = computed(() => canBlacklist.value && !readOnlyListView.value)
+const canDeleteUserInCurrentView = computed(() => canDeleteUser.value && !readOnlyListView.value)
 /** 列表首列展示下单时间（下单用户 / 已发放卡包客户） */
 const showsOrderTimeColumn = computed(() => isOrderingUsersView.value || isCardPackageIssuedUsersView.value)
 /** 仅「注册用户」「已发放卡包客户」页提供导出 */
@@ -640,6 +649,9 @@ async function fetchUsers() {
       if (isOrderingUsersView.value) {
         params.set('view', 'ordering')
       }
+      else if (isRegisteredWhitelistUsersView.value) {
+        params.set('view', 'registered-whitelist')
+      }
       else if (isNoOrderUsersView.value) {
         params.set('view', 'no-order')
       }
@@ -724,7 +736,7 @@ function closePreview() {
 }
 
 function startEdit(user: ListedUser) {
-  if (!canSetQuota.value)
+  if (!canSetQuotaInCurrentView.value)
     return
   previewUser.value = user
   editingUserId.value = user.id
@@ -1274,7 +1286,7 @@ async function toggleBlacklist(user: ListedUser) {
           </td>
           <td class="quota-cell">
             <button
-              v-if="canSetQuota"
+              v-if="canSetQuotaInCurrentView"
               type="button"
               class="quota-trigger"
               @click="openQuotaDialog(item)"
@@ -1289,7 +1301,7 @@ async function toggleBlacklist(user: ListedUser) {
           <td>{{ item.orderCount }}</td>
           <td class="td-remark">
             <button
-              v-if="canRemark"
+              v-if="canRemarkInCurrentView"
               type="button"
               class="remark-cell remark-cell--clickable"
               :title="item.adminRemark?.trim() ? '点击编辑备注' : '点击添加备注'"
@@ -1351,7 +1363,7 @@ async function toggleBlacklist(user: ListedUser) {
                 修改
               </button>
               <button
-                v-if="canBlacklist"
+                v-if="canBlacklistInCurrentView"
                 type="button"
                 class="btn"
                 :class="item.orderBlacklisted ? 'btn-success' : 'btn-danger'"
@@ -1367,7 +1379,7 @@ async function toggleBlacklist(user: ListedUser) {
                 }}
               </button>
               <div
-                v-if="canDeleteUser"
+                v-if="canDeleteUserInCurrentView"
                 class="delete-wrap"
               >
                 <button

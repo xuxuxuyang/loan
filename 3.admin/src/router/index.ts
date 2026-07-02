@@ -147,6 +147,12 @@ const router = createRouter({
       meta: { title: '下单用户', roles: ['super_admin'], permissionKey: 'users.ordering' },
     },
     {
+      path: '/users/registered-whitelist',
+      name: 'users-registered-whitelist',
+      component: UsersPage,
+      meta: { title: '注册白名单', roles: ['super_admin'], permissionKey: 'users.registeredWhitelist' },
+    },
+    {
       path: '/users/no-order',
       name: 'users-no-order',
       component: UsersPage,

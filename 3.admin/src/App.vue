@@ -118,6 +118,7 @@ const allMenus: MenuEntry[] = [
     roles: ['super_admin'],
     children: [
       { label: '注册用户', path: '/users', icon: User },
+      { label: '注册白名单', path: '/users/registered-whitelist', icon: UserFilled },
       { label: '未下单用户', path: '/users/no-order', icon: UserFilled },
       { label: '下单用户', path: '/users/ordering', icon: ShoppingCart },
       { label: '已发放卡包客户', path: '/users/card-package-issued', icon: Box },

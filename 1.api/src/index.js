@@ -1704,7 +1704,7 @@ async function requireAdminUsersActionOnAny(ctx, action, actionLabel) {
     fail(ctx, `当前角色【${getRoleLabel(role)}】无权限执行${actionLabel}`, 403)
     return ''
   }
-  const keys = ['users.registered', 'users.noOrder', 'users.ordering', 'users.cardPackageIssued']
+  const keys = ['users.registered', 'users.registeredWhitelist', 'users.noOrder', 'users.ordering', 'users.cardPackageIssued']
   const allowed = keys.some(key => hasAdminPermission(account, key, action))
   if (!allowed) {
     fail(ctx, `当前账号无权限执行${actionLabel}`, 403)
@@ -3821,6 +3821,8 @@ function createMallUserFromRegisterPayload(db, payload) {
     quota: normalizeUserQuota(payload.quota),
     adminRemark: '',
     orderBlacklisted: false,
+    registeredWhitelistEligible: true,
+    mallInstallmentRiskAttempted: false,
   }
   const reg = resolveRegisterChannelForUser(db, payload)
   if (reg) {
@@ -4163,6 +4165,43 @@ function isNoOrderWhiteUser(submittedOrderIndex, user) {
     && displayCreditStatusFromOrderSevenSnapshot(user?.riskControlSnapshot) === '待风控'
 }
 
+function mallUserHasWhitelistExclusionMarker(user) {
+  return Boolean(
+    String(user?.manualRejectReason || '').trim()
+    || user?.orderBlacklisted === true
+    || String(user?.duodiandianApplyNo || '').trim()
+    || String(user?.duodiandianPartnerOrderNo || '').trim()
+    || String(user?.riskReviewStatus || '').trim()
+    || String(user?.riskReviewSource || '').trim()
+  )
+}
+
+function hasRegisteredWhitelistFields(user) {
+  return user?.registeredWhitelistEligible === true
+    && user?.mallInstallmentRiskAttempted === false
+}
+
+function isRegisteredWhitelistUser(submittedOrderIndex, user) {
+  return hasRegisteredWhitelistFields(user)
+    && !mallUserHasSubmittedOrder(submittedOrderIndex, user)
+    && displayCreditStatusFromOrderSevenSnapshot(user?.riskControlSnapshot) === '待风控'
+    && user?.mallInstallmentRiskAttempted !== true
+    && !mallUserHasWhitelistExclusionMarker(user)
+}
+
+function markMallInstallmentRiskAttempted(db, phone) {
+  const normalized = normalizePhone(phone)
+  if (!/^1\d{10}$/.test(normalized)) {
+    return false
+  }
+  const user = db.users.find(item => item && item.phone === normalized)
+  if (!user || user.mallInstallmentRiskAttempted === true) {
+    return false
+  }
+  user.mallInstallmentRiskAttempted = true
+  return true
+}
+
 /** 单次扫描 orders，供用户列表 filter/sort 与 attachUserOrderStats 复用 */
 function buildMallUserOrderStatsIndex(db, opts = {}) {
   const index = new Map()
@@ -4352,7 +4391,7 @@ function listAdminUsersFilteredRows(db, query, opts = {}) {
     candidates = candidates.filter(item => userRegisterChannelDisplayKeyFromUser(db, item) === registerChannel)
   }
 
-  const submittedOrderUserIds = view === 'no-order'
+  const submittedOrderUserIds = view === 'no-order' || view === 'registered-whitelist'
     ? buildMallUserSubmittedOrderIndex(db)
     : null
 
@@ -4380,6 +4419,9 @@ function listAdminUsersFilteredRows(db, query, opts = {}) {
   else {
     if (view === 'no-order') {
       rows = rows.filter(item => isNoOrderWhiteUser(submittedOrderUserIds, item.user))
+    }
+    else if (view === 'registered-whitelist') {
+      rows = rows.filter(item => isRegisteredWhitelistUser(submittedOrderUserIds, item.user))
     }
     rows.sort((a, b) => {
       const ta = a.user.registerAt ? new Date(a.user.registerAt).getTime() : 0
@@ -7966,11 +8008,13 @@ router.get('/users', async (ctx) => {
   const viewRaw = String(ctx.query.view || 'registered').trim()
   const view = viewRaw === 'ordering'
     ? 'ordering'
-    : viewRaw === 'no-order'
-      ? 'no-order'
-      : viewRaw === 'card-package-issued'
-        ? 'card-package-issued'
-        : 'registered'
+    : viewRaw === 'registered-whitelist'
+      ? 'registered-whitelist'
+      : viewRaw === 'no-order'
+        ? 'no-order'
+        : viewRaw === 'card-package-issued'
+          ? 'card-package-issued'
+          : 'registered'
   const registerChannel = String(ctx.query.registerChannel || '').trim()
   const orderDate = String(ctx.query.orderDate || '').trim()
   const page = Math.max(1, parseInt(String(ctx.query.page || '1'), 10) || 1)
@@ -8027,7 +8071,7 @@ router.get('/users', async (ctx) => {
     rows = rows.filter(item => userRegisterChannelDisplayKeyFromUser(db, item) === registerChannel)
   }
 
-  const submittedOrderUserIds = view === 'no-order'
+  const submittedOrderUserIds = view === 'no-order' || view === 'registered-whitelist'
     ? buildMallUserSubmittedOrderIndex(db)
     : null
 
@@ -8055,6 +8099,9 @@ router.get('/users', async (ctx) => {
   else {
     if (view === 'no-order') {
       rows = rows.filter(item => isNoOrderWhiteUser(submittedOrderUserIds, item))
+    }
+    else if (view === 'registered-whitelist') {
+      rows = rows.filter(item => isRegisteredWhitelistUser(submittedOrderUserIds, item))
     }
     rows.sort((a, b) => {
       const ta = a.registerAt ? new Date(a.registerAt).getTime() : 0
@@ -8150,6 +8197,9 @@ router.post('/mall/installment-risk/wave', async (ctx) => {
       phoneNumber: body.phoneNumber,
       idNumber: body.idNumber,
     })
+    if (markMallInstallmentRiskAttempted(db, wavePhone)) {
+      writeUsersDb(db)
+    }
     ctx.body = success(data)
   }
   catch (err) {
