@@ -10,6 +10,7 @@ const {
   filterDueOnDateRowRefs,
   computePendingReceivableStats,
   computeTotalOverdueAmount,
+  computePrincipalSettlementThroughDate,
   computeDynamicOrderSettlementRate,
   computeDynamicPendingReceivableAverages,
   computeDynamicUnpaidRateThroughDate,
@@ -4129,6 +4130,39 @@ function buildRegisterChannelUserCounts(db) {
   return counts
 }
 
+function buildMallUserSubmittedOrderIndex(db) {
+  const byUserId = new Set()
+  const byBuyerPhone = new Set()
+  for (const order of db.orders || []) {
+    const mid = String(order?.mallUserId || '').trim()
+    if (mid) {
+      byUserId.add(mid)
+    }
+    const buyerPhone = normalizeBuyerPhoneDigits(order?.buyerPhone || order?.userPhone || '')
+    if (/^1\d{10}$/.test(buyerPhone)) {
+      byBuyerPhone.add(buyerPhone)
+    }
+  }
+  return { byUserId, byBuyerPhone }
+}
+
+function mallUserHasSubmittedOrder(submittedOrderIndex, user) {
+  if (!submittedOrderIndex || !user) {
+    return false
+  }
+  const uid = String(user.id || '').trim()
+  if (uid && submittedOrderIndex.byUserId.has(uid)) {
+    return true
+  }
+  const phone = normalizeBuyerPhoneDigits(user.phone || '')
+  return /^1\d{10}$/.test(phone) && submittedOrderIndex.byBuyerPhone.has(phone)
+}
+
+function isNoOrderWhiteUser(submittedOrderIndex, user) {
+  return !mallUserHasSubmittedOrder(submittedOrderIndex, user)
+    && displayCreditStatusFromOrderSevenSnapshot(user?.riskControlSnapshot) === '待风控'
+}
+
 /** 单次扫描 orders，供用户列表 filter/sort 与 attachUserOrderStats 复用 */
 function buildMallUserOrderStatsIndex(db, opts = {}) {
   const index = new Map()
@@ -4298,7 +4332,6 @@ function listAdminUsersFilteredRows(db, query, opts = {}) {
     key = '',
     view = 'registered',
     registerChannel = '',
-    orderDate = '',
   } = query
   const needOrderStats = opts.needOrderStats !== false
   const statsIndex = needOrderStats
@@ -4318,6 +4351,10 @@ function listAdminUsersFilteredRows(db, query, opts = {}) {
   else if (registerChannel && registerChannel !== '__all__') {
     candidates = candidates.filter(item => userRegisterChannelDisplayKeyFromUser(db, item) === registerChannel)
   }
+
+  const submittedOrderUserIds = view === 'no-order'
+    ? buildMallUserSubmittedOrderIndex(db)
+    : null
 
   let rows = candidates.map((user) => {
     if (!needOrderStats) {
@@ -4342,7 +4379,7 @@ function listAdminUsersFilteredRows(db, query, opts = {}) {
   }
   else {
     if (view === 'no-order') {
-      rows = rows.filter(item => Number(item.orderCount || 0) === 0)
+      rows = rows.filter(item => isNoOrderWhiteUser(submittedOrderUserIds, item.user))
     }
     rows.sort((a, b) => {
       const ta = a.user.registerAt ? new Date(a.user.registerAt).getTime() : 0
@@ -7990,6 +8027,10 @@ router.get('/users', async (ctx) => {
     rows = rows.filter(item => userRegisterChannelDisplayKeyFromUser(db, item) === registerChannel)
   }
 
+  const submittedOrderUserIds = view === 'no-order'
+    ? buildMallUserSubmittedOrderIndex(db)
+    : null
+
   const cardPackageStatsOnly = view === 'card-package-issued'
   rows = rows.map(item => attachUserOrderStats(db, item, {
     includeAdminPasswordEcho: true,
@@ -8013,7 +8054,7 @@ router.get('/users', async (ctx) => {
   }
   else {
     if (view === 'no-order') {
-      rows = rows.filter(item => Number(item.orderCount || 0) === 0)
+      rows = rows.filter(item => isNoOrderWhiteUser(submittedOrderUserIds, item))
     }
     rows.sort((a, b) => {
       const ta = a.registerAt ? new Date(a.registerAt).getTime() : 0
@@ -9829,6 +9870,7 @@ function computeAdminDashboardKpisFromDb(db) {
       }
       const a = Number(item.amount) || 0
       const dk = normalizeInstallmentDueDateKey(item.dueDate)
+      const overdueKey = resolveInstallmentEffectiveDueDateKey(item, order)
 
       if (installmentItemIsPaid(item)) {
         collectedAmount += a
@@ -9837,7 +9879,7 @@ function computeAdminDashboardKpisFromDb(db) {
 
       receivableAmount += a
 
-      if (dk && dk < t) {
+      if (overdueKey && overdueKey < t) {
         orderHasOverdue = true
       }
       if (dk === t) {
@@ -9880,18 +9922,23 @@ function computeAdminDashboardKpisFromDb(db) {
   const dynamicReceivable = computeDynamicPendingReceivableAverages(basis, tYesterday)
   const overdueRate = dynamicReceivable.dynamicUnpaidRate
   const overdueShareOfReceivable = dynamicReceivable.dynamicUnpaidShareOfDue
+  const principalSettlement = computePrincipalSettlementThroughDate(basis, tYesterday)
+  const principalProfit = principalSettlement.principalProfit
   // 逾期金额：截至昨日全部逾期未还分期金额合计（非日均）
   const overdueAmount = computeTotalOverdueAmount(basis, t)
+  const overduePrincipalAmount = computeTotalOverdueAmount(basis, t, { principalOnly: true })
 
   return {
     orderCount,
     totalSales,
     totalPrincipal,
     premiumToPrincipal,
+    principalProfit,
     receivableAmount,
     receivablePrincipal,
     collectedAmount,
     overdueAmount,
+    overduePrincipalAmount,
     overdueOrderCount,
     overdueRate,
     overdueShareOfReceivable,

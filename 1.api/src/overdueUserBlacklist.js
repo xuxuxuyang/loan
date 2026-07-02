@@ -20,7 +20,7 @@ function computeOrderRepayBucket(order, todayKey) {
     if (!p || installmentItemIsPaid(p)) {
       continue
     }
-    const key = resolveInstallmentEffectiveDueDateKey(p)
+    const key = resolveInstallmentEffectiveDueDateKey(p, order)
     if (key && today && key < today) {
       return '已逾期'
     }

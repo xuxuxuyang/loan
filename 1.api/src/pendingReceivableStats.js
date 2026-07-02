@@ -1,3 +1,7 @@
+const {
+  calculateInstallmentDueDateAfterCardIssue,
+} = require('./installmentRepaySchedule')
+
 function normalizeInstallmentDueDateKey(dueDate) {
   if (dueDate == null || dueDate === '') {
     return ''
@@ -25,8 +29,15 @@ function installmentItemIsPaid(item) {
   return paid === true || paid === 1 || paid === '1' || paid === 'true'
 }
 
-/** 待收统计用有效还款日：协商待支付时以协商还款日为准，否则以当前 dueDate（含延期后）为准 */
-function resolveInstallmentEffectiveDueDateKey(item) {
+function resolveCardPackageIssueDueDateKey(order) {
+  if (!order || !order.cardPackageIssued) {
+    return ''
+  }
+  return normalizeInstallmentDueDateKey(calculateInstallmentDueDateAfterCardIssue(order.cardPackageIssuedAt || order.createdAt))
+}
+
+/** 待收/逾期统计用有效还款日：协商待支付优先；否则历史旧 dueDate 不得早于卡包发放后的真实还款日。 */
+function resolveInstallmentEffectiveDueDateKey(item, order) {
   if (!item) {
     return ''
   }
@@ -37,11 +48,33 @@ function resolveInstallmentEffectiveDueDateKey(item) {
       return negotiatedDue
     }
   }
-  return normalizeInstallmentDueDateKey(item.dueDate)
+  const itemDue = normalizeInstallmentDueDateKey(item.dueDate)
+  const issueDue = resolveCardPackageIssueDueDateKey(order)
+  if (itemDue && issueDue) {
+    return itemDue > issueDue ? itemDue : issueDue
+  }
+  return itemDue || issueDue
 }
 
 function roundMoney(value) {
   return Number(Number(value || 0).toFixed(2))
+}
+
+function resolveInstallmentPrincipalAmount(item, order) {
+  if (!item) {
+    return 0
+  }
+  const orderPrincipal = Number(order && order.cardPackageAmount)
+  const plan = Array.isArray(order && order.installmentPlan) ? order.installmentPlan : []
+  const periods = Math.max(1, Number(order && order.periods) || Number(order && order.installmentPeriods) || plan.length || 1)
+  if (Number.isFinite(orderPrincipal) && orderPrincipal > 0) {
+    return roundMoney(orderPrincipal / periods)
+  }
+  const principal = Number(item.principal)
+  if (Number.isFinite(principal) && principal > 0) {
+    return roundMoney(principal)
+  }
+  return roundMoney(item.amount)
 }
 
 const DEFER_AS_COLLECTED_EVENT_TYPE = 'defer_as_collected'
@@ -103,7 +136,7 @@ function computePendingReceivableStats(orders, dueDate, options = {}) {
       if (!item) {
         continue
       }
-      const key = resolveInstallmentEffectiveDueDateKey(item)
+      const key = resolveInstallmentEffectiveDueDateKey(item, order)
       const paid = installmentItemIsPaid(item)
       if (key === dueDate) {
         const amt = roundMoney(item.amount)
@@ -193,7 +226,7 @@ function collectReceivableDueDatesUpTo(orders, endDate, options = {}) {
       if (!item) {
         continue
       }
-      const key = resolveInstallmentEffectiveDueDateKey(item)
+      const key = resolveInstallmentEffectiveDueDateKey(item, order)
       if (key && key <= endDate) {
         dates.add(key)
       }
@@ -214,7 +247,10 @@ function collectReceivableDueDatesUpTo(orders, endDate, options = {}) {
 /**
  * 全部逾期金额：有效应还日早于 todayKey、仍未还的分期金额合计（不含当日应还，与订单「已逾期」口径一致）。
  */
-function computeTotalOverdueAmount(orders, todayKey) {
+function computeTotalOverdueAmount(orders, todayKey, options = {}) {
+  const amountOf = options.principalOnly
+    ? (item, order) => resolveInstallmentPrincipalAmount(item, order)
+    : item => roundMoney(item.amount)
   let total = 0
   for (const order of Array.isArray(orders) ? orders : []) {
     const plan = Array.isArray(order && order.installmentPlan) ? order.installmentPlan : []
@@ -222,13 +258,48 @@ function computeTotalOverdueAmount(orders, todayKey) {
       if (!item || installmentItemIsPaid(item)) {
         continue
       }
-      const key = resolveInstallmentEffectiveDueDateKey(item)
+      const key = resolveInstallmentEffectiveDueDateKey(item, order)
       if (key && todayKey && key < todayKey) {
-        total += roundMoney(item.amount)
+        total += amountOf(item, order)
       }
     }
   }
   return roundMoney(total)
+}
+
+function computePrincipalSettlementThroughDate(orders, endDate) {
+  const endKey = normalizeInstallmentDueDateKey(endDate)
+  if (!endKey) {
+    return { collectedPrincipal: 0, overduePrincipal: 0, principalProfit: 0 }
+  }
+
+  let collectedPrincipal = 0
+  let overduePrincipal = 0
+
+  for (const order of Array.isArray(orders) ? orders : []) {
+    const plan = Array.isArray(order && order.installmentPlan) ? order.installmentPlan : []
+    for (const item of plan) {
+      if (!item) {
+        continue
+      }
+      const key = resolveInstallmentEffectiveDueDateKey(item, order)
+      const principal = resolveInstallmentPrincipalAmount(item, order)
+      if (installmentItemIsPaid(item) && key && key <= endKey) {
+        collectedPrincipal += principal
+      }
+      else if (!installmentItemIsPaid(item) && key && key < endKey) {
+        overduePrincipal += principal
+      }
+    }
+  }
+
+  const collected = roundMoney(collectedPrincipal)
+  const overdue = roundMoney(overduePrincipal)
+  return {
+    collectedPrincipal: collected,
+    overduePrincipal: overdue,
+    principalProfit: roundMoney(collected - overdue),
+  }
 }
 
 function collectOrderEffectiveDueDateBounds(order) {
@@ -239,7 +310,7 @@ function collectOrderEffectiveDueDateBounds(order) {
     if (!item) {
       continue
     }
-    const key = resolveInstallmentEffectiveDueDateKey(item)
+    const key = resolveInstallmentEffectiveDueDateKey(item, order)
     if (!key) {
       continue
     }
@@ -356,7 +427,7 @@ function computeDynamicUnpaidRateThroughDate(orders, endDate, options = {}) {
       if (!item) {
         continue
       }
-      const key = resolveInstallmentEffectiveDueDateKey(item)
+      const key = resolveInstallmentEffectiveDueDateKey(item, order)
       if (!key || key > endKey) {
         continue
       }
@@ -401,6 +472,7 @@ module.exports = {
   DEFER_AS_COLLECTED_EVENT_TYPE,
   computePendingReceivableStats,
   computeTotalOverdueAmount,
+  computePrincipalSettlementThroughDate,
   computeOrderSettlementRateOnDate,
   computeDynamicOrderSettlementRate,
   computeDynamicPendingReceivableAverages,
@@ -409,4 +481,5 @@ module.exports = {
   installmentItemIsPaid,
   normalizeInstallmentDueDateKey,
   resolveInstallmentEffectiveDueDateKey,
+  resolveInstallmentPrincipalAmount,
 }

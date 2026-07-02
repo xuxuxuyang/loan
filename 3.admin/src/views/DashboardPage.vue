@@ -12,10 +12,12 @@ interface DashboardKpis {
   totalSales: number
   totalPrincipal: number
   premiumToPrincipal: number
+  principalProfit: number
   receivableAmount: number
   receivablePrincipal: number
   collectedAmount: number
   overdueAmount: number
+  overduePrincipalAmount: number
   overdueOrderCount: number
   overdueRate: number
   overdueShareOfReceivable: number
@@ -39,10 +41,12 @@ function emptyDashboardKpis(): DashboardKpis {
     totalSales: 0,
     totalPrincipal: 0,
     premiumToPrincipal: 0,
+    principalProfit: 0,
     receivableAmount: 0,
     receivablePrincipal: 0,
     collectedAmount: 0,
     overdueAmount: 0,
+    overduePrincipalAmount: 0,
     overdueOrderCount: 0,
     overdueRate: 0,
     overdueShareOfReceivable: 0,
@@ -79,6 +83,7 @@ type Tone =
   | 'violet'
   | 'redTomato'
   | 'redCrimson'
+  | 'redRuby'
   | 'redWine'
 
 interface BoardSection {
@@ -142,6 +147,12 @@ const kpiBoardRows = computed<BoardItem[]>(() => {
       tone: 'slateInk',
     }),
     card({
+      label: '实际利润',
+      value: fmtYuan(k.principalProfit),
+      hint: `${scope}截至昨日，已收本金 − 逾期本金`,
+      tone: 'cyanSky',
+    }),
+    card({
       label: '延期还款金额',
       value: fmtYuan(k.extensionRepaymentAmount),
       hint: `${scope}已支付延期费合计`,
@@ -152,12 +163,6 @@ const kpiBoardRows = computed<BoardItem[]>(() => {
       value: fmtYuan(k.extensionRepaymentPendingAmount),
       hint: `${scope}已登记协商、用户尚未完成支付的延期费`,
       tone: 'amberGold',
-    }),
-    card({
-      label: '分期笔均期数',
-      value: k.installmentPayOrderCount ? k.avgPeriods.toFixed(1) : '—',
-      hint: `${scope}先享后付订单的平均约定分期期数`,
-      tone: 'violet',
     }),
 
     section('回款与待收'),
@@ -242,6 +247,12 @@ const kpiBoardRows = computed<BoardItem[]>(() => {
       value: fmtYuan(k.overdueAmount),
       hint: `${scope}截至昨日（不含当日），有效应还日已过的未还分期金额合计`,
       tone: 'redCrimson',
+    }),
+    card({
+      label: '逾期金额（本金）',
+      value: fmtYuan(k.overduePrincipalAmount),
+      hint: `${scope}截至昨日（不含当日），有效应还日已过的未还分期本金合计`,
+      tone: 'redRuby',
     }),
     card({
       label: '逾期占待收',
@@ -490,6 +501,10 @@ onMounted(() => {
 
 .kpi-card--redCrimson {
   background: linear-gradient(145deg, #f43f5e 0%, #b91c1c 100%);
+}
+
+.kpi-card--redRuby {
+  background: linear-gradient(145deg, #ef4444 0%, #991b1b 100%);
 }
 
 .kpi-card--redWine {

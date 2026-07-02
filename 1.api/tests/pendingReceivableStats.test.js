@@ -5,6 +5,8 @@ const {
   filterDueOnDateRowRefs,
   computePendingReceivableStats,
   computeTotalOverdueAmount,
+  computePrincipalSettlementThroughDate,
+  resolveInstallmentPrincipalAmount,
   computeOrderSettlementRateOnDate,
   computeDynamicOrderSettlementRate,
   computeDynamicPendingReceivableAverages,
@@ -497,4 +499,81 @@ test('returns zero overdue rate when there are no unpaid due installments', () =
 
   assert.equal(stats.unpaidDueOnOrBeforeDateCount, 0)
   assert.equal(stats.overdueRateAsOfDate, 0)
+})
+
+test('resolves installment principal from order card package before legacy item fields', () => {
+  const order = { cardPackageAmount: 2000, periods: 1, installmentPlan: [{ period: 1, amount: 2750 }] }
+  assert.equal(resolveInstallmentPrincipalAmount(order.installmentPlan[0], order), 2000)
+  assert.equal(resolveInstallmentPrincipalAmount({ principal: 80, amount: 100 }), 80)
+  assert.equal(resolveInstallmentPrincipalAmount({ amount: 100 }), 100)
+})
+
+test('calculates overdue principal amount from unpaid overdue installments only', () => {
+  const orders = [
+    {
+      id: 'OD-overdue-principal',
+      cardPackageIssued: true,
+      cardPackageIssuedAt: '2026-06-01T10:00:00.000Z',
+      cardPackageAmount: 2000,
+      periods: 1,
+      installmentPlan: [
+        { period: 1, dueDate: '2026-06-10', amount: 2750, paid: false },
+        { period: 2, dueDate: '2026-06-10', principal: 40, amount: 50, paid: true },
+        { period: 3, dueDate: '2026-06-15', principal: 120, amount: 150, paid: false },
+      ],
+    },
+    {
+      id: 'OD-not-due-principal',
+      cardPackageIssued: true,
+      cardPackageIssuedAt: '2026-06-12T10:00:00.000Z',
+      cardPackageAmount: 2000,
+      periods: 1,
+      installmentPlan: [
+        { period: 1, dueDate: '2026-06-01', amount: 2750, paid: false },
+      ],
+    },
+  ]
+
+  assert.equal(computeTotalOverdueAmount(orders, '2026-06-15'), 2750)
+  assert.equal(computeTotalOverdueAmount(orders, '2026-06-15', { principalOnly: true }), 2000)
+})
+
+test('calculates actual profit through yesterday from collected principal minus overdue principal', () => {
+  const orders = [
+    {
+      id: 'OD-profit-paid',
+      cardPackageIssued: true,
+      cardPackageIssuedAt: '2026-06-01T10:00:00.000Z',
+      cardPackageAmount: 2000,
+      periods: 1,
+      installmentPlan: [
+        { period: 1, dueDate: '2026-06-10', amount: 2750, paid: true },
+      ],
+    },
+    {
+      id: 'OD-profit-overdue',
+      cardPackageIssued: true,
+      cardPackageIssuedAt: '2026-06-01T10:00:00.000Z',
+      cardPackageAmount: 2000,
+      periods: 1,
+      installmentPlan: [
+        { period: 1, dueDate: '2026-06-10', amount: 2750, paid: false },
+      ],
+    },
+    {
+      id: 'OD-profit-not-due-ignored',
+      cardPackageIssued: true,
+      cardPackageIssuedAt: '2026-06-12T10:00:00.000Z',
+      cardPackageAmount: 2000,
+      periods: 1,
+      installmentPlan: [
+        { period: 1, dueDate: '2026-06-20', amount: 2750, paid: false },
+      ],
+    },
+  ]
+
+  const stats = computePrincipalSettlementThroughDate(orders, '2026-06-14')
+  assert.equal(stats.collectedPrincipal, 2000)
+  assert.equal(stats.overduePrincipal, 2000)
+  assert.equal(stats.principalProfit, 0)
 })
