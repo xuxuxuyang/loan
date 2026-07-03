@@ -114,6 +114,7 @@ export type AdminPermissionAction =
   | 'bindPortalAccount'
   | 'purgeTenantData'
   | 'export'
+  | 'remove'
   | 'create'
   | 'update'
   | 'delete'

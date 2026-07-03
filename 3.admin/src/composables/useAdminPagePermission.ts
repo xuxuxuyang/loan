@@ -84,5 +84,6 @@ export function useAdminPagePermission(
     canBindPortalAccount: can('bindPortalAccount'),
     canPurgeTenantData: can('purgeTenantData'),
     canSwitchTenant: can('switchTenant'),
+    canRemove: can('remove'),
   }
 }

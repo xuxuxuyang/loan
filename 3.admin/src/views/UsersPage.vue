@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { CirclePlus, EditPen } from '@element-plus/icons-vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { computed, onUnmounted, reactive, ref, watch, type CSSProperties } from 'vue'
 import { useRoute } from 'vue-router'
 import { apiErrorMessage, readApiErrorMessage, withMallTenantHeaders } from '../composables/useAdminApi'
@@ -27,6 +27,14 @@ import { MALL_DEFAULT_CREDIT_QUOTA, resolveMallCreditQuota } from '../utils/mall
 /** 与商城注册、后端校验一致的 18 位身份证号格式（扩展表单校验时可复用） */
 const CN_ID_CARD_RE = /^[1-9]\d{5}(18|19|20)\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])\d{3}[\dX]$/
 
+type RegisteredWhitelistStatusFilter = 'active' | 'removed' | 'all'
+
+const REGISTERED_WHITELIST_STATUS_OPTIONS: Array<{ label: string, value: RegisteredWhitelistStatusFilter }> = [
+  { label: '白名单', value: 'active' },
+  { label: '已移出名单', value: 'removed' },
+  { label: '全部', value: 'all' },
+]
+
 /** 列表与预览：档案字段；`riskControlSnapshot` 含十四槽 / 下单七项写入结果 */
 type ListedUser = UserItem & {
   riskControlSnapshot?: UserRiskSnapshot | null
@@ -38,6 +46,7 @@ type ListedUser = UserItem & {
   registerChannelName?: string
   /** 列表展示：快照优先，否则当前渠道名 */
   registerChannelLabel?: string
+  registeredWhitelistRemovedAt?: string
 }
 
 /** 与 GET /admin/traffic-channels 对齐，用于注册渠道筛选项（与流量管理联动） */
@@ -72,6 +81,7 @@ interface ApiUserItem {
   registerChannelCode?: string
   registerChannelName?: string
   registerChannelLabel?: string
+  registeredWhitelistRemovedAt?: string
   /** 两位紧急联系人（GET /users 等） */
   emergencyContacts?: Array<{ name: string, phone: string }>
 }
@@ -124,6 +134,8 @@ const remarkSaving = ref(false)
 const remarkTarget = ref<ListedUser | null>(null)
 const remarkDraft = ref('')
 const blacklistBusyId = ref('')
+const registeredWhitelistRemovingId = ref('')
+const registeredWhitelistRestoringId = ref('')
 const registerChannelSavingId = ref('')
 const createDialogVisible = ref(false)
 const keyword = ref('')
@@ -131,6 +143,7 @@ const keyword = ref('')
 const orderDateKey = ref<string | null>(null)
 /** 注册用户页：按与列表「注册渠道」列一致的展示名筛选 */
 const registerChannelFilter = ref<string>(REGISTER_CHANNEL_FILTER_ALL)
+const registeredWhitelistStatusFilter = ref<RegisteredWhitelistStatusFilter>('active')
 /** 流量管理端配置的渠道，用于下拉展示即使用户列表中尚无人从该渠道注册 */
 const trafficChannelsForFilter = ref<AdminTrafficChannelRow[]>([])
 const previewUser = ref<ListedUser | null>(null)
@@ -200,6 +213,7 @@ const {
   canResetPassword,
   canDelete: canDeleteUser,
   canExport: canExportUsers,
+  canRemove: canRemoveRegisteredWhitelistUser,
 } = useAdminPagePermission(undefined, () => isSuperAdminRole(getAdminSession()?.role))
 
 /** 下单用户页：仅展示订单数大于 0 的用户 */
@@ -219,6 +233,7 @@ const canManageRegisterChannel = computed(() => {
   return role === 'super_admin' || role === 'boss'
 })
 const readOnlyListView = computed(() => isRegisteredWhitelistUsersView.value)
+const canRemoveRegisteredWhitelistInCurrentView = computed(() => isRegisteredWhitelistUsersView.value && canRemoveRegisteredWhitelistUser.value)
 const canSetQuotaInCurrentView = computed(() => canSetQuota.value && !readOnlyListView.value)
 const canRemarkInCurrentView = computed(() => canRemark.value && !readOnlyListView.value)
 const canBlacklistInCurrentView = computed(() => canBlacklist.value && !readOnlyListView.value)
@@ -251,6 +266,9 @@ watch(
   (path) => {
     if (path !== '/users/ordering' && path !== '/users/card-package-issued') {
       orderDateKey.value = null
+    }
+    if (path === '/users/registered-whitelist') {
+      registeredWhitelistStatusFilter.value = 'active'
     }
     currentPage.value = 1
   },
@@ -404,6 +422,7 @@ function mapApiUser(user: ApiUserItem): ListedUser {
     registerChannelCode: typeof user.registerChannelCode === 'string' ? user.registerChannelCode.trim() : undefined,
     registerChannelName: typeof user.registerChannelName === 'string' ? user.registerChannelName.trim() : undefined,
     registerChannelLabel: typeof user.registerChannelLabel === 'string' ? user.registerChannelLabel.trim() : undefined,
+    registeredWhitelistRemovedAt: typeof user.registeredWhitelistRemovedAt === 'string' ? user.registeredWhitelistRemovedAt.trim() : undefined,
     emergencyContacts: Array.isArray(user.emergencyContacts)
       ? user.emergencyContacts
         .map(x => ({
@@ -651,6 +670,7 @@ async function fetchUsers() {
       }
       else if (isRegisteredWhitelistUsersView.value) {
         params.set('view', 'registered-whitelist')
+        params.set('registeredWhitelistStatus', registeredWhitelistStatusFilter.value)
       }
       else if (isNoOrderUsersView.value) {
         params.set('view', 'no-order')
@@ -1129,6 +1149,95 @@ async function toggleBlacklist(user: ListedUser) {
     blacklistBusyId.value = ''
   }
 }
+
+async function removeRegisteredWhitelistUser(user: ListedUser) {
+  if (!canRemoveRegisteredWhitelistInCurrentView.value || registeredWhitelistRemovingId.value)
+    return
+  try {
+    await ElMessageBox.confirm(
+      `确定将 ${user.name || user.phone} 移出注册白名单？`,
+      '移出注册白名单',
+      {
+        confirmButtonText: '确认移出',
+        cancelButtonText: '取消',
+        type: 'warning',
+      },
+    )
+  }
+  catch {
+    return
+  }
+
+  registeredWhitelistRemovingId.value = user.id
+  try {
+    const response = await fetch(`${MALL_API_BASE}/users/${encodeURIComponent(user.id)}/registered-whitelist/remove`, {
+      method: 'PATCH',
+      headers: withMallTenantHeaders({ 'Content-Type': 'application/json' }),
+    })
+    const payload = await response.json() as { success?: boolean, msg?: string }
+    if (!response.ok || payload.success === false) {
+      throw new Error(apiErrorMessage(payload, '移出白名单失败'))
+    }
+    users.value = users.value.filter(item => item.id !== user.id)
+    totalUsers.value = Math.max(0, totalUsers.value - 1)
+    ElMessage.success('已移出注册白名单')
+    if (users.value.length === 0 && currentPage.value > 1) {
+      currentPage.value -= 1
+    }
+    await fetchUsers()
+  }
+  catch (error) {
+    console.error('移出注册白名单失败', error)
+    ElMessage.error(error instanceof Error ? error.message : '移出白名单失败')
+  }
+  finally {
+    registeredWhitelistRemovingId.value = ''
+  }
+}
+async function restoreRegisteredWhitelistUser(user: ListedUser) {
+  if (!canRemoveRegisteredWhitelistInCurrentView.value || registeredWhitelistRestoringId.value)
+    return
+  try {
+    await ElMessageBox.confirm(
+      `确定将 ${user.name || user.phone} 恢复到注册白名单？恢复后会重新出现在默认白名单列表。`,
+      '恢复注册白名单',
+      {
+        confirmButtonText: '确认恢复',
+        cancelButtonText: '取消',
+        type: 'warning',
+      },
+    )
+  }
+  catch {
+    return
+  }
+
+  registeredWhitelistRestoringId.value = user.id
+  try {
+    const response = await fetch(`${MALL_API_BASE}/users/${encodeURIComponent(user.id)}/registered-whitelist/restore`, {
+      method: 'PATCH',
+      headers: withMallTenantHeaders({ 'Content-Type': 'application/json' }),
+    })
+    const payload = await response.json() as { success?: boolean, msg?: string }
+    if (!response.ok || payload.success === false) {
+      throw new Error(apiErrorMessage(payload, '恢复白名单失败'))
+    }
+    users.value = users.value.filter(item => item.id !== user.id)
+    totalUsers.value = Math.max(0, totalUsers.value - 1)
+    ElMessage.success('已恢复到注册白名单')
+    if (users.value.length === 0 && currentPage.value > 1) {
+      currentPage.value -= 1
+    }
+    await fetchUsers()
+  }
+  catch (error) {
+    console.error('恢复注册白名单失败', error)
+    ElMessage.error(error instanceof Error ? error.message : '恢复白名单失败')
+  }
+  finally {
+    registeredWhitelistRestoringId.value = ''
+  }
+}
 </script>
 
 <template>
@@ -1166,6 +1275,20 @@ async function toggleBlacklist(user: ListedUser) {
         value-format="YYYY-MM-DD"
         clearable
       />
+      <el-select
+        v-if="isRegisteredWhitelistUsersView"
+        v-model="registeredWhitelistStatusFilter"
+        class="toolbar-select-channel"
+        placeholder="名单状态"
+        @change="() => { currentPage = 1; void fetchUsers() }"
+      >
+        <el-option
+          v-for="option in REGISTERED_WHITELIST_STATUS_OPTIONS"
+          :key="option.value"
+          :label="option.label"
+          :value="option.value"
+        />
+      </el-select>
       <el-input
         v-model="keyword"
         class="toolbar-input"
@@ -1374,9 +1497,27 @@ async function toggleBlacklist(user: ListedUser) {
                   blacklistBusyId === item.id
                     ? '处理中…'
                     : item.orderBlacklisted
-                      ? '移除黑名单'
+                      ? '移出黑名单'
                       : '拉黑'
                 }}
+              </button>
+              <button
+                v-if="canRemoveRegisteredWhitelistInCurrentView && !item.registeredWhitelistRemovedAt"
+                type="button"
+                class="btn btn-danger"
+                :disabled="Boolean(registeredWhitelistRemovingId)"
+                @click="removeRegisteredWhitelistUser(item)"
+              >
+                {{ registeredWhitelistRemovingId === item.id ? '移出中...' : '移出白名单' }}
+              </button>
+              <button
+                v-if="canRemoveRegisteredWhitelistInCurrentView && item.registeredWhitelistRemovedAt"
+                type="button"
+                class="btn btn-success"
+                :disabled="Boolean(registeredWhitelistRestoringId)"
+                @click="restoreRegisteredWhitelistUser(item)"
+              >
+                {{ registeredWhitelistRestoringId === item.id ? '恢复中...' : '恢复白名单' }}
               </button>
               <div
                 v-if="canDeleteUserInCurrentView"

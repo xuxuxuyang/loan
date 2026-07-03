@@ -24,6 +24,7 @@ const ADMIN_PERMISSION_ACTION_LABELS = {
   bindPortalAccount: '\u7ed1\u5b9a\u6570\u636e\u540e\u53f0\u8d26\u53f7',
   purgeTenantData: '\u6e05\u7a7a\u5b50\u7cfb\u7edf\u6570\u636e',
   export: '导出',
+  remove: '移除',
   create: '新增',
   update: '编辑',
   delete: '删除',
@@ -59,7 +60,7 @@ const ADMIN_PERMISSION_TREE = [
     actions: ['view'],
     children: [
       { key: 'users.registered', label: '注册用户', actions: ['view', 'create', 'update', 'setQuota', 'remark', 'blacklist', 'riskCheck', 'resetPassword', 'delete', 'export'] },
-      { key: 'users.registeredWhitelist', label: '注册白名单', actions: ['view'] },
+      { key: 'users.registeredWhitelist', label: '注册白名单', actions: ['view', 'remove'] },
       { key: 'users.noOrder', label: '未下单用户', actions: ['view', 'update', 'setQuota', 'remark', 'blacklist', 'riskCheck', 'resetPassword', 'delete'] },
       { key: 'users.ordering', label: '下单用户', actions: ['view', 'update', 'setQuota', 'remark', 'blacklist', 'riskCheck', 'resetPassword', 'delete'] },
       { key: 'users.cardPackageIssued', label: '已发放卡包客户', actions: ['view', 'update', 'setQuota', 'remark', 'blacklist', 'riskCheck', 'resetPassword', 'delete', 'export'] },

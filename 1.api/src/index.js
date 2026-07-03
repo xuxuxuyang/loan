@@ -4165,7 +4165,11 @@ function isNoOrderWhiteUser(submittedOrderIndex, user) {
     && displayCreditStatusFromOrderSevenSnapshot(user?.riskControlSnapshot) === '待风控'
 }
 
-function mallUserHasWhitelistExclusionMarker(user) {
+function mallUserHasRegisteredWhitelistRemoved(user) {
+  return Boolean(String(user?.registeredWhitelistRemovedAt || '').trim())
+}
+
+function mallUserHasNonRemovalWhitelistExclusionMarker(user) {
   return Boolean(
     String(user?.manualRejectReason || '').trim()
     || user?.orderBlacklisted === true
@@ -4176,17 +4180,77 @@ function mallUserHasWhitelistExclusionMarker(user) {
   )
 }
 
+function mallUserHasWhitelistExclusionMarker(user) {
+  return mallUserHasRegisteredWhitelistRemoved(user)
+    || mallUserHasNonRemovalWhitelistExclusionMarker(user)
+}
+
+function markRegisteredWhitelistRemoved(user, operator = '') {
+  if (!user || typeof user !== 'object') {
+    return false
+  }
+  if (String(user.registeredWhitelistRemovedAt || '').trim()) {
+    return false
+  }
+  user.registeredWhitelistRemovedAt = new Date().toISOString()
+  const by = String(operator || '').trim()
+  if (by) {
+    user.registeredWhitelistRemovedBy = by
+  }
+  return true
+}
+
+function restoreRegisteredWhitelistRemoved(user) {
+  if (!user || typeof user !== 'object') {
+    return false
+  }
+  const changed = Boolean(
+    String(user.registeredWhitelistRemovedAt || '').trim()
+    || String(user.registeredWhitelistRemovedBy || '').trim(),
+  )
+  delete user.registeredWhitelistRemovedAt
+  delete user.registeredWhitelistRemovedBy
+  return changed
+}
+
 function hasRegisteredWhitelistFields(user) {
   return user?.registeredWhitelistEligible === true
     && user?.mallInstallmentRiskAttempted === false
 }
 
-function isRegisteredWhitelistUser(submittedOrderIndex, user) {
+function isRegisteredWhitelistBaseUser(submittedOrderIndex, user) {
   return hasRegisteredWhitelistFields(user)
     && !mallUserHasSubmittedOrder(submittedOrderIndex, user)
     && displayCreditStatusFromOrderSevenSnapshot(user?.riskControlSnapshot) === '待风控'
     && user?.mallInstallmentRiskAttempted !== true
-    && !mallUserHasWhitelistExclusionMarker(user)
+    && !mallUserHasNonRemovalWhitelistExclusionMarker(user)
+}
+
+function normalizeRegisteredWhitelistStatus(raw) {
+  const status = String(raw || '').trim()
+  if (status === 'all' || status === 'removed') {
+    return status
+  }
+  return 'active'
+}
+
+function isRegisteredWhitelistUserByStatus(submittedOrderIndex, user, statusRaw = 'active') {
+  if (!isRegisteredWhitelistBaseUser(submittedOrderIndex, user)) {
+    return false
+  }
+  const removed = mallUserHasRegisteredWhitelistRemoved(user)
+  const status = normalizeRegisteredWhitelistStatus(statusRaw)
+  if (status === 'all') {
+    return true
+  }
+  if (status === 'removed') {
+    return removed
+  }
+  return !removed
+}
+
+function isRegisteredWhitelistUser(submittedOrderIndex, user) {
+  return isRegisteredWhitelistUserByStatus(submittedOrderIndex, user, 'active')
 }
 
 function markMallInstallmentRiskAttempted(db, phone) {
@@ -4421,7 +4485,7 @@ function listAdminUsersFilteredRows(db, query, opts = {}) {
       rows = rows.filter(item => isNoOrderWhiteUser(submittedOrderUserIds, item.user))
     }
     else if (view === 'registered-whitelist') {
-      rows = rows.filter(item => isRegisteredWhitelistUser(submittedOrderUserIds, item.user))
+      rows = rows.filter(item => isRegisteredWhitelistUserByStatus(submittedOrderUserIds, item.user, query.registeredWhitelistStatus))
     }
     rows.sort((a, b) => {
       const ta = a.user.registerAt ? new Date(a.user.registerAt).getTime() : 0
@@ -8016,6 +8080,7 @@ router.get('/users', async (ctx) => {
           ? 'card-package-issued'
           : 'registered'
   const registerChannel = String(ctx.query.registerChannel || '').trim()
+  const registeredWhitelistStatus = normalizeRegisteredWhitelistStatus(ctx.query.registeredWhitelistStatus)
   const orderDate = String(ctx.query.orderDate || '').trim()
   const page = Math.max(1, parseInt(String(ctx.query.page || '1'), 10) || 1)
   const pageSize = Math.min(100, Math.max(1, parseInt(String(ctx.query.pageSize || '20'), 10) || 20))
@@ -8030,6 +8095,7 @@ router.get('/users', async (ctx) => {
           key,
           view,
           registerChannel,
+          registeredWhitelistStatus,
           orderDate,
           page,
           pageSize,
@@ -8052,6 +8118,7 @@ router.get('/users', async (ctx) => {
       key,
       view,
       registerChannel,
+      registeredWhitelistStatus,
       orderDate,
       page,
       pageSize,
@@ -8101,7 +8168,7 @@ router.get('/users', async (ctx) => {
       rows = rows.filter(item => isNoOrderWhiteUser(submittedOrderUserIds, item))
     }
     else if (view === 'registered-whitelist') {
-      rows = rows.filter(item => isRegisteredWhitelistUser(submittedOrderUserIds, item))
+      rows = rows.filter(item => isRegisteredWhitelistUserByStatus(submittedOrderUserIds, item, registeredWhitelistStatus))
     }
     rows.sort((a, b) => {
       const ta = a.registerAt ? new Date(a.registerAt).getTime() : 0
@@ -8246,6 +8313,56 @@ router.post('/mall/installment-risk/wave/:waveId/step/:stepKey', async (ctx) => 
     }
     ctx.body = success({ ok: false, step })
   }
+})
+
+router.patch('/users/:id/registered-whitelist/remove', async (ctx) => {
+  if (!await requireAdminPermission(ctx, [ADMIN_ROLES.SUPER], '移除注册白名单用户', {
+    permissionKey: 'users.registeredWhitelist',
+    permissionAction: 'remove',
+  })) {
+    return
+  }
+  const db = readDb()
+  const { id } = ctx.params
+  const target = db.users.find(item => item.id === id)
+  if (!target) {
+    fail(ctx, '用户不存在', 404)
+    return
+  }
+  const account = await resolveAdminAccount(ctx)
+  const operator = account?.username || account?.name || ctx.state?.adminRole || ''
+  const changed = markRegisteredWhitelistRemoved(target, operator)
+  if (changed) {
+    writeUsersDb(db)
+  }
+  ctx.body = success({
+    user: attachUserOrderStats(db, target, { includeAdminPasswordEcho: true }),
+    changed,
+  })
+})
+
+router.patch('/users/:id/registered-whitelist/restore', async (ctx) => {
+  if (!await requireAdminPermission(ctx, [ADMIN_ROLES.SUPER], '恢复注册白名单用户', {
+    permissionKey: 'users.registeredWhitelist',
+    permissionAction: 'remove',
+  })) {
+    return
+  }
+  const db = readDb()
+  const { id } = ctx.params
+  const target = db.users.find(item => item.id === id)
+  if (!target) {
+    fail(ctx, '用户不存在', 404)
+    return
+  }
+  const changed = restoreRegisteredWhitelistRemoved(target)
+  if (changed) {
+    writeUsersDb(db)
+  }
+  ctx.body = success({
+    user: attachUserOrderStats(db, target, { includeAdminPasswordEcho: true }),
+    changed,
+  })
 })
 
 /** 管理端：用户详情 + 风控档案占位（打开弹窗时不自动跑全量接口） */
