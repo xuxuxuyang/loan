@@ -1,4 +1,4 @@
-﻿const assert = require('assert')
+const assert = require('assert')
 const {
   ADMIN_PERMISSION_TREE,
   ADMIN_PERMISSION_ACTIONS,
@@ -29,8 +29,10 @@ const PAGE_PERMISSION_SPEC = {
   'orders.review': ['view', 'review', 'delete'],
   'orders.approved': ['view', 'update', 'updateStatus', 'fillTracking', 'updateContract', 'issueCard', 'delete'],
   'orders.cardData': ['view', 'fillTracking', 'issueCard', 'markPaid', 'delayRepayment', 'settleAmount', 'negotiateRepayment', 'revokePaid'],
-  'orders.receivable.today': ['view'],
-  'orders.receivable.tomorrow': ['view'],
+  'orders.receivable.today': ['view', 'remark'],
+  'orders.receivable.tomorrow': ['view', 'remark'],
+  'orders.receivable.data': ['view', 'remark'],
+  'orders.repayment.records': ['view'],
   'users.registered': ['view', 'create', 'update', 'setQuota', 'remark', 'blacklist', 'riskCheck', 'resetPassword', 'delete', 'export'],
   'users.noOrder': ['view', 'update', 'setQuota', 'remark', 'blacklist', 'riskCheck', 'resetPassword', 'delete'],
   'users.ordering': ['view', 'update', 'setQuota', 'remark', 'blacklist', 'riskCheck', 'resetPassword', 'delete'],
@@ -123,7 +125,7 @@ assert.equal(adminOrderPermissionKeyForListScope(''), 'orders.approved')
 assert.equal(adminProductPermissionKeyForSalesMode('installment'), 'products.installment')
 assert.equal(adminProductPermissionKeyForSalesMode('mall'), 'products.mall')
 assert.equal(adminReceivablePermissionKeyForDueDate('2099-01-02', '2099-01-01'), 'orders.receivable.tomorrow')
-assert.equal(adminReceivablePermissionKeyForDueDate('2099-01-03', '2099-01-01'), 'orders.receivable.today')
+assert.equal(adminReceivablePermissionKeyForDueDate('2099-01-03', '2099-01-01'), 'orders.receivable.data')
 assert.equal(hasAdminShipmentTrackingPermission({ role: 'boss', permissions: {
   menus: ['orders', 'orders.cardData'],
   actions: { 'orders.cardData': ['view', 'fillTracking'] },
@@ -176,7 +178,9 @@ assert.equal(reviewerDefaults.actions['users.registered'].includes('delete'), fa
 
 const collectorDefaults = defaultAdminPermissionsForRole('collector')
 assert.equal(collectorDefaults.menus.includes('orders.receivable.today'), true)
+assert.equal(collectorDefaults.menus.includes('orders.repayment.records'), true)
 assert.equal(collectorDefaults.actions['orders.receivable.today'].includes('view'), true)
+assert.deepEqual(collectorDefaults.actions['orders.repayment.records'], ['view'])
 assert.equal(Boolean(collectorDefaults.actions['orders.review']?.includes('review')), false)
 
 const bossDefaults = defaultAdminPermissionsForRole('boss')

@@ -29,6 +29,7 @@ const DashboardSimulationPage = () => import('../views/DashboardSimulationPage.v
 const OrdersPage = () => import('../views/OrdersPage.vue')
 const OrderReviewPage = () => import('../views/OrderReviewPage.vue')
 const ReceivableByDatePage = () => import('../views/ReceivableByDatePage.vue')
+const RepaymentRecordsPage = () => import('../views/RepaymentRecordsPage.vue')
 const UsersPage = () => import('../views/UsersPage.vue')
 const AccountManagePage = () => import('../views/AccountManagePage.vue')
 const TenantManagePage = () => import('../views/TenantManagePage.vue')
@@ -140,6 +141,12 @@ const router = createRouter({
       name: 'orders-receivable-data',
       component: ReceivableByDatePage,
       meta: { title: '待收数据', roles: ['super_admin', 'collector'], receivableDatePicker: true, permissionKey: 'orders.receivable.data' },
+    },
+    {
+      path: '/orders/repayment-records',
+      name: 'orders-repayment-records',
+      component: RepaymentRecordsPage,
+      meta: { title: '还款记录', roles: ['super_admin', 'collector'], permissionKey: 'orders.repayment.records' },
     },
     {
       path: '/users/card-package-issued',

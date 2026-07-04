@@ -146,6 +146,7 @@ const { buildCardPackageContractViewHtml } = require('./cardPackageContractViewH
 const { buildCardPackageContractPdfBuffer } = require('./cardPackageContractPdf')
 const lakalaPayment = require('./payment/lakalaPaymentService')
 const { registerLakalaRoutes } = require('./payment/registerLakalaRoutes')
+const { registerRepaymentRecordRoutes } = require('./adminRepaymentRecords')
 const {
   ensureDuodiandianChannel,
   ensureDuodiandianPortalPartner,
@@ -9460,8 +9461,11 @@ function calcBillRepayAllAmount(db, mallUser) {
     .filter(item => item.payType === 'installment')
     .filter(item => item.status !== 'reviewing')
   let total = 0
+  const unpaidOrders = []
   for (const order of loanOrders) {
     ensureOrderInstallmentPlan(order)
+    let orderTotal = 0
+    let firstUnpaidPeriod = 0
     for (const planItem of order.installmentPlan) {
       if (planItem && !installmentItemIsPaid(planItem)) {
         if (planItem.negotiationPayPending && Number(planItem.negotiationPayPending.negotiatedAmount || 0) > 0) {
@@ -9469,8 +9473,15 @@ function calcBillRepayAllAmount(db, mallUser) {
           err.statusCode = 400
           throw err
         }
-        total += Number(planItem.amount || order.totalAmount || 0)
+        orderTotal += Number(planItem.amount || order.totalAmount || 0)
+        if (!firstUnpaidPeriod) {
+          firstUnpaidPeriod = Number(planItem.period) || 1
+        }
       }
+    }
+    if (orderTotal > 0) {
+      unpaidOrders.push({ order, period: firstUnpaidPeriod })
+      total += orderTotal
     }
     if (!order.cardPackageIssued) {
       const err = new Error(`订单 ${order.id} 的卡包尚未发放，暂无法还款`)
@@ -9484,7 +9495,13 @@ function calcBillRepayAllAmount(db, mallUser) {
     err.statusCode = 400
     throw err
   }
-  return { amountYuan, subject: '账单一键还款' }
+  const matchedOrder = unpaidOrders.length === 1 ? unpaidOrders[0] : null
+  return {
+    amountYuan,
+    subject: '账单一键还款',
+    orderId: matchedOrder ? String(matchedOrder.order.id || '') : '',
+    period: matchedOrder ? matchedOrder.period : undefined,
+  }
 }
 
 function applyBillRepayInDb(db, mallUser, { orderId, period }) {
@@ -9565,6 +9582,21 @@ registerLakalaRoutes(router, {
   success,
   readDb,
   resolvePlacingMallUserFromBearer,
+})
+
+registerRepaymentRecordRoutes(router, {
+  fail,
+  success,
+  readDb,
+  requireAdminPermissionOnAny,
+  parseOptionalListPagination,
+  paginateRows,
+  orderBelongsToRegisteredMallUser,
+  ensureOrderInstallmentPlan,
+  ensureOrderCardPackage,
+  ensureOrderShipment,
+  resolveMallBuyerFromOrder,
+  resolveOrderRegisterChannelView,
 })
 
 registerMallContactsRoutes(router, {

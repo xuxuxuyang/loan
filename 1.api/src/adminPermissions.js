@@ -52,6 +52,7 @@ const ADMIN_PERMISSION_TREE = [
       { key: 'orders.receivable.today', label: '今日待收', actions: ['view', 'remark'] },
       { key: 'orders.receivable.tomorrow', label: '明日待收', actions: ['view', 'remark'] },
       { key: 'orders.receivable.data', label: '待收数据', actions: ['view', 'remark'] },
+      { key: 'orders.repayment.records', label: '还款记录', actions: ['view'] },
     ],
   },
   {
@@ -195,7 +196,7 @@ function defaultAdminPermissionsForRole(role) {
   }
   if (role === 'collector') {
     return permissionsFromMenuActions(
-      ['orders', 'orders.approved', 'orders.cardData', 'orders.receivable.today', 'orders.receivable.tomorrow', 'orders.receivable.data'],
+      ['orders', 'orders.approved', 'orders.cardData', 'orders.receivable.today', 'orders.receivable.tomorrow', 'orders.receivable.data', 'orders.repayment.records'],
       {
         orders: ['view'],
         'orders.approved': ['view'],
@@ -203,6 +204,7 @@ function defaultAdminPermissionsForRole(role) {
         'orders.receivable.today': ['view', 'remark'],
         'orders.receivable.tomorrow': ['view', 'remark'],
         'orders.receivable.data': ['view', 'remark'],
+        'orders.repayment.records': ['view'],
       },
     )
   }

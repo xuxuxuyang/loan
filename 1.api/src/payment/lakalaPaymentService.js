@@ -72,6 +72,110 @@ function buildPaymentRecordBase({
   }
 }
 
+function normalizeActualPayChannel(raw) {
+  const value = String(raw || '').trim().toUpperCase()
+  if (!value) {
+    return ''
+  }
+  if (value.includes('WECHAT') || value.includes('WX') || value.includes('微信')) {
+    return 'wechat'
+  }
+  if (value.includes('ALIPAY') || value.includes('ALI') || value.includes('支付宝')) {
+    return 'alipay'
+  }
+  if (value.includes('UNION') || value.includes('BANK') || value.includes('银联')) {
+    return 'union'
+  }
+  return 'other'
+}
+
+function pickActualPayChannelSource(payload) {
+  if (!payload || typeof payload !== 'object') {
+    return ''
+  }
+  const directKeys = [
+    'actual_pay_channel',
+    'pay_channel',
+    'payChannel',
+    'pay_mode',
+    'payMode',
+    'account_type',
+    'accountType',
+    'trade_type',
+    'tradeType',
+    'bank_type',
+    'bankType',
+  ]
+  for (const key of directKeys) {
+    if (payload[key] != null && String(payload[key]).trim()) {
+      return String(payload[key]).trim()
+    }
+  }
+  const list = payload.order_trade_info_list || payload.orderTradeInfoList
+  if (Array.isArray(list)) {
+    for (const item of list) {
+      const picked = pickActualPayChannelSource(item)
+      if (picked) {
+        return picked
+      }
+    }
+  }
+  const nested = payload.req_data || payload.resp_data || payload.data
+  if (nested && typeof nested === 'object') {
+    return pickActualPayChannelSource(nested)
+  }
+  return ''
+}
+
+function resolveActualPayChannel(payload) {
+  const source = pickActualPayChannelSource(payload)
+  return {
+    actualPayChannel: normalizeActualPayChannel(source),
+    actualPayChannelRaw: source,
+  }
+}
+
+function shouldRefreshActualPayChannel(record) {
+  if (!record || record.status !== 'success') {
+    return false
+  }
+  const raw = String(record.actualPayChannelRaw || '').trim()
+  if (raw) {
+    return false
+  }
+  const actual = normalizeActualPayChannel(record.actualPayChannel)
+  const requested = normalizeActualPayChannel(record.payChannel)
+  return !actual || actual === requested
+}
+
+async function refreshActualPayChannelFromLakala(db, record) {
+  if (!shouldRefreshActualPayChannel(record)) {
+    return false
+  }
+  let queried
+  try {
+    queried = await lakala.queryCounterOrder({
+      outOrderNo: record.outTradeNo,
+      payOrderNo: record.tradeNo,
+    })
+  }
+  catch (err) {
+    console.warn('[lakala] refresh actual pay channel failed', record.outTradeNo, err.message)
+    return false
+  }
+  const channel = resolveActualPayChannel(queried)
+  if (!channel.actualPayChannel) {
+    return false
+  }
+  record.actualPayChannel = channel.actualPayChannel
+  if (channel.actualPayChannelRaw) {
+    record.actualPayChannelRaw = channel.actualPayChannelRaw
+  }
+  persistLakalaDb(db, ['lakalaPayments'])
+  await deps.flushMongoPersist()
+  return true
+}
+
 function persistLakalaDb(db, entityKeys) {
   if (deps.writeDbPartial && Array.isArray(entityKeys) && entityKeys.length) {
     deps.writeDbPartial(db, entityKeys)
@@ -166,6 +270,8 @@ async function createMallPayment(ctx, payload, mallUser) {
       mallUserPhone: mallUser.phone,
       amountYuan,
       payChannel,
+      orderId: calc.orderId,
+      period: calc.period,
       subject,
     })
   }
@@ -217,13 +323,20 @@ async function createMallPayment(ctx, payload, mallUser) {
   }
 }
 
-async function fulfillPaymentRecord(db, record, { tradeState, notifyRaw } = {}) {
+async function fulfillPaymentRecord(db, record, { tradeState, notifyRaw, actualPayChannelPayload } = {}) {
   if (!record || record.status === 'success') {
     return { already: true }
   }
   record.tradeState = tradeState || record.tradeState || 'SUCCESS'
   record.status = 'success'
   record.paidAt = new Date().toISOString()
+  const channel = resolveActualPayChannel(actualPayChannelPayload || notifyRaw)
+  if (channel.actualPayChannel) {
+    record.actualPayChannel = channel.actualPayChannel
+  }
+  if (channel.actualPayChannelRaw) {
+    record.actualPayChannelRaw = channel.actualPayChannelRaw
+  }
   if (notifyRaw) {
     record.notifyRaw = notifyRaw
   }
@@ -269,6 +382,7 @@ async function syncPaymentStatus(outTradeNo, { mallUser } = {}) {
     throw Object.assign(new Error('无权查询该支付单'), { statusCode: 403 })
   }
   if (record.status === 'success') {
+    await refreshActualPayChannelFromLakala(db, record)
     return {
       status: 'success',
       tradeState: record.tradeState || 'SUCCESS',
@@ -285,7 +399,7 @@ async function syncPaymentStatus(outTradeNo, { mallUser } = {}) {
   const tradeState = payState.tradeState
   record.tradeState = tradeState
   if (payState.paid) {
-    const result = await fulfillPaymentRecord(db, record, { tradeState })
+    const result = await fulfillPaymentRecord(db, record, { tradeState, actualPayChannelPayload: queried })
     return {
       status: 'success',
       tradeState,
@@ -366,6 +480,7 @@ async function handleNotifyPayload(notifyBody) {
   }
   if (lakala.isOrderPaidStatus(tradeStatus) || lakala.isTradeSuccessState(tradeStatus)) {
     await fulfillPaymentRecord(db, record, { tradeState: tradeStatus, notifyRaw: notifyBody })
+    await refreshActualPayChannelFromLakala(db, record)
   }
   else {
     record.tradeState = tradeStatus
