@@ -16,6 +16,7 @@ const COLLECTIONS = {
   partnerGatewayApplications: 'partnerGatewayApplications',
   csSessions: 'csSessions',
   lakalaPayments: 'lakalaPayments',
+  dashboardSimulationConfigs: 'dashboardSimulationConfigs',
 }
 
 /** 旧版整库单文档（启动时若存在则迁移到分集合后删除） */
@@ -37,6 +38,7 @@ const SHARDED_ENTITY_KEYS = [
   'partnerGatewayApplications',
   'csSessions',
   'lakalaPayments',
+  'dashboardSimulationConfigs',
 ]
 
 let client = null

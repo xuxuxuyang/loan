@@ -78,6 +78,7 @@ const ADMIN_PERMISSION_TREE = [
   { key: 'accounts', label: '账号管理', actions: ['view', 'create', 'update', 'toggleStatus', 'changeRole', 'resetPassword', 'delete', 'permission'] },
   { key: 'traffic', label: '流量管理', actions: ['view', 'create', 'update', 'toggleStatus', 'remark', 'editChannel', 'bindPortalAccount', 'delete'] },
   { key: 'dashboard', label: '财务报表', actions: ['view'] },
+  { key: 'dashboardSimulation', label: '财务汇算', actions: ['view'] },
   {
     key: 'tenants',
     label: '子系统管理',

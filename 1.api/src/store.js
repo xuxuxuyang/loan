@@ -156,6 +156,8 @@ function buildEmptyRaw() {
     csSessions: [],
     /** 拉卡拉支付流水（商城还款/订单支付） */
     lakalaPayments: [],
+    /** 后台展示配置（低频写入，读取时随报表接口取用） */
+    dashboardSimulationConfigs: [],
   }
 }
 
@@ -232,6 +234,7 @@ function shapeDbFromParsed(parsed) {
     partnerGatewayApplications: Array.isArray(parsed.partnerGatewayApplications) ? parsed.partnerGatewayApplications : [],
     csSessions: Array.isArray(parsed.csSessions) ? parsed.csSessions : [],
     lakalaPayments: Array.isArray(parsed.lakalaPayments) ? parsed.lakalaPayments : [],
+    dashboardSimulationConfigs: Array.isArray(parsed.dashboardSimulationConfigs) ? parsed.dashboardSimulationConfigs : [],
   }
   db.users = dedupeUsersById(ensureAdminUser(db.users))
   db.adminAccounts = ensureAdminAccounts(db.adminAccounts)
@@ -249,6 +252,7 @@ function shapeDbFromParsed(parsed) {
     partnerGatewayApplications: db.partnerGatewayApplications,
     csSessions: db.csSessions,
     lakalaPayments: db.lakalaPayments,
+    dashboardSimulationConfigs: db.dashboardSimulationConfigs,
   }
 }
 
@@ -292,6 +296,7 @@ function clonePayloadForMongo(db) {
     partnerGatewayApplications: Array.isArray(db.partnerGatewayApplications) ? db.partnerGatewayApplications : [],
     csSessions: Array.isArray(db.csSessions) ? db.csSessions : [],
     lakalaPayments: Array.isArray(db.lakalaPayments) ? db.lakalaPayments : [],
+    dashboardSimulationConfigs: Array.isArray(db.dashboardSimulationConfigs) ? db.dashboardSimulationConfigs : [],
   }
   return JSON.parse(JSON.stringify(payload))
 }
@@ -418,6 +423,7 @@ const SHRINK_PROTECT_BY_ENTITY = {
   partnerGatewayApplications: SHRINK_PROTECT_DEFAULT,
   csSessions: SHRINK_PROTECT_DEFAULT,
   lakalaPayments: SHRINK_PROTECT_DEFAULT,
+  dashboardSimulationConfigs: SHRINK_PROTECT_DEFAULT,
 }
 
 function assertSafeEntitySnapshotShrink(spec, existing, list) {

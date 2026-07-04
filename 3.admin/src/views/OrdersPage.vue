@@ -1938,7 +1938,7 @@ watch(
         :page-size="pageSize"
         :page-sizes="[...PAGE_SIZE_OPTIONS]"
         :total="totalOrders"
-        layout="total, sizes, prev, pager, next, jumper"
+        layout="sizes, prev, pager, next, jumper"
         background
         @current-change="onOrdersPageChange"
         @size-change="onOrdersPageSizeChange"

@@ -25,6 +25,7 @@ declare module 'vue-router' {
 
 const LoginPage = () => import('../views/LoginPage.vue')
 const DashboardPage = () => import('../views/DashboardPage.vue')
+const DashboardSimulationPage = () => import('../views/DashboardSimulationPage.vue')
 const OrdersPage = () => import('../views/OrdersPage.vue')
 const OrderReviewPage = () => import('../views/OrderReviewPage.vue')
 const ReceivableByDatePage = () => import('../views/ReceivableByDatePage.vue')
@@ -89,6 +90,12 @@ const router = createRouter({
       name: 'dashboard-overview',
       component: DashboardPage,
       meta: { title: '财务报表', roles: ['super_admin'], permissionKey: 'dashboard' },
+    },
+    {
+      path: '/dashboard/plan',
+      name: 'dashboard-plan',
+      component: DashboardSimulationPage,
+      meta: { title: '财务汇算1', roles: ['super_admin', 'boss', 'reviewer', 'collector'], permissionKey: 'dashboardSimulation' },
     },
     {
       path: '/dashboard/receivable/today',

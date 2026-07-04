@@ -138,6 +138,7 @@ const allMenus: MenuEntry[] = [
   { label: '流量管理', path: '/traffic', icon: Promotion, roles: ['super_admin'] },
   /** 与各租户 mall 请求头一致，展示当前工作区订单汇总；非「仅总部」项以便子系统老板可见 */
   { label: '财务报表', path: '/dashboard', icon: DataAnalysis, roles: ['super_admin'] },
+  { label: '财务汇算', path: '/dashboard/plan', icon: DataBoard, roles: ['super_admin', 'boss', 'reviewer', 'collector'] },
   {
     label: '子系统管理',
     path: '/tenants',
@@ -194,7 +195,7 @@ const menus = computed(() => {
     .filter(item => !item.children || item.children.length > 0)
 })
 
-/** 进入订单相关路由时展开子菜单；离开订单模块时重建菜单避免 default-openeds 不响应的问题 */
+/** 进入有子菜单的路由时展开子菜单；离开模块时重建菜单避免 default-openeds 不响应的问题 */
 const sideMenuKey = computed(() =>
   route.path.startsWith('/orders')
     ? 'admin-nav-orders'

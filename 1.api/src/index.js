@@ -10124,6 +10124,142 @@ function computeAdminDashboardKpisFromDb(db) {
   }
 }
 
+const DASHBOARD_SIMULATION_CONFIG_ID = 'global'
+const DEFAULT_DASHBOARD_SIMULATION_INPUT = { orderCount: 356, overdueRate: 19.3 }
+
+function normalizeDashboardSimulationInput(payload, fallback = DEFAULT_DASHBOARD_SIMULATION_INPUT) {
+  const fallbackInput = fallback && typeof fallback === 'object' ? fallback : DEFAULT_DASHBOARD_SIMULATION_INPUT
+  const orderCountRaw = Number(payload && payload.orderCount)
+  const overdueRateRaw = Number(payload && payload.overdueRate)
+  const fallbackOrderCount = Number(fallbackInput.orderCount)
+  const fallbackOverdueRate = Number(fallbackInput.overdueRate)
+  const orderCount = Number.isFinite(orderCountRaw)
+    ? Math.max(0, Math.min(1000000, Math.round(orderCountRaw)))
+    : Math.max(0, Math.min(1000000, Math.round(Number.isFinite(fallbackOrderCount) ? fallbackOrderCount : 0)))
+  const overdueRate = Number.isFinite(overdueRateRaw)
+    ? Math.max(0, Math.min(100, Math.round(overdueRateRaw * 100) / 100))
+    : Math.max(0, Math.min(100, Math.round((Number.isFinite(fallbackOverdueRate) ? fallbackOverdueRate : 0) * 100) / 100))
+  return { orderCount, overdueRate }
+}
+
+function readDashboardSimulationConfig(db) {
+  const list = Array.isArray(db.dashboardSimulationConfigs) ? db.dashboardSimulationConfigs : []
+  const saved = list.find(item => item && item.id === DASHBOARD_SIMULATION_CONFIG_ID)
+  return normalizeDashboardSimulationInput(saved || DEFAULT_DASHBOARD_SIMULATION_INPUT)
+}
+
+function upsertDashboardSimulationConfig(db, input, adminAccount) {
+  if (!Array.isArray(db.dashboardSimulationConfigs)) {
+    db.dashboardSimulationConfigs = []
+  }
+  const normalized = normalizeDashboardSimulationInput(input)
+  const now = new Date().toISOString()
+  const operator = adminAccount && typeof adminAccount === 'object'
+    ? String(adminAccount.username || adminAccount.phone || adminAccount.id || '').trim()
+    : ''
+  const next = {
+    id: DASHBOARD_SIMULATION_CONFIG_ID,
+    ...normalized,
+    updatedAt: now,
+    updatedBy: operator,
+  }
+  const index = db.dashboardSimulationConfigs.findIndex(item => item && item.id === DASHBOARD_SIMULATION_CONFIG_ID)
+  if (index >= 0) {
+    db.dashboardSimulationConfigs[index] = { ...db.dashboardSimulationConfigs[index], ...next }
+  }
+  else {
+    db.dashboardSimulationConfigs.push(next)
+  }
+  return next
+}
+
+function roundDashboardSimulationAmount(value) {
+  return Math.round((Number(value) || 0) / 50) * 50
+}
+
+function scaleDashboardSimulationAmount(amount, multiplier) {
+  return roundDashboardSimulationAmount((Number(amount) || 0) * multiplier)
+}
+
+function scaleDashboardSimulationCount(count, multiplier, maxCount = Number.POSITIVE_INFINITY) {
+  return Math.max(0, Math.min(maxCount, Math.round((Number(count) || 0) * multiplier)))
+}
+
+function computeAdminDashboardSimulationKpisFromDb(db, input) {
+  const sourceOrders = (db.orders || []).filter((order) => {
+    ensureOrderCardPackage(order)
+    return Boolean(order.cardPackageIssued)
+  })
+  const sourceKpis = computeAdminDashboardKpisFromDb({ ...db, orders: sourceOrders })
+  const sourceCount = sourceKpis.orderCount
+  const multiplier = sourceCount > 0 ? input.orderCount / sourceCount : 0
+  const overdueOrderCount = Math.min(input.orderCount, Math.round((input.orderCount * input.overdueRate) / 100))
+  const sourceOpenOrderCount = Math.max(0, Number(sourceKpis.settlementGapCount) || 0)
+  const scaledOpenOrderCount = scaleDashboardSimulationCount(sourceOpenOrderCount, multiplier, input.orderCount)
+  const settlementGapCount = Math.min(input.orderCount, Math.max(overdueOrderCount, scaledOpenOrderCount))
+  const settledOrderCount = Math.max(0, input.orderCount - settlementGapCount)
+
+  const totalSales = scaleDashboardSimulationAmount(sourceKpis.totalSales, multiplier)
+  const totalPrincipal = scaleDashboardSimulationAmount(sourceKpis.totalPrincipal, multiplier)
+  const sourceReceivableAmountPerOpenOrder = sourceOpenOrderCount > 0
+    ? sourceKpis.receivableAmount / sourceOpenOrderCount
+    : 0
+  const receivableAmount = Math.min(
+    totalSales,
+    roundDashboardSimulationAmount(settlementGapCount * sourceReceivableAmountPerOpenOrder),
+  )
+  const collectedAmount = roundDashboardSimulationAmount(totalSales - receivableAmount)
+  const sourceOverdueAmountPerOrder = sourceKpis.overdueOrderCount > 0
+    ? sourceKpis.overdueAmount / sourceKpis.overdueOrderCount
+    : sourceKpis.settlementGapCount > 0
+      ? sourceKpis.receivableAmount / sourceKpis.settlementGapCount
+      : sourceCount > 0
+        ? sourceKpis.receivableAmount / sourceCount
+        : 0
+  const overdueAmount = Math.min(
+    receivableAmount,
+    roundDashboardSimulationAmount(overdueOrderCount * sourceOverdueAmountPerOrder),
+  )
+  const overduePrincipalRatio = sourceKpis.overdueAmount > 0
+    ? sourceKpis.overduePrincipalAmount / sourceKpis.overdueAmount
+    : 0
+  const overduePrincipalAmount = roundDashboardSimulationAmount(overdueAmount * overduePrincipalRatio)
+  const premiumToPrincipal = scaleDashboardSimulationAmount(sourceKpis.premiumToPrincipal, multiplier)
+  const principalProfit = scaleDashboardSimulationAmount(premiumToPrincipal - overduePrincipalAmount, 1)
+  const collectedPrincipal = Math.min(totalPrincipal, Math.max(0, roundDashboardSimulationAmount(collectedAmount - principalProfit)))
+  const receivablePrincipal = roundDashboardSimulationAmount(totalPrincipal - collectedPrincipal)
+  const settledRate = sourceKpis.settledRate
+  const contractCashTotal = collectedAmount + receivableAmount
+
+  return {
+    ...sourceKpis,
+    orderCount: input.orderCount,
+    totalSales,
+    totalPrincipal,
+    premiumToPrincipal,
+    principalProfit,
+    collectedAmount,
+    receivableAmount,
+    receivablePrincipal,
+    collectionRateByAmount: contractCashTotal > 0 ? (collectedAmount / contractCashTotal) * 100 : 0,
+    settledOrderCount,
+    settlementGapCount,
+    overdueOrderCount,
+    overdueRate: input.overdueRate,
+    settledRate,
+    overdueAmount,
+    overduePrincipalAmount,
+    overdueShareOfReceivable: receivableAmount > 0 ? (overdueAmount / receivableAmount) * 100 : 0,
+    dueTodayAmount: scaleDashboardSimulationAmount(sourceKpis.dueTodayAmount, multiplier),
+    dueTomorrowAmount: scaleDashboardSimulationAmount(sourceKpis.dueTomorrowAmount, multiplier),
+    dueIn7DaysAmount: scaleDashboardSimulationAmount(sourceKpis.dueIn7DaysAmount, multiplier),
+    installmentPayOrderCount: scaleDashboardSimulationCount(sourceKpis.installmentPayOrderCount, multiplier, input.orderCount),
+    extensionRepaymentAmount: scaleDashboardSimulationAmount(sourceKpis.extensionRepaymentAmount, multiplier),
+    extensionRepaymentPendingAmount: scaleDashboardSimulationAmount(sourceKpis.extensionRepaymentPendingAmount, multiplier),
+    simulationInput: input,
+  }
+}
+
 /** admin 侧栏：未审核（默认列表，不含风控未通过）/ 已审核列表角标 */
 function computeAdminOrderSidebarCountsFromDb(db) {
   let pendingReview = 0
@@ -10197,6 +10333,27 @@ router.get('/admin/dashboard/kpis', async (ctx) => {
     return computeAdminDashboardKpisFromDb(db)
   })
   ctx.body = success(ctx.state.adminRole === ADMIN_ROLES.SUPER ? data : { ...data, principalProfit: 0 })
+})
+
+router.post('/admin/dashboard/simulation-kpis', async (ctx) => {
+  if (!await requireAdminPermission(ctx, [ADMIN_ROLES.SUPER, ADMIN_ROLES.BOSS, ADMIN_ROLES.REVIEWER, ADMIN_ROLES.COLLECTOR], '查看财务汇算', { permissionKey: 'dashboardSimulation', permissionAction: 'view' })) {
+    return
+  }
+  const db = readDb()
+  const input = normalizeDashboardSimulationInput(ctx.request.body || {}, readDashboardSimulationConfig(db))
+  const data = computeAdminDashboardSimulationKpisFromDb(db, input)
+  ctx.body = success({ ...data, simulationInput: input })
+})
+
+router.put('/admin/dashboard/simulation-config', async (ctx) => {
+  if (!await requireAdminPermission(ctx, [ADMIN_ROLES.SUPER], '保存财务汇算配置', { strictRoles: true })) {
+    return
+  }
+  const db = readDb()
+  const config = upsertDashboardSimulationConfig(db, ctx.request.body || {}, ctx.state.adminAccount)
+  writeDbPartial(db, ['dashboardSimulationConfigs'])
+  const data = computeAdminDashboardSimulationKpisFromDb(db, config)
+  ctx.body = success({ ...data, simulationInput: config })
 })
 
 router.get('/orders', async (ctx) => {

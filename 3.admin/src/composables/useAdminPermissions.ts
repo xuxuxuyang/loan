@@ -25,6 +25,7 @@ export const ADMIN_PATH_PERMISSION_KEY: Record<string, string> = {
   '/accounts': 'accounts',
   '/traffic': 'traffic',
   '/dashboard': 'dashboard',
+  '/dashboard/plan': 'dashboardSimulation',
   '/tenants': 'tenants.system',
   '/tenants/mall-users-data': 'tenants.mallUsersData',
 }
@@ -48,6 +49,7 @@ export const ADMIN_PERMISSION_KEY_ROUTE: Record<string, { name: string, path: st
   'accounts': { name: 'accounts', path: '/accounts' },
   'traffic': { name: 'traffic', path: '/traffic' },
   'dashboard': { name: 'dashboard-overview', path: '/dashboard' },
+  'dashboardSimulation': { name: 'dashboard-plan', path: '/dashboard/plan' },
   'tenants.system': { name: 'tenants', path: '/tenants' },
   'tenants.mallUsersData': { name: 'tenants-mall-users-data', path: '/tenants/mall-users-data' },
 }
@@ -71,6 +73,7 @@ export const ADMIN_HOME_PERMISSION_ORDER = [
   'accounts',
   'traffic',
   'dashboard',
+  'dashboardSimulation',
   'tenants.system',
   'tenants.mallUsersData',
 ] as const
