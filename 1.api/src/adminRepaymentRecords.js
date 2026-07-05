@@ -32,8 +32,28 @@ function normalizeActualPayChannel(raw) {
   return 'other'
 }
 
+function parseJsonObject(value) {
+  if (!value) {
+    return null
+  }
+  if (typeof value === 'object') {
+    return value
+  }
+  if (typeof value !== 'string') {
+    return null
+  }
+  try {
+    const parsed = JSON.parse(value)
+    return parsed && typeof parsed === 'object' ? parsed : null
+  }
+  catch {
+    return null
+  }
+}
+
 function pickActualPayChannelSource(payload) {
-  if (!payload || typeof payload !== 'object') {
+  const parsedPayload = parseJsonObject(payload)
+  if (!parsedPayload) {
     return ''
   }
   const keys = [
@@ -51,11 +71,11 @@ function pickActualPayChannelSource(payload) {
     'bankType',
   ]
   for (const key of keys) {
-    if (payload[key] != null && trimString(payload[key])) {
-      return trimString(payload[key])
+    if (parsedPayload[key] != null && trimString(parsedPayload[key])) {
+      return trimString(parsedPayload[key])
     }
   }
-  const list = payload.order_trade_info_list || payload.orderTradeInfoList
+  const list = parsedPayload.order_trade_info_list || parsedPayload.orderTradeInfoList
   if (Array.isArray(list)) {
     for (const item of list) {
       const picked = pickActualPayChannelSource(item)
@@ -64,7 +84,11 @@ function pickActualPayChannelSource(payload) {
       }
     }
   }
-  const nested = payload.req_data || payload.resp_data || payload.data
+  const nested = parsedPayload.order_trade_info
+    || parsedPayload.orderTradeInfo
+    || parsedPayload.req_data
+    || parsedPayload.resp_data
+    || parsedPayload.data
   if (nested && typeof nested === 'object') {
     return pickActualPayChannelSource(nested)
   }
