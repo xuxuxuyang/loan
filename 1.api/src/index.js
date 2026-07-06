@@ -156,6 +156,21 @@ const {
   findReusableDuodiandianApplyRiskReview,
   registerDuodiandianGatewayRoutes,
 } = require('./duodiandianGateway')
+
+function loadOptionalZheyinTrafficGateway() {
+  if (String(process.env.ZHEYIN_TRAFFIC_ENABLED || '').trim().toLowerCase() !== 'true') {
+    return null
+  }
+  try {
+    return require('./zheyinTrafficGateway')
+  }
+  catch (err) {
+    console.warn('[zheyin-traffic] module unavailable, skipped:', err && err.message ? err.message : err)
+    return null
+  }
+}
+
+const zheyinTrafficGateway = loadOptionalZheyinTrafficGateway()
 const { createMallContactsStore } = require('./mallContacts/store')
 const {
   markMallContactsRequiredForOrder,
@@ -3940,6 +3955,13 @@ function resolveApiMongoRefreshPlan(ctx) {
   const duodiandianPlan = resolveDuodiandianMongoRefreshPlan(method, path)
   if (duodiandianPlan) {
     return duodiandianPlan
+  }
+  const zheyinPlan = zheyinTrafficGateway
+    && typeof zheyinTrafficGateway.resolveZheyinTrafficMongoRefreshPlan === 'function'
+    ? zheyinTrafficGateway.resolveZheyinTrafficMongoRefreshPlan(method, path)
+    : null
+  if (zheyinPlan) {
+    return zheyinPlan
   }
   if (!isAdminReadOptimizeEnabled()) {
     return { mode: 'full' }
@@ -9617,6 +9639,13 @@ registerDuodiandianGatewayRoutes(router, {
   runApplyRiskPack: runOrderSubmitUpstreamRiskPack,
 })
 
+if (zheyinTrafficGateway && typeof zheyinTrafficGateway.registerZheyinTrafficGatewayRoutes === 'function') {
+  zheyinTrafficGateway.registerZheyinTrafficGatewayRoutes(router, {
+    readDb,
+    runCreditReview: runOrderSubmitUpstreamRiskPack,
+  })
+}
+
 registerDuodiandianGatewayRoutes(duodiandianPublicRouter, {
   readDb,
   writeDb,
@@ -12244,7 +12273,10 @@ app.use(bodyParser({
 
 function isManagedApiPath(pathValue) {
   const pathRaw = String(pathValue || '')
-  return pathRaw.startsWith('/api/') || isDuodiandianPublicPath(pathRaw)
+  const isZheyinPath = zheyinTrafficGateway
+    && typeof zheyinTrafficGateway.isZheyinTrafficPublicPath === 'function'
+    && zheyinTrafficGateway.isZheyinTrafficPublicPath(pathRaw)
+  return pathRaw.startsWith('/api/') || isDuodiandianPublicPath(pathRaw) || Boolean(isZheyinPath)
 }
 
 app.use(async (ctx, next) => {
