@@ -7,6 +7,7 @@ const config = {
   enabled: true,
   routePrefix: '/open/partners/zheyin',
   channel: 'zheyin_test',
+  registerChannelName: '上海企浩',
   aesKey: 'aB3$kL9@mN2#pQ7&',
   aesIv: 'xY4*zW8!vU5&tS1@',
   orderIdPrefix: 'ZY',
@@ -203,6 +204,7 @@ test('handles admission, credit apply, async review, query and app link without 
   assert.equal(db.users[0].idCardBack, 'https://cdn.example.com/back.jpg')
   assert.equal(db.users[0].idCardHandheld, 'https://cdn.example.com/face.jpg')
   assert.equal(db.users[0].registerChannelCode, 'zheyin_test')
+  assert.equal(db.users[0].registerChannelName, '上海企浩')
   assert.equal(db.users[0].quota, 2750)
   assert.equal(db.users[0].zheyinApplyNo, orderId)
   assert.equal(partialWrites.at(-1).keys.includes('users'), true)
@@ -315,6 +317,7 @@ test('app link lazily binds approved zheyin applications created before password
   assert.equal(db.users.length, 1)
   assert.equal(db.users[0].phone, '15959415271')
   assert.equal(db.users[0].zheyinApplyNo, orderId)
+  assert.equal(db.users[0].registerChannelName, '上海企浩')
   assert.equal(writes.at(-1).keys.includes('users'), true)
   const url = new URL(ctx.body.data.loanUrl)
   assert.equal(url.searchParams.get('trafficLogin'), '1')

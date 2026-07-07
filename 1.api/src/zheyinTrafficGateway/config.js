@@ -42,6 +42,7 @@ function zheyinTrafficConfigFromEnv(env = process.env) {
     enabled: boolFromEnv(env.ZHEYIN_TRAFFIC_ENABLED),
     routePrefix: normalizeRoutePrefix(env.ZHEYIN_TRAFFIC_ROUTE_PREFIX),
     channel: readTrim(env.ZHEYIN_TRAFFIC_CHANNEL),
+    registerChannelName: readTrim(env.ZHEYIN_TRAFFIC_REGISTER_CHANNEL_NAME) || '上海企浩',
     aesKey: readTrim(env.ZHEYIN_TRAFFIC_AES_KEY),
     aesIv: readTrim(env.ZHEYIN_TRAFFIC_AES_IV),
     orderIdPrefix: readTrim(env.ZHEYIN_TRAFFIC_ORDER_ID_PREFIX) || 'ZY',
@@ -64,6 +65,7 @@ function resolveZheyinTrafficConfig(config = {}) {
   merged.enabled = Boolean(merged.enabled)
   merged.routePrefix = normalizeRoutePrefix(merged.routePrefix)
   merged.channel = readTrim(merged.channel)
+  merged.registerChannelName = readTrim(merged.registerChannelName) || '上海企浩'
   merged.aesKey = readTrim(merged.aesKey)
   merged.aesIv = readTrim(merged.aesIv)
   merged.orderIdPrefix = readTrim(merged.orderIdPrefix) || 'ZY'

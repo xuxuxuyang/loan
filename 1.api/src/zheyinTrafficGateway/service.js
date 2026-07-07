@@ -91,7 +91,7 @@ function makeZheyinMallUser(row, config = {}, now) {
     orderBlacklisted: false,
     emergencyContacts: normalizeZheyinContacts(payload.contactList),
     registerChannelCode: readTrim(config.channel),
-    registerChannelName: '遮银',
+    registerChannelName: readTrim(config.registerChannelName) || '上海企浩',
     zheyinApplyNo: readTrim(row.orderId || row.applyNo),
     zheyinAdmissionRespSeq: readTrim(row.admissionRespSeq),
     zheyinExternalUserId: readTrim(row.externalUserId),
@@ -129,7 +129,7 @@ function bindZheyinMallUser(db, row, config = {}, now) {
     user.zheyinExternalUserId = readTrim(row.externalUserId)
     user.zheyinBoundAt = user.zheyinBoundAt || at
     if (!readTrim(user.registerChannelCode)) user.registerChannelCode = readTrim(config.channel)
-    if (!readTrim(user.registerChannelName)) user.registerChannelName = '遮银'
+    if (!readTrim(user.registerChannelName)) user.registerChannelName = readTrim(config.registerChannelName) || '上海企浩'
     return user
   }
   user = makeZheyinMallUser(row, config, now)
