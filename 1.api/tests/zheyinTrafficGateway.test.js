@@ -10,12 +10,13 @@ const config = {
   aesKey: 'aB3$kL9@mN2#pQ7&',
   aesIv: 'xY4*zW8!vU5&tS1@',
   orderIdPrefix: 'ZY',
-  defaultAmount: 50000,
-  periods: [3, 6, 9, 12],
+  defaultAmount: 2750,
+  defaultUserQuota: 2750,
+  periods: [1],
   yearRate: '12%',
   creditType: 1,
   creditExpireDays: 365,
-  loanUrlTemplate: 'https://shop.example.com/traffic-entry?orderId={orderId}&redirect={redirectUrl}&channel={channel}',
+  loanUrlTemplate: 'https://shop.example.com/login?trafficLogin=1&channel={channel}&applyNo={orderId}&token={token}&consumePath={consumePath}&redirect={redirectUrl}',
   contractsByScene: {
     '1': [{ contractName: '个人征信授权协议', contractUrl: 'https://shop.example.com/contract/credit.pdf' }],
   },
@@ -96,6 +97,7 @@ test('registers isolated routes only when enabled', () => {
     '/open/partners/zheyin/contracts',
     '/open/partners/zheyin/credit/apply',
     '/open/partners/zheyin/credit/query',
+    '/open/partners/zheyin/login/consume',
   ])
 })
 
@@ -119,6 +121,8 @@ test('handles admission, credit apply, async review, query and app link without 
   const repository = gateway.createMemoryZheyinTrafficRepository()
   const jobs = []
   const notifyCalls = []
+  const partialWrites = []
+  let flushCount = 0
   const db = {
     users: [],
     orders: [],
@@ -130,6 +134,8 @@ test('handles admission, credit apply, async review, query and app link without 
     configProvider: () => config,
     repository,
     readDb: () => db,
+    writeDbPartial: (nextDb, keys) => partialWrites.push({ nextDb, keys }),
+    flushMongoPersist: async () => { flushCount += 1 },
     scheduleAsyncJob: (fn) => jobs.push(fn),
     runCreditReview: async () => ({ allPassed: true, message: '', steps: [] }),
     httpClient: async (url, options) => {
@@ -190,23 +196,53 @@ test('handles admission, credit apply, async review, query and app link without 
 
   await jobs[0]()
 
+  assert.equal(db.users.length, 1)
+  assert.equal(db.users[0].phone, '13812345678')
+  assert.equal(db.users[0].idNumber, '32010119900307663X')
+  assert.equal(db.users[0].idCardFront, 'https://cdn.example.com/front.jpg')
+  assert.equal(db.users[0].idCardBack, 'https://cdn.example.com/back.jpg')
+  assert.equal(db.users[0].idCardHandheld, 'https://cdn.example.com/face.jpg')
+  assert.equal(db.users[0].registerChannelCode, 'zheyin_test')
+  assert.equal(db.users[0].quota, 2750)
+  assert.equal(db.users[0].zheyinApplyNo, orderId)
+  assert.equal(partialWrites.at(-1).keys.includes('users'), true)
+  assert.equal(flushCount > 0, true)
+
   const passedQueryCtx = makeCtx(envelope({ applyNo: orderId }))
   await router.routes.get('/open/partners/zheyin/credit/query')(passedQueryCtx)
   assert.equal(passedQueryCtx.body.data.auditStatus, 1)
-  assert.equal(passedQueryCtx.body.data.totalAmount, 50000)
-  assert.deepEqual(passedQueryCtx.body.data.periods, [3, 6, 9, 12])
+  assert.equal(passedQueryCtx.body.data.totalAmount, 2750)
+  assert.deepEqual(passedQueryCtx.body.data.periods, [1])
 
   const linkCtx = makeCtx(envelope({ applyNo: orderId, redirectUrl: 'https://partner.example.com/return' }))
   await router.routes.get('/open/partners/zheyin/app/link')(linkCtx)
   assert.equal(linkCtx.status, 200)
-  assert.equal(new URL(linkCtx.body.data.loanUrl).searchParams.get('orderId'), orderId)
-  assert.equal(new URL(linkCtx.body.data.loanUrl).searchParams.get('channel'), 'zheyin_test')
+  const loginUrl = new URL(linkCtx.body.data.loanUrl)
+  assert.equal(loginUrl.pathname, '/login')
+  assert.equal(loginUrl.searchParams.get('trafficLogin'), '1')
+  assert.equal(loginUrl.searchParams.get('applyNo'), orderId)
+  assert.equal(loginUrl.searchParams.get('channel'), 'zheyin_test')
+  assert.equal(loginUrl.searchParams.get('consumePath'), '/api/open/partners/zheyin/login/consume')
+  const loginToken = loginUrl.searchParams.get('token')
+  assert(loginToken)
+
+  const consumeCtx = makeCtx({ applyNo: orderId, token: loginToken })
+  await router.routes.get('/open/partners/zheyin/login/consume')(consumeCtx)
+  assert.equal(consumeCtx.status, 200)
+  assert.equal(consumeCtx.body.success, true)
+  assert.equal(consumeCtx.body.data.token, 'mock-token-13812345678')
+  assert.equal(consumeCtx.body.data.user.phone, '13812345678')
+
+  const reuseCtx = makeCtx({ applyNo: orderId, token: loginToken })
+  await router.routes.get('/open/partners/zheyin/login/consume')(reuseCtx)
+  assert.equal(reuseCtx.status, 400)
+  assert.notEqual(reuseCtx.body.success, true)
 
   const linkWithoutRedirectCtx = makeCtx(envelope({ applyNo: orderId }))
   await router.routes.get('/open/partners/zheyin/app/link')(linkWithoutRedirectCtx)
   assert.equal(linkWithoutRedirectCtx.status, 200)
   assert.equal(linkWithoutRedirectCtx.body.code, 200)
-  assert.equal(new URL(linkWithoutRedirectCtx.body.data.loanUrl).searchParams.get('orderId'), orderId)
+  assert.equal(new URL(linkWithoutRedirectCtx.body.data.loanUrl).searchParams.get('applyNo'), orderId)
   assert.equal(new URL(linkWithoutRedirectCtx.body.data.loanUrl).searchParams.get('redirect'), '')
 
   assert.equal(db.partnerGatewayApplications.length, 1)
@@ -231,4 +267,56 @@ test('resolves lightweight refresh plans for only zheyin paths', () => {
   )
   assert.equal(gateway.resolveZheyinTrafficMongoRefreshPlan('POST', '/api/open/partners/other/admission', config), null)
   assert.equal(gateway.isZheyinTrafficPublicPath('/api/open/partners/zheyin/credit/apply', config), true)
+})
+
+test('app link lazily binds approved zheyin applications created before passwordless rollout', async () => {
+  const orderId = 'ZYR-LEGACY-PASS'
+  const repository = gateway.createMemoryZheyinTrafficRepository([{
+    id: orderId,
+    orderId,
+    applyNo: orderId,
+    admissionRespSeq: orderId,
+    channel: config.channel,
+    auditStatus: 1,
+    auditStatusName: 'auth_success',
+    rawApplyPayload: {
+      applyNo: orderId,
+      userInfo: {
+        mobile: '15959415271',
+        name: 'Legacy User',
+        idCardNo: '32010119900307663X',
+        homeAddress: 'legacy address',
+      },
+      idCardInfo: {
+        frontImgUrl: 'https://cdn.example.com/legacy-front.jpg',
+        backImgUrl: 'https://cdn.example.com/legacy-back.jpg',
+        faceImgUrl: 'https://cdn.example.com/legacy-face.jpg',
+      },
+      contactList: [{ relation: '7', name: 'Contact', mobile: '13912345678' }],
+    },
+    notifyLogs: [],
+  }])
+  const db = { users: [], orders: [], partnerGatewayApplications: [] }
+  const writes = []
+  const router = makeRouter()
+  gateway.registerZheyinTrafficGatewayRoutes(router, {
+    configProvider: () => config,
+    repository,
+    readDb: () => db,
+    writeDbPartial: (nextDb, keys) => writes.push({ nextDb, keys }),
+    flushMongoPersist: async () => {},
+    now: () => 1760000000000,
+  })
+
+  const ctx = makeCtx(envelope({ applyNo: orderId }))
+  await router.routes.get('/open/partners/zheyin/app/link')(ctx)
+
+  assert.equal(ctx.status, 200)
+  assert.equal(db.users.length, 1)
+  assert.equal(db.users[0].phone, '15959415271')
+  assert.equal(db.users[0].zheyinApplyNo, orderId)
+  assert.equal(writes.at(-1).keys.includes('users'), true)
+  const url = new URL(ctx.body.data.loanUrl)
+  assert.equal(url.searchParams.get('trafficLogin'), '1')
+  assert(url.searchParams.get('token'))
 })

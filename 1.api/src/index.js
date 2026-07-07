@@ -9642,6 +9642,9 @@ registerDuodiandianGatewayRoutes(router, {
 if (zheyinTrafficGateway && typeof zheyinTrafficGateway.registerZheyinTrafficGatewayRoutes === 'function') {
   zheyinTrafficGateway.registerZheyinTrafficGatewayRoutes(router, {
     readDb,
+    writeDb,
+    writeDbPartial,
+    flushMongoPersist,
     runCreditReview: runOrderSubmitUpstreamRiskPack,
   })
 }

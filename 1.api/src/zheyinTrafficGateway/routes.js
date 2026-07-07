@@ -6,6 +6,10 @@ const {
   handleCreditApply,
   handleCreditQuery,
   handleAppLink,
+  bindZheyinMallUser,
+  verifyZheyinLoginToken,
+  sanitizeZheyinLoginUser,
+  normalizePhone,
   compactDateTime,
   addDaysDateTime,
 } = require('./service')
@@ -21,6 +25,17 @@ function fail(ctx, err) {
   const status = err && err.status ? err.status : 400
   ctx.status = 200
   ctx.body = { code: status, msg: err && err.message ? err.message : 'request failed' }
+}
+
+function loginSuccess(ctx, data) {
+  ctx.status = 200
+  ctx.body = { success: true, data }
+}
+
+function loginFail(ctx, err) {
+  const status = err && err.status ? err.status : 400
+  ctx.status = status
+  ctx.body = { success: false, code: status, msg: err && err.message ? err.message : 'request failed', data: null }
 }
 
 function normalizePath(value) {
@@ -64,7 +79,7 @@ function buildReviewSubject(row) {
   }
 }
 
-async function processCreditReview({ orderId, repository, config, runCreditReview, httpClient, now }) {
+async function processCreditReview({ orderId, repository, config, runCreditReview, httpClient, now, readDb, writeDbPartial, writeDb, flushMongoPersist }) {
   const row = await repository.findByOrderId(orderId)
   if (!row) return { status: 'SKIPPED', reason: 'application_not_found' }
   if (typeof runCreditReview !== 'function') return { status: 'SKIPPED', reason: 'review_runner_missing' }
@@ -80,6 +95,8 @@ async function processCreditReview({ orderId, repository, config, runCreditRevie
       auditTime: compactDateTime(checkedAt),
       expireTime: passed ? addDaysDateTime(checkedAt, config.creditExpireDays) : '',
       refuseReason: passed ? '' : String((result && result.message) || 'credit rejected'),
+      riskReviewSource: 'zheyin_apply_async',
+      applyRiskSteps: Array.isArray(result && result.steps) ? result.steps : [],
       updatedAt: checkedAt,
     }
   }
@@ -91,6 +108,23 @@ async function processCreditReview({ orderId, repository, config, runCreditRevie
       auditTime: compactDateTime(checkedAt),
       refuseReason: err && err.message ? err.message : String(err),
       updatedAt: checkedAt,
+    }
+  }
+  if (Number(next.auditStatus) === 1 && typeof readDb === 'function') {
+    const db = readDb()
+    const user = bindZheyinMallUser(db, next, config, now)
+    if (user && readTrim(user.id)) {
+      next.mallUserId = readTrim(user.id)
+      next.mallUserPhone = normalizePhone(user.phone)
+      if (typeof writeDbPartial === 'function') {
+        writeDbPartial(db, ['users'])
+      }
+      else if (typeof writeDb === 'function') {
+        writeDb(db)
+      }
+      if (typeof flushMongoPersist === 'function') {
+        await flushMongoPersist()
+      }
     }
   }
   await repository.upsert(next)
@@ -113,6 +147,9 @@ function registerZheyinTrafficGatewayRoutes(router, deps = {}) {
   }
   const repository = deps.repository || createMongoZheyinTrafficRepository()
   const readDb = typeof deps.readDb === 'function' ? deps.readDb : () => ({})
+  const writeDb = typeof deps.writeDb === 'function' ? deps.writeDb : null
+  const writeDbPartial = typeof deps.writeDbPartial === 'function' ? deps.writeDbPartial : null
+  const flushMongoPersist = typeof deps.flushMongoPersist === 'function' ? deps.flushMongoPersist : null
   const httpClient = typeof deps.httpClient === 'function' ? deps.httpClient : undefined
   const runCreditReview = typeof deps.runCreditReview === 'function' ? deps.runCreditReview : null
   const now = typeof deps.now === 'function' ? deps.now : () => Date.now()
@@ -141,10 +178,49 @@ function registerZheyinTrafficGatewayRoutes(router, deps = {}) {
     ...args,
     now,
     scheduleAsyncJob,
-    processCreditReview: (orderId) => processCreditReview({ orderId, repository, config: args.config, runCreditReview, httpClient, now }),
+    processCreditReview: (orderId) => processCreditReview({
+      orderId,
+      repository,
+      config: args.config,
+      runCreditReview,
+      httpClient,
+      now,
+      readDb,
+      writeDb,
+      writeDbPartial,
+      flushMongoPersist,
+    }),
   })))
   router.post(`${prefix}/credit/query`, ctx => handle(ctx, args => handleCreditQuery(args), { needsDb: false }))
-  router.post(`${prefix}/app/link`, ctx => handle(ctx, args => handleAppLink(args), { needsDb: false }))
+  router.post(`${prefix}/app/link`, ctx => handle(ctx, args => handleAppLink({
+    ...args,
+    now,
+    writeDb,
+    writeDbPartial,
+    flushMongoPersist,
+  })))
+  router.post(`${prefix}/login/consume`, async (ctx) => {
+    try {
+      const config = resolveZheyinTrafficConfig(configProvider())
+      const payload = ctx.request.body || {}
+      const orderId = readTrim(payload.applyNo)
+      const row = await repository.findByOrderId(orderId)
+      if (!row) throw new ZheyinTrafficError('applyNo not found', 404)
+      verifyZheyinLoginToken(row, payload.token, config.loginTokenTtlMs, typeof now === 'function' ? now() : Date.now())
+      const db = readDb()
+      const user = (Array.isArray(db.users) ? db.users : []).find(item => item && readTrim(item.id) === readTrim(row.mallUserId))
+      if (!user) throw new ZheyinTrafficError('mall user not found', 404)
+      row.loginTokenConsumedAt = new Date(typeof now === 'function' ? Number(now()) : Date.now()).toISOString()
+      await repository.upsert(row)
+      loginSuccess(ctx, {
+        token: `mock-token-${normalizePhone(user.phone)}`,
+        user: sanitizeZheyinLoginUser(user),
+      })
+    }
+    catch (err) {
+      loginFail(ctx, err)
+    }
+  })
 }
 
 async function queueZheyinTrafficCreditNotify(options = {}) {

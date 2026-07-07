@@ -37,6 +37,7 @@ function parseContracts(value) {
 }
 
 function zheyinTrafficConfigFromEnv(env = process.env) {
+  const defaultAmount = parseNumber(env.ZHEYIN_TRAFFIC_DEFAULT_AMOUNT, 2750)
   return {
     enabled: boolFromEnv(env.ZHEYIN_TRAFFIC_ENABLED),
     routePrefix: normalizeRoutePrefix(env.ZHEYIN_TRAFFIC_ROUTE_PREFIX),
@@ -46,11 +47,13 @@ function zheyinTrafficConfigFromEnv(env = process.env) {
     orderIdPrefix: readTrim(env.ZHEYIN_TRAFFIC_ORDER_ID_PREFIX) || 'ZY',
     creditNotifyUrl: readTrim(env.ZHEYIN_TRAFFIC_CREDIT_NOTIFY_URL),
     loanUrlTemplate: readTrim(env.ZHEYIN_TRAFFIC_LOAN_URL_TEMPLATE),
-    defaultAmount: parseNumber(env.ZHEYIN_TRAFFIC_DEFAULT_AMOUNT, 50000),
+    defaultAmount,
+    defaultUserQuota: parseNumber(env.ZHEYIN_TRAFFIC_DEFAULT_USER_QUOTA, defaultAmount),
     periods: parsePeriods(env.ZHEYIN_TRAFFIC_PERIODS),
     yearRate: readTrim(env.ZHEYIN_TRAFFIC_YEAR_RATE) || '12%',
     creditType: parseNumber(env.ZHEYIN_TRAFFIC_CREDIT_TYPE, 1),
     creditExpireDays: parseNumber(env.ZHEYIN_TRAFFIC_CREDIT_EXPIRE_DAYS, 365),
+    loginTokenTtlMs: parseNumber(env.ZHEYIN_TRAFFIC_LOGIN_TOKEN_TTL_MS, 10 * 60 * 1000),
     contractsByScene: parseContracts(env.ZHEYIN_TRAFFIC_CONTRACTS_BY_SCENE || env.ZHEYIN_TRAFFIC_CONTRACTS_CREDIT),
   }
 }
@@ -66,11 +69,13 @@ function resolveZheyinTrafficConfig(config = {}) {
   merged.orderIdPrefix = readTrim(merged.orderIdPrefix) || 'ZY'
   merged.creditNotifyUrl = readTrim(merged.creditNotifyUrl)
   merged.loanUrlTemplate = readTrim(merged.loanUrlTemplate)
-  merged.defaultAmount = parseNumber(merged.defaultAmount, 50000)
+  merged.defaultAmount = parseNumber(merged.defaultAmount, 2750)
+  merged.defaultUserQuota = parseNumber(merged.defaultUserQuota, merged.defaultAmount || 2750)
   merged.periods = parsePeriods(merged.periods)
   merged.yearRate = readTrim(merged.yearRate) || '12%'
   merged.creditType = parseNumber(merged.creditType, 1)
   merged.creditExpireDays = parseNumber(merged.creditExpireDays, 365)
+  merged.loginTokenTtlMs = parseNumber(merged.loginTokenTtlMs, 10 * 60 * 1000)
   merged.contractsByScene = parseContracts(merged.contractsByScene)
   return merged
 }
