@@ -118,12 +118,13 @@ test('returns doc-style failure body with HTTP 200 for invalid requests', async 
   assert.equal(Object.hasOwn(ctx.body, 'data'), false)
 })
 
-test('handles admission, credit apply, async review, query and app link without touching duodiandian data', async () => {
+test('handles admission, credit apply, basic pass, query and app link without touching duodiandian data', async () => {
   const repository = gateway.createMemoryZheyinTrafficRepository()
   const jobs = []
   const notifyCalls = []
   const partialWrites = []
   let flushCount = 0
+  let riskReviewCalls = 0
   const db = {
     users: [],
     orders: [],
@@ -138,7 +139,10 @@ test('handles admission, credit apply, async review, query and app link without 
     writeDbPartial: (nextDb, keys) => partialWrites.push({ nextDb, keys }),
     flushMongoPersist: async () => { flushCount += 1 },
     scheduleAsyncJob: (fn) => jobs.push(fn),
-    runCreditReview: async () => ({ allPassed: true, message: '', steps: [] }),
+    runCreditReview: async () => {
+      riskReviewCalls += 1
+      return { allPassed: true, message: '', steps: [] }
+    },
     httpClient: async (url, options) => {
       notifyCalls.push({ url, options })
       return { ok: true, status: 200, async text() { return JSON.stringify({ code: 200, msg: 'success' }) } }
@@ -190,13 +194,29 @@ test('handles admission, credit apply, async review, query and app link without 
   const orderId = applyCtx.body.data.orderId
   assert.equal(orderId, respSeq)
   assert.equal(jobs.length, 1)
+  assert.equal(riskReviewCalls, 0)
 
-  const pendingQueryCtx = makeCtx(envelope({ applyNo: orderId }))
-  await router.routes.get('/open/partners/zheyin/credit/query')(pendingQueryCtx)
-  assert.equal(pendingQueryCtx.body.data.auditStatus, 2)
+  const passedQueryBeforeNotifyCtx = makeCtx(envelope({ applyNo: orderId }))
+  await router.routes.get('/open/partners/zheyin/credit/query')(passedQueryBeforeNotifyCtx)
+  assert.equal(passedQueryBeforeNotifyCtx.body.data.auditStatus, 1)
+  assert.equal(passedQueryBeforeNotifyCtx.body.data.totalAmount, 2750)
 
   await jobs[0]()
+  assert.equal(riskReviewCalls, 0)
 
+  assert.equal(notifyCalls.length, 1)
+  assert.equal(notifyCalls[0].url, config.creditNotifyUrl)
+  const notifyBody = JSON.parse(notifyCalls[0].options.body)
+  assert.deepEqual(Object.keys(notifyBody).sort(), ['channel', 'data', 'requestNo'])
+  assert.equal(notifyBody.channel, 'zheyin_test')
+  assert.match(notifyBody.requestNo, /^NOTIFY-/)
+  assert.equal(gateway.parseZheyinTrafficEnvelope(notifyBody, config, { now: 1760000000000 }).auditStatus, 1)
+
+  assert.equal(db.users.length, 0)
+
+  const linkCtx = makeCtx(envelope({ applyNo: orderId, redirectUrl: 'https://partner.example.com/return' }))
+  await router.routes.get('/open/partners/zheyin/app/link')(linkCtx)
+  assert.equal(linkCtx.status, 200)
   assert.equal(db.users.length, 1)
   assert.equal(db.users[0].phone, '13812345678')
   assert.equal(db.users[0].idNumber, '32010119900307663X')
@@ -207,6 +227,7 @@ test('handles admission, credit apply, async review, query and app link without 
   assert.equal(db.users[0].registerChannelName, '上海企浩')
   assert.equal(db.users[0].quota, 2750)
   assert.equal(db.users[0].zheyinApplyNo, orderId)
+  assert.equal(db.users[0].riskControlSnapshot, undefined)
   assert.equal(partialWrites.at(-1).keys.includes('users'), true)
   assert.equal(flushCount > 0, true)
 
@@ -216,9 +237,6 @@ test('handles admission, credit apply, async review, query and app link without 
   assert.equal(passedQueryCtx.body.data.totalAmount, 2750)
   assert.deepEqual(passedQueryCtx.body.data.periods, [1])
 
-  const linkCtx = makeCtx(envelope({ applyNo: orderId, redirectUrl: 'https://partner.example.com/return' }))
-  await router.routes.get('/open/partners/zheyin/app/link')(linkCtx)
-  assert.equal(linkCtx.status, 200)
   const loginUrl = new URL(linkCtx.body.data.loanUrl)
   assert.equal(loginUrl.pathname, '/login')
   assert.equal(loginUrl.searchParams.get('trafficLogin'), '1')
@@ -249,13 +267,6 @@ test('handles admission, credit apply, async review, query and app link without 
 
   assert.equal(db.partnerGatewayApplications.length, 1)
   assert.equal(db.partnerGatewayApplications[0].applyNo, 'DONT-TOUCH')
-  assert.equal(notifyCalls.length, 1)
-  assert.equal(notifyCalls[0].url, config.creditNotifyUrl)
-  const notifyBody = JSON.parse(notifyCalls[0].options.body)
-  assert.deepEqual(Object.keys(notifyBody).sort(), ['channel', 'data', 'requestNo'])
-  assert.equal(notifyBody.channel, 'zheyin_test')
-  assert.match(notifyBody.requestNo, /^NOTIFY-/)
-  assert.equal(gateway.parseZheyinTrafficEnvelope(notifyBody, config, { now: 1760000000000 }).auditStatus, 1)
 })
 
 test('resolves lightweight refresh plans for only zheyin paths', () => {
@@ -322,4 +333,77 @@ test('app link lazily binds approved zheyin applications created before password
   const url = new URL(ctx.body.data.loanUrl)
   assert.equal(url.searchParams.get('trafficLogin'), '1')
   assert(url.searchParams.get('token'))
+})
+
+test('app link waits briefly for reviewing zheyin credit to become approved', async () => {
+  const orderId = 'ZYR-WAIT-PASS'
+  let findCount = 0
+  let storedRow = null
+  const approvedRow = {
+    id: orderId,
+    orderId,
+    applyNo: orderId,
+    admissionRespSeq: orderId,
+    channel: config.channel,
+    auditStatus: 1,
+    auditStatusName: 'auth_success',
+    rawApplyPayload: {
+      applyNo: orderId,
+      userInfo: {
+        mobile: '15627949077',
+        name: 'Wait User',
+        idCardNo: '32010119900307663X',
+        homeAddress: 'wait address',
+      },
+      idCardInfo: {
+        frontImgUrl: 'https://cdn.example.com/wait-front.jpg',
+        backImgUrl: 'https://cdn.example.com/wait-back.jpg',
+        faceImgUrl: 'https://cdn.example.com/wait-face.jpg',
+      },
+      contactList: [{ relation: '7', name: 'Contact', mobile: '13912345678' }],
+    },
+    notifyLogs: [],
+  }
+  const repository = {
+    async findByOrderId(id) {
+      findCount += 1
+      if (id !== orderId) return null
+      if (findCount === 1) return { ...approvedRow, auditStatus: 2, auditStatusName: 'authing' }
+      return { ...approvedRow, ...storedRow }
+    },
+    async upsert(row) {
+      storedRow = { ...row }
+      return storedRow
+    },
+  }
+  const db = { users: [], orders: [], partnerGatewayApplications: [] }
+  const router = makeRouter()
+  gateway.registerZheyinTrafficGatewayRoutes(router, {
+    configProvider: () => ({
+      ...config,
+      appLinkWaitMs: 20,
+      appLinkPollMs: 1,
+    }),
+    repository,
+    readDb: () => db,
+    writeDbPartial: () => {},
+    flushMongoPersist: async () => {},
+    now: () => 1760000000000,
+  })
+
+  const ctx = makeCtx(envelope({ applyNo: orderId }, {
+    config: {
+      ...config,
+      appLinkWaitMs: 20,
+      appLinkPollMs: 1,
+    },
+  }))
+  await router.routes.get('/open/partners/zheyin/app/link')(ctx)
+
+  assert.equal(ctx.status, 200)
+  assert.equal(ctx.body.code, 200)
+  assert.equal(findCount >= 2, true)
+  assert.equal(db.users.length, 1)
+  assert.equal(db.users[0].phone, '15627949077')
+  assert.equal(new URL(ctx.body.data.loanUrl).searchParams.get('applyNo'), orderId)
 })

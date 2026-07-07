@@ -55,6 +55,8 @@ function zheyinTrafficConfigFromEnv(env = process.env) {
     creditType: parseNumber(env.ZHEYIN_TRAFFIC_CREDIT_TYPE, 1),
     creditExpireDays: parseNumber(env.ZHEYIN_TRAFFIC_CREDIT_EXPIRE_DAYS, 365),
     loginTokenTtlMs: parseNumber(env.ZHEYIN_TRAFFIC_LOGIN_TOKEN_TTL_MS, 10 * 60 * 1000),
+    appLinkWaitMs: parseNumber(env.ZHEYIN_TRAFFIC_APP_LINK_WAIT_MS, 8000),
+    appLinkPollMs: parseNumber(env.ZHEYIN_TRAFFIC_APP_LINK_POLL_MS, 500),
     contractsByScene: parseContracts(env.ZHEYIN_TRAFFIC_CONTRACTS_BY_SCENE || env.ZHEYIN_TRAFFIC_CONTRACTS_CREDIT),
   }
 }
@@ -78,6 +80,8 @@ function resolveZheyinTrafficConfig(config = {}) {
   merged.creditType = parseNumber(merged.creditType, 1)
   merged.creditExpireDays = parseNumber(merged.creditExpireDays, 365)
   merged.loginTokenTtlMs = parseNumber(merged.loginTokenTtlMs, 10 * 60 * 1000)
+  merged.appLinkWaitMs = Math.max(0, parseNumber(merged.appLinkWaitMs, 8000))
+  merged.appLinkPollMs = Math.max(50, parseNumber(merged.appLinkPollMs, 500))
   merged.contractsByScene = parseContracts(merged.contractsByScene)
   return merged
 }

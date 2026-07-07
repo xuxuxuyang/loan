@@ -174,23 +174,16 @@ function registerZheyinTrafficGatewayRoutes(router, deps = {}) {
   const prefix = routeConfig.routePrefix
   router.post(`${prefix}/admission`, ctx => handle(ctx, args => handleAdmission({ ...args, now })))
   router.post(`${prefix}/contracts`, ctx => handle(ctx, args => handleContracts(args), { needsDb: false }))
-  router.post(`${prefix}/credit/apply`, ctx => handle(ctx, args => handleCreditApply({
-    ...args,
-    now,
-    scheduleAsyncJob,
-    processCreditReview: (orderId) => processCreditReview({
-      orderId,
-      repository,
-      config: args.config,
-      runCreditReview,
-      httpClient,
-      now,
-      readDb,
-      writeDb,
-      writeDbPartial,
-      flushMongoPersist,
-    }),
-  })))
+  router.post(`${prefix}/credit/apply`, ctx => handle(ctx, async args => {
+    const result = await handleCreditApply({ ...args, now })
+    if (result && readTrim(result.orderId)) {
+      scheduleAsyncJob(async () => {
+        const row = await repository.findByOrderId(result.orderId)
+        await notifyZheyinTrafficCreditResult({ row, repository, config: args.config, httpClient, now })
+      })
+    }
+    return result
+  }))
   router.post(`${prefix}/credit/query`, ctx => handle(ctx, args => handleCreditQuery(args), { needsDb: false }))
   router.post(`${prefix}/app/link`, ctx => handle(ctx, args => handleAppLink({
     ...args,

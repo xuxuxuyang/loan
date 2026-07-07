@@ -72,7 +72,6 @@ function makeZheyinMallUser(row, config = {}, now) {
   const idCard = payload.idCardInfo || {}
   const at = nowIso(now)
   const phone = normalizePhone(user.mobile)
-  const steps = Array.isArray(row.applyRiskSteps) ? row.applyRiskSteps : []
   const next = {
     id: `U${Date.now()}${Math.floor(Math.random() * 1000)}`,
     name: readTrim(user.name) || '商城用户',
@@ -89,6 +88,7 @@ function makeZheyinMallUser(row, config = {}, now) {
     quota: Math.round(Number(config.defaultUserQuota || config.defaultAmount || 2750)),
     adminRemark: '',
     orderBlacklisted: false,
+    mallInstallmentRiskAttempted: false,
     emergencyContacts: normalizeZheyinContacts(payload.contactList),
     registerChannelCode: readTrim(config.channel),
     registerChannelName: readTrim(config.registerChannelName) || '上海企浩',
@@ -96,24 +96,7 @@ function makeZheyinMallUser(row, config = {}, now) {
     zheyinAdmissionRespSeq: readTrim(row.admissionRespSeq),
     zheyinExternalUserId: readTrim(row.externalUserId),
     zheyinBoundAt: at,
-    riskControlSnapshot: {
-      configured: true,
-      simulated: false,
-      passed: true,
-      checkedAt: row.auditTime || at,
-      summaryMessage: '',
-      fourteenRows: steps.map((step, idx) => ({
-        slotKey: step && step.key ? step.key : `zheyin_apply_${idx + 1}`,
-        productLabel: step && step.label ? step.label : (step && step.key ? step.key : `risk_${idx + 1}`),
-        state: step && step.ok ? 'ok' : 'fail',
-        error: step && step.error,
-        response: step && step.response,
-      })),
-      rawSteps: JSON.parse(JSON.stringify(steps)),
-      userId: '',
-    },
   }
-  next.riskControlSnapshot.userId = next.id
   return next
 }
 
@@ -266,7 +249,7 @@ function assertCreditApplyPayload(payload) {
   }
 }
 
-async function handleCreditApply({ payload, repository, config, scheduleAsyncJob, processCreditReview, now }) {
+async function handleCreditApply({ payload, repository, config, now }) {
   assertCreditApplyPayload(payload)
   const admission = await repository.findByAdmission(readTrim(payload.applyNo))
   if (!admission) {
@@ -281,9 +264,10 @@ async function handleCreditApply({ payload, repository, config, scheduleAsyncJob
     applyNo: readTrim(payload.applyNo),
     userPhoneMasked: maskPhone(payload.userInfo.mobile),
     rawApplyPayload: payload,
-    auditStatus: 2,
-    auditStatusName: 'authing',
-    auditTime: '',
+    auditStatus: 1,
+    auditStatusName: 'basic_pass',
+    auditTime: compactDateTime(at),
+    expireTime: addDaysDateTime(at, config.creditExpireDays),
     refuseReason: '',
     totalAmount: Number(config.defaultAmount),
     availableAmount: Number(config.defaultAmount),
@@ -292,12 +276,11 @@ async function handleCreditApply({ payload, repository, config, scheduleAsyncJob
     type: Number(config.creditType),
     externalCreditId: orderId,
     externalUserId: md5(`${config.channel}|${payload.userInfo.mobile}`).slice(0, 24).toUpperCase(),
+    creditDecisionSource: 'zheyin_basic_admission',
+    applyRiskSteps: [],
     updatedAt: at,
   }
   await repository.upsert(next)
-  if (typeof scheduleAsyncJob === 'function' && typeof processCreditReview === 'function') {
-    scheduleAsyncJob(() => processCreditReview(orderId))
-  }
   return { status: 1, resultDesc: '授信进件申请已受理', orderId }
 }
 
@@ -349,13 +332,42 @@ function buildAppLink(template, values) {
     .replaceAll('{consumePath}', encodeTemplate(values.consumePath))
 }
 
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, Math.max(0, Number(ms) || 0)))
+}
+
+function appLinkCreditError(row) {
+  const status = Number(row && row.auditStatus)
+  if (status === 2) return new ZheyinTrafficError('credit is reviewing, please retry later', 409)
+  if (status === 3) return new ZheyinTrafficError('credit review error', 409)
+  if (status === 4) return new ZheyinTrafficError('credit rejected', 403)
+  return new ZheyinTrafficError('credit is not approved', 409)
+}
+
+async function waitForApprovedAppLinkRow(repository, orderId, config) {
+  let row = await repository.findByOrderId(orderId)
+  if (!row) throw new ZheyinTrafficError('applyNo not found', 404)
+  if (Number(row.auditStatus) === 1) return row
+  if (Number(row.auditStatus) !== 2) throw appLinkCreditError(row)
+
+  const waitMs = Math.max(0, Number(config.appLinkWaitMs) || 0)
+  const pollMs = Math.max(50, Number(config.appLinkPollMs) || 500)
+  const deadline = Date.now() + waitMs
+  while (Date.now() < deadline) {
+    await sleep(Math.min(pollMs, Math.max(1, deadline - Date.now())))
+    row = await repository.findByOrderId(orderId)
+    if (!row) throw new ZheyinTrafficError('applyNo not found', 404)
+    if (Number(row.auditStatus) === 1) return row
+    if (Number(row.auditStatus) !== 2) throw appLinkCreditError(row)
+  }
+  throw appLinkCreditError(row)
+}
+
 async function handleAppLink({ payload, repository, config, now, db, writeDbPartial, writeDb, flushMongoPersist }) {
   const orderId = readTrim(payload.applyNo)
   const redirectUrl = readTrim(payload.redirectUrl)
   if (!orderId) throw new ZheyinTrafficError('applyNo is required')
-  const row = await repository.findByOrderId(orderId)
-  if (!row) throw new ZheyinTrafficError('applyNo not found', 404)
-  if (Number(row.auditStatus) !== 1) throw new ZheyinTrafficError('credit is not approved', 409)
+  const row = await waitForApprovedAppLinkRow(repository, orderId, config)
   if (!readTrim(row.mallUserId) && db) {
     const user = bindZheyinMallUser(db, row, config, now)
     if (user && readTrim(user.id)) {
