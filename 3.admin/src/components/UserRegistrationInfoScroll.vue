@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { CircleCheck, CircleClose, Minus, Picture } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
-import { computed, ref, watch } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import TrafficChannelNameTag from './TrafficChannelNameTag.vue'
 import { readApiErrorMessage, withMallTenantHeaders } from '../composables/useAdminApi'
 import { trafficChannelDisplayKey } from '../utils/trafficChannelTagStyle'
@@ -104,6 +104,7 @@ const mallContactsPageSize = ref(CONTACTS_PAGE_SIZE)
 const mallContactsTotal = ref(0)
 const mallContactsRecords = ref<MallContactUploadRecord[]>([])
 const mallContactsActiveRecords = ref<string[]>([])
+const mallContactsPageLoading = reactive<Record<string, boolean>>({})
 
 const orderShippingNameTrim = computed(() => String(props.orderShippingSnapshot?.name ?? '').trim())
 const orderShippingPhoneTrim = computed(() => String(props.orderShippingSnapshot?.phone ?? '').trim())
@@ -118,6 +119,7 @@ function resetMallContactsViewer() {
   mallContactsTotal.value = 0
   mallContactsRecords.value = []
   mallContactsActiveRecords.value = []
+  Object.keys(mallContactsPageLoading).forEach(key => delete mallContactsPageLoading[key])
 }
 
 watch(() => props.user.id, resetMallContactsViewer)
@@ -190,6 +192,66 @@ async function fetchMallContacts(page = 1) {
 
 function onMallContactsPageChange(page: number) {
   void fetchMallContacts(page)
+}
+
+function mallContactRecordKey(record: MallContactUploadRecord, index: number): string {
+  return record.upload?.uploadId || String(index)
+}
+
+function mallContactRecordHasMore(record: MallContactUploadRecord): boolean {
+  return record.list.length < record.total
+}
+
+async function loadMoreMallContactRows(record: MallContactUploadRecord) {
+  const uploadId = String(record.upload?.uploadId || '').trim()
+  if (!uploadId || mallContactsPageLoading[uploadId] || !mallContactRecordHasMore(record)) {
+    return
+  }
+  const nextPage = Math.floor(record.list.length / CONTACTS_PREVIEW_SIZE) + 1
+  mallContactsPageLoading[uploadId] = true
+  try {
+    const params = new URLSearchParams()
+    params.set('page', String(nextPage))
+    params.set('pageSize', String(CONTACTS_PREVIEW_SIZE))
+    const response = await fetch(
+      `${MALL_API_BASE}/users/${encodeURIComponent(props.user.id)}/mall-contacts/${encodeURIComponent(uploadId)}/contacts?${params.toString()}`,
+      { method: 'GET', headers: withMallTenantHeaders() },
+    )
+    if (!response.ok) {
+      throw new Error(await readApiErrorMessage(response, '读取更多通讯录失败'))
+    }
+    const payload = await response.json() as {
+      success?: boolean
+      msg?: string
+      data?: MallContactUploadRecord
+    }
+    if (payload.success === false) {
+      throw new Error(payload.msg || '读取更多通讯录失败')
+    }
+    const data = payload.data
+    const nextRows = Array.isArray(data?.list) ? data.list : []
+    record.list = [...record.list, ...nextRows]
+    record.page = Math.max(record.page || 1, Number(data?.page || nextPage) || nextPage)
+    record.pageSize = Math.max(1, Number(data?.pageSize || CONTACTS_PREVIEW_SIZE) || CONTACTS_PREVIEW_SIZE)
+    record.total = Math.max(record.total, Number(data?.total || 0) || record.total)
+  }
+  catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '读取更多通讯录失败')
+  }
+  finally {
+    mallContactsPageLoading[uploadId] = false
+  }
+}
+
+function onMallContactsRowsScroll(event: Event, record: MallContactUploadRecord) {
+  const el = event.currentTarget instanceof HTMLElement ? event.currentTarget : null
+  if (!el) {
+    return
+  }
+  const distanceToBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+  if (distanceToBottom <= 48) {
+    void loadMoreMallContactRows(record)
+  }
 }
 
 function buildOrderShippingClipboardText(): string {
@@ -465,8 +527,8 @@ function getStatusClass(status: ReturnType<typeof displayCreditStatusFromOrderSe
             >
               <el-collapse-item
                 v-for="(record, recordIndex) in mallContactsRecords"
-                :key="record.upload?.uploadId || recordIndex"
-                :name="record.upload?.uploadId || String(recordIndex)"
+                :key="mallContactRecordKey(record, recordIndex)"
+                :name="mallContactRecordKey(record, recordIndex)"
               >
                 <template #title>
                   <div class="user-preview-contacts-record-title">
@@ -482,51 +544,67 @@ function getStatusClass(status: ReturnType<typeof displayCreditStatusFromOrderSe
                   <span v-if="record.upload?.orderId">关联订单：{{ record.upload.orderId }}</span>
                   <span v-if="record.upload?.uploadId">读取批次：{{ record.upload.uploadId }}</span>
                 </div>
-                <el-table
-                  v-loading="mallContactsLoading"
-                  :data="record.list"
-                  border
-                  size="small"
-                  class="user-preview-contacts__table"
+                <div
+                  class="user-preview-contacts__table-scroll"
+                  @scroll="onMallContactsRowsScroll($event, record)"
                 >
-                  <el-table-column
-                    type="index"
-                    width="64"
-                    label="序号"
-                  />
-                  <el-table-column
-                    prop="displayName"
-                    label="联系人姓名"
-                    min-width="160"
+                  <el-table
+                    :data="record.list"
+                    border
+                    size="small"
+                    class="user-preview-contacts__table"
                   >
-                    <template #default="{ row }">
-                      {{ row.displayName || '未命名联系人' }}
-                    </template>
-                  </el-table-column>
-                  <el-table-column
-                    label="手机号"
-                    min-width="220"
+                    <el-table-column
+                      type="index"
+                      width="64"
+                      label="序号"
+                    />
+                    <el-table-column
+                      prop="displayName"
+                      label="联系人姓名"
+                      min-width="160"
+                    >
+                      <template #default="{ row }">
+                        {{ row.displayName || '未命名联系人' }}
+                      </template>
+                    </el-table-column>
+                    <el-table-column
+                      label="手机号"
+                      min-width="220"
+                    >
+                      <template #default="{ row }">
+                        <span class="tabular-nums">{{ Array.isArray(row.phones) && row.phones.length ? row.phones.join('、') : '暂无号码' }}</span>
+                      </template>
+                    </el-table-column>
+                    <el-table-column
+                      prop="contactId"
+                      label="通讯录ID"
+                      min-width="140"
+                    >
+                      <template #default="{ row }">
+                        <span :class="{ 'user-preview-meta__muted': !row.contactId }">{{ row.contactId || '暂无' }}</span>
+                      </template>
+                    </el-table-column>
+                  </el-table>
+                  <div
+                    v-if="mallContactsPageLoading[String(record.upload?.uploadId || '')]"
+                    class="user-preview-contacts__lazy-note"
                   >
-                    <template #default="{ row }">
-                      <span class="tabular-nums">{{ Array.isArray(row.phones) && row.phones.length ? row.phones.join('、') : '暂无号码' }}</span>
-                    </template>
-                  </el-table-column>
-                  <el-table-column
-                    prop="contactId"
-                    label="通讯录ID"
-                    min-width="140"
+                    正在加载更多通讯录...
+                  </div>
+                  <div
+                    v-else-if="mallContactRecordHasMore(record)"
+                    class="user-preview-contacts__lazy-note"
                   >
-                    <template #default="{ row }">
-                      <span :class="{ 'user-preview-meta__muted': !row.contactId }">{{ row.contactId || '暂无' }}</span>
-                    </template>
-                  </el-table-column>
-                </el-table>
-                <p
-                  v-if="record.total > record.list.length"
-                  class="user-preview-contacts__preview-note"
-                >
-                  当前仅预览前 {{ record.list.length }} 条，完整数据已按本次读取批次保存。
-                </p>
+                    向下滚动继续加载，已显示 {{ record.list.length }} / {{ record.total }} 条
+                  </div>
+                  <div
+                    v-else
+                    class="user-preview-contacts__lazy-note user-preview-contacts__lazy-note--done"
+                  >
+                    已显示全部 {{ record.total }} 条通讯录
+                  </div>
+                </div>
               </el-collapse-item>
             </el-collapse>
             <div
@@ -1689,14 +1767,31 @@ function getStatusClass(status: ReturnType<typeof displayCreditStatusFromOrderSe
   font-size: 12px;
 }
 
+.user-preview-contacts__table-scroll {
+  max-height: 360px;
+  margin-top: 10px;
+  overflow-y: auto;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #fff;
+  -webkit-overflow-scrolling: touch;
+}
+
 .user-preview-contacts__table {
   width: 100%;
 }
 
-.user-preview-contacts__preview-note {
-  margin: 8px 0 0;
+.user-preview-contacts__lazy-note {
+  padding: 8px 10px;
+  border-top: 1px solid #e2e8f0;
+  background: #f8fafc;
   color: #64748b;
   font-size: 12px;
+  text-align: center;
+}
+
+.user-preview-contacts__lazy-note--done {
+  color: #16a34a;
 }
 
 .user-preview-contacts__pager {

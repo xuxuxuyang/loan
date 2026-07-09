@@ -8464,6 +8464,33 @@ router.get('/users/:id/mall-contacts', async (ctx) => {
   ctx.body = success(await mallContactsStore.listCompletedContactUploads({ phone, page, pageSize, contactsPreviewSize }))
 })
 
+router.get('/users/:id/mall-contacts/:uploadId/contacts', async (ctx) => {
+  if (!await requireAdminUsersActionOnAny(ctx, 'view', 'view user contacts')) {
+    return
+  }
+  const db = readDb()
+  const { id } = ctx.params
+  const target = db.users.find(item => item.id === id)
+  if (!target) {
+    fail(ctx, 'user_not_found', 404)
+    return
+  }
+  const uploadId = String(ctx.params.uploadId || '').trim()
+  if (!uploadId) {
+    fail(ctx, 'upload_id_required', 400)
+    return
+  }
+  const page = Math.max(1, parseInt(String(ctx.query.page || '1'), 10) || 1)
+  const pageSize = Math.min(50, Math.max(1, parseInt(String(ctx.query.pageSize || '20'), 10) || 20))
+  const phone = normalizePhone(target.phone)
+  const result = await mallContactsStore.listCompletedUploadContacts({ phone, uploadId, page, pageSize })
+  if (!result.upload) {
+    fail(ctx, 'contacts_upload_not_found', 404)
+    return
+  }
+  ctx.body = success(result)
+})
+
 router.get('/users/:id/bill-risk', async (ctx) => {
   if (!await requireAdminUsersActionOnAny(ctx, 'view', '查看用户流水风控')) {
     return

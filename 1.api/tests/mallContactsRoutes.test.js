@@ -196,6 +196,89 @@ test('contacts batch upload rejects upload ids that belong to another phone', as
   }
 })
 
+test('admin contacts route pages a single upload contacts by upload id', async () => {
+  const db = {
+    users: [{ id: 'U1', phone: '13800138000' }],
+    orders: [],
+  }
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mall-contacts-routes-'))
+  const store = createMallContactsStore({
+    jsonFile: path.join(dir, 'mallContacts.json'),
+    mongo: { getMongoDb: () => null },
+    idGenerator: () => 'MCU_ADMIN_PAGE',
+  })
+  const upload = await store.startUpload({
+    phone: '13800138000',
+    userId: 'U1',
+    orderId: 'O1',
+    nowIso: '2026-06-26T10:00:00.000Z',
+  })
+  await store.saveBatch({
+    uploadId: upload.uploadId,
+    batchIndex: 0,
+    contacts: [
+      { contactId: 'admin-1', displayName: 'Admin One', phones: ['13800138001'] },
+      { contactId: 'admin-2', displayName: 'Admin Two', phones: ['13800138002'] },
+    ],
+    nowIso: '2026-06-26T10:01:00.000Z',
+  })
+  await store.saveBatch({
+    uploadId: upload.uploadId,
+    batchIndex: 1,
+    contacts: [{ contactId: 'admin-3', displayName: 'Admin Three', phones: ['13800138003'] }],
+    nowIso: '2026-06-26T10:02:00.000Z',
+  })
+  await store.completeUpload({
+    uploadId: upload.uploadId,
+    expectedBatchCount: 2,
+    nowIso: '2026-06-26T10:03:00.000Z',
+  })
+
+  const app = new Koa()
+  const router = new Router({ prefix: '/api' })
+  app.use(bodyParser({ jsonLimit: '1mb' }))
+  registerMallContactsRoutes(router, {
+    contactsStore: store,
+    fail,
+    flushMongoPersist: async () => {},
+    normalizePhone,
+    readDb: () => db,
+    success,
+    writeDbPartial: () => {},
+  })
+  router.get('/users/:id/mall-contacts/:uploadId/contacts', async (ctx) => {
+    const target = db.users.find(item => item.id === ctx.params.id)
+    if (!target) {
+      fail(ctx, 'user_not_found', 404)
+      return
+    }
+    const result = await store.listCompletedUploadContacts({
+      phone: normalizePhone(target.phone),
+      uploadId: ctx.params.uploadId,
+      page: Number(ctx.query.page || 1),
+      pageSize: Number(ctx.query.pageSize || 20),
+    })
+    if (!result.upload) {
+      fail(ctx, 'contacts_upload_not_found', 404)
+      return
+    }
+    ctx.body = success(result)
+  })
+  app.use(router.routes())
+  app.use(router.allowedMethods())
+
+  const { server, baseUrl } = await listen(app)
+  try {
+    const page = await fetch(`${baseUrl}/api/users/U1/mall-contacts/MCU_ADMIN_PAGE/contacts?page=2&pageSize=2`).then(r => r.json())
+    assert.equal(page.success, true)
+    assert.equal(page.data.total, 3)
+    assert.deepEqual(page.data.list.map(item => item.contactId), ['admin-3'])
+  }
+  finally {
+    server.close()
+  }
+})
+
 test('contacts complete rejects empty uploads without unblocking contract', async () => {
   const order = {
     id: 'O1',

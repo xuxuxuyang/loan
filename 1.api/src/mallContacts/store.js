@@ -373,6 +373,66 @@ function createMallContactsStore(options = {}) {
     }
   }
 
+  async function listCompletedUploadContacts(input = {}) {
+    const phone = String(input.phone || '').trim()
+    const uploadId = String(input.uploadId || '').trim()
+    const { page, pageSize } = normalizeContactsPage(input)
+    const empty = { upload: null, list: [], total: 0, page, pageSize }
+    if (!phone || !uploadId) {
+      return empty
+    }
+    const dbm = getMongoDb()
+    if (dbm) {
+      const uploadDoc = await dbm.collection(COLLECTIONS.uploads).findOne({
+        _id: uploadId,
+        phone,
+        status: 'completed',
+        contactsCount: { $gt: 0 },
+      })
+      const upload = toPublicUpload(uploadDoc)
+      if (!upload) {
+        return empty
+      }
+      const contacts = await dbm.collection(COLLECTIONS.batches)
+        .aggregate([
+          { $match: { uploadId } },
+          { $sort: { batchIndex: 1 } },
+          { $unwind: '$contacts' },
+          { $skip: (page - 1) * pageSize },
+          { $limit: pageSize },
+          { $replaceRoot: { newRoot: '$contacts' } },
+        ])
+        .toArray()
+      return {
+        upload: summarizeUpload(upload),
+        list: contacts.map(cloneDoc),
+        total: Math.max(0, Math.floor(Number(upload.contactsCount || 0) || 0)),
+        page,
+        pageSize,
+      }
+    }
+
+    const state = readJsonState(jsonFile)
+    const upload = state.uploads
+      .filter(item => String(item.status || '') === 'completed')
+      .filter(hasPositiveContactsCount)
+      .find(item => String(item.uploadId || '') === uploadId && String(item.phone || '') === phone) || null
+    if (!upload) {
+      return empty
+    }
+    const batches = state.batches
+      .filter(item => String(item.uploadId || '') === uploadId)
+      .sort((a, b) => Number(a.batchIndex || 0) - Number(b.batchIndex || 0))
+    const contacts = flattenBatchContacts(batches)
+    return {
+      upload: summarizeUpload(upload),
+      list: contacts.slice((page - 1) * pageSize, page * pageSize),
+      total: contacts.length,
+      page,
+      pageSize,
+    }
+  }
+
   async function listCompletedContactUploads(input = {}) {
     const phone = String(input.phone || '').trim()
     const { page, pageSize, contactsPreviewSize } = normalizeUploadHistoryPage(input)
@@ -446,6 +506,7 @@ function createMallContactsStore(options = {}) {
     getLatestCompletedSummary,
     getUpload,
     listLatestCompletedContacts,
+    listCompletedUploadContacts,
     listCompletedContactUploads,
   }
 }

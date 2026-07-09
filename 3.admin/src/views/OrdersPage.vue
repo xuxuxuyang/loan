@@ -2822,6 +2822,10 @@ watch(
   margin-top: 14px;
   padding-top: 12px;
   border-top: 1px solid #e5e7eb;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 4px;
 }
 
 .modal-negotiation-records__title {
@@ -3363,12 +3367,17 @@ watch(
 }
 
 .modal-panel {
+  display: flex;
+  flex-direction: column;
   width: 900px;
   max-width: 100%;
+  max-height: calc(100vh - 40px);
+  min-height: 0;
   border-radius: 12px;
   background: #fff;
   border: 1px solid #e5e7eb;
   padding: 16px;
+  overflow: hidden;
 }
 
 .modal-header {
