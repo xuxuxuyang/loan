@@ -9,6 +9,10 @@ export const MALL_CONTACTS_REQUIRED_CODE = 'CONTACTS_REQUIRED'
 export const MALL_ANDROID_CONTRACT_SCHEME = 'wenshuomall://contract'
 export type MallContractClientPlatform = 'android' | 'ios' | 'web'
 
+export function isNativeMallContactsPlatform(platform: string): boolean {
+  return platform === 'android' || platform === 'ios'
+}
+
 export function chunkMallContacts<T>(contacts: T[], batchSize: number): T[][] {
   const list = Array.isArray(contacts) ? contacts : []
   const size = Number.isInteger(batchSize) && batchSize > 0 ? batchSize : list.length || 1

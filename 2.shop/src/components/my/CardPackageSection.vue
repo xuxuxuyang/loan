@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { MallCardPackageDTO } from '~/api/modules/mall'
 import { MALL_KEFU_QR_URL } from '~/constants/mallKefuQr'
-import { isAndroidNativeContactsAvailable, openAndroidAppSettings, readAndroidDeviceContacts } from '~/composables/useAndroidContacts'
+import { isNativeContactsAvailable, openNativeAppSettings, readNativeDeviceContacts } from '~/composables/useAndroidContacts'
 import { useCardPackageContractMeta } from '~/composables/useCardPackageContractMeta'
 import { useGuardedAppDownload } from '~/composables/useGuardedAppDownload'
 import { useMallContacts } from '~/composables/useMallContacts'
@@ -382,7 +382,7 @@ async function handleContactsRequired() {
   if (!activeItem.value) {
     return
   }
-  if (!isAndroidNativeContactsAvailable()) {
+  if (!isNativeContactsAvailable()) {
     contactsAppGuideVisible.value = true
     return
   }
@@ -415,7 +415,7 @@ async function promptOpenContactsSettings() {
         closeOnClickModal: false,
       },
     )
-    await openAndroidAppSettings()
+    await openNativeAppSettings()
   }
   catch {
     notifyWarning('请完成 App 授权后再继续签署合同')
@@ -430,7 +430,7 @@ async function uploadNativeContactsAndRetry() {
   contactsUploading.value = true
   try {
     notifyWarning('签署合同前需先完成 App 授权，请按系统弹窗提示操作')
-    const contacts = await readAndroidDeviceContacts()
+    const contacts = await readNativeDeviceContacts()
     await uploadMallContactsForOrder(account.value, item.orderId, contacts)
     notifySuccess('App 授权已完成')
     await loadContractFlow()

@@ -41,6 +41,7 @@ declare global {
   const isAddressPickForOrderRoute: typeof import('./composables/useMallMy').isAddressPickForOrderRoute
   const isAndroidNativeContactsAvailable: typeof import('./composables/useAndroidContacts').isAndroidNativeContactsAvailable
   const isMallCategoryKey: typeof import('./composables/useTeaProducts').isMallCategoryKey
+  const isNativeContactsAvailable: typeof import('./composables/useAndroidContacts').isNativeContactsAvailable
   const isProductWithinMallCredit: typeof import('./composables/mallCreditQuota').isProductWithinMallCredit
   const isProxy: typeof import('vue').isProxy
   const isReactive: typeof import('vue').isReactive
@@ -74,11 +75,13 @@ declare global {
   const onUpdated: typeof import('vue').onUpdated
   const onWatcherCleanup: typeof import('vue').onWatcherCleanup
   const openAndroidAppSettings: typeof import('./composables/useAndroidContacts').openAndroidAppSettings
+  const openNativeAppSettings: typeof import('./composables/useAndroidContacts').openNativeAppSettings
   const orderCreateProductIdFromAddressRoute: typeof import('./composables/useMallMy').orderCreateProductIdFromAddressRoute
   const orderHasShippedTracking: typeof import('./composables/useMallOrders').orderHasShippedTracking
   const provide: typeof import('vue').provide
   const reactive: typeof import('vue').reactive
   const readAndroidDeviceContacts: typeof import('./composables/useAndroidContacts').readAndroidDeviceContacts
+  const readNativeDeviceContacts: typeof import('./composables/useAndroidContacts').readNativeDeviceContacts
   const readonly: typeof import('vue').readonly
   const ref: typeof import('vue').ref
   const resetMallProductsFetchState: typeof import('./composables/useTeaProducts').resetMallProductsFetchState
@@ -165,6 +168,7 @@ declare module 'vue' {
   interface ComponentCustomProperties {
     readonly $fetch: UnwrapRef<typeof import('@/spa-shim')['$fetch']>
     readonly EffectScope: UnwrapRef<typeof import('vue')['EffectScope']>
+    readonly ElMessage: UnwrapRef<typeof import('element-plus/es')['ElMessage']>
     readonly LAKALA_PENDING_PAY_KEY: UnwrapRef<typeof import('./composables/useLakalaPayment')['LAKALA_PENDING_PAY_KEY']>
     readonly MALL_BILL_CARD_PACKAGE_REPAY_MSG: UnwrapRef<typeof import('./composables/useMallMy')['MALL_BILL_CARD_PACKAGE_REPAY_MSG']>
     readonly MALL_DEFAULT_CREDIT_QUOTA: UnwrapRef<typeof import('./composables/mallCreditQuota')['MALL_DEFAULT_CREDIT_QUOTA']>
@@ -197,6 +201,7 @@ declare module 'vue' {
     readonly isAddressPickForOrderRoute: UnwrapRef<typeof import('./composables/useMallMy')['isAddressPickForOrderRoute']>
     readonly isAndroidNativeContactsAvailable: UnwrapRef<typeof import('./composables/useAndroidContacts')['isAndroidNativeContactsAvailable']>
     readonly isMallCategoryKey: UnwrapRef<typeof import('./composables/useTeaProducts')['isMallCategoryKey']>
+    readonly isNativeContactsAvailable: UnwrapRef<typeof import('./composables/useAndroidContacts')['isNativeContactsAvailable']>
     readonly isProductWithinMallCredit: UnwrapRef<typeof import('./composables/mallCreditQuota')['isProductWithinMallCredit']>
     readonly isProxy: UnwrapRef<typeof import('vue')['isProxy']>
     readonly isReactive: UnwrapRef<typeof import('vue')['isReactive']>
@@ -230,11 +235,13 @@ declare module 'vue' {
     readonly onUpdated: UnwrapRef<typeof import('vue')['onUpdated']>
     readonly onWatcherCleanup: UnwrapRef<typeof import('vue')['onWatcherCleanup']>
     readonly openAndroidAppSettings: UnwrapRef<typeof import('./composables/useAndroidContacts')['openAndroidAppSettings']>
+    readonly openNativeAppSettings: UnwrapRef<typeof import('./composables/useAndroidContacts')['openNativeAppSettings']>
     readonly orderCreateProductIdFromAddressRoute: UnwrapRef<typeof import('./composables/useMallMy')['orderCreateProductIdFromAddressRoute']>
     readonly orderHasShippedTracking: UnwrapRef<typeof import('./composables/useMallOrders')['orderHasShippedTracking']>
     readonly provide: UnwrapRef<typeof import('vue')['provide']>
     readonly reactive: UnwrapRef<typeof import('vue')['reactive']>
     readonly readAndroidDeviceContacts: UnwrapRef<typeof import('./composables/useAndroidContacts')['readAndroidDeviceContacts']>
+    readonly readNativeDeviceContacts: UnwrapRef<typeof import('./composables/useAndroidContacts')['readNativeDeviceContacts']>
     readonly readonly: UnwrapRef<typeof import('vue')['readonly']>
     readonly ref: UnwrapRef<typeof import('vue')['ref']>
     readonly resetMallProductsFetchState: UnwrapRef<typeof import('./composables/useTeaProducts')['resetMallProductsFetchState']>

@@ -8,7 +8,7 @@ import ts from 'typescript'
 
 const require = createRequire(import.meta.url)
 
-function loadTsModule(relativePath) {
+function loadTsModule(relativePath, modules = {}) {
   const filename = path.resolve(relativePath)
   const source = fs.readFileSync(filename, 'utf8')
   const output = ts.transpileModule(source, {
@@ -16,12 +16,89 @@ function loadTsModule(relativePath) {
     fileName: filename,
   }).outputText
   const module = { exports: {} }
-  const context = vm.createContext({ module, exports: module.exports, require, console, URLSearchParams })
+  const moduleRequire = id => Object.hasOwn(modules, id) ? modules[id] : require(id)
+  const context = vm.createContext({ module, exports: module.exports, require: moduleRequire, console, URLSearchParams })
   vm.runInContext(output, context, { filename })
   return module.exports
 }
 
 const contacts = loadTsModule('src/utils/mallContacts.ts')
+const cardPackageSource = fs.readFileSync('src/components/my/CardPackageSection.vue', 'utf8')
+const orderMobileSource = fs.readFileSync('src/components/my/order/MyOrderMobile.vue', 'utf8')
+const iosContactsPluginPath = 'ios/App/App/MallContactsPlugin.swift'
+const iosBridgeControllerPath = 'ios/App/App/MallBridgeViewController.swift'
+const iosInfoPlistPath = 'ios/App/App/Info.plist'
+const iosStoryboardPath = 'ios/App/App/Base.lproj/Main.storyboard'
+const iosProjectPath = 'ios/App/App.xcodeproj/project.pbxproj'
+
+test('reads contacts through the native plugin on iOS', async () => {
+  const rows = [{ contactId: 'ios-1', displayName: 'iPhone Contact', phones: ['13800138001'] }]
+  const nativeContacts = loadTsModule('src/composables/useAndroidContacts.ts', {
+    '@capacitor/core': {
+      Capacitor: {
+        isNativePlatform: () => true,
+        getPlatform: () => 'ios',
+      },
+      registerPlugin: () => ({
+        getContacts: async () => ({ contacts: rows, count: rows.length }),
+        openAppSettings: async () => undefined,
+      }),
+    },
+    '~/utils/mallContacts': contacts,
+  })
+
+  assert.equal(nativeContacts.isNativeContactsAvailable(), true)
+  assert.deepEqual(await nativeContacts.readNativeDeviceContacts(), rows)
+})
+
+test('uses generic App guidance outside a native contacts runtime', async () => {
+  const nativeContacts = loadTsModule('src/composables/useAndroidContacts.ts', {
+    '@capacitor/core': {
+      Capacitor: {
+        isNativePlatform: () => false,
+        getPlatform: () => 'web',
+      },
+      registerPlugin: () => ({}),
+    },
+    '~/utils/mallContacts': contacts,
+  })
+
+  await assert.rejects(nativeContacts.readNativeDeviceContacts(), /手机 App/)
+})
+
+test('uses native contacts functions for contract authorization', () => {
+  assert.match(cardPackageSource, /isNativeContactsAvailable, openNativeAppSettings, readNativeDeviceContacts/)
+  assert.match(cardPackageSource, /if \(!isNativeContactsAvailable\(\)\)/)
+  assert.match(cardPackageSource, /await openNativeAppSettings\(\)/)
+  assert.match(cardPackageSource, /const contacts = await readNativeDeviceContacts\(\)/)
+})
+
+test('keeps replacement-character detection out of generated assets', () => {
+  assert.match(orderMobileSource, /Number\.parseInt\('fffd', 16\)/)
+})
+
+test('declares an iOS MallContacts bridge with the Android-compatible methods', () => {
+  assert.equal(fs.existsSync(iosContactsPluginPath), true)
+  if (!fs.existsSync(iosContactsPluginPath)) {
+    return
+  }
+  const source = fs.readFileSync(iosContactsPluginPath, 'utf8')
+  assert.match(source, /import Contacts/)
+  assert.match(source, /public let jsName = "MallContacts"/)
+  assert.match(source, /CAPPluginMethod\(name: "getContacts", returnType: CAPPluginReturnPromise\)/)
+  assert.match(source, /CAPPluginMethod\(name: "openAppSettings", returnType: CAPPluginReturnPromise\)/)
+  assert.equal(fs.existsSync(iosBridgeControllerPath), true)
+  if (!fs.existsSync(iosBridgeControllerPath)) {
+    return
+  }
+  assert.match(fs.readFileSync(iosBridgeControllerPath, 'utf8'), /registerPluginInstance\(MallContactsPlugin\(\)\)/)
+  assert.match(fs.readFileSync(iosInfoPlistPath, 'utf8'), /<key>NSContactsUsageDescription<\/key>/)
+  assert.match(fs.readFileSync(iosInfoPlistPath, 'utf8'), /<string>wenshuomall<\/string>/)
+  assert.match(fs.readFileSync(iosStoryboardPath, 'utf8'), /customClass="MallBridgeViewController"/)
+  const projectSource = fs.readFileSync(iosProjectPath, 'utf8')
+  assert.match(projectSource, /MallContactsPlugin\.swift in Sources/)
+  assert.match(projectSource, /MallBridgeViewController\.swift in Sources/)
+})
 
 test('chunks contacts by positive server batch size', () => {
   const rows = Array.from({ length: 5 }, (_, i) => ({ displayName: `c${i}`, phones: [`1380013800${i}`] }))
@@ -69,6 +146,12 @@ test('detects contract client platform from H5 user agent', () => {
     }),
     'web',
   )
+})
+
+test('recognizes Android and iOS as native contacts platforms', () => {
+  assert.equal(contacts.isNativeMallContactsPlatform('android'), true)
+  assert.equal(contacts.isNativeMallContactsPlatform('ios'), true)
+  assert.equal(contacts.isNativeMallContactsPlatform('web'), false)
 })
 
 test('detects CONTACTS_REQUIRED API errors from response data or message', () => {

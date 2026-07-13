@@ -157,7 +157,8 @@ function isGarbledText(value: string) {
   if (!text) {
     return true
   }
-  return text.includes(String.fromCharCode(0xfffd))
+  const replacementCharacter = String.fromCharCode(Number.parseInt('fffd', 16))
+  return text.includes(replacementCharacter)
 }
 
 function getFallbackProduct(productId: number) {
