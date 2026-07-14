@@ -437,11 +437,11 @@ async function uploadNativeContactsAndRetry() {
   try {
     await confirmDialog(
       isIosContacts
-        ? '订单审核前需要您授权联系人。iOS 18 及以上可以选择部分联系人，也可以自愿选择完全访问；较早版本请按系统提供的方式授权。我们只会上传您授权的联系人。选择部分联系人时，请至少选择一位含手机号的联系人。'
+        ? '订单审核需要授权读取通讯录。推荐选择“完全访问”，有助于更快完成审核。'
         : '为完成订单安全审核，需要读取通讯录。请在下一步系统弹窗中允许访问通讯录。',
       '联系人授权',
       {
-        confirmButtonText: isIosContacts ? '继续选择授权方式' : '继续授权',
+        confirmButtonText: '继续授权',
         cancelButtonText: '暂不授权',
         type: 'warning',
         customClass: 'contacts-full-access-dialog',
