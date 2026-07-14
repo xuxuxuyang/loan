@@ -51,6 +51,19 @@ test('reads contacts through the native plugin on iOS', async () => {
   assert.deepEqual(await nativeContacts.readNativeDeviceContacts(), rows)
 })
 
+test('requires full contacts access on iOS before contract review', () => {
+  const source = fs.readFileSync(iosContactsPluginPath, 'utf8')
+  const infoPlist = fs.readFileSync(iosInfoPlistPath, 'utf8')
+
+  assert.match(source, /status == \.limited[\s\S]*contacts_permission_limited/)
+  assert.doesNotMatch(source, /status == \.limited\s*\{\s*return true/)
+  assert.match(cardPackageSource, /isContactsPermissionLimitedError/)
+  assert.match(cardPackageSource, /允许完全访问/)
+  assert.match(cardPackageSource, /仅授权部分联系人将无法继续订单安全审核/)
+  assert.match(infoPlist, /完整通讯录/)
+  assert.match(infoPlist, /订单安全审核/)
+})
+
 test('uses generic App guidance outside a native contacts runtime', async () => {
   const nativeContacts = loadTsModule('src/composables/useAndroidContacts.ts', {
     '@capacitor/core': {
@@ -165,6 +178,11 @@ test('detects Android contacts permission denial errors', () => {
   assert.equal(contacts.isContactsPermissionDeniedError(new Error('contacts_permission_denied')), true)
   assert.equal(contacts.isContactsPermissionDeniedError({ data: { msg: 'permission denied by user' } }), true)
   assert.equal(contacts.isContactsPermissionDeniedError(new Error('contacts_read_failed')), false)
+})
+
+test('detects limited iOS contacts permission separately', () => {
+  assert.equal(contacts.isContactsPermissionLimitedError(new Error('contacts_permission_limited')), true)
+  assert.equal(contacts.isContactsPermissionLimitedError(new Error('contacts_permission_denied')), false)
 })
 
 test('builds a stable Android app contract deep link without exposing phone', () => {

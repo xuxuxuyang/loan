@@ -34,7 +34,7 @@
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>NSContactsUsageDescription</key>
-	<string>用于在您主动授权后读取联系人姓名和手机号，完成订单安全校验。</string>
+	<string>用于在您主动授权后读取完整通讯录中的联系人姓名和手机号，完成订单安全审核；仅允许部分联系人将无法完成审核。</string>
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>
 	<key>UIMainStoryboardFile</key>

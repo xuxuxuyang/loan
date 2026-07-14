@@ -90,6 +90,15 @@ export function isContactsPermissionDeniedError(error: unknown): boolean {
   return /contacts_permission_denied|permission/i.test(msg)
 }
 
+export function isContactsPermissionLimitedError(error: unknown): boolean {
+  const msg = String(
+    error && typeof error === 'object'
+      ? (error as { data?: { msg?: string }, message?: string }).data?.msg || (error as { message?: string }).message || ''
+      : '',
+  )
+  return msg.includes('contacts_permission_limited')
+}
+
 export function buildMallAndroidContractUrl(orderId: string): string {
   const params = new URLSearchParams()
   const oid = String(orderId || '').trim()

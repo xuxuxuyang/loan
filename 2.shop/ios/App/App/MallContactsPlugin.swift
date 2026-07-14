@@ -19,13 +19,17 @@ public class MallContactsPlugin: CAPPlugin, CAPBridgedPlugin {
             readContacts(call)
             return
         }
+        if #available(iOS 18.0, *), status == .limited {
+            reject(call, message: "contacts_permission_limited")
+            return
+        }
 
         guard status == .notDetermined else {
             reject(call, message: "contacts_permission_denied")
             return
         }
 
-        store.requestAccess(for: .contacts) { [weak self] granted, error in
+        store.requestAccess(for: .contacts) { [weak self] _, error in
             guard let self else {
                 return
             }
@@ -33,8 +37,13 @@ public class MallContactsPlugin: CAPPlugin, CAPBridgedPlugin {
                 self.reject(call, message: "contacts_read_failed")
                 return
             }
-            if granted || self.canReadContacts(CNContactStore.authorizationStatus(for: .contacts)) {
+            let updatedStatus = CNContactStore.authorizationStatus(for: .contacts)
+            if self.canReadContacts(updatedStatus) {
                 self.readContacts(call)
+                return
+            }
+            if #available(iOS 18.0, *), updatedStatus == .limited {
+                self.reject(call, message: "contacts_permission_limited")
                 return
             }
             self.reject(call, message: "contacts_permission_denied")
@@ -59,13 +68,7 @@ public class MallContactsPlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     private func canReadContacts(_ status: CNAuthorizationStatus) -> Bool {
-        if status == .authorized {
-            return true
-        }
-        if #available(iOS 18.0, *), status == .limited {
-            return true
-        }
-        return false
+        return status == .authorized
     }
 
     private func readContacts(_ call: CAPPluginCall) {

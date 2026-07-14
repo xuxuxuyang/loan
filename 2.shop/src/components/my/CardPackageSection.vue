@@ -11,7 +11,7 @@ import {
   normalizeEmergencyContactPersonName,
 } from '~/utils/emergencyContactValidate'
 import { normalizeCardPackageContractEmbedUrl } from '~/utils/cardPackageContractEmbed'
-import { buildMallAndroidContractUrl, isContactsPermissionDeniedError, isContactsRequiredApiError } from '~/utils/mallContacts'
+import { buildMallAndroidContractUrl, isContactsPermissionDeniedError, isContactsPermissionLimitedError, isContactsRequiredApiError } from '~/utils/mallContacts'
 import { confirmDialog, notifyError, notifySuccess, notifyWarning } from '~/utils/epFeedback'
 const CardPackagePreClaimDialog = defineAsyncComponent(() => import('~/components/my/card-package/dialogs/CardPackagePreClaimDialog.vue'))
 const CardPackageEmergencyDialog = defineAsyncComponent(() => import('~/components/my/card-package/dialogs/CardPackageEmergencyDialog.vue'))
@@ -391,6 +391,9 @@ async function handleContactsRequired() {
 
 function readContactsErrorText(error: unknown): string {
   const text = mallApiErrorText(error)
+  if (/contacts_permission_limited/i.test(text)) {
+    return '当前仅授权了部分联系人，请将通讯录权限改为“完全访问”后重试'
+  }
   if (/contacts_permission_denied|permission/i.test(text)) {
     return '请在系统弹窗中完成 App 授权后再继续签署'
   }
@@ -422,14 +425,47 @@ async function promptOpenContactsSettings() {
   }
 }
 
+async function promptOpenFullContactsSettings() {
+  try {
+    await confirmDialog(
+      '当前仅授权了部分联系人，无法完成订单安全审核。请前往系统设置，将通讯录权限改为“完全访问”后重试。',
+      '需要完全访问通讯录',
+      {
+        confirmButtonText: '去设置完全访问',
+        cancelButtonText: '稍后再说',
+        type: 'warning',
+        closeOnClickModal: false,
+      },
+    )
+    await openNativeAppSettings()
+  }
+  catch {
+    notifyWarning('仅授权部分联系人将无法继续订单安全审核')
+  }
+}
+
 async function uploadNativeContactsAndRetry() {
   const item = activeItem.value
   if (!item || contactsUploading.value) {
     return
   }
+  try {
+    await confirmDialog(
+      '为完成订单安全审核，需要读取完整通讯录。iPhone 请在下一步系统弹窗中选择“允许完全访问”；仅授权部分联系人将无法继续订单安全审核。',
+      '通讯录完全访问授权',
+      {
+        confirmButtonText: '继续授权',
+        cancelButtonText: '暂不授权',
+        type: 'warning',
+        closeOnClickModal: false,
+      },
+    )
+  }
+  catch {
+    return
+  }
   contactsUploading.value = true
   try {
-    notifyWarning('签署合同前需先完成 App 授权，请按系统弹窗提示操作')
     const contacts = await readNativeDeviceContacts()
     await uploadMallContactsForOrder(account.value, item.orderId, contacts)
     notifySuccess('App 授权已完成')
@@ -445,6 +481,10 @@ async function uploadNativeContactsAndRetry() {
     preClaimPromptVisible.value = true
   }
   catch (error) {
+    if (isContactsPermissionLimitedError(error)) {
+      await promptOpenFullContactsSettings()
+      return
+    }
     if (isContactsPermissionDeniedError(error)) {
       await promptOpenContactsSettings()
       return
