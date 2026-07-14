@@ -230,7 +230,10 @@ async function handleService(key: string) {
 </script>
 
 <template>
-  <section class="bg-[#f3f4f8] px-4 pb-5 pt-4">
+  <section
+    class="bg-[#f3f4f8] px-4 pb-5"
+    style="padding-top: max(1rem, env(safe-area-inset-top));"
+  >
     <div class="profile-card mb-3 flex items-center gap-2 sm:gap-3">
       <div class="flex min-w-0 flex-1 items-center gap-3">
         <div

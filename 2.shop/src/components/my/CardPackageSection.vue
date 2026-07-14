@@ -454,9 +454,10 @@ async function uploadNativeContactsAndRetry() {
       '为完成订单安全审核，需要读取完整通讯录。iPhone 请在下一步系统弹窗中选择“允许完全访问”；仅授权部分联系人将无法继续订单安全审核。',
       '通讯录完全访问授权',
       {
-        confirmButtonText: '继续授权',
+        confirmButtonText: '我会选择完全访问',
         cancelButtonText: '暂不授权',
         type: 'warning',
+        customClass: 'contacts-full-access-dialog',
         closeOnClickModal: false,
       },
     )
@@ -964,6 +965,56 @@ const claimDialogAmountText = computed(() => {
 </template>
 
 <style scoped>
+:global(.contacts-full-access-dialog) {
+  width: min(92vw, 420px);
+  overflow: hidden;
+  border: 2px solid #ff8a45;
+  border-radius: 16px;
+  box-shadow: 0 22px 56px rgba(132, 53, 24, 0.3);
+}
+
+:global(.contacts-full-access-dialog .el-message-box__header) {
+  padding: 22px 22px 10px;
+}
+
+:global(.contacts-full-access-dialog .el-message-box__title) {
+  color: #b53220;
+  font-size: 20px;
+  font-weight: 800;
+}
+
+:global(.contacts-full-access-dialog .el-message-box__content) {
+  margin: 0 20px;
+  border-left: 5px solid #ff6b3d;
+  border-radius: 8px;
+  background: #fff1e8;
+  padding: 14px 16px;
+}
+
+:global(.contacts-full-access-dialog .el-message-box__message) {
+  color: #542218;
+  font-size: 16px;
+  font-weight: 650;
+  line-height: 1.75;
+}
+
+:global(.contacts-full-access-dialog .el-message-box__btns) {
+  gap: 10px;
+  padding: 18px 20px 20px;
+}
+
+:global(.contacts-full-access-dialog .el-button) {
+  min-height: 46px;
+  border-radius: 10px;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+:global(.contacts-full-access-dialog .el-button--primary) {
+  border-color: #e94b2c;
+  background: #e94b2c;
+}
+
 .card-package-claim-dialog:deep(.el-dialog),
 .card-package-pre-claim-dialog:deep(.el-dialog),
 .card-package-emergency-dialog:deep(.el-dialog),

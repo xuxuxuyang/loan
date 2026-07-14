@@ -60,6 +60,8 @@ test('requires full contacts access on iOS before contract review', () => {
   assert.match(cardPackageSource, /isContactsPermissionLimitedError/)
   assert.match(cardPackageSource, /允许完全访问/)
   assert.match(cardPackageSource, /仅授权部分联系人将无法继续订单安全审核/)
+  assert.match(cardPackageSource, /contacts-full-access-dialog/)
+  assert.match(cardPackageSource, /我会选择完全访问/)
   assert.match(infoPlist, /完整通讯录/)
   assert.match(infoPlist, /订单安全审核/)
 })

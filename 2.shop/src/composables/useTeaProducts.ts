@@ -1,3 +1,6 @@
+import { Capacitor } from '@capacitor/core'
+import { withNativeStartupRetry } from '~/utils/nativeStartupRetry'
+
 export type ProductSalesMode = 'mall' | 'installment'
 
 /** 商品归属品类（后端/筛选用）；不含 Tab 专有项「全部」「先享后付」 */
@@ -187,7 +190,10 @@ export async function ensureMallProductsLoaded(): Promise<void> {
       try {
         const base = resolveMallApiBase()
         logUrl = buildProductsUrl(base, 'installment')
-        const response = await $fetch<{ success: boolean, data: TeaProduct[] }>(logUrl, { method: 'GET' })
+        const response = await withNativeStartupRetry(
+          () => $fetch<{ success: boolean, data: TeaProduct[] }>(logUrl, { method: 'GET' }),
+          { native: Capacitor.isNativePlatform(), retryDelaysMs: [600, 1800] },
+        )
         products.value = Array.isArray(response?.data) ? response.data.map(normalizeApiProduct) : []
         fetchOk.value = true
       }
@@ -218,7 +224,10 @@ export async function ensureMallShowcaseProductsLoaded(): Promise<void> {
       try {
         const base = resolveMallApiBase()
         logUrl = buildProductsUrl(base, 'mall')
-        const response = await $fetch<{ success: boolean, data: TeaProduct[] }>(logUrl, { method: 'GET' })
+        const response = await withNativeStartupRetry(
+          () => $fetch<{ success: boolean, data: TeaProduct[] }>(logUrl, { method: 'GET' }),
+          { native: Capacitor.isNativePlatform(), retryDelaysMs: [600, 1800] },
+        )
         products.value = Array.isArray(response?.data) ? response.data.map(normalizeApiProduct) : []
         fetchOk.value = true
       }
