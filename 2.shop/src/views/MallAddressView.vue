@@ -4,7 +4,10 @@ const MyAddressMobile = defineAsyncComponent(() => import('~/components/my/addre
 </script>
 
 <template>
-  <div class="min-h-screen bg-[#f3f4f8] pb-16">
+  <div
+    class="min-h-screen bg-[#f3f4f8] pb-16"
+    style="padding-top: var(--app-safe-area-top);"
+  >
     <MyAddressMobile />
     <AppTabbar />
   </div>

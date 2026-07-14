@@ -24,7 +24,10 @@ onMounted(() => {
 </script>
 
 <template>
-  <section class="min-h-screen bg-[#f4f6f8] px-5 py-10">
+  <section
+    class="min-h-screen bg-[#f4f6f8] px-5 pb-10"
+    style="padding-top: max(2.5rem, var(--app-safe-area-top));"
+  >
     <div class="mx-auto max-w-[390px] rounded-[28px] bg-white p-6 text-center shadow-sm">
       <div class="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-emerald-50 text-2xl">
         ↓

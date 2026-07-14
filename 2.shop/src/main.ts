@@ -1,5 +1,4 @@
 import { createApp } from 'vue'
-import { Capacitor } from '@capacitor/core'
 import { addCollection } from '@iconify/vue'
 import type { IconifyJSON } from '@iconify/vue'
 import tablerIcons from '@iconify-json/tabler/icons.json'
@@ -13,10 +12,6 @@ import { installTenantFetchInterceptor } from './utils/tenant'
 import './assets/styles/tailwind.css'
 import './assets/styles/webview-compat.scss'
 import './assets/styles/main.scss'
-
-if (typeof document !== 'undefined' && Capacitor.getPlatform() === 'ios') {
-  document.documentElement.classList.add('capacitor-ios')
-}
 
 /** 离线注册 Tabler，避免运行时请求 api.iconify.design（本地易出现 CORS / net::ERR_FAILED） */
 addCollection(tablerIcons as IconifyJSON)

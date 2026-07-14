@@ -81,7 +81,11 @@ onBeforeUnmount(clearTimer)
 </script>
 
 <template>
-  <section v-if="trafficLogin" class="wv-bg-login-page min-h-screen px-5 py-10">
+  <section
+    v-if="trafficLogin"
+    class="wv-bg-login-page min-h-screen px-5 pb-10"
+    style="padding-top: max(2.5rem, var(--app-safe-area-top));"
+  >
     <div class="relative mx-auto flex min-h-[72vh] w-full max-w-[390px] items-center p-5">
       <div class="w-full rounded-[28px] border border-black/[0.05] bg-white/90 p-7 text-center shadow-[0_18px_50px_rgba(31,36,48,0.10)]">
         <div class="wv-gradient-amber-icon mx-auto mb-5 flex h-14 w-14 items-center justify-center rounded-2xl shadow-[0_8px_18px_rgba(221,146,25,0.22)]">
@@ -107,7 +111,11 @@ onBeforeUnmount(clearTimer)
       </div>
     </div>
   </section>
-  <div v-else class="min-h-screen">
+  <div
+    v-else
+    class="min-h-screen"
+    style="padding-top: var(--app-safe-area-top);"
+  >
     <LoginForm />
   </div>
 </template>

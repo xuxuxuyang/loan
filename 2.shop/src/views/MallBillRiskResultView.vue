@@ -76,6 +76,7 @@ const resultDesc = computed(() => {
 <style scoped>
 .bill-risk-result-page {
   min-height: 100vh;
+  padding-top: var(--app-safe-area-top);
   padding-bottom: calc(4.5rem + var(--app-safe-area-bottom));
   background:
     radial-gradient(circle at 18% 14%, rgba(255, 117, 156, 0.24), transparent 28%),

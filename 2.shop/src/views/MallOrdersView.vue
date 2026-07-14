@@ -4,7 +4,10 @@ const MyOrderMobile = defineAsyncComponent(() => import('~/components/my/order/M
 </script>
 
 <template>
-  <div class="min-h-screen bg-[#f3f4f8] pb-16">
+  <div
+    class="min-h-screen bg-[#f3f4f8] pb-16"
+    style="padding-top: var(--app-safe-area-top);"
+  >
     <MyOrderMobile />
     <AppTabbar />
   </div>
