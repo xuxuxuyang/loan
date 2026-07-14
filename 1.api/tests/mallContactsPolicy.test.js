@@ -55,6 +55,8 @@ test('blocks contract flow only until a required order has completed contacts', 
   const blocked = shouldBlockContractForMallContacts(order)
   assert.equal(blocked.block, true)
   assert.equal(blocked.code, MALL_CONTACTS_ERROR_CODE)
+  assert.match(blocked.msg, /App/)
+  assert.doesNotMatch(blocked.msg, /安卓/)
 
   const user = { id: 'U1', phone: '13800138000' }
   applyMallContactsUploadSummary(order, user, {

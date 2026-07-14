@@ -82,7 +82,7 @@ function shouldBlockContractForMallContacts(order) {
   return {
     block: true,
     code: MALL_CONTACTS_ERROR_CODE,
-    msg: '签署合同前需在安卓 App 内完成通讯录授权',
+    msg: '签署合同前需在 App 内完成通讯录授权',
   }
 }
 

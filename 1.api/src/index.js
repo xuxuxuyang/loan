@@ -2981,10 +2981,10 @@ function shouldRequireMallContactsForClient(ctx) {
   const bodyPlatform = String(body.clientPlatform || '').trim().toLowerCase()
   const platform = queryPlatform || bodyPlatform
   if (platform) {
-    return platform === 'android'
+    return platform === 'android' || platform === 'ios'
   }
   const ua = String(ctx.headers && ctx.headers['user-agent'] || '')
-  return /Android/i.test(ua)
+  return /Android|iPhone|iPad/i.test(ua)
 }
 
 function failMallContactsRequired(ctx, order) {
