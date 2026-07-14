@@ -7,12 +7,9 @@ const routerSource = fs.readFileSync(
   'utf8',
 )
 
-test('unwraps lazy view modules before Vue Router handles them on iOS WebKit', () => {
-  assert.match(routerSource, /function loadRouteView/)
-
-  const wrappedViews = routerSource.match(/const Mall\w+View = loadRouteView\(\(\) => import\(/g) ?? []
-  const rawViews = routerSource.match(/const Mall\w+View = \(\) => import\(/g) ?? []
-
-  assert.ok(wrappedViews.length >= 19, 'all routed mall views should unwrap their default export')
-  assert.equal(rawViews.length, 0, 'raw module namespace loaders trigger a WebKit router error')
+test('loads the iOS checkout path without WebKit dynamic-module interop', () => {
+  assert.match(routerSource, /import MallProductDetailView from '\.\.\/views\/MallProductDetailView\.vue'/)
+  assert.match(routerSource, /import MallOrderCreateView from '\.\.\/views\/MallOrderCreateView\.vue'/)
+  assert.doesNotMatch(routerSource, /const MallProductDetailView =/)
+  assert.doesNotMatch(routerSource, /const MallOrderCreateView =/)
 })
