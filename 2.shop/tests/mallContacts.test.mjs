@@ -102,6 +102,7 @@ test('declares an iOS MallContacts bridge with the Android-compatible methods', 
   assert.match(source, /public let jsName = "MallContacts"/)
   assert.match(source, /CAPPluginMethod\(name: "getContacts", returnType: CAPPluginReturnPromise\)/)
   assert.match(source, /CAPPluginMethod\(name: "openAppSettings", returnType: CAPPluginReturnPromise\)/)
+  assert.match(source, /CNContactFormatter\.descriptorForRequiredKeys\(for:\s*\.fullName\)/)
   assert.equal(fs.existsSync(iosBridgeControllerPath), true)
   if (!fs.existsSync(iosBridgeControllerPath)) {
     return

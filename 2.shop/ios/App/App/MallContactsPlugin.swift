@@ -94,6 +94,7 @@ public class MallContactsPlugin: CAPPlugin, CAPBridgedPlugin {
     private func phoneContacts() throws -> JSArray {
         let keys: [CNKeyDescriptor] = [
             CNContactIdentifierKey as CNKeyDescriptor,
+            CNContactFormatter.descriptorForRequiredKeys(for: .fullName),
             CNContactGivenNameKey as CNKeyDescriptor,
             CNContactMiddleNameKey as CNKeyDescriptor,
             CNContactFamilyNameKey as CNKeyDescriptor,
