@@ -129,7 +129,7 @@ test('requires at least one contact before upload can complete', () => {
   assert.equal(contacts.hasUploadableMallContacts([{ displayName: '张三', phones: ['13800138001'] }]), true)
 })
 
-test('detects contract client platform from H5 user agent', () => {
+test('requires contacts only for native iOS while preserving existing Android detection', () => {
   assert.equal(
     contacts.resolveMallContractClientPlatform({
       userAgent: 'Mozilla/5.0 (Linux; Android 14; Pixel) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36',
@@ -144,7 +144,7 @@ test('detects contract client platform from H5 user agent', () => {
       platform: 'iPhone',
       maxTouchPoints: 5,
     }),
-    'ios',
+    'web',
   )
   assert.equal(
     contacts.resolveMallContractClientPlatform({
@@ -152,7 +152,16 @@ test('detects contract client platform from H5 user agent', () => {
       platform: 'MacIntel',
       maxTouchPoints: 5,
     }),
-    'ios',
+    'web',
+  )
+  assert.equal(
+    contacts.resolveMallContractClientPlatform({
+      userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)',
+      platform: 'iPhone',
+      maxTouchPoints: 5,
+      nativePlatform: 'ios',
+    }),
+    'ios_app',
   )
   assert.equal(
     contacts.resolveMallContractClientPlatform({

@@ -1,3 +1,5 @@
+import { Capacitor } from '@capacitor/core'
+
 export interface MallDeviceContact {
   contactId?: string
   displayName?: string
@@ -7,7 +9,7 @@ export interface MallDeviceContact {
 
 export const MALL_CONTACTS_REQUIRED_CODE = 'CONTACTS_REQUIRED'
 export const MALL_ANDROID_CONTRACT_SCHEME = 'wenshuomall://contract'
-export type MallContractClientPlatform = 'android' | 'ios' | 'web'
+export type MallContractClientPlatform = 'android' | 'ios_app' | 'web'
 
 export function isNativeMallContactsPlatform(platform: string): boolean {
   return platform === 'android' || platform === 'ios'
@@ -43,17 +45,15 @@ export function resolveMallContractClientPlatform(input: {
   userAgent?: string
   platform?: string
   maxTouchPoints?: number
+  nativePlatform?: string
 }): MallContractClientPlatform {
   const ua = String(input.userAgent || '')
-  const platform = String(input.platform || '')
-  if (/Android/i.test(ua)) {
+  const nativePlatform = String(input.nativePlatform || '')
+  if (nativePlatform === 'ios') {
+    return 'ios_app'
+  }
+  if (nativePlatform === 'android' || /Android/i.test(ua)) {
     return 'android'
-  }
-  if (/iPhone|iPad|iPod/i.test(ua)) {
-    return 'ios'
-  }
-  if (platform === 'MacIntel' && Number(input.maxTouchPoints || 0) > 1) {
-    return 'ios'
   }
   return 'web'
 }
@@ -66,6 +66,7 @@ export function currentMallContractClientPlatform(): MallContractClientPlatform 
     userAgent: navigator.userAgent,
     platform: navigator.platform,
     maxTouchPoints: navigator.maxTouchPoints,
+    nativePlatform: Capacitor.getPlatform(),
   })
 }
 

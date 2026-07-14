@@ -33,8 +33,9 @@ test('card-package contract flow and ack both guard contacts before signing', ()
   assert.match(ack, /failMallContactsRequired\(ctx, order\)/)
   assert.match(source, /function shouldRequireMallContactsForClient\(ctx\)/)
   assert.match(source, /clientPlatform[^]*android/)
-  assert.match(source, /platform === 'android'\s*\|\|\s*platform === 'ios'/)
-  assert.match(source, /Android\|iPhone\|iPad/)
+  assert.match(source, /platform === 'android'\s*\|\|\s*platform === 'ios_app'/)
+  assert.match(source, /return \/Android\/i\.test\(ua\)/)
+  assert.doesNotMatch(source, /Android\|iPhone\|iPad/)
 })
 
 test('admin user contacts route is read-only and permission-gated', () => {
