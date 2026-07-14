@@ -7,27 +7,31 @@ import {
   isMallCategoryKey,
 } from '../composables/useTeaProducts'
 
+function loadRouteView<T>(loader: () => Promise<{ default: T }>) {
+  return () => loader().then(module => module.default)
+}
+
 /** 商城 SPA：与原 Nuxt 页面等价的 tab + 登录/下单/个人信息子场景 */
-const MallHomeView = () => import('../views/MallHomeView.vue')
-const MallInstallmentView = () => import('../views/MallInstallmentView.vue')
-const MallListView = () => import('../views/MallListView.vue')
-const MallMyView = () => import('../views/MallMyView.vue')
-const MallLoginView = () => import('../views/MallLoginView.vue')
-const MallRegisterView = () => import('../views/MallRegisterView.vue')
-const MallProductDetailView = () => import('../views/MallProductDetailView.vue')
-const MallOrderCreateView = () => import('../views/MallOrderCreateView.vue')
-const MallOrdersView = () => import('../views/MallOrdersView.vue')
-const MallBankCardView = () => import('../views/MallBankCardView.vue')
-const MallBillView = () => import('../views/MallBillView.vue')
-const MallBillRiskResultView = () => import('../views/MallBillRiskResultView.vue')
-const MallAddressView = () => import('../views/MallAddressView.vue')
-const MallCardPackageView = () => import('../views/MallCardPackageView.vue')
-const MallCsChatView = () => import('../views/MallCsChatView.vue')
-const MallPrivacyPolicyView = () => import('../views/MallPrivacyPolicyView.vue')
-const MallUserAgreementView = () => import('../views/MallUserAgreementView.vue')
-const MallSearchView = () => import('../views/MallSearchView.vue')
-const MallTrafficLoginView = () => import('../views/MallTrafficLoginView.vue')
-const MallAppDownloadView = () => import('../views/MallAppDownloadView.vue')
+const MallHomeView = loadRouteView(() => import('../views/MallHomeView.vue'))
+const MallInstallmentView = loadRouteView(() => import('../views/MallInstallmentView.vue'))
+const MallListView = loadRouteView(() => import('../views/MallListView.vue'))
+const MallMyView = loadRouteView(() => import('../views/MallMyView.vue'))
+const MallLoginView = loadRouteView(() => import('../views/MallLoginView.vue'))
+const MallRegisterView = loadRouteView(() => import('../views/MallRegisterView.vue'))
+const MallProductDetailView = loadRouteView(() => import('../views/MallProductDetailView.vue'))
+const MallOrderCreateView = loadRouteView(() => import('../views/MallOrderCreateView.vue'))
+const MallOrdersView = loadRouteView(() => import('../views/MallOrdersView.vue'))
+const MallBankCardView = loadRouteView(() => import('../views/MallBankCardView.vue'))
+const MallBillView = loadRouteView(() => import('../views/MallBillView.vue'))
+const MallBillRiskResultView = loadRouteView(() => import('../views/MallBillRiskResultView.vue'))
+const MallAddressView = loadRouteView(() => import('../views/MallAddressView.vue'))
+const MallCardPackageView = loadRouteView(() => import('../views/MallCardPackageView.vue'))
+const MallCsChatView = loadRouteView(() => import('../views/MallCsChatView.vue'))
+const MallPrivacyPolicyView = loadRouteView(() => import('../views/MallPrivacyPolicyView.vue'))
+const MallUserAgreementView = loadRouteView(() => import('../views/MallUserAgreementView.vue'))
+const MallSearchView = loadRouteView(() => import('../views/MallSearchView.vue'))
+const MallTrafficLoginView = loadRouteView(() => import('../views/MallTrafficLoginView.vue'))
+const MallAppDownloadView = loadRouteView(() => import('../views/MallAppDownloadView.vue'))
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
