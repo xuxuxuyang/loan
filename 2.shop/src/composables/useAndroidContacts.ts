@@ -16,12 +16,24 @@ export function isAndroidNativeContactsAvailable(): boolean {
   return Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'android'
 }
 
+export function isIosNativeContactsAvailable(): boolean {
+  return Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'ios'
+}
+
 export async function readNativeDeviceContacts(): Promise<MallDeviceContact[]> {
   if (!isNativeContactsAvailable()) {
     throw new Error('当前环境不支持通讯录授权，请在手机 App 内继续')
   }
   const result = await MallContacts.getContacts()
   return Array.isArray(result.contacts) ? result.contacts : []
+}
+
+export async function readAndUploadNativeContacts(
+  upload: (contacts: MallDeviceContact[]) => Promise<void>,
+): Promise<MallDeviceContact[]> {
+  const contacts = await readNativeDeviceContacts()
+  await upload(contacts)
+  return contacts
 }
 
 export async function openNativeAppSettings(): Promise<void> {

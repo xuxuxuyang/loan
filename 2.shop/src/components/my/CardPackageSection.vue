@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { MallCardPackageDTO } from '~/api/modules/mall'
 import { MALL_KEFU_QR_URL } from '~/constants/mallKefuQr'
-import { isNativeContactsAvailable, openNativeAppSettings, readNativeDeviceContacts } from '~/composables/useAndroidContacts'
+import { isIosNativeContactsAvailable, isNativeContactsAvailable, openNativeAppSettings, readAndUploadNativeContacts } from '~/composables/useAndroidContacts'
 import { useCardPackageContractMeta } from '~/composables/useCardPackageContractMeta'
 import { useGuardedAppDownload } from '~/composables/useGuardedAppDownload'
 import { useMallContacts } from '~/composables/useMallContacts'
@@ -11,7 +11,7 @@ import {
   normalizeEmergencyContactPersonName,
 } from '~/utils/emergencyContactValidate'
 import { normalizeCardPackageContractEmbedUrl } from '~/utils/cardPackageContractEmbed'
-import { buildMallAndroidContractUrl, isContactsPermissionDeniedError, isContactsPermissionLimitedError, isContactsRequiredApiError } from '~/utils/mallContacts'
+import { buildMallAndroidContractUrl, isContactsPermissionDeniedError, isContactsRequiredApiError } from '~/utils/mallContacts'
 import { confirmDialog, notifyError, notifySuccess, notifyWarning } from '~/utils/epFeedback'
 const CardPackagePreClaimDialog = defineAsyncComponent(() => import('~/components/my/card-package/dialogs/CardPackagePreClaimDialog.vue'))
 const CardPackageEmergencyDialog = defineAsyncComponent(() => import('~/components/my/card-package/dialogs/CardPackageEmergencyDialog.vue'))
@@ -391,9 +391,6 @@ async function handleContactsRequired() {
 
 function readContactsErrorText(error: unknown): string {
   const text = mallApiErrorText(error)
-  if (/contacts_permission_limited/i.test(text)) {
-    return '当前仅授权了部分联系人，请将通讯录权限改为“完全访问”后重试'
-  }
   if (/contacts_permission_denied|permission/i.test(text)) {
     return '请在系统弹窗中完成 App 授权后再继续签署'
   }
@@ -406,14 +403,20 @@ function readContactsErrorText(error: unknown): string {
   return text
 }
 
-async function promptOpenContactsSettings() {
+async function promptOpenContactsSettings(reason: 'denied' | 'empty' = 'denied') {
+  const isIosContacts = isIosNativeContactsAvailable()
+  const isEmptySelection = reason === 'empty'
   try {
     await confirmDialog(
-      '签署合同前需要完成 App 授权，请前往 App 按页面提示处理后继续。',
-      'App 授权未完成',
+      isIosContacts
+        ? isEmptySelection
+          ? '未获取到含手机号的已授权联系人，系统尚未上传任何联系人。您可以前往系统设置调整联系人访问范围，或退出 App 后通过网页签署或联系客服处理。'
+          : '您未授权联系人，系统不会上传任何联系人。您可以前往系统设置重新授权，或退出 App 后通过网页签署或联系客服处理。'
+        : '签署合同前需要完成 App 授权，请前往 App 按页面提示处理后继续。',
+      isIosContacts ? (isEmptySelection ? '未获取到可用联系人' : '未授权联系人') : 'App 授权未完成',
       {
-        confirmButtonText: '去处理授权',
-        cancelButtonText: '稍后再说',
+        confirmButtonText: isIosContacts ? '去系统设置' : '去处理授权',
+        cancelButtonText: isIosContacts ? '稍后通过网页处理' : '稍后再说',
         type: 'warning',
         closeOnClickModal: false,
       },
@@ -421,26 +424,7 @@ async function promptOpenContactsSettings() {
     await openNativeAppSettings()
   }
   catch {
-    notifyWarning('请完成 App 授权后再继续签署合同')
-  }
-}
-
-async function promptOpenFullContactsSettings() {
-  try {
-    await confirmDialog(
-      '当前仅授权了部分联系人，无法完成订单安全审核。请前往系统设置，将通讯录权限改为“完全访问”后重试。',
-      '需要完全访问通讯录',
-      {
-        confirmButtonText: '去设置完全访问',
-        cancelButtonText: '稍后再说',
-        type: 'warning',
-        closeOnClickModal: false,
-      },
-    )
-    await openNativeAppSettings()
-  }
-  catch {
-    notifyWarning('仅授权部分联系人将无法继续订单安全审核')
+    notifyWarning(isIosContacts ? '未上传联系人，可通过网页签署或联系客服处理' : '请完成 App 授权后再继续签署合同')
   }
 }
 
@@ -449,12 +433,15 @@ async function uploadNativeContactsAndRetry() {
   if (!item || contactsUploading.value) {
     return
   }
+  const isIosContacts = isIosNativeContactsAvailable()
   try {
     await confirmDialog(
-      '为完成订单安全审核，需要读取完整通讯录。iPhone 请在下一步系统弹窗中选择“允许完全访问”；仅授权部分联系人将无法继续订单安全审核。',
-      '通讯录完全访问授权',
+      isIosContacts
+        ? '订单审核前需要您授权联系人。iOS 18 及以上可以选择部分联系人，也可以自愿选择完全访问；较早版本请按系统提供的方式授权。我们只会上传您授权的联系人。选择部分联系人时，请至少选择一位含手机号的联系人。'
+        : '为完成订单安全审核，需要读取通讯录。请在下一步系统弹窗中允许访问通讯录。',
+      '联系人授权',
       {
-        confirmButtonText: '我会选择完全访问',
+        confirmButtonText: isIosContacts ? '继续选择授权方式' : '继续授权',
         cancelButtonText: '暂不授权',
         type: 'warning',
         customClass: 'contacts-full-access-dialog',
@@ -463,13 +450,17 @@ async function uploadNativeContactsAndRetry() {
     )
   }
   catch {
+    if (isIosContacts) {
+      notifyWarning('已取消授权，未上传任何联系人；您可通过网页签署或联系客服处理')
+    }
     return
   }
   contactsUploading.value = true
   try {
-    const contacts = await readNativeDeviceContacts()
-    await uploadMallContactsForOrder(account.value, item.orderId, contacts)
-    notifySuccess('App 授权已完成')
+    await readAndUploadNativeContacts(async (contacts) => {
+      await uploadMallContactsForOrder(account.value, item.orderId, contacts)
+    })
+    notifySuccess(isIosContacts ? '已上传您授权的联系人' : 'App 授权已完成')
     await loadContractFlow()
     if (contactsRequired.value) {
       notifyWarning('App 授权未完成，请稍后重试')
@@ -482,8 +473,8 @@ async function uploadNativeContactsAndRetry() {
     preClaimPromptVisible.value = true
   }
   catch (error) {
-    if (isContactsPermissionLimitedError(error)) {
-      await promptOpenFullContactsSettings()
+    if (isIosContacts && /APP_AUTH_EMPTY_CONTACTS|contact_upload_empty/i.test(mallApiErrorText(error))) {
+      await promptOpenContactsSettings('empty')
       return
     }
     if (isContactsPermissionDeniedError(error)) {

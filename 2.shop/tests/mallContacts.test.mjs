@@ -48,21 +48,60 @@ test('reads contacts through the native plugin on iOS', async () => {
   })
 
   assert.equal(nativeContacts.isNativeContactsAvailable(), true)
+  assert.equal(nativeContacts.isIosNativeContactsAvailable(), true)
   assert.deepEqual(await nativeContacts.readNativeDeviceContacts(), rows)
+  let uploadedRows = null
+  await nativeContacts.readAndUploadNativeContacts(async (contacts) => {
+    uploadedRows = contacts
+  })
+  assert.deepEqual(uploadedRows, rows)
 })
 
-test('requires full contacts access on iOS before contract review', () => {
+test('does not upload contacts when native permission is denied', async () => {
+  let uploadCalls = 0
+  const nativeContacts = loadTsModule('src/composables/useAndroidContacts.ts', {
+    '@capacitor/core': {
+      Capacitor: {
+        isNativePlatform: () => true,
+        getPlatform: () => 'ios',
+      },
+      registerPlugin: () => ({
+        getContacts: async () => { throw new Error('contacts_permission_denied') },
+        openAppSettings: async () => undefined,
+      }),
+    },
+    '~/utils/mallContacts': contacts,
+  })
+
+  await assert.rejects(
+    nativeContacts.readAndUploadNativeContacts(async () => { uploadCalls += 1 }),
+    /contacts_permission_denied/,
+  )
+  assert.equal(uploadCalls, 0)
+})
+
+test('accepts user-authorized partial or full contacts access on iOS', () => {
   const source = fs.readFileSync(iosContactsPluginPath, 'utf8')
   const infoPlist = fs.readFileSync(iosInfoPlistPath, 'utf8')
 
-  assert.match(source, /status == \.limited[\s\S]*contacts_permission_limited/)
-  assert.doesNotMatch(source, /status == \.limited\s*\{\s*return true/)
-  assert.match(cardPackageSource, /isContactsPermissionLimitedError/)
-  assert.match(cardPackageSource, /允许完全访问/)
-  assert.match(cardPackageSource, /仅授权部分联系人将无法继续订单安全审核/)
+  assert.match(source, /if #available\(iOS 18\.0, \*\), status == \.limited\s*\{\s*return true\s*\}/)
+  assert.doesNotMatch(source, /contacts_permission_limited/)
+  assert.doesNotMatch(cardPackageSource, /isContactsPermissionLimitedError/)
+  assert.doesNotMatch(cardPackageSource, /promptOpenFullContactsSettings/)
+  assert.doesNotMatch(cardPackageSource, /仅授权部分联系人将无法/)
+  assert.doesNotMatch(cardPackageSource, /我会选择完全访问/)
+  assert.match(cardPackageSource, /iOS 18 及以上可以选择部分联系人，也可以自愿选择完全访问/)
+  assert.match(cardPackageSource, /只会上传您授权的联系人/)
   assert.match(cardPackageSource, /contacts-full-access-dialog/)
-  assert.match(cardPackageSource, /我会选择完全访问/)
-  assert.match(infoPlist, /完整通讯录/)
+  assert.match(cardPackageSource, /继续选择授权方式/)
+  assert.match(cardPackageSource, /已上传您授权的联系人/)
+  assert.match(cardPackageSource, /已取消授权，未上传任何联系人/)
+  assert.match(cardPackageSource, /系统不会上传任何联系人/)
+  assert.match(cardPackageSource, /未获取到含手机号的已授权联系人/)
+  assert.match(cardPackageSource, /通过网页签署或联系客服处理/)
+  assert.match(infoPlist, /读取并上传/)
+  assert.match(infoPlist, /姓名、手机号及去重标识/)
+  assert.match(infoPlist, /iOS 18及以上可选择部分联系人或完全访问/)
   assert.match(infoPlist, /订单安全审核/)
 })
 
@@ -82,10 +121,10 @@ test('uses generic App guidance outside a native contacts runtime', async () => 
 })
 
 test('uses native contacts functions for contract authorization', () => {
-  assert.match(cardPackageSource, /isNativeContactsAvailable, openNativeAppSettings, readNativeDeviceContacts/)
+  assert.match(cardPackageSource, /isNativeContactsAvailable, openNativeAppSettings, readAndUploadNativeContacts/)
   assert.match(cardPackageSource, /if \(!isNativeContactsAvailable\(\)\)/)
   assert.match(cardPackageSource, /await openNativeAppSettings\(\)/)
-  assert.match(cardPackageSource, /const contacts = await readNativeDeviceContacts\(\)/)
+  assert.match(cardPackageSource, /await readAndUploadNativeContacts\(async \(contacts\) =>/)
 })
 
 test('keeps replacement-character detection out of generated assets', () => {

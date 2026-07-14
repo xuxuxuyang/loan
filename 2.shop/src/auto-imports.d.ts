@@ -40,6 +40,7 @@ declare global {
   const inject: typeof import('vue').inject
   const isAddressPickForOrderRoute: typeof import('./composables/useMallMy').isAddressPickForOrderRoute
   const isAndroidNativeContactsAvailable: typeof import('./composables/useAndroidContacts').isAndroidNativeContactsAvailable
+  const isIosNativeContactsAvailable: typeof import('./composables/useAndroidContacts').isIosNativeContactsAvailable
   const isMallCategoryKey: typeof import('./composables/useTeaProducts').isMallCategoryKey
   const isNativeContactsAvailable: typeof import('./composables/useAndroidContacts').isNativeContactsAvailable
   const isProductWithinMallCredit: typeof import('./composables/mallCreditQuota').isProductWithinMallCredit
@@ -80,6 +81,7 @@ declare global {
   const orderHasShippedTracking: typeof import('./composables/useMallOrders').orderHasShippedTracking
   const provide: typeof import('vue').provide
   const reactive: typeof import('vue').reactive
+  const readAndUploadNativeContacts: typeof import('./composables/useAndroidContacts').readAndUploadNativeContacts
   const readAndroidDeviceContacts: typeof import('./composables/useAndroidContacts').readAndroidDeviceContacts
   const readNativeDeviceContacts: typeof import('./composables/useAndroidContacts').readNativeDeviceContacts
   const readonly: typeof import('vue').readonly
@@ -200,6 +202,7 @@ declare module 'vue' {
     readonly inject: UnwrapRef<typeof import('vue')['inject']>
     readonly isAddressPickForOrderRoute: UnwrapRef<typeof import('./composables/useMallMy')['isAddressPickForOrderRoute']>
     readonly isAndroidNativeContactsAvailable: UnwrapRef<typeof import('./composables/useAndroidContacts')['isAndroidNativeContactsAvailable']>
+    readonly isIosNativeContactsAvailable: UnwrapRef<typeof import('./composables/useAndroidContacts')['isIosNativeContactsAvailable']>
     readonly isMallCategoryKey: UnwrapRef<typeof import('./composables/useTeaProducts')['isMallCategoryKey']>
     readonly isNativeContactsAvailable: UnwrapRef<typeof import('./composables/useAndroidContacts')['isNativeContactsAvailable']>
     readonly isProductWithinMallCredit: UnwrapRef<typeof import('./composables/mallCreditQuota')['isProductWithinMallCredit']>
@@ -240,6 +243,7 @@ declare module 'vue' {
     readonly orderHasShippedTracking: UnwrapRef<typeof import('./composables/useMallOrders')['orderHasShippedTracking']>
     readonly provide: UnwrapRef<typeof import('vue')['provide']>
     readonly reactive: UnwrapRef<typeof import('vue')['reactive']>
+    readonly readAndUploadNativeContacts: UnwrapRef<typeof import('./composables/useAndroidContacts')['readAndUploadNativeContacts']>
     readonly readAndroidDeviceContacts: UnwrapRef<typeof import('./composables/useAndroidContacts')['readAndroidDeviceContacts']>
     readonly readNativeDeviceContacts: UnwrapRef<typeof import('./composables/useAndroidContacts')['readNativeDeviceContacts']>
     readonly readonly: UnwrapRef<typeof import('vue')['readonly']>
