@@ -42,3 +42,12 @@ test('uses native startup retry for product GET requests', () => {
   assert.match(productsSource, /withNativeStartupRetry/)
   assert.match(productsSource, /Capacitor\.isNativePlatform\(\)/)
 })
+
+test('keeps retrying long enough for the first iOS network permission decision', async () => {
+  const { NATIVE_STARTUP_RETRY_DELAYS_MS } = await import(helperUrl.href)
+  const retryWindowMs = NATIVE_STARTUP_RETRY_DELAYS_MS.reduce((total, delay) => total + delay, 0)
+
+  assert.ok(NATIVE_STARTUP_RETRY_DELAYS_MS.length >= 4)
+  assert.ok(retryWindowMs >= 45_000)
+  assert.match(productsSource, /NATIVE_STARTUP_RETRY_DELAYS_MS/)
+})

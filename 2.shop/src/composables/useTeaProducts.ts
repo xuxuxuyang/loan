@@ -1,5 +1,5 @@
 import { Capacitor } from '@capacitor/core'
-import { withNativeStartupRetry } from '~/utils/nativeStartupRetry'
+import { NATIVE_STARTUP_RETRY_DELAYS_MS, withNativeStartupRetry } from '~/utils/nativeStartupRetry'
 
 export type ProductSalesMode = 'mall' | 'installment'
 
@@ -192,7 +192,7 @@ export async function ensureMallProductsLoaded(): Promise<void> {
         logUrl = buildProductsUrl(base, 'installment')
         const response = await withNativeStartupRetry(
           () => $fetch<{ success: boolean, data: TeaProduct[] }>(logUrl, { method: 'GET' }),
-          { native: Capacitor.isNativePlatform(), retryDelaysMs: [600, 1800] },
+          { native: Capacitor.isNativePlatform(), retryDelaysMs: NATIVE_STARTUP_RETRY_DELAYS_MS },
         )
         products.value = Array.isArray(response?.data) ? response.data.map(normalizeApiProduct) : []
         fetchOk.value = true
@@ -226,7 +226,7 @@ export async function ensureMallShowcaseProductsLoaded(): Promise<void> {
         logUrl = buildProductsUrl(base, 'mall')
         const response = await withNativeStartupRetry(
           () => $fetch<{ success: boolean, data: TeaProduct[] }>(logUrl, { method: 'GET' }),
-          { native: Capacitor.isNativePlatform(), retryDelaysMs: [600, 1800] },
+          { native: Capacitor.isNativePlatform(), retryDelaysMs: NATIVE_STARTUP_RETRY_DELAYS_MS },
         )
         products.value = Array.isArray(response?.data) ? response.data.map(normalizeApiProduct) : []
         fetchOk.value = true

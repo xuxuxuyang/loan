@@ -3,6 +3,8 @@ export interface NativeStartupRetryOptions {
   retryDelaysMs: readonly number[]
 }
 
+export const NATIVE_STARTUP_RETRY_DELAYS_MS = [1000, 2000, 3000, 5000, 8000, 12000, 18000] as const
+
 function wait(delayMs: number) {
   return new Promise<void>(resolve => setTimeout(resolve, Math.max(0, delayMs)))
 }
