@@ -321,7 +321,7 @@ watch(
 
           <div
             v-if="!redirecting"
-            class="border-t border-black/6 px-5 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]"
+            class="border-t border-black/6 px-5 py-3 pb-[max(0.75rem,var(--app-safe-area-bottom))]"
           >
             <button
               type="button"

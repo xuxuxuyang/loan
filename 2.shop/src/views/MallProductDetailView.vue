@@ -144,11 +144,11 @@ if (!import.meta.env.SSR) {
 
 <template>
   <div
-    class="normal-font min-h-screen bg-[#f3f4f8] pb-[calc(8rem+env(safe-area-inset-bottom))]"
+    class="normal-font min-h-screen bg-[#f3f4f8] pb-[calc(8rem+var(--app-safe-area-bottom))]"
   >
     <header
       class="sticky top-0 z-20 flex items-center gap-2 border-b border-black/6 bg-[#f3f4f8]/95 px-3 pb-2.5 backdrop-blur supports-[backdrop-filter]:bg-[#f3f4f8]/80"
-      style="padding-top: max(0.625rem, env(safe-area-inset-top));"
+      style="padding-top: max(0.625rem, var(--app-safe-area-top));"
     >
       <button
         type="button"
@@ -260,7 +260,7 @@ if (!import.meta.env.SSR) {
     <div
       v-if="product"
       class="fixed bottom-16 left-0 right-0 z-[1210] border-t border-black/8 bg-white/95 px-4 py-3 backdrop-blur supports-[backdrop-filter]:bg-white/90"
-      style="padding-bottom: calc(0.75rem + env(safe-area-inset-bottom));"
+      style="padding-bottom: calc(0.75rem + var(--app-safe-area-bottom));"
     >
       <div class="mx-auto flex max-w-[980px] items-center gap-3">
         <div class="min-w-0 flex-1">

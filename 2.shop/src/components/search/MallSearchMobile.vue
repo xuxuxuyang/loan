@@ -115,7 +115,7 @@ onMounted(async () => {
 <template>
   <div class="mall-search normal-font flex min-h-[100dvh] flex-col bg-[#e9f1f3]">
     <header
-      class="search-header sticky top-0 z-20 shrink-0 px-3 pb-3 pt-[max(0.5rem,env(safe-area-inset-top))]"
+      class="search-header sticky top-0 z-20 shrink-0 px-3 pb-3 pt-[max(0.5rem,var(--app-safe-area-top))]"
     >
       <div class="mb-2 flex items-center gap-2">
         <button
@@ -160,7 +160,7 @@ onMounted(async () => {
       </div>
     </header>
 
-    <main class="flex-1 px-3 pb-[max(1rem,env(safe-area-inset-bottom))]">
+    <main class="flex-1 px-3 pb-[max(1rem,var(--app-safe-area-bottom))]">
       <div
         v-if="loading"
         class="mx-auto mt-10 max-w-md rounded-2xl bg-white/90 px-6 py-10 text-center text-sm text-[#5a6072] shadow-sm"

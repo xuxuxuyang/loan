@@ -13,7 +13,7 @@ if (!import.meta.env.SSR) {
 <template>
   <div
     class="normal-font min-h-screen bg-[#f7f7f5]"
-    style="padding-bottom: calc(4rem + env(safe-area-inset-bottom));"
+    style="padding-bottom: calc(4rem + var(--app-safe-area-bottom));"
   >
     <section id="installment-zone">
       <InstallmentZoneMobile :products="installmentProducts" />

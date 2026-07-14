@@ -13,7 +13,14 @@
   --header-height: 4rem;
   --container-width: 1200px;
   --theme-color: #007162;
+  --app-safe-area-top: env(safe-area-inset-top);
+  --app-safe-area-bottom: env(safe-area-inset-bottom);
   --app-font-family: "PingFang SC", "Microsoft YaHei", "Helvetica Neue", Helvetica, Arial, sans-serif;
+}
+
+html.capacitor-ios {
+  --app-safe-area-top: 0px;
+  --app-safe-area-bottom: 0px;
 }
 
 /** 暗色模式 */

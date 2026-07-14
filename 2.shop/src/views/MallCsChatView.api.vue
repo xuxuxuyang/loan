@@ -207,7 +207,7 @@ function bubbleClass(m: CsChatMessage) {
       </div>
     </div>
 
-    <footer class="shrink-0 border-t border-slate-200/80 bg-white px-3 py-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
+    <footer class="shrink-0 border-t border-slate-200/80 bg-white px-3 py-2 pb-[max(0.5rem,var(--app-safe-area-bottom))]">
       <input
         ref="imageInputRef"
         type="file"
@@ -256,7 +256,7 @@ function bubbleClass(m: CsChatMessage) {
 <style scoped>
 .cs-header {
   background: linear-gradient(120deg, #ff8fb3, #8ea8ff);
-  padding-top: max(0.75rem, env(safe-area-inset-top));
+  padding-top: max(0.75rem, var(--app-safe-area-top));
 }
 
 .tap:active {

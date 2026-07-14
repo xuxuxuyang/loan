@@ -730,7 +730,7 @@ if (!import.meta.env.SSR) {
 
     <div
       v-if="showRepayAllBar"
-      class="fixed bottom-16 left-0 right-0 z-20 border-t border-black/[0.06] bg-white/95 px-4 py-3 shadow-[0_-6px_24px_rgba(0,0,0,0.06)] backdrop-blur-sm pb-[max(0.75rem,env(safe-area-inset-bottom))]"
+      class="fixed bottom-16 left-0 right-0 z-20 border-t border-black/[0.06] bg-white/95 px-4 py-3 shadow-[0_-6px_24px_rgba(0,0,0,0.06)] backdrop-blur-sm pb-[max(0.75rem,var(--app-safe-area-bottom))]"
     >
       <p
         v-if="repayAllBlockedByCardPackage"

@@ -814,7 +814,7 @@ watch(
     <Transition name="order-address-mask">
       <div
         v-if="addressPromptOpen"
-        class="fixed inset-0 z-[6000] flex flex-col justify-end bg-black/50 p-4 pb-[max(1rem,env(safe-area-inset-bottom))] sm:items-center sm:justify-center sm:pb-4"
+        class="fixed inset-0 z-[6000] flex flex-col justify-end bg-black/50 p-4 pb-[max(1rem,var(--app-safe-area-bottom))] sm:items-center sm:justify-center sm:pb-4"
         role="dialog"
         aria-modal="true"
         aria-labelledby="order-address-prompt-title"

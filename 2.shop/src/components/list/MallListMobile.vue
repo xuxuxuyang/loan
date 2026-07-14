@@ -40,7 +40,7 @@ async function openProductDetail(item: TeaProduct) {
 <template>
   <section
     class="normal-font px-4 pb-5"
-    style="padding-top: max(1rem, env(safe-area-inset-top));"
+    style="padding-top: max(1rem, var(--app-safe-area-top));"
   >
     <div class="hero-card mb-4 rounded-2xl p-4 text-white">
       <p class="mb-1 text-[11px] tracking-[0.16em] uppercase text-white/80">

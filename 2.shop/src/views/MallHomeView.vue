@@ -94,7 +94,7 @@ function handleSelectZone(zone: 'installment' | 'mall') {
 <template>
   <div
     class="bg-[#f7f7f5] min-h-screen"
-    style="padding-bottom: calc(4rem + env(safe-area-inset-bottom));"
+    style="padding-bottom: calc(4rem + var(--app-safe-area-bottom));"
   >
     <HomeBannerMobile
       :preview-products="filteredHomeProducts"

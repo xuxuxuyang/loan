@@ -46,7 +46,7 @@ function openMallListFor(item: TeaProduct) {
 <template>
   <section
     class="normal-font bg-[#e9f1f3] px-4 pb-5"
-    style="padding-top: max(0.75rem, env(safe-area-inset-top));"
+    style="padding-top: max(0.75rem, var(--app-safe-area-top));"
   >
     <div class="mb-3 flex items-center gap-2">
       <button
