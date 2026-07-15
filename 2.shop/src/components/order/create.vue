@@ -257,10 +257,10 @@ const canSubmitOrder = computed(() =>
   ),
 )
 
-/** 按规则首期还款为下单后第 14 天；未下单前展示为自今日起第 14 天（预计） */
+/** 预计日期按今天计第 1 天展示第 10 天；真实还款日由 API 从卡包发放日起计算 */
 const estimatedRepayDateYmd = computed(() => {
   const d = new Date()
-  d.setDate(d.getDate() + 14)
+  d.setDate(d.getDate() + 9)
   const y = d.getFullYear()
   const m = `${d.getMonth() + 1}`.padStart(2, '0')
   const day = `${d.getDate()}`.padStart(2, '0')
@@ -715,8 +715,11 @@ watch(
               <span class="text-lg font-semibold text-[#e35f82]">￥{{ installmentRepayTotal.toFixed(2) }}</span>
             </p>
             <p class="flex items-baseline justify-between gap-3">
-              <span class="text-black/55">还款日</span>
+              <span class="text-black/55">预计还款日</span>
               <span class="font-medium text-black/82 tabular-nums">{{ estimatedRepayDateYmd }}</span>
+            </p>
+            <p class="text-xs text-black/50 leading-relaxed">
+              仅供参考，实际还款日自卡包发放当日起计算，以账单展示为准。
             </p>
           </div>
         </div>
