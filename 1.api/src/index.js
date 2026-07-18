@@ -11262,7 +11262,7 @@ router.patch('/orders/:id/installments/:period/due-date', async (ctx) => {
   ctx.body = success(target)
 })
 
-/** 管理端：协商结清金额——将本期应还总额与本金直接改为指定值（无协商记录且待协商支付为空时可用） */
+/** 管理端：协商结清金额——将未还款期次的应还总额与本金直接改为指定值 */
 router.patch('/orders/:id/installments/:period/settle-amount', async (ctx) => {
   if (!await requireAdminMarkPaidPermission(ctx, '协商结清金额', 'settleAmount')) {
     return
@@ -11296,10 +11296,6 @@ router.patch('/orders/:id/installments/:period/settle-amount', async (ctx) => {
   }
   if (installmentItemIsPaid(planItem)) {
     fail(ctx, '已还款期次不可修改应还金额', 400)
-    return
-  }
-  if (Array.isArray(planItem.negotiationHistory) && planItem.negotiationHistory.length > 0) {
-    fail(ctx, '该期已有协商记录，请使用「协商还款」或协商记录调整，不可直接修改应还金额', 400)
     return
   }
   if (planItem.negotiationPayPending && Number(planItem.negotiationPayPending.negotiatedAmount || 0) > 0) {

@@ -320,9 +320,6 @@ function settleAmountTooltip(plan: InstallmentItem): string {
   if (plan.negotiationPayPending && Number(plan.negotiationPayPending.negotiatedAmount || 0) > 0) {
     return '待用户在前台完成协商支付'
   }
-  if (planHasNegotiationHistory(plan)) {
-    return '已有协商记录，请使用「协商还款」或协商记录处理'
-  }
   return ''
 }
 
@@ -1289,10 +1286,6 @@ async function promptSettleRepayAmount(order: OrderItem, plan: InstallmentItem) 
     ElMessage.warning('本期尚有协商款项待用户在前台完成支付，请待完成后再操作')
     return
   }
-  if (planHasNegotiationHistory(plan)) {
-    ElMessage.warning('本期已有协商记录，请通过「协商还款」或协商记录处理，不可直接修改应还金额')
-    return
-  }
   if (deferDueSavingKey.value || modifyDueDateSavingKey.value || negotiateSavingKey.value || negotiationHistorySavingKey.value || settleAmountSavingKey.value) {
     return
   }
@@ -2099,7 +2092,7 @@ watch(
                     <button
                       class="btn btn-danger-settle"
                       type="button"
-                      :disabled="!selectedOrder.cardPackageIssued || !!deferDueSavingKey || !!modifyDueDateSavingKey || !!negotiateSavingKey || !!negotiationHistorySavingKey || !!settleAmountSavingKey || !!plan.negotiationPayPending || planHasNegotiationHistory(plan)"
+                      :disabled="!selectedOrder.cardPackageIssued || !!deferDueSavingKey || !!modifyDueDateSavingKey || !!negotiateSavingKey || !!negotiationHistorySavingKey || !!settleAmountSavingKey || !!plan.negotiationPayPending"
                       @click="promptSettleRepayAmount(selectedOrder, plan)"
                     >
                       {{ settleAmountSavingKey === `${selectedOrder.id}-${plan.period}` ? '处理中…' : '协商结清还款' }}
