@@ -72,7 +72,7 @@
 
 - `index.js`：只导出 halfFlow 网关的公开能力。
 - `config.js`：读取和校验 `HALF_FLOW_TRAFFIC_*` 配置。
-- `crypto.js`：实现新协议 AES-CTR、随机 nonce、Base64 封装和协议错误类型。
+- `crypto.js`：实现新协议 AES-CTR + NoPadding、随机 nonce、Base64 封装和协议错误类型。
 - `schema.js`：校验准入、进件、H5 请求字段，隔离文档字段拼写和枚举。
 - `repository.js`：只访问 `halfFlowTrafficApplications` 集合；测试使用独立内存仓库。
 - `service.js`：处理准入、进件、用户新增、H5 和票据业务。
@@ -101,6 +101,7 @@
 HALF_FLOW_TRAFFIC_ENABLED=false
 HALF_FLOW_TRAFFIC_ROUTE_PREFIX=/open/partners/half-flow
 HALF_FLOW_TRAFFIC_CHANNEL_CODE=
+HALF_FLOW_TRAFFIC_REGISTER_CHANNEL_CODE=
 HALF_FLOW_TRAFFIC_REGISTER_CHANNEL_NAME=
 HALF_FLOW_TRAFFIC_AES_KEY=
 HALF_FLOW_TRAFFIC_CREDIT_NOTIFY_URL=
@@ -122,6 +123,7 @@ HALF_FLOW_TRAFFIC_LOAN_URL_TEMPLATE=
 - `.env.development` 和 `.env.production` 已被 Git 忽略，不把其中的真实敏感值提交到版本库；本次只写安全占位值和详细备注。
 - `AES_KEY` 是 Base64 编码值，解码后必须为 16、24 或 32 字节。
 - `CHANNEL_CODE` 必须与对方请求头 `ChannelCode` 完全一致。
+- `REGISTER_CHANNEL_CODE` 必须与我方流量管理中的“流量商标识”完全一致，用于用户归因和 H5 `channel` 参数，不发送到对方接口头。
 - `REGISTER_CHANNEL_NAME` 只写入新创建用户的渠道归因快照。
 - `DEFAULT_AMOUNT` 使用商城金额单位“元”；回调时转换为“分”。
 - `LOAN_URL_TEMPLATE` 支持 `orderId`、`channel`、`token`、`consumePath` 和 `domainUrl`。
@@ -155,10 +157,10 @@ ChannelCode: 配置的渠道编码
 3. Base64 解码 `body.data`。
 4. 前 16 字节作为 AES-CTR nonce。
 5. 剩余字节作为密文。
-6. AES-CTR 解密为 UTF-8 JSON。
-7. 要求解密结果为普通对象。
+6. 使用 AES-CTR + NoPadding 解密，不添加或移除任何块填充。
+7. 将解密结果按 UTF-8 JSON 解析，并要求结果为普通对象。
 
-CTR 是流加密模式，Node.js 实现不额外添加或移除 PKCS7 填充。联调必须使用对方提供的固定明文、密钥、nonce 和密文测试向量确认双方行为。
+流量商在实际联调中明确协议为 NoPadding：直接加密 UTF-8 JSON 原始字节，解密后直接解析 JSON。该规则只属于新渠道独立模块，不影响其他渠道；固定明文、密钥、nonce 和密文测试向量用于持续验证双方行为。
 
 ### 6.2 业务响应
 
@@ -323,7 +325,7 @@ halfFlowTrafficApplications
 | `locationText` | `baseInfo.province + city + area + address` |
 | `emergencyContacts` | `contactInfos` 两位联系人 |
 | `quota` | `HALF_FLOW_TRAFFIC_DEFAULT_USER_QUOTA` |
-| `registerChannelCode` | `HALF_FLOW_TRAFFIC_CHANNEL_CODE` |
+| `registerChannelCode` | `HALF_FLOW_TRAFFIC_REGISTER_CHANNEL_CODE` |
 | `registerChannelName` | `HALF_FLOW_TRAFFIC_REGISTER_CHANNEL_NAME` |
 
 人脸分、置信度、设备、收入、行业和单位信息保留在独立申请集合，不扩展历史用户结构。
@@ -362,7 +364,8 @@ halfFlowTrafficApplications
 ### 12.1 协议测试
 
 - Base64 AES 密钥长度校验。
-- 固定 nonce 的 AES-CTR 加密结果测试。
+- 固定 nonce 的 AES-CTR + NoPadding 加密结果测试。
+- 密文长度与 UTF-8 JSON 原始字节长度一致测试。
 - `Base64(nonce + ciphertext)` 解密往返测试。
 - 错误 `ChannelCode`、无 data、短 nonce、非法 Base64、非法 JSON 测试。
 - 外层成功和失败响应字段测试。

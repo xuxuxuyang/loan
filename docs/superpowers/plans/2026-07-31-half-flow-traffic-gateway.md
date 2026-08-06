@@ -17,7 +17,7 @@
 - 不修改公共下单、订单审核、卡包、还款、商城前端、管理后台、Nginx 或共享 `store.js` 集合映射。
 - 所有可变运行参数只从 `1.api/.env.development` 和 `1.api/.env.production` 读取；代码不得提供业务默认回退。
 - 两份环境文件均写完整配置和详细中文备注；生产开关初始为 `HALF_FLOW_TRAFFIC_ENABLED=false`。
-- 协议固定为 `ChannelCode` 请求头、`{ data: Base64(nonce + ciphertext) }`、Base64 AES 密钥、16 字节 nonce、AES-CTR、UTF-8 JSON。
+- 协议固定为 `ChannelCode` 请求头、`{ data: Base64(nonce + ciphertext) }`、Base64 AES 密钥、16 字节 nonce、AES-CTR、NoPadding、UTF-8 JSON。
 - 对外接口只有 `POST /admission`、`POST /apply`、`POST /app/link`；内部接口只有 `POST /login/consume`。
 - 授信通过回调固定 `orderStatus=3`，金额由元转分，有效期为 13 位毫秒时间戳；申请先持久化，再异步回调。
 - 每次修改文件后都从仓库根目录运行 `node scripts/check-mojibake.js .`，失败时立即修复后重跑。
@@ -71,7 +71,8 @@ const config = {
   enabled: true,
   routePrefix: '/open/partners/half-flow',
   channelCode: 'half-flow-test',
-  registerChannelName: '新半流程流量商',
+  registerChannelCode: 'lihalfflow-test',
+  registerChannelName: '丽半流程',
   aesKey: 'MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=',
   creditNotifyUrl: 'https://partner.example.com/credit/notify',
   customerServicePhone: '4000000000',
@@ -88,6 +89,7 @@ test('uses only explicit HALF_FLOW_TRAFFIC environment values', () => {
     HALF_FLOW_TRAFFIC_ENABLED: 'true',
     HALF_FLOW_TRAFFIC_ROUTE_PREFIX: config.routePrefix,
     HALF_FLOW_TRAFFIC_CHANNEL_CODE: config.channelCode,
+    HALF_FLOW_TRAFFIC_REGISTER_CHANNEL_CODE: config.registerChannelCode,
     HALF_FLOW_TRAFFIC_REGISTER_CHANNEL_NAME: config.registerChannelName,
     HALF_FLOW_TRAFFIC_AES_KEY: config.aesKey,
     HALF_FLOW_TRAFFIC_CREDIT_NOTIFY_URL: config.creditNotifyUrl,
@@ -104,7 +106,7 @@ test('uses only explicit HALF_FLOW_TRAFFIC environment values', () => {
   assert.equal(gateway.halfFlowTrafficConfigFromEnv({}).defaultAmount, undefined)
 })
 
-test('matches the fixed AES-256-CTR vector', () => {
+test('matches the fixed AES-256-CTR NoPadding protocol vector', () => {
   const payload = {
     idCardMd5: '95dbf70af76519537e4fa8801f339ee2',
     mobileMd5: '6643f667b12386a1bb2e1adf8f054d0e',
@@ -141,6 +143,7 @@ function halfFlowTrafficConfigFromEnv(env = process.env) {
     enabled: ['1', 'true', 'yes', 'on'].includes(readTrim(env.HALF_FLOW_TRAFFIC_ENABLED).toLowerCase()),
     routePrefix: readTrim(env.HALF_FLOW_TRAFFIC_ROUTE_PREFIX).replace(/\/+$/, ''),
     channelCode: readTrim(env.HALF_FLOW_TRAFFIC_CHANNEL_CODE),
+    registerChannelCode: readTrim(env.HALF_FLOW_TRAFFIC_REGISTER_CHANNEL_CODE),
     registerChannelName: readTrim(env.HALF_FLOW_TRAFFIC_REGISTER_CHANNEL_NAME),
     aesKey: readTrim(env.HALF_FLOW_TRAFFIC_AES_KEY),
     creditNotifyUrl: readTrim(env.HALF_FLOW_TRAFFIC_CREDIT_NOTIFY_URL),
@@ -176,8 +179,9 @@ function encryptHalfFlowJson(payload, config, suppliedNonce) {
   const key = decodeAesKey(config.aesKey)
   const nonce = suppliedNonce || crypto.randomBytes(16)
   if (!Buffer.isBuffer(nonce) || nonce.length !== 16) throw new HalfFlowTrafficError('nonce must be 16 bytes')
+  const plaintext = Buffer.from(JSON.stringify(payload), 'utf8')
   const cipher = crypto.createCipheriv(`aes-${key.length * 8}-ctr`, key, nonce)
-  const ciphertext = Buffer.concat([cipher.update(JSON.stringify(payload), 'utf8'), cipher.final()])
+  const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()])
   return Buffer.concat([nonce, ciphertext]).toString('base64')
 }
 
@@ -186,7 +190,8 @@ function decryptHalfFlowData(data, config) {
   const packed = decodeCanonicalBase64(data, 'data')
   if (packed.length <= 16) throw new HalfFlowTrafficError('data must contain nonce and ciphertext')
   const decipher = crypto.createDecipheriv(`aes-${key.length * 8}-ctr`, key, packed.subarray(0, 16))
-  const text = Buffer.concat([decipher.update(packed.subarray(16)), decipher.final()]).toString('utf8')
+  const plaintext = Buffer.concat([decipher.update(packed.subarray(16)), decipher.final()])
+  const text = plaintext.toString('utf8')
   const payload = JSON.parse(text)
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
     throw new HalfFlowTrafficError('decrypted data must be an object')
@@ -195,7 +200,7 @@ function decryptHalfFlowData(data, config) {
 }
 ```
 
-Do not add or remove PKCS7 bytes: Node CTR is a stream mode and the partner's Go example does not pad.
+Follow the protocol confirmed by the partner during integration: use AES-CTR with NoPadding and encrypt the UTF-8 JSON bytes directly. Keep this behavior inside `halfFlowTrafficGateway/crypto.js` only.
 
 - [ ] **Step 5: 写并实现精确字段校验测试**
 
@@ -780,7 +785,7 @@ function makeHalfFlowMallUser(row, config, now) {
     orderBlacklisted: false,
     mallInstallmentRiskAttempted: false,
     emergencyContacts: mapHalfFlowContacts(input.contactInfos),
-    registerChannelCode: config.channelCode,
+    registerChannelCode: config.registerChannelCode,
     registerChannelName: config.registerChannelName,
     halfFlowOrderId: row.orderId,
     halfFlowBoundAt: at,
@@ -1057,6 +1062,8 @@ HALF_FLOW_TRAFFIC_ENABLED=false
 HALF_FLOW_TRAFFIC_ROUTE_PREFIX=/open/partners/half-flow
 # 对方分配的 ChannelCode，请求头必须完全一致；敏感联调参数，未分配时留空。
 HALF_FLOW_TRAFFIC_CHANNEL_CODE=
+# 我方流量管理中的渠道标识；用于用户归因和 H5 channel 参数，不发送到对方接口头。
+HALF_FLOW_TRAFFIC_REGISTER_CHANNEL_CODE=
 # 新用户渠道归因展示名；只写入本渠道新创建用户。
 HALF_FLOW_TRAFFIC_REGISTER_CHANNEL_NAME=新半流程流量商
 # Base64 编码 AES 密钥，解码后必须为 16/24/32 字节；敏感，未分配时留空。
@@ -1091,6 +1098,8 @@ HALF_FLOW_TRAFFIC_ENABLED=false
 HALF_FLOW_TRAFFIC_ROUTE_PREFIX=/open/partners/half-flow
 # 生产 ChannelCode；敏感参数，由流量商分配，未分配时留空。
 HALF_FLOW_TRAFFIC_CHANNEL_CODE=
+# 我方流量管理中的生产渠道标识；用于用户归因和 H5 channel 参数，不发送到对方接口头。
+HALF_FLOW_TRAFFIC_REGISTER_CHANNEL_CODE=
 # 新用户渠道归因展示名；只写入本渠道新创建用户。
 HALF_FLOW_TRAFFIC_REGISTER_CHANNEL_NAME=新半流程流量商
 # Base64 编码生产 AES 密钥；敏感，解码后必须为 16/24/32 字节，未分配时留空。
@@ -1113,7 +1122,7 @@ HALF_FLOW_TRAFFIC_NOTIFY_TIMEOUT_MS=8000
 HALF_FLOW_TRAFFIC_LOAN_URL_TEMPLATE=https://wenshuosc.com/login?trafficLogin=1&channel={channel}&orderId={orderId}&token={token}&consumePath={consumePath}&domainUrl={domainUrl}
 ```
 
-Do not force-add `.env.development` or `.env.production`; `.gitignore` intentionally protects them. Verify both files locally with `rg -n "^HALF_FLOW_TRAFFIC_"` and confirm each has exactly the same 13 variable names.
+Do not force-add `.env.development` or `.env.production`; `.gitignore` intentionally protects them. Verify both files locally with `rg -n "^HALF_FLOW_TRAFFIC_"` and confirm each has exactly the same 14 variable names.
 
 - [ ] **Step 6: 运行接线测试和旧渠道定向回归**
 

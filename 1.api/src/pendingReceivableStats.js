@@ -164,6 +164,10 @@ function computePendingReceivableStats(orders, dueDate, options = {}) {
           rowRefs.push(ref)
         }
       }
+      // 当前期次已落在统计日时，以真实还款状态为准，避免历史延期事件重复展示和计数。
+      if (key === dueDate) {
+        continue
+      }
       const deferEvents = collectDeferAsCollectedEventsForDate(deferredAsCollectedEvents, order, item, dueDate)
       for (const event of deferEvents) {
         const amt = roundMoney(event.amountAtAction || item.amount)

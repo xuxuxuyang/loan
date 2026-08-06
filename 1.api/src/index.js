@@ -171,6 +171,21 @@ function loadOptionalZheyinTrafficGateway() {
 }
 
 const zheyinTrafficGateway = loadOptionalZheyinTrafficGateway()
+
+function loadOptionalHalfFlowTrafficGateway() {
+  if (String(process.env.HALF_FLOW_TRAFFIC_ENABLED || '').trim().toLowerCase() !== 'true') {
+    return null
+  }
+  try {
+    return require('./halfFlowTrafficGateway')
+  }
+  catch (err) {
+    console.warn('[half-flow-traffic] module unavailable, skipped:', err && err.message ? err.message : err)
+    return null
+  }
+}
+
+const halfFlowTrafficGateway = loadOptionalHalfFlowTrafficGateway()
 const { createMallContactsStore } = require('./mallContacts/store')
 const {
   markMallContactsRequiredForOrder,
@@ -3962,6 +3977,13 @@ function resolveApiMongoRefreshPlan(ctx) {
     : null
   if (zheyinPlan) {
     return zheyinPlan
+  }
+  const halfFlowPlan = halfFlowTrafficGateway
+    && typeof halfFlowTrafficGateway.resolveHalfFlowTrafficMongoRefreshPlan === 'function'
+    ? halfFlowTrafficGateway.resolveHalfFlowTrafficMongoRefreshPlan(method, path)
+    : null
+  if (halfFlowPlan) {
+    return halfFlowPlan
   }
   if (!isAdminReadOptimizeEnabled()) {
     return { mode: 'full' }
@@ -9676,6 +9698,14 @@ if (zheyinTrafficGateway && typeof zheyinTrafficGateway.registerZheyinTrafficGat
   })
 }
 
+if (halfFlowTrafficGateway && typeof halfFlowTrafficGateway.registerHalfFlowTrafficGatewayRoutes === 'function') {
+  halfFlowTrafficGateway.registerHalfFlowTrafficGatewayRoutes(router, {
+    readDb,
+    writeDbEntity,
+    flushMongoPersist,
+  })
+}
+
 registerDuodiandianGatewayRoutes(duodiandianPublicRouter, {
   readDb,
   writeDb,
@@ -12302,7 +12332,13 @@ function isManagedApiPath(pathValue) {
   const isZheyinPath = zheyinTrafficGateway
     && typeof zheyinTrafficGateway.isZheyinTrafficPublicPath === 'function'
     && zheyinTrafficGateway.isZheyinTrafficPublicPath(pathRaw)
-  return pathRaw.startsWith('/api/') || isDuodiandianPublicPath(pathRaw) || Boolean(isZheyinPath)
+  const isHalfFlowPath = halfFlowTrafficGateway
+    && typeof halfFlowTrafficGateway.isHalfFlowTrafficPublicPath === 'function'
+    && halfFlowTrafficGateway.isHalfFlowTrafficPublicPath(pathRaw)
+  return pathRaw.startsWith('/api/')
+    || isDuodiandianPublicPath(pathRaw)
+    || Boolean(isZheyinPath)
+    || Boolean(isHalfFlowPath)
 }
 
 app.use(async (ctx, next) => {
