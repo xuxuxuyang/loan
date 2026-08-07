@@ -35,6 +35,27 @@ function aesCtrAlgorithm(key) {
   return `aes-${key.length * 8}-ctr`
 }
 
+function removeValidPkcs7Padding(plaintext) {
+  if (!Buffer.isBuffer(plaintext) || plaintext.length === 0 || plaintext.length % 16 !== 0) return null
+  const paddingLength = plaintext[plaintext.length - 1]
+  if (paddingLength < 1 || paddingLength > 16 || paddingLength > plaintext.length) return null
+  for (let index = plaintext.length - paddingLength; index < plaintext.length; index += 1) {
+    if (plaintext[index] !== paddingLength) return null
+  }
+  return plaintext.subarray(0, plaintext.length - paddingLength)
+}
+
+function parseDecryptedJson(plaintext) {
+  try {
+    return JSON.parse(plaintext.toString('utf8'))
+  }
+  catch (originalError) {
+    const unpadded = removeValidPkcs7Padding(plaintext)
+    if (!unpadded) throw originalError
+    return JSON.parse(unpadded.toString('utf8'))
+  }
+}
+
 function encryptHalfFlowJson(payload, config, suppliedNonce) {
   const key = decodeAesKey(config && config.aesKey)
   const nonce = suppliedNonce || crypto.randomBytes(16)
@@ -62,8 +83,7 @@ function decryptHalfFlowData(data, config) {
       decipher.update(packed.subarray(16)),
       decipher.final(),
     ])
-    const text = plaintext.toString('utf8')
-    const payload = JSON.parse(text)
+    const payload = parseDecryptedJson(plaintext)
     if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
       throw new Error('decrypted data must be an object')
     }

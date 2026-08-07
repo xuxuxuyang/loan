@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict')
+const crypto = require('node:crypto')
 const fs = require('node:fs')
 const path = require('node:path')
 const test = require('node:test')
@@ -128,6 +129,13 @@ function encryptedRequest(payload) {
   return { data: gateway.encryptHalfFlowJson(payload, config) }
 }
 
+function encryptHalfFlowPlaintext(plaintext, nonce = Buffer.alloc(16, 7)) {
+  const key = Buffer.from(config.aesKey, 'base64')
+  const cipher = crypto.createCipheriv(`aes-${key.length * 8}-ctr`, key, nonce)
+  const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()])
+  return Buffer.concat([nonce, ciphertext]).toString('base64')
+}
+
 test('uses only explicit HALF_FLOW_TRAFFIC environment values', () => {
   const parsed = gateway.halfFlowTrafficConfigFromEnv({
     HALF_FLOW_TRAFFIC_ENABLED: 'true',
@@ -243,6 +251,31 @@ test('NoPadding ciphertext length matches the UTF-8 JSON byte length', () => {
 
   assert.equal(encrypted.subarray(16).length, Buffer.byteLength(JSON.stringify(payload), 'utf8'))
   assert.deepEqual(gateway.decryptHalfFlowData(encrypted.toString('base64'), config), payload)
+})
+
+test('decrypts the 95-byte admission JSON when the partner adds PKCS7 padding', () => {
+  const payload = {
+    idCardMd5: 'a'.repeat(32),
+    mobileMd5: 'b'.repeat(32),
+  }
+  const plaintext = Buffer.from(JSON.stringify(payload), 'utf8')
+  assert.equal(plaintext.length, 95)
+
+  const paddingLength = 16 - (plaintext.length % 16)
+  const padded = Buffer.concat([plaintext, Buffer.alloc(paddingLength, paddingLength)])
+
+  assert.equal(paddingLength, 1)
+  assert.deepEqual(gateway.decryptHalfFlowData(encryptHalfFlowPlaintext(padded), config), payload)
+})
+
+test('does not trim arbitrary decrypted bytes that are not valid PKCS7 padding', () => {
+  const plaintext = Buffer.from(JSON.stringify({ orderId: 'HF-INVALID-TAIL-001' }), 'utf8')
+  const malformed = Buffer.concat([plaintext, Buffer.from([1, 2])])
+
+  assert.throws(
+    () => gateway.decryptHalfFlowData(encryptHalfFlowPlaintext(malformed), config),
+    /Unexpected non-whitespace character after JSON/,
+  )
 })
 
 test('validates the documented admission, apply, and H5 payloads', () => {
