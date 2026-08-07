@@ -82,11 +82,24 @@ const DEFER_AS_COLLECTED_EVENT_TYPE = 'defer_as_collected'
 function collectDeferAsCollectedEventsForDate(events, order, item, dueDate) {
   const orderId = String(order && order.id ? order.id : '').trim()
   const period = Number(item && item.period)
-  return events.filter(event => event
-    && event.type === DEFER_AS_COLLECTED_EVENT_TYPE
-    && normalizeInstallmentDueDateKey(event.statsDate) === dueDate
-    && String(event.orderId || '').trim() === orderId
-    && Number(event.period) === period)
+  let latestEvent = null
+  let latestCreatedAt = Number.NEGATIVE_INFINITY
+  for (const event of events) {
+    if (!event
+      || event.type !== DEFER_AS_COLLECTED_EVENT_TYPE
+      || normalizeInstallmentDueDateKey(event.statsDate) !== dueDate
+      || String(event.orderId || '').trim() !== orderId
+      || Number(event.period) !== period) {
+      continue
+    }
+    const createdAt = Date.parse(String(event.createdAt || ''))
+    const comparableCreatedAt = Number.isFinite(createdAt) ? createdAt : Number.NEGATIVE_INFINITY
+    if (!latestEvent || comparableCreatedAt >= latestCreatedAt) {
+      latestEvent = event
+      latestCreatedAt = comparableCreatedAt
+    }
+  }
+  return latestEvent ? [latestEvent] : []
 }
 
 function collectRepaymentDisplayEvents(orders, extraEvents = []) {

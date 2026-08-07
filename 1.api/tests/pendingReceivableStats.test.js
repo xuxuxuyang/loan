@@ -260,6 +260,58 @@ test('prefers current installment state when a historical defer event overlaps t
   assert.deepEqual(orders, before)
 })
 
+test('counts same-day defer history once and keeps the latest event for display', () => {
+  const orders = [
+    {
+      id: 'OD-same-day-defers',
+      installmentPlan: [
+        {
+          period: 1,
+          dueDate: '2026-08-10',
+          amount: 4100,
+          paid: false,
+          repaymentDisplayEvents: [
+            {
+              type: 'defer_as_collected',
+              orderId: 'OD-same-day-defers',
+              period: 1,
+              statsDate: '2026-08-07',
+              fromDueDate: '2026-08-07',
+              toDueDate: '2026-08-08',
+              amountAtAction: 4100,
+              createdAt: '2026-08-06T01:37:13.072Z',
+            },
+            {
+              type: 'defer_as_collected',
+              orderId: 'OD-same-day-defers',
+              period: 1,
+              statsDate: '2026-08-07',
+              fromDueDate: '2026-08-07',
+              toDueDate: '2026-08-10',
+              amountAtAction: 4100,
+              createdAt: '2026-08-07T01:39:39.060Z',
+            },
+          ],
+        },
+      ],
+    },
+  ]
+  const before = structuredClone(orders)
+
+  const stats = computePendingReceivableStats(orders, '2026-08-07')
+
+  assert.equal(stats.totalDueOnDate, 4100)
+  assert.equal(stats.paidDueOnDate, 4100)
+  assert.equal(stats.unpaidDueOnDate, 0)
+  assert.equal(stats.totalDueOnDateCount, 1)
+  assert.equal(stats.paidDueOnDateCount, 1)
+  assert.equal(stats.deferredAsCollectedAmount, 4100)
+  assert.equal(stats.deferredAsCollectedCount, 1)
+  assert.equal(stats.allDueOnDateRowRefs.length, 1)
+  assert.equal(stats.allDueOnDateRowRefs[0].deferEvent.toDueDate, '2026-08-10')
+  assert.deepEqual(orders, before)
+})
+
 test('resolveInstallmentEffectiveDueDateKey prefers negotiated remainder due date', () => {
   const key = resolveInstallmentEffectiveDueDateKey({
     dueDate: '2026-06-15',
