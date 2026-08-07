@@ -25,12 +25,6 @@ function requireFields(object, fields, path) {
   }
 }
 
-function requireEnum(value, allowed, path) {
-  if (!allowed.includes(Number(value))) {
-    throw new HalfFlowTrafficError(`${path} is invalid`)
-  }
-}
-
 function requireNonEmptyScalar(value, path) {
   const validNumber = typeof value === 'number' && Number.isFinite(value)
   const validString = typeof value === 'string' && Boolean(readTrim(value))
@@ -58,7 +52,11 @@ function assertApplyPayload(payload) {
   if (!MOBILE_PATTERN.test(mobile)) throw new HalfFlowTrafficError('mobile is invalid')
   if (!ID_CARD_PATTERN.test(idCard)) throw new HalfFlowTrafficError('idCard is invalid')
 
-  const authInfo = requireObject(input.authInfo, 'authInfo')
+  const suppliedAuthInfo = requireObject(input.authInfo, 'authInfo')
+  const authInfo = {
+    ...suppliedAuthInfo,
+    lssuing: hasValue(suppliedAuthInfo.lssuing) ? suppliedAuthInfo.lssuing : suppliedAuthInfo.issuing,
+  }
   requireFields(authInfo, [
     'idCardFront', 'idCardBack', 'faceUrl', 'faceScore', 'faceTime', 'nativePlace',
     'effectiveDate', 'gender', 'birthday', 'nation', 'lssuing', 'age',
@@ -69,32 +67,26 @@ function assertApplyPayload(payload) {
     'marital', 'education', 'isOpType', 'province', 'city', 'area', 'address',
     'companyAddress', 'companyName', 'monthlyAverageIncome', 'industry',
   ], 'baseInfo')
-  requireEnum(baseInfo.marital, [1, 2, 3, 4], 'baseInfo.marital')
-  requireEnum(baseInfo.education, [1, 2, 3, 4, 5], 'baseInfo.education')
-  requireEnum(baseInfo.isOpType, [1, 2, 4, 5, 6], 'baseInfo.isOpType')
-  requireNonEmptyScalar(baseInfo.monthlyAverageIncome, 'baseInfo.monthlyAverageIncome')
-  requireEnum(baseInfo.industry, Array.from({ length: 21 }, (_, index) => index), 'baseInfo.industry')
+  for (const field of ['marital', 'education', 'isOpType', 'monthlyAverageIncome', 'industry']) {
+    requireNonEmptyScalar(baseInfo[field], `baseInfo.${field}`)
+  }
 
   const deviceInfo = requireObject(input.deviceInfo, 'deviceInfo')
   requireFields(deviceInfo, ['lng', 'lat', 'osType'], 'deviceInfo')
-  requireEnum(deviceInfo.osType, [1, 2], 'deviceInfo.osType')
+  requireNonEmptyScalar(deviceInfo.osType, 'deviceInfo.osType')
 
   const contactInfos = requireObject(input.contactInfos, 'contactInfos')
   requireFields(contactInfos, [
     'commonName', 'commonPhone', 'commonRelationship',
     'emergentName', 'emergentPhone', 'emergentRelationship',
   ], 'contactInfos')
-  if (!MOBILE_PATTERN.test(readTrim(contactInfos.commonPhone))) {
-    throw new HalfFlowTrafficError('contactInfos.commonPhone is invalid')
+  for (const field of ['commonPhone', 'commonRelationship', 'emergentPhone', 'emergentRelationship']) {
+    requireNonEmptyScalar(contactInfos[field], `contactInfos.${field}`)
   }
-  if (!MOBILE_PATTERN.test(readTrim(contactInfos.emergentPhone))) {
-    throw new HalfFlowTrafficError('contactInfos.emergentPhone is invalid')
-  }
-  requireEnum(contactInfos.commonRelationship, [1, 2, 3, 4, 5, 6, 7, 8], 'contactInfos.commonRelationship')
-  requireEnum(contactInfos.emergentRelationship, [1, 2, 3, 4, 5, 6, 7, 8], 'contactInfos.emergentRelationship')
 
   return {
     ...input,
+    authInfo,
     orderId: readTrim(input.orderId),
     mobile,
     name: readTrim(input.name),

@@ -297,6 +297,86 @@ test('rejects missing, blank, or structured monthlyAverageIncome values', () => 
   }
 })
 
+test('accepts future descriptive values and documented contact phone formats', () => {
+  const payload = makeApplyPayload()
+  const result = gateway.assertApplyPayload({
+    ...payload,
+    baseInfo: {
+      ...payload.baseInfo,
+      marital: 0,
+      education: 6,
+      isOpType: 3,
+      monthlyAverageIncome: 'future-income-tier',
+      industry: 21,
+    },
+    deviceInfo: {
+      ...payload.deviceInfo,
+      osType: 'future-os',
+    },
+    contactInfos: {
+      ...payload.contactInfos,
+      commonPhone: '010-12345678',
+      commonRelationship: 0,
+      emergentPhone: '+86 137 1234 5678',
+      emergentRelationship: 9,
+    },
+  })
+
+  assert.equal(result.baseInfo.marital, 0)
+  assert.equal(result.baseInfo.education, 6)
+  assert.equal(result.baseInfo.isOpType, 3)
+  assert.equal(result.baseInfo.monthlyAverageIncome, 'future-income-tier')
+  assert.equal(result.baseInfo.industry, 21)
+  assert.equal(result.deviceInfo.osType, 'future-os')
+  assert.equal(result.contactInfos.commonPhone, '010-12345678')
+  assert.equal(result.contactInfos.commonRelationship, 0)
+  assert.equal(result.contactInfos.emergentPhone, '+86 137 1234 5678')
+  assert.equal(result.contactInfos.emergentRelationship, 9)
+})
+
+test('accepts issuing as a compatibility alias for the documented lssuing field', () => {
+  const payload = makeApplyPayload()
+  const { lssuing, ...authInfo } = payload.authInfo
+  const result = gateway.assertApplyPayload({
+    ...payload,
+    authInfo: { ...authInfo, issuing: lssuing },
+  })
+
+  assert.equal(result.authInfo.lssuing, lssuing)
+})
+
+test('rejects missing, blank, or structured descriptive values', () => {
+  const payload = makeApplyPayload()
+  const cases = [
+    ['baseInfo.marital', value => ({ baseInfo: { ...payload.baseInfo, marital: value } })],
+    ['baseInfo.education', value => ({ baseInfo: { ...payload.baseInfo, education: value } })],
+    ['baseInfo.isOpType', value => ({ baseInfo: { ...payload.baseInfo, isOpType: value } })],
+    ['baseInfo.industry', value => ({ baseInfo: { ...payload.baseInfo, industry: value } })],
+    ['deviceInfo.osType', value => ({ deviceInfo: { ...payload.deviceInfo, osType: value } })],
+    ['contactInfos.commonPhone', value => ({ contactInfos: { ...payload.contactInfos, commonPhone: value } })],
+    ['contactInfos.commonRelationship', value => ({ contactInfos: { ...payload.contactInfos, commonRelationship: value } })],
+    ['contactInfos.emergentPhone', value => ({ contactInfos: { ...payload.contactInfos, emergentPhone: value } })],
+    ['contactInfos.emergentRelationship', value => ({ contactInfos: { ...payload.contactInfos, emergentRelationship: value } })],
+  ]
+
+  for (const [field, makeOverride] of cases) {
+    for (const value of [undefined, '', {}, []]) {
+      assert.throws(
+        () => gateway.assertApplyPayload({ ...payload, ...makeOverride(value) }),
+        new RegExp(field.replaceAll('.', '\\.') + ' (?:is required|is invalid)'),
+        `${field} should reject ${JSON.stringify(value)}`,
+      )
+    }
+  }
+})
+
+test('keeps primary identity validation strict while metadata is compatible', () => {
+  const payload = makeApplyPayload()
+
+  assert.throws(() => gateway.assertApplyPayload({ ...payload, mobile: '010-12345678' }), /mobile is invalid/)
+  assert.throws(() => gateway.assertApplyPayload({ ...payload, idCard: 'not-an-id-card' }), /idCard is invalid/)
+})
+
 test('keeps applications in a dedicated half-flow repository', async () => {
   assert.equal(gateway.HALF_FLOW_COLLECTION_NAME, 'halfFlowTrafficApplications')
   const repository = gateway.createMemoryHalfFlowTrafficRepository()
