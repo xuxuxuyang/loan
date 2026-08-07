@@ -271,6 +271,32 @@ test('validates the documented admission, apply, and H5 payloads', () => {
   assert.throws(() => gateway.assertAdmissionPayload({ idCardMd5: 'bad', mobileMd5: 'bad' }), /MD5/)
 })
 
+test('accepts non-empty scalar monthlyAverageIncome values outside the documented enum', () => {
+  const payload = makeApplyPayload()
+
+  for (const monthlyAverageIncome of [0, 4, 5000, '5000-10000']) {
+    const result = gateway.assertApplyPayload({
+      ...payload,
+      baseInfo: { ...payload.baseInfo, monthlyAverageIncome },
+    })
+    assert.equal(result.baseInfo.monthlyAverageIncome, monthlyAverageIncome)
+  }
+})
+
+test('rejects missing, blank, or structured monthlyAverageIncome values', () => {
+  const payload = makeApplyPayload()
+
+  for (const monthlyAverageIncome of [undefined, '', {}, []]) {
+    assert.throws(
+      () => gateway.assertApplyPayload({
+        ...payload,
+        baseInfo: { ...payload.baseInfo, monthlyAverageIncome },
+      }),
+      /baseInfo\.monthlyAverageIncome/,
+    )
+  }
+})
+
 test('keeps applications in a dedicated half-flow repository', async () => {
   assert.equal(gateway.HALF_FLOW_COLLECTION_NAME, 'halfFlowTrafficApplications')
   const repository = gateway.createMemoryHalfFlowTrafficRepository()

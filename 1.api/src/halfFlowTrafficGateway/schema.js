@@ -31,6 +31,14 @@ function requireEnum(value, allowed, path) {
   }
 }
 
+function requireNonEmptyScalar(value, path) {
+  const validNumber = typeof value === 'number' && Number.isFinite(value)
+  const validString = typeof value === 'string' && Boolean(readTrim(value))
+  if (!validNumber && !validString) {
+    throw new HalfFlowTrafficError(`${path} is invalid`)
+  }
+}
+
 function assertAdmissionPayload(payload) {
   const input = requireObject(payload, 'payload')
   const mobileMd5 = readTrim(input.mobileMd5).toLowerCase()
@@ -64,7 +72,7 @@ function assertApplyPayload(payload) {
   requireEnum(baseInfo.marital, [1, 2, 3, 4], 'baseInfo.marital')
   requireEnum(baseInfo.education, [1, 2, 3, 4, 5], 'baseInfo.education')
   requireEnum(baseInfo.isOpType, [1, 2, 4, 5, 6], 'baseInfo.isOpType')
-  requireEnum(baseInfo.monthlyAverageIncome, [1, 2, 3], 'baseInfo.monthlyAverageIncome')
+  requireNonEmptyScalar(baseInfo.monthlyAverageIncome, 'baseInfo.monthlyAverageIncome')
   requireEnum(baseInfo.industry, Array.from({ length: 21 }, (_, index) => index), 'baseInfo.industry')
 
   const deviceInfo = requireObject(input.deviceInfo, 'deviceInfo')
