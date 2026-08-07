@@ -19,7 +19,7 @@ const config = {
   creditExpireDays: 365,
   loginTokenTtlMs: 600000,
   notifyTimeoutMs: 8000,
-  loanUrlTemplate: 'https://shop.example.com/login?trafficLogin=1&channel={channel}&orderId={orderId}&token={token}&consumePath={consumePath}&domainUrl={domainUrl}',
+  loanUrlTemplate: 'https://shop.example.com/login?trafficLogin=1&channel={channel}&applyNo={orderId}&token={token}&consumePath={consumePath}&domainUrl={domainUrl}',
 }
 
 function makeApplyPayload(overrides = {}) {
@@ -670,7 +670,8 @@ test('creates one new mall user only when an approved application requests H5', 
   const url = new URL(result.repaymentAddress)
   assert.equal(url.searchParams.get('trafficLogin'), '1')
   assert.equal(url.searchParams.get('channel'), config.registerChannelCode)
-  assert.equal(url.searchParams.get('orderId'), row.orderId)
+  assert.equal(url.searchParams.get('applyNo'), row.orderId)
+  assert.equal(url.searchParams.get('orderId'), null)
   assert.equal(url.searchParams.get('consumePath'), '/api/open/partners/half-flow/login/consume')
   assert.equal(url.searchParams.get('domainUrl'), payload.domainUrl)
   const token = url.searchParams.get('token')
@@ -980,15 +981,18 @@ test('runs the encrypted apply, callback, H5, and plain one-time login flow', as
   assert.equal(appLink.body.code, 0)
   assert.equal(db.users.length, 1)
   const repaymentAddress = gateway.decryptHalfFlowData(appLink.body.data, config).repaymentAddress
-  const token = new URL(repaymentAddress).searchParams.get('token')
+  const loginUrl = new URL(repaymentAddress)
+  const applyNo = loginUrl.searchParams.get('applyNo')
+  const token = loginUrl.searchParams.get('token')
+  assert.equal(applyNo, payload.orderId)
 
-  const consume = makeCtx({ orderId: payload.orderId, token }, '')
+  const consume = makeCtx({ applyNo, token }, '')
   await router.routes.get(`${config.routePrefix}/login/consume`)(consume)
   assert.equal(consume.status, 200)
   assert.equal(consume.body.success, true)
   assert.equal(consume.body.data.user.phone, payload.mobile)
 
-  const reuse = makeCtx({ orderId: payload.orderId, token }, '')
+  const reuse = makeCtx({ applyNo, token }, '')
   await router.routes.get(`${config.routePrefix}/login/consume`)(reuse)
   assert.equal(reuse.status, 400)
   assert.equal(reuse.body.success, false)

@@ -81,7 +81,7 @@ const config = {
   creditExpireDays: 365,
   loginTokenTtlMs: 600000,
   notifyTimeoutMs: 8000,
-  loanUrlTemplate: 'https://shop.example.com/login?trafficLogin=1&channel={channel}&orderId={orderId}&token={token}&consumePath={consumePath}&domainUrl={domainUrl}',
+  loanUrlTemplate: 'https://shop.example.com/login?trafficLogin=1&channel={channel}&applyNo={orderId}&token={token}&consumePath={consumePath}&domainUrl={domainUrl}',
 }
 
 test('uses only explicit HALF_FLOW_TRAFFIC environment values', () => {
@@ -800,7 +800,7 @@ function mapHalfFlowContacts(contactInfos) {
 }
 ```
 
-`handleHalfFlowAppLink` must: require an approved row; reuse only `row.mallUserId`; otherwise recheck phone and ID against all shared users; append one new user; call `writeDbPartial(db, ['users'])`; await `flushMongoPersist`; then save `mallUserId`, SHA-256 token hash, issued time, empty consumed time on the application. Each repeated H5 request rotates the application token without creating a second user. Build `repaymentAddress` only from `config.loanUrlTemplate`, replacing `orderId`, `channel`, `token`, `consumePath`, and `domainUrl`; no fallback URL is permitted.
+`handleHalfFlowAppLink` must: require an approved row; reuse only `row.mallUserId`; otherwise recheck phone and ID against all shared users; append one new user; call `writeDbPartial(db, ['users'])`; await `flushMongoPersist`; then save `mallUserId`, SHA-256 token hash, issued time, empty consumed time on the application. Each repeated H5 request rotates the application token without creating a second user. Build `repaymentAddress` only from `config.loanUrlTemplate`, replacing `orderId`, `channel`, `token`, `consumePath`, and `domainUrl`; the template exposes the replaced `orderId` value under the mall-facing query key `applyNo`, and no fallback URL is permitted.
 
 - [ ] **Step 4: 写并实现一次性票据测试**
 
@@ -960,7 +960,7 @@ router.post(`${prefix}/apply`, ctx => handleEncrypted(ctx, runtime, async args =
   return result.data
 }))
 router.post(`${prefix}/app/link`, ctx => handleEncrypted(ctx, runtime, args => handleHalfFlowAppLink({ ...args, now, writeDbPartial, flushMongoPersist })))
-router.post(`${prefix}/login/consume`, ctx => handlePlainLogin(ctx, () => consumeHalfFlowLoginToken({ ...ctx.request.body, db: readDb(), repository, config: resolveHalfFlowTrafficConfig(configProvider()), now })))
+router.post(`${prefix}/login/consume`, ctx => handlePlainLogin(ctx, () => consumeHalfFlowLoginToken({ orderId: ctx.request.body.applyNo, token: ctx.request.body.token, db: readDb(), repository, config: resolveHalfFlowTrafficConfig(configProvider()), now })))
 ```
 
 The logger prefix is `[half-flow-traffic]`; logs contain only endpoint/order status and safe error messages. Never log decrypted requests or config secrets.
@@ -1082,8 +1082,8 @@ HALF_FLOW_TRAFFIC_CREDIT_EXPIRE_DAYS=365
 HALF_FLOW_TRAFFIC_LOGIN_TOKEN_TTL_MS=600000
 # 授信回调 HTTP 超时，单位毫秒；超时只记录失败，不回滚授信。
 HALF_FLOW_TRAFFIC_NOTIFY_TIMEOUT_MS=8000
-# 商城 H5 模板；支持 orderId/channel/token/consumePath/domainUrl，占位符必须全部保留。
-HALF_FLOW_TRAFFIC_LOAN_URL_TEMPLATE=http://localhost:5173/login?trafficLogin=1&channel={channel}&orderId={orderId}&token={token}&consumePath={consumePath}&domainUrl={domainUrl}
+# 商城 H5 免登模板；查询键 applyNo 的值使用 {orderId}，其余占位符必须全部保留。
+HALF_FLOW_TRAFFIC_LOAN_URL_TEMPLATE=http://localhost:5173/login?trafficLogin=1&channel={channel}&applyNo={orderId}&token={token}&consumePath={consumePath}&domainUrl={domainUrl}
 ```
 
 - [ ] **Step 5: 在生产环境文件增加同名完整配置**
@@ -1118,8 +1118,8 @@ HALF_FLOW_TRAFFIC_CREDIT_EXPIRE_DAYS=365
 HALF_FLOW_TRAFFIC_LOGIN_TOKEN_TTL_MS=600000
 # 授信回调 HTTP 超时，单位毫秒；失败不回滚授信。
 HALF_FLOW_TRAFFIC_NOTIFY_TIMEOUT_MS=8000
-# 生产商城 H5 模板；五个占位符必须全部保留。
-HALF_FLOW_TRAFFIC_LOAN_URL_TEMPLATE=https://wenshuosc.com/login?trafficLogin=1&channel={channel}&orderId={orderId}&token={token}&consumePath={consumePath}&domainUrl={domainUrl}
+# 生产商城 H5 免登模板；查询键 applyNo 的值使用 {orderId}，五个占位符必须全部保留。
+HALF_FLOW_TRAFFIC_LOAN_URL_TEMPLATE=https://wenshuosc.com/login?trafficLogin=1&channel={channel}&applyNo={orderId}&token={token}&consumePath={consumePath}&domainUrl={domainUrl}
 ```
 
 Do not force-add `.env.development` or `.env.production`; `.gitignore` intentionally protects them. Verify both files locally with `rg -n "^HALF_FLOW_TRAFFIC_"` and confirm each has exactly the same 14 variable names.

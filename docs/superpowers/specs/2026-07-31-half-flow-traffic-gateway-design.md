@@ -43,7 +43,7 @@
 | --- | --- | --- |
 | `/login/consume` | POST | 消费一次性免登票据 |
 
-该接口由新渠道生成的 H5 地址携带在 `consumePath` 中，不作为流量商业务接口发布。
+该接口由新渠道生成的 H5 地址携带在 `consumePath` 中，不作为流量商业务接口发布。商城稳定免登契约使用查询参数和请求体字段 `applyNo`；本模块在独立路由内将其映射为流量商业务 `orderId`。
 
 ### 3.4 明确不实现
 
@@ -297,11 +297,11 @@ halfFlowTrafficApplications
 7. 等待用户持久化成功。
 8. 生成随机一次性 token，只在响应 URL 中返回明文；申请集合只保存 SHA-256 哈希。
 9. 更新申请的 `mallUserId` 和票据状态。
-10. 返回字段 `repaymentAddress`，值为带 `trafficLogin=1`、`channel`、`orderId`、`token` 和 `consumePath` 的商城 H5 地址。
+10. 返回字段 `repaymentAddress`，值为带 `trafficLogin=1`、`channel`、`applyNo`、`token` 和 `consumePath` 的商城 H5 地址；其中 `applyNo` 的值来自本渠道 `orderId`。
 
 ### 8.4 消费免登票据
 
-1. 按 `orderId` 查询本渠道申请。
+1. 接收商城请求体 `{ applyNo, token }`，在本渠道独立路由内将 `applyNo` 映射为内部 `orderId`，再查询本渠道申请。
 2. 校验授信状态、token 哈希、签发时间、有效期和未消费状态。
 3. 按申请保存的 `mallUserId` 查询商城用户。
 4. 标记票据已消费并持久化。
@@ -395,7 +395,7 @@ halfFlowTrafficApplications
 - 首次获取 H5 只新增一个商城用户。
 - 并发出现历史用户时拒绝且不修改历史用户。
 - 重复获取 H5 不重复创建用户，只轮换本渠道票据。
-- H5 使用 `repaymentAddress` 字段并携带本渠道 `consumePath`。
+- H5 使用 `repaymentAddress` 字段，携带本渠道 `consumePath`，并以 `applyNo=<orderId>` 对齐商城稳定免登契约。
 - token 哈希保存、明文不落库、过期拒绝、重复消费拒绝。
 
 ### 12.5 隔离测试

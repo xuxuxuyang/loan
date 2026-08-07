@@ -146,7 +146,7 @@ function registerHalfFlowTrafficGatewayRoutes(router, deps = {}) {
       const currentConfig = resolveHalfFlowTrafficConfig(configProvider())
       const body = ctx.request && ctx.request.body ? ctx.request.body : {}
       const data = await consumeHalfFlowLoginToken({
-        orderId: body.orderId,
+        orderId: body.applyNo,
         token: body.token,
         db: readDb(),
         repository,
