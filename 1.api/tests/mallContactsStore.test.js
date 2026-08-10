@@ -6,6 +6,47 @@ const path = require('node:path')
 
 const { createMallContactsStore } = require('../src/mallContacts/store')
 
+function createContactsMongoFake() {
+  const records = {
+    mallContactUploads: [],
+    mallContactUploadBatches: [],
+  }
+  const matches = (item, query) => Object.entries(query || {}).every(([key, value]) => item[key] === value)
+  const collection = name => ({
+    async findOne(query) {
+      const item = records[name].find(record => matches(record, query))
+      return item ? JSON.parse(JSON.stringify(item)) : null
+    },
+    find(query) {
+      let list = records[name].filter(record => matches(record, query)).map(record => JSON.parse(JSON.stringify(record)))
+      return {
+        sort(sortSpec) {
+          const [key, direction] = Object.entries(sortSpec)[0]
+          list.sort((a, b) => (Number(a[key]) - Number(b[key])) * Number(direction))
+          return this
+        },
+        async toArray() {
+          return list
+        },
+      }
+    },
+    async replaceOne(query, replacement) {
+      const index = records[name].findIndex(record => matches(record, query))
+      const value = JSON.parse(JSON.stringify(replacement))
+      if (index >= 0) records[name][index] = value
+      else records[name].push(value)
+    },
+    async updateOne(query, update) {
+      const item = records[name].find(record => matches(record, query))
+      if (item && update && update.$set) Object.assign(item, JSON.parse(JSON.stringify(update.$set)))
+    },
+  })
+  return {
+    mongo: { getMongoDb: () => ({ collection }) },
+    records,
+  }
+}
+
 test('stores contact uploads as independent batch records in JSON fallback', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mall-contacts-'))
   const jsonFile = path.join(dir, 'mallContacts.json')
@@ -101,6 +142,83 @@ test('overwrites repeated batch indexes instead of duplicating contacts', async 
   const raw = JSON.parse(fs.readFileSync(path.join(dir, 'mallContacts.json'), 'utf8'))
   assert.equal(raw.batches.length, 1)
   assert.equal(raw.batches[0].contacts[0].displayName, '新记录')
+})
+
+test('deduplicates phone numbers across iOS contact batches when completing an upload', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mall-contacts-'))
+  const jsonFile = path.join(dir, 'mallContacts.json')
+  const store = createMallContactsStore({
+    jsonFile,
+    mongo: { getMongoDb: () => null },
+    idGenerator: () => 'MCU_IOS_DEDUPE',
+  })
+  const upload = await store.startUpload({
+    phone: '13800138000',
+    userId: 'U1',
+    orderId: 'O1',
+    nowIso: '2026-08-10T10:00:00.000Z',
+  })
+  await store.saveBatch({
+    uploadId: upload.uploadId,
+    batchIndex: 0,
+    contacts: [{ displayName: 'First', phones: ['13800138001'] }],
+    nowIso: '2026-08-10T10:01:00.000Z',
+  })
+  await store.saveBatch({
+    uploadId: upload.uploadId,
+    batchIndex: 1,
+    contacts: [
+      { displayName: 'Second', phones: ['13800138001', '13800138002'] },
+      { displayName: 'Duplicate', phones: ['13800138002'] },
+    ],
+    nowIso: '2026-08-10T10:02:00.000Z',
+  })
+
+  const completed = await store.completeUpload({
+    uploadId: upload.uploadId,
+    expectedBatchCount: 2,
+    dedupeByPhone: true,
+    nowIso: '2026-08-10T10:03:00.000Z',
+  })
+
+  assert.equal(completed.contactsCount, 2)
+  const raw = JSON.parse(fs.readFileSync(jsonFile, 'utf8'))
+  assert.deepEqual(raw.batches[0].contacts[0].phones, ['13800138001'])
+  assert.deepEqual(raw.batches[1].contacts.map(item => item.phones), [['13800138002']])
+})
+
+test('persists iOS cross-batch phone deduplication through the Mongo store path', async () => {
+  const fake = createContactsMongoFake()
+  const store = createMallContactsStore({
+    mongo: fake.mongo,
+    idGenerator: () => 'MCU_IOS_MONGO_DEDUPE',
+  })
+  const upload = await store.startUpload({ phone: '13800138000', userId: 'U1', orderId: 'O1' })
+  await store.saveBatch({
+    uploadId: upload.uploadId,
+    batchIndex: 0,
+    contacts: [{ displayName: 'First', phones: ['13800138001'] }],
+  })
+  await store.saveBatch({
+    uploadId: upload.uploadId,
+    batchIndex: 1,
+    contacts: [
+      { displayName: 'Second', phones: ['13800138001', '13800138002'] },
+      { displayName: 'Duplicate', phones: ['13800138002'] },
+    ],
+  })
+
+  const completed = await store.completeUpload({
+    uploadId: upload.uploadId,
+    expectedBatchCount: 2,
+    dedupeByPhone: true,
+  })
+
+  assert.equal(completed.contactsCount, 2)
+  assert.deepEqual(
+    fake.records.mallContactUploadBatches.map(batch => batch.contacts.map(contact => contact.phones)),
+    [[['13800138001']], [['13800138002']]],
+  )
 })
 
 test('rejects completing uploads when no valid contacts were saved', async () => {

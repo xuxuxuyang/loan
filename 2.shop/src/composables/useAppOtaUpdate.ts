@@ -64,6 +64,9 @@ export async function runAppOtaCheck(): Promise<void> {
   if (!Capacitor.isNativePlatform()) {
     return
   }
+  if (Capacitor.getPlatform() === 'ios') {
+    return
+  }
 
   try {
     await CapacitorUpdater.notifyAppReady()

@@ -112,7 +112,15 @@ async function uploadIdCardImage({ buffer, contentType, originalName, scene, pho
   })
 }
 
-async function uploadPublicImage({ buffer, contentType, originalName, scene, phone, biz }) {
+async function uploadPublicImage({
+  buffer,
+  contentType,
+  originalName,
+  scene,
+  phone,
+  biz,
+  cacheControl = 'public, max-age=31536000',
+}) {
   const client = getOssClient()
   if (!client) {
     const err = new Error('oss_not_configured')
@@ -128,7 +136,7 @@ async function uploadPublicImage({ buffer, contentType, originalName, scene, pho
   await client.put(objectKey, buffer, {
     headers: {
       'Content-Type': String(contentType || 'image/jpeg'),
-      'Cache-Control': 'public, max-age=31536000',
+      'Cache-Control': cacheControl,
     },
   })
   return {
@@ -137,9 +145,37 @@ async function uploadPublicImage({ buffer, contentType, originalName, scene, pho
   }
 }
 
+function ownedIdCardObjectKey(urlValue, phoneValue) {
+  const raw = String(urlValue || '').trim()
+  const phone = String(phoneValue || '').replace(/\D/g, '')
+  if (!raw || !/^1\d{10}$/.test(phone) || raw.includes('*') || raw.includes('..')) return ''
+  let pathname
+  try {
+    pathname = decodeURIComponent(new URL(raw).pathname).replace(/^\/+/, '')
+  }
+  catch {
+    return ''
+  }
+  const config = getOssConfig()
+  const expectedPrefix = `${config.uploadPrefix}/${config.envTag}/id-cards/`
+  if (!pathname.startsWith(expectedPrefix) || !pathname.includes(`/${phone}/`)) return ''
+  return pathname
+}
+
+async function deleteOwnedIdCardImage(urlValue, phoneValue) {
+  const objectKey = ownedIdCardObjectKey(urlValue, phoneValue)
+  if (!objectKey) throw new Error('unsafe_id_card_object_key')
+  const client = getOssClient()
+  if (!client) throw new Error('oss_not_configured')
+  await client.delete(objectKey)
+  return { deleted: true, key: objectKey }
+}
+
 module.exports = {
   getOssConfig,
   isOssConfigured,
   uploadPublicImage,
   uploadIdCardImage,
+  ownedIdCardObjectKey,
+  deleteOwnedIdCardImage,
 }

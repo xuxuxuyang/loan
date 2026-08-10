@@ -106,7 +106,8 @@ const multer = require('@koa/multer')
 const mount = require('koa-mount')
 const serve = require('koa-static')
 const { imageSize } = require('image-size')
-const { getOssConfig, isOssConfigured, uploadIdCardImage, uploadPublicImage } = require('./oss')
+const { deleteOwnedIdCardImage, getOssConfig, isOssConfigured, uploadIdCardImage, uploadPublicImage } = require('./oss')
+const { uploadIosIdCardImage, validateIosIdCardImageSet } = require('./ios/idCardStorage')
 
 const { router: riskControlRouter, PREFIX: RISK_CONTROL_PREFIX } = require('./riskControl/router')
 const {
@@ -188,10 +189,12 @@ function loadOptionalHalfFlowTrafficGateway() {
 const halfFlowTrafficGateway = loadOptionalHalfFlowTrafficGateway()
 const { createMallContactsStore } = require('./mallContacts/store')
 const {
+  applyMallContactsUploadSummary,
   markMallContactsRequiredForOrder,
   shouldBlockContractForMallContacts,
 } = require('./mallContacts/policy')
 const { registerMallContactsRoutes } = require('./mallContacts/router')
+const { registerIosAppRoutes } = require('./ios')
 
 const app = new Koa()
 const router = new Router({ prefix: '/api' })
@@ -9678,6 +9681,43 @@ registerMallContactsRoutes(router, {
   readDb,
   success,
   writeDbPartial,
+})
+
+registerIosAppRoutes(router, {
+  readDb,
+  success,
+  fail,
+  normalizePhone,
+  resolveUser: resolvePlacingMallUserFromBearer,
+  sendRegisterSms: sendRegisterVerificationSms,
+  verifyRegisterSms: verifyAndConsumeRegisterSms,
+  resolveRegisterChannel: resolveRegisterChannelForRegistration,
+  createUser: createMallUserFromRegisterPayload,
+  writeUsers: writeUsersDb,
+  idCardUploadMiddleware: mallIdCardUpload.single('image'),
+  uploadIdCard: uploadIosIdCardImage,
+  validateIdCardImages: validateIosIdCardImageSet,
+  getRiskStepKeys: () => [...ORDER_INSTALLMENT_RISK_STEP_KEYS],
+  createRiskWave: createInstallmentRiskWave,
+  runRiskStep: async ({ stepKey, ...identity }) => {
+    const result = await runOrderSubmitSingleRiskStep(stepKey, identity)
+    return result.step || { key: stepKey, ok: Boolean(result.ok) }
+  },
+  recordRiskStep: recordInstallmentRiskWaveStep,
+  consumeRiskWave: consumeInstallmentRiskWaveForOrder,
+  normalizeProduct: normalizeProductRecord,
+  normalizeQuota: normalizeUserQuota,
+  isOrderSettled: isMallOrderRepaymentSettled,
+  buildInstallmentPlan,
+  writeOrders: writeOrdersDb,
+  flushPersist: flushMongoPersist,
+  contactsStore: mallContactsStore,
+  applyContactsSummary: applyMallContactsUploadSummary,
+  writeUsersAndOrders: writeOrdersAndUsersDb,
+  verifyPassword: verifyMallUserPassword,
+  deleteContactsByAccount: input => mallContactsStore.deleteByAccount(input),
+  deleteIdCardImage: deleteOwnedIdCardImage,
+  writeAccountDeletion: db => writeDbPartial(db, ['users', 'addresses', 'bankCards', 'orders', 'lakalaPayments', 'csSessions']),
 })
 
 registerDuodiandianGatewayRoutes(router, {

@@ -34,7 +34,11 @@
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>NSContactsUsageDescription</key>
-	<string>用于在您主动授权后读取并上传您授权的联系人姓名、手机号及去重标识至平台，关联到您的账号并完成订单安全审核。iOS 18及以上可选择部分联系人或完全访问。</string>
+	<string>仅在您主动申请的先享后付订单审核通过并进入合同签署前，用于读取您的授权；</string>
+	<key>NSCameraUsageDescription</key>
+	<string>用于您主动申请先享后付时拍摄身份证正反面和手持身份证照片，以完成身份核验；</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>用于您主动申请先享后付时选择身份证正反面和手持身份证照片，以完成身份核验；</string>
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>
 	<key>UIMainStoryboardFile</key>

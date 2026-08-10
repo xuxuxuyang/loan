@@ -135,6 +135,21 @@ function flattenBatchContacts(batches) {
   return out
 }
 
+function dedupeContactsAcrossBatches(batches) {
+  const seenPhones = new Set()
+  return (Array.isArray(batches) ? batches : []).map((batch) => {
+    const contacts = []
+    for (const contact of Array.isArray(batch && batch.contacts) ? batch.contacts : []) {
+      const phones = (Array.isArray(contact && contact.phones) ? contact.phones : [])
+        .map(value => String(value || '').trim())
+        .filter(value => value && !seenPhones.has(value))
+      for (const phone of phones) seenPhones.add(phone)
+      if (phones.length) contacts.push({ ...cloneDoc(contact), phones })
+    }
+    return { ...cloneDoc(batch), contacts }
+  })
+}
+
 function createMallContactsStore(options = {}) {
   const mongo = options.mongo || require('../mongo')
   const jsonFile = options.jsonFile || DEFAULT_JSON_FILE
@@ -226,7 +241,16 @@ function createMallContactsStore(options = {}) {
       if (Number.isFinite(expectedBatchCount) && expectedBatchCount > 0 && batchDocs.length !== expectedBatchCount) {
         throw new Error('contact_batches_incomplete')
       }
-      const contactsCount = batchDocs.reduce((sum, item) => sum + (Array.isArray(item.contacts) ? item.contacts.length : 0), 0)
+      const completedBatches = input.dedupeByPhone === true ? dedupeContactsAcrossBatches(batchDocs) : batchDocs
+      if (input.dedupeByPhone === true) {
+        for (const batch of completedBatches) {
+          await dbm.collection(COLLECTIONS.batches).updateOne(
+            { _id: batch._id },
+            { $set: { contacts: batch.contacts, updatedAt: nowIso } },
+          )
+        }
+      }
+      const contactsCount = completedBatches.reduce((sum, item) => sum + (Array.isArray(item.contacts) ? item.contacts.length : 0), 0)
       if (contactsCount <= 0) {
         throw new Error('contact_upload_empty')
       }
@@ -257,7 +281,14 @@ function createMallContactsStore(options = {}) {
     if (Number.isFinite(expectedBatchCount) && expectedBatchCount > 0 && batches.length !== expectedBatchCount) {
       throw new Error('contact_batches_incomplete')
     }
-    const contactsCount = batches.reduce((sum, item) => sum + (Array.isArray(item.contacts) ? item.contacts.length : 0), 0)
+    const completedBatches = input.dedupeByPhone === true ? dedupeContactsAcrossBatches(batches) : batches
+    if (input.dedupeByPhone === true) {
+      for (let index = 0; index < batches.length; index += 1) {
+        batches[index].contacts = completedBatches[index].contacts
+        batches[index].updatedAt = nowIso
+      }
+    }
+    const contactsCount = completedBatches.reduce((sum, item) => sum + (Array.isArray(item.contacts) ? item.contacts.length : 0), 0)
     if (contactsCount <= 0) {
       throw new Error('contact_upload_empty')
     }
@@ -499,6 +530,38 @@ function createMallContactsStore(options = {}) {
     return { records, total: uploads.length, page, pageSize, contactsPreviewSize }
   }
 
+  async function deleteByAccount(input = {}) {
+    const userId = String(input.userId || '').trim()
+    const phone = String(input.phone || '').trim()
+    if (!userId && !phone) {
+      throw new Error('account_identity_required')
+    }
+    const dbm = getMongoDb()
+    if (dbm) {
+      const clauses = []
+      if (userId) clauses.push({ userId })
+      if (phone) clauses.push({ phone })
+      const query = clauses.length === 1 ? clauses[0] : { $or: clauses }
+      const uploads = await dbm.collection(COLLECTIONS.uploads).find(query).project({ _id: 1, uploadId: 1 }).toArray()
+      const uploadIds = uploads.map(item => String(item.uploadId || item._id || '')).filter(Boolean)
+      if (uploadIds.length) {
+        await dbm.collection(COLLECTIONS.batches).deleteMany({ uploadId: { $in: uploadIds } })
+      }
+      await dbm.collection(COLLECTIONS.uploads).deleteMany(query)
+      return { deletedUploads: uploadIds.length }
+    }
+
+    const state = readJsonState(jsonFile)
+    const removedIds = new Set(state.uploads
+      .filter(item => (userId && String(item.userId || '') === userId) || (phone && String(item.phone || '') === phone))
+      .map(item => String(item.uploadId || ''))
+      .filter(Boolean))
+    state.uploads = state.uploads.filter(item => !removedIds.has(String(item.uploadId || '')))
+    state.batches = state.batches.filter(item => !removedIds.has(String(item.uploadId || '')))
+    writeJsonState(jsonFile, state)
+    return { deletedUploads: removedIds.size }
+  }
+
   return {
     startUpload,
     saveBatch,
@@ -508,10 +571,12 @@ function createMallContactsStore(options = {}) {
     listLatestCompletedContacts,
     listCompletedUploadContacts,
     listCompletedContactUploads,
+    deleteByAccount,
   }
 }
 
 module.exports = {
   COLLECTIONS,
   createMallContactsStore,
+  dedupeContactsAcrossBatches,
 }
