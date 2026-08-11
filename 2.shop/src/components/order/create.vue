@@ -608,15 +608,39 @@ async function bootstrapOrderPage() {
   }
 }
 
+let iosBodyOverflowBeforeCheckout = ''
+let iosOwnsBodyScrollLock = false
+
+function restoreIosBodyOverflow() {
+  if (!useIosReviewFlow || !iosOwnsBodyScrollLock || typeof document === 'undefined') return
+  document.body.style.overflow = iosBodyOverflowBeforeCheckout
+  iosOwnsBodyScrollLock = false
+}
+
 if (!import.meta.env.SSR) {
   void bootstrapOrderPage()
   watch(
     () => addressPromptOpen.value || orderSubmitLoadingVisible.value || iosProfileStage.value !== 'closed',
     (busy) => {
+      if (useIosReviewFlow) {
+        if (busy) {
+          if (!iosOwnsBodyScrollLock) {
+            iosBodyOverflowBeforeCheckout = document.body.style.overflow
+            iosOwnsBodyScrollLock = true
+          }
+          document.body.style.overflow = 'hidden'
+        }
+        else {
+          restoreIosBodyOverflow()
+        }
+        return
+      }
       document.body.style.overflow = busy ? 'hidden' : ''
     },
   )
 }
+
+onBeforeUnmount(restoreIosBodyOverflow)
 
 watch(
   () => `${String(route.query.addressId || '')}|${String(route.query.productId || '')}|${addresses.value.map(a => a.id).join(',')}`,

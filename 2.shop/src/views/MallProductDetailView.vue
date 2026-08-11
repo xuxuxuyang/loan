@@ -12,11 +12,13 @@ import {
   useTeaProducts,
 } from '~/composables/useTeaProducts'
 import { notifyWarning } from '~/utils/epFeedback'
+import { isIosNativeApp } from '~/utils/iosNativePlatform'
 
 const route = useRoute()
 const { smartNavigate } = useCustomRouting(route)
 const runtimeConfig = useRuntimeConfig()
 const { ensureRegistered, profile, syncFromStorage } = useMallAuth()
+const isIosApp = isIosNativeApp()
 
 const product = ref<TeaProduct | null>(null)
 const loadError = ref(false)
@@ -144,7 +146,8 @@ if (!import.meta.env.SSR) {
 
 <template>
   <div
-    class="normal-font min-h-screen bg-[#f3f4f8] pb-[calc(8rem+var(--app-safe-area-bottom))]"
+    class="normal-font bg-[#f3f4f8] pb-[calc(8rem+var(--app-safe-area-bottom))]"
+    :class="isIosApp ? 'ios-product-detail-scroll' : 'min-h-screen'"
   >
     <header
       class="sticky top-0 z-20 flex items-center gap-2 border-b border-black/6 bg-[#f3f4f8]/95 px-3 pb-2.5 backdrop-blur supports-[backdrop-filter]:bg-[#f3f4f8]/80"
@@ -289,5 +292,14 @@ if (!import.meta.env.SSR) {
 <style scoped>
 .normal-font {
   font-family: "PingFang SC", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
+}
+
+.ios-product-detail-scroll {
+  height: 100dvh;
+  min-height: 100dvh;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  -webkit-overflow-scrolling: touch;
 }
 </style>

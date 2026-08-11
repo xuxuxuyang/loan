@@ -134,6 +134,30 @@ test('iOS identity images are converted before upload and full purchases enter p
   assert.match(order, /payPreorderPayload/)
 })
 
+test('iOS identity uploads show local previews and feedback above the profile sheet', () => {
+  const profileForm = read('2.shop/src/components/ios/order/IosInstallmentProfileForm.vue')
+
+  assert.match(profileForm, /URL\.createObjectURL/)
+  assert.match(profileForm, /URL\.revokeObjectURL/)
+  assert.match(profileForm, /:src="previewUrls\[scene\]"/)
+  assert.match(profileForm, /点击重新选择/)
+  assert.match(profileForm, /zIndex:\s*9000/)
+  assert.match(profileForm, /appendTo:\s*document\.body/)
+  assert.match(profileForm, /customClass:\s*'ios-profile-feedback'/)
+})
+
+test('iOS product detail owns its scroll container and releases checkout body locks', () => {
+  const productDetail = read('2.shop/src/views/MallProductDetailView.vue')
+  const order = read('2.shop/src/components/order/create.vue')
+
+  assert.match(productDetail, /isIosNativeApp/)
+  assert.match(productDetail, /ios-product-detail-scroll/)
+  assert.match(productDetail, /overflow-y:\s*auto/)
+  assert.match(productDetail, /-webkit-overflow-scrolling:\s*touch/)
+  assert.match(order, /onBeforeUnmount/)
+  assert.match(order, /restoreIosBodyOverflow/)
+})
+
 test('iOS personal center exposes complete in-app account deletion', () => {
   const api = read('2.shop/src/api/modules/iosMall.ts')
   const center = read('2.shop/src/components/my/MyCenterMobile.vue')

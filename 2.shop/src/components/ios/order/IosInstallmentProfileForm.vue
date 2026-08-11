@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import type { IosIdCardScene, IosInstallmentProfileStatus, IosInstallmentProfileUpdate } from '~/api/modules/iosMall'
 import { saveIosInstallmentProfile, uploadIosIdCard } from '~/api/modules/iosMall'
-import { notifyError, notifySuccess, notifyWarning } from '~/utils/epFeedback'
 
 const props = defineProps<{ phone: string }>()
 const emit = defineEmits<{ saved: [status: IosInstallmentProfileStatus], cancel: [] }>()
@@ -15,9 +14,38 @@ const form = reactive<IosInstallmentProfileUpdate>({
   emergencyContacts: [{ name: '', phone: '' }, { name: '', phone: '' }],
 })
 const uploading = reactive<Record<IosIdCardScene, boolean>>({ front: false, back: false, handheld: false })
+const previewUrls = reactive<Record<IosIdCardScene, string>>({ front: '', back: '', handheld: '' })
 const submitting = ref(false)
 const IOS_IDENTITY_MAX_EDGE = 1280
 const IOS_IDENTITY_JPEG_QUALITY = 0.82
+
+type IosProfileFeedbackType = 'success' | 'warning' | 'error'
+
+async function showIosProfileFeedback(type: IosProfileFeedbackType, message: string) {
+  const [, messageModule] = await Promise.all([
+    import('element-plus/es/components/message/style/css'),
+    import('element-plus/es/components/message/index'),
+  ])
+  messageModule.ElMessage({
+    type,
+    message,
+    zIndex: 9000,
+    duration: 2400,
+    offset: 64,
+    showClose: true,
+    appendTo: document.body,
+    customClass: 'ios-profile-feedback',
+  })
+}
+
+function replacePreview(scene: IosIdCardScene, nextUrl: string) {
+  if (previewUrls[scene]) URL.revokeObjectURL(previewUrls[scene])
+  previewUrls[scene] = nextUrl
+}
+
+onBeforeUnmount(() => {
+  Object.values(previewUrls).filter(Boolean).forEach(url => URL.revokeObjectURL(url))
+})
 
 interface DecodedIosIdentityImage {
   source: CanvasImageSource
@@ -105,32 +133,42 @@ function imageField(scene: IosIdCardScene): 'idCardFront' | 'idCardBack' | 'idCa
 async function onImageChange(uploadFile: { raw?: File }, scene: IosIdCardScene) {
   if (!uploadFile.raw) return
   uploading[scene] = true
+  let nextPreviewUrl = ''
   try {
     const compressed = await compressIosIdentityImage(uploadFile.raw)
+    nextPreviewUrl = URL.createObjectURL(compressed)
     const url = await uploadIosIdCard(props.phone, compressed, scene)
     form[imageField(scene)] = url
-    notifySuccess('图片上传成功')
+    replacePreview(scene, nextPreviewUrl)
+    nextPreviewUrl = ''
+    await showIosProfileFeedback('success', '图片上传成功')
   }
   catch (error) {
-    notifyError((error as Error).message)
+    await showIosProfileFeedback('error', (error as Error).message)
   }
   finally {
+    if (nextPreviewUrl) URL.revokeObjectURL(nextPreviewUrl)
     uploading[scene] = false
   }
 }
 
+function warn(message: string): false {
+  void showIosProfileFeedback('warning', message)
+  return false
+}
+
 function validate(): boolean {
-  if (!form.name.trim()) return notifyWarning('请填写真实姓名'), false
+  if (!form.name.trim()) return warn('请填写真实姓名')
   if (!/^[1-9]\d{5}(18|19|20)\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])\d{3}[\dXx]$/.test(form.idNumber.trim())) {
-    return notifyWarning('身份证号格式不正确'), false
+    return warn('身份证号格式不正确')
   }
-  if (!form.idCardFront || !form.idCardBack || !form.idCardHandheld) return notifyWarning('请完整上传三张身份证照片'), false
+  if (!form.idCardFront || !form.idCardBack || !form.idCardHandheld) return warn('请完整上传三张身份证照片')
   const phones = form.emergencyContacts.map(item => item.phone.replace(/\D/g, ''))
   if (form.emergencyContacts.some(item => !item.name.trim()) || phones.some(phone => !/^1\d{10}$/.test(phone))) {
-    return notifyWarning('请完整填写两位紧急联系人'), false
+    return warn('请完整填写两位紧急联系人')
   }
   if (phones[0] === phones[1] || phones.includes(props.phone.replace(/\D/g, ''))) {
-    return notifyWarning('联系人不能重复，也不能填写本人手机号'), false
+    return warn('联系人不能重复，也不能填写本人手机号')
   }
   return true
 }
@@ -151,11 +189,11 @@ async function submit() {
       ],
     }
     const status = await saveIosInstallmentProfile(props.phone, payload)
-    notifySuccess('先享后付资料已保存')
+    await showIosProfileFeedback('success', '先享后付资料已保存')
     emit('saved', status)
   }
   catch (error) {
-    notifyError((error as Error).message)
+    await showIosProfileFeedback('error', (error as Error).message)
   }
   finally {
     submitting.value = false
@@ -176,9 +214,22 @@ async function submit() {
         <p class="text-sm font-medium">身份证照片</p>
         <div class="mt-2 grid grid-cols-2 gap-3">
           <el-upload v-for="scene in (['front', 'back', 'handheld'] as IosIdCardScene[])" :key="scene" :class="scene === 'handheld' ? 'col-span-2' : ''" :auto-upload="false" :show-file-list="false" accept="image/*" @change="file => onImageChange(file, scene)">
-            <button type="button" class="min-h-24 w-full rounded-xl border border-dashed border-black/15 bg-[#fafafa] p-3 text-sm text-black/60">
-              {{ form[imageField(scene)] ? '已上传，可重新选择' : (scene === 'front' ? '身份证正面' : scene === 'back' ? '身份证反面' : '手持身份证') }}
-              <span v-if="uploading[scene]" class="block text-xs">上传中…</span>
+            <button
+              type="button"
+              class="relative block w-full overflow-hidden rounded-xl border border-dashed border-black/15 bg-[#fafafa] text-sm text-black/60"
+              :class="scene === 'handheld' ? 'h-28' : 'h-24'"
+            >
+              <img
+                v-if="previewUrls[scene]"
+                :src="previewUrls[scene]"
+                :alt="scene === 'front' ? '身份证正面' : scene === 'back' ? '身份证反面' : '手持身份证'"
+                class="absolute inset-0 h-full w-full bg-black/[0.03] object-contain"
+              >
+              <span v-else class="flex h-full items-center justify-center p-3">
+                {{ scene === 'front' ? '身份证正面' : scene === 'back' ? '身份证反面' : '手持身份证' }}
+              </span>
+              <span v-if="uploading[scene]" class="absolute inset-0 flex items-center justify-center bg-black/45 font-medium text-white">上传中…</span>
+              <span v-else-if="previewUrls[scene]" class="absolute inset-x-0 bottom-0 bg-black/55 px-2 py-1.5 text-xs font-medium text-white">点击重新选择</span>
             </button>
           </el-upload>
         </div>
@@ -198,4 +249,18 @@ async function submit() {
 
 <style scoped>
 :deep(.el-upload) { display: block; width: 100%; }
+
+:global(.ios-profile-feedback.el-message) {
+  min-width: min(21rem, calc(100vw - 2rem));
+  max-width: calc(100vw - 2rem);
+  padding: 14px 16px;
+  border-radius: 14px;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.2);
+}
+
+:global(.ios-profile-feedback .el-message__content) {
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.45;
+}
 </style>
