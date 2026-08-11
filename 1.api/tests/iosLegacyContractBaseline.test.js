@@ -22,7 +22,7 @@ test('legacy registration remains on the existing endpoint and fields', () => {
   assert.doesNotMatch(form, /\/ios\//)
 })
 
-test('legacy order and card package components keep existing endpoints', () => {
+test('legacy order and card package endpoints remain the default outside guarded iOS actions', () => {
   const orders = read('2.shop/src/composables/useMallOrders.ts')
   const contacts = read('2.shop/src/composables/useMallContacts.ts')
   const orderComponent = read('2.shop/src/components/order/create.vue')
@@ -32,8 +32,11 @@ test('legacy order and card package components keep existing endpoints', () => {
   assert.match(contacts, /\/mall\/contacts\/upload\/start/)
   assert.match(orderComponent, /installment-risk\/wave/)
   assert.match(cardPackage, /uploadMallContactsForOrder/)
-  assert.doesNotMatch(orderComponent, /\/ios\//)
-  assert.doesNotMatch(cardPackage, /\/ios\//)
+  assert.doesNotMatch(orders, /\/ios\//)
+  assert.doesNotMatch(contacts, /\/ios\//)
+  assert.match(orderComponent, /const useIosReviewFlow = isIosNativeApp\(\)/)
+  assert.match(orderComponent, /if \(!useIosReviewFlow\)[\s\S]*installment-risk\/wave/)
+  assert.match(cardPackage, /if \(useIosReviewFlow\)[\s\S]*uploadIosAuthorizedContacts[\s\S]*return[\s\S]*uploadMallContactsForOrder/)
 })
 
 test('thin views still point to the legacy components before iOS dispatch', () => {

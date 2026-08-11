@@ -1,13 +1,20 @@
 <script setup lang="ts">
 import type { UploadProps } from 'element-plus'
 import { useGuardedAppDownload } from '../../composables/useGuardedAppDownload'
-import { captureRegisterChannelFromRoute } from '../../composables/useRegisterChannel'
+import {
+  captureRegisterChannelFromRoute,
+  clearPendingRegisterChannel,
+  getPendingRegisterChannel,
+  resolveChannelFromRouteQuery,
+} from '../../composables/useRegisterChannel'
+import { registerIosMallAccount, sendIosRegisterSms } from '~/api/modules/iosMall'
 import {
   isValidEmergencyContactPersonName,
   isValidEmergencyContactPhoneDigits,
   normalizeEmergencyContactPersonName,
 } from '~/utils/emergencyContactValidate'
 import { notifyError, notifySuccess, notifyWarning } from '~/utils/epFeedback'
+import { isIosNativeApp } from '~/utils/iosNativePlatform'
 
 interface RegisterFormModel {
   name: string
@@ -29,6 +36,11 @@ const route = useRoute()
 const { smartNavigate } = useCustomRouting(route)
 const { register, sendRegisterSms } = useMallAuth()
 const { openGuardedAppDownload } = useGuardedAppDownload()
+const useIosReviewFlow = isIosNativeApp()
+const iosProfileState = useState<Record<string, unknown> | null>('mall-register-profile', () => null)
+const iosLoginPhoneState = useState<string>('mall-login-phone', () => '')
+const iosRegisteredCookie = useCookie<string>('mall_registered', { maxAge: 60 * 60 * 24 * 365, default: () => '' })
+const iosLoginCookie = useCookie<string>('mall_login_phone', { maxAge: 60 * 60 * 24 * 30, default: () => '' })
 const runtimeConfig = useRuntimeConfig()
 const mallApiBase = String(runtimeConfig.public.mallApiBase || '/api').replace(/\/+$/, '')
 
@@ -221,7 +233,7 @@ const phoneReg = /^1\d{10}$/
 const idCardReg = /^[1-9]\d{5}(18|19|20)\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])\d{3}[\dXx]$/
 
 function validateForm() {
-  if (!form.value.name.trim()) {
+  if (!useIosReviewFlow && !form.value.name.trim()) {
     notifyWarning('请填写姓名')
     return false
   }
@@ -241,6 +253,9 @@ function validateForm() {
   if (pwd !== form.value.passwordConfirm.trim()) {
     notifyWarning('两次输入的密码不一致')
     return false
+  }
+  if (useIosReviewFlow) {
+    return true
   }
   const idUpper = form.value.idNumber.trim().toUpperCase()
   if (!idUpper) {
@@ -306,29 +321,46 @@ async function handleSubmit() {
 
   submitting.value = true
   const pwdSubmit = form.value.password.trim()
-  const payload = {
-    name: form.value.name.trim(),
-    phone: form.value.phone.trim(),
-    smsCode: form.value.smsCode.trim(),
-    password: pwdSubmit,
-    idNumber: form.value.idNumber.trim().toUpperCase(),
-    idCardFront: form.value.idCardFront,
-    idCardBack: form.value.idCardBack,
-    idCardHandheld: form.value.idCardHandheld,
-    emergencyContacts: [
-      {
-        name: normalizeEmergencyContactPersonName(form.value.emergencyContact1Name),
-        phone: form.value.emergencyContact1Phone.trim().replace(/\D/g, ''),
-      },
-      {
-        name: normalizeEmergencyContactPersonName(form.value.emergencyContact2Name),
-        phone: form.value.emergencyContact2Phone.trim().replace(/\D/g, ''),
-      },
-    ],
-  }
 
   try {
-    await register(payload)
+    if (useIosReviewFlow) {
+      const phone = form.value.phone.trim()
+      const channel = getPendingRegisterChannel()
+        || resolveChannelFromRouteQuery(route.query as Record<string, unknown>)
+      const user = await registerIosMallAccount({
+        phone,
+        smsCode: form.value.smsCode.trim(),
+        password: pwdSubmit,
+        ...(channel ? { channel } : {}),
+      })
+      iosProfileState.value = user
+      iosLoginPhoneState.value = phone
+      iosRegisteredCookie.value = '1'
+      iosLoginCookie.value = phone
+      clearPendingRegisterChannel()
+    }
+    else {
+      await register({
+        name: form.value.name.trim(),
+        phone: form.value.phone.trim(),
+        smsCode: form.value.smsCode.trim(),
+        password: pwdSubmit,
+        idNumber: form.value.idNumber.trim().toUpperCase(),
+        idCardFront: form.value.idCardFront,
+        idCardBack: form.value.idCardBack,
+        idCardHandheld: form.value.idCardHandheld,
+        emergencyContacts: [
+          {
+            name: normalizeEmergencyContactPersonName(form.value.emergencyContact1Name),
+            phone: form.value.emergencyContact1Phone.trim().replace(/\D/g, ''),
+          },
+          {
+            name: normalizeEmergencyContactPersonName(form.value.emergencyContact2Name),
+            phone: form.value.emergencyContact2Phone.trim().replace(/\D/g, ''),
+          },
+        ],
+      })
+    }
     const shouldDownloadAfterAuth = route.query.downloadAfterAuth === '1'
       || route.query.downloadAfterRegister === '1'
     if (shouldDownloadAfterAuth) {
@@ -374,7 +406,12 @@ async function handleSendSms() {
   }
   smsSending.value = true
   try {
-    await sendRegisterSms(p)
+    if (useIosReviewFlow) {
+      await sendIosRegisterSms(p)
+    }
+    else {
+      await sendRegisterSms(p)
+    }
     notifySuccess('验证码已发送')
     smsCooldown.value = 60
     if (smsTimer) {
@@ -449,14 +486,14 @@ async function openPrivacyPolicy() {
         用户注册
       </h1>
       <p class="text-sm text-white/85">
-        先完成实名注册，再开启商城购买与先享后付服务。
+        {{ useIosReviewFlow ? '完成账号注册，开启商城服务。' : '先完成实名注册，再开启商城购买与先享后付服务。' }}
       </p>
     </div>
 
     <div class="-mt-4 px-4 pb-8">
       <div class="rounded-2xl border border-black/10 bg-white p-4 shadow-sm">
         <div class="space-y-4">
-          <div>
+          <div v-if="!useIosReviewFlow">
             <p class="mb-2 text-sm font-medium text-black/75">
               姓名
             </p>
@@ -536,7 +573,7 @@ async function openPrivacyPolicy() {
             />
           </div>
 
-          <div>
+          <div v-if="!useIosReviewFlow">
             <p class="mb-2 text-sm font-medium text-black/75">
               身份证号码
             </p>
@@ -550,7 +587,7 @@ async function openPrivacyPolicy() {
           </div>
         </div>
 
-        <div>
+        <div v-if="!useIosReviewFlow">
           <div class="mb-1 flex items-center justify-center gap-2">
             <p class="text-sm font-medium text-black/75">
               身份证上传
@@ -642,9 +679,9 @@ async function openPrivacyPolicy() {
           </div>
         </div>
 
-        <div class="my-4 h-px bg-black/8" />
+        <div v-if="!useIosReviewFlow" class="my-4 h-px bg-black/8" />
 
-        <div class="space-y-4">
+        <div v-if="!useIosReviewFlow" class="space-y-4">
           <div>
             <div class="mb-2 flex items-center justify-between gap-2">
               <p class="text-sm font-medium text-black/75">
@@ -696,7 +733,7 @@ async function openPrivacyPolicy() {
           </div>
         </div>
 
-        <div class="my-4 h-px bg-black/8" />
+        <div v-if="!useIosReviewFlow" class="my-4 h-px bg-black/8" />
 
       </div>
 

@@ -1,18 +1,32 @@
 <script setup lang="ts">
 import { h } from 'vue'
 import type { TeaProduct } from '~/composables/useTeaProducts'
+import IosAccountSecurity from '~/components/ios/my/IosAccountSecurity.vue'
 import mallDefaultAvatarUrl from '~/assets/mall-default-avatar.png?url'
 import { MALL_RUNTIME_CONFIG } from '~/config/mallRuntime'
 import { useGuardedAppDownload } from '~/composables/useGuardedAppDownload'
 import { alertDialog, notifyInfo, notifySuccess } from '~/utils/epFeedback'
+import { isIosNativeApp } from '~/utils/iosNativePlatform'
 
 const route = useRoute()
 const mallSiteUrl = MALL_RUNTIME_CONFIG.siteUrl || (typeof window !== 'undefined' ? window.location.origin : '')
 const { smartNavigate } = useCustomRouting(route)
 const { isLoggedIn, loginPhone, profile, syncFromStorage, logout } = useMallAuth()
 const { openGuardedAppDownload } = useGuardedAppDownload()
-const { summary, fetchSummary, cardPackages, fetchCardPackages } = useMallMy()
+const { orders } = useMallOrders()
+const {
+  summary,
+  addresses,
+  bankCards,
+  cardPackages,
+  billSummary,
+  bills,
+  fetchSummary,
+  fetchCardPackages,
+} = useMallMy()
 const recommendProducts = useTeaProducts()
+const useIosReviewFlow = isIosNativeApp()
+const securityVisible = ref(false)
 
 /** 「我的」页先享后付推荐：按订单展示价（price）升序，再取前 4 个 */
 const sortedRecommendProducts = computed(() => {
@@ -31,14 +45,20 @@ const orderStatus = [
   { title: '已完成', icon: 'tabler:clipboard-check', key: 'enjoying' },
 ]
 
-const serviceList = [
+const baseServiceList = [
   { key: 'address', title: '收货地址', icon: 'tabler:map-pin' },
   { key: 'service', title: '在线客服', icon: 'tabler:message-dots' },
   // { key: 'question', title: '常见问题', icon: 'tabler:help-circle' },
   { key: 'privacy', title: '隐私政策', icon: 'tabler:lock' },
   { key: 'download', title: 'App下载', icon: 'tabler:download' },
-  
 ]
+
+const serviceList = computed(() => [
+  ...baseServiceList,
+  ...(useIosReviewFlow && isLoggedIn.value
+    ? [{ key: 'account-security', title: '账号与安全', icon: 'tabler:shield-lock' }]
+    : []),
+])
 
 const displayName = computed(() => {
   if (!isLoggedIn.value) {
@@ -149,6 +169,37 @@ function handleLogout() {
   notifySuccess('已退出登录')
 }
 
+async function onDeleted() {
+  securityVisible.value = false
+  logout()
+  orders.value = []
+  addresses.value = []
+  bankCards.value = []
+  cardPackages.value = []
+  bills.value = []
+  summary.value = {
+    orderCount: { reviewing: 0, shipping: 0, receiving: 0, enjoying: 0 },
+    bankCardCount: 0,
+    billPendingAmount: 0,
+  }
+  billSummary.value = {
+    shouldRepay: 0,
+    totalPending: 0,
+    availableQuota: 0,
+    billDate: '每月 08 日',
+    minRepayment: 0,
+  }
+  if (!import.meta.env.SSR) {
+    localStorage.removeItem('mall-orders')
+    localStorage.removeItem('mall_cs_visitor_key')
+    localStorage.removeItem('mall_cs_session_id')
+    localStorage.removeItem('mall_cs_secret')
+    sessionStorage.removeItem('lakala_pending_pay')
+  }
+  notifySuccess('账号已注销并退出登录')
+  await smartNavigate('/login')
+}
+
 function isSafariBrowser() {
   if (typeof navigator === 'undefined') {
     return false
@@ -204,6 +255,10 @@ async function showIosPwaGuide() {
 }
 
 async function handleService(key: string) {
+  if (key === 'account-security' && useIosReviewFlow && isLoggedIn.value) {
+    securityVisible.value = true
+    return
+  }
   /** 收货地址需登录；在线客服允许访客会话，不校验 */
   if (key === 'address' && !isLoggedIn.value) {
     await smartNavigate('/login')
@@ -481,6 +536,13 @@ async function handleService(key: string) {
         </article>
       </div>
     </div>
+
+    <IosAccountSecurity
+      v-if="useIosReviewFlow && securityVisible"
+      :phone="loginPhone"
+      @close="securityVisible = false"
+      @deleted="onDeleted"
+    />
   </section>
 </template>
 

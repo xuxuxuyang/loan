@@ -1,4 +1,13 @@
 <script setup lang="ts">
+import type { IosInstallmentProfileStatus } from '~/api/modules/iosMall'
+import {
+  createIosInstallmentOrder,
+  createIosInstallmentRiskWave,
+  getIosInstallmentProfile,
+  runIosInstallmentRiskStep,
+} from '~/api/modules/iosMall'
+import IosInstallmentProfileForm from '~/components/ios/order/IosInstallmentProfileForm.vue'
+import IosInstallmentProfileSummary from '~/components/ios/order/IosInstallmentProfileSummary.vue'
 import { normalizeMallAccount } from '~/composables/useMallAuth'
 import { resolveMallCreditQuota } from '~/composables/mallCreditQuota'
 import { formatMallAddressLine, useMallMy } from '~/composables/useMallMy'
@@ -16,6 +25,7 @@ import { notifyError, notifySuccess, notifyWarning } from '~/utils/epFeedback'
 import { installmentRiskRejectToast } from '~/utils/installmentRiskMessage'
 import { validateMallOrderBeforeRisk } from '~/utils/orderEligibility'
 import { MALL_ORDER_ELIGIBILITY_POLICY } from '~/config/mallOrderEligibility'
+import { isIosNativeApp } from '~/utils/iosNativePlatform'
 
 const route = useRoute()
 const router = useRouter()
@@ -26,6 +36,12 @@ const { ensureRegistered, profile, loginPhone, syncFromStorage } = useMallAuth()
 const { addresses, fetchAddresses, fetchBills, fetchSummary, applyPostOrderCreationBundles } = useMallMy()
 const { orders, createOrder, syncFromRemote } = useMallOrders()
 const runtimeConfig = useRuntimeConfig()
+const useIosReviewFlow = isIosNativeApp()
+
+type IosProfileStage = 'closed' | 'loading' | 'form' | 'summary'
+const iosProfileStage = ref<IosProfileStage>('closed')
+const iosProfileStatus = ref<IosInstallmentProfileStatus | null>(null)
+const iosProfileApprovedForSubmit = ref(false)
 
 /** 本页仅支持单件下单 */
 const ORDER_QUANTITY = 1
@@ -234,6 +250,42 @@ function promptAddressBeforeSubmit() {
   addressPromptOpen.value = true
 }
 
+function closeIosProfileSheet() {
+  if (iosProfileStage.value === 'loading') {
+    return
+  }
+  iosProfileStage.value = 'closed'
+}
+
+async function openIosInstallmentProfileSheet() {
+  iosProfileStage.value = 'loading'
+  try {
+    iosProfileStatus.value = await getIosInstallmentProfile(currentUserPhone.value)
+    iosProfileStage.value = iosProfileStatus.value.canReuse ? 'summary' : 'form'
+  }
+  catch (error) {
+    iosProfileStage.value = 'closed'
+    notifyError((error as Error).message || '资料加载失败，请稍后重试')
+  }
+}
+
+async function continueIosOrderSubmit() {
+  iosProfileStage.value = 'closed'
+  iosProfileApprovedForSubmit.value = true
+  try {
+    await nextTick()
+    await submitOrder()
+  }
+  finally {
+    iosProfileApprovedForSubmit.value = false
+  }
+}
+
+async function onIosProfileSaved(status: IosInstallmentProfileStatus) {
+  iosProfileStatus.value = status
+  await continueIosOrderSubmit()
+}
+
 const itemAmount = computed(() => {
   if (!selectedProduct.value) {
     return 0
@@ -311,21 +363,28 @@ async function submitOrder() {
     return
   }
 
-  const preRiskEligibility = validateMallOrderBeforeRisk({
-    idNumber: profile.value?.idNumber,
-    phone: currentUserPhone.value,
-    phoneLocationText: profile.value?.locationText,
-    addressParts: [
-      shippingAddress.value.province,
-      shippingAddress.value.city,
-      shippingAddress.value.district,
-      shippingAddress.value.detail,
-    ],
-    policy: MALL_ORDER_ELIGIBILITY_POLICY,
-  })
-  if (!preRiskEligibility.ok) {
-    notifyWarning(preRiskEligibility.message)
+  if (useIosReviewFlow && !isMallDirectPurchase.value && !iosProfileApprovedForSubmit.value) {
+    await openIosInstallmentProfileSheet()
     return
+  }
+
+  if (!useIosReviewFlow) {
+    const preRiskEligibility = validateMallOrderBeforeRisk({
+      idNumber: profile.value?.idNumber,
+      phone: currentUserPhone.value,
+      phoneLocationText: profile.value?.locationText,
+      addressParts: [
+        shippingAddress.value.province,
+        shippingAddress.value.city,
+        shippingAddress.value.district,
+        shippingAddress.value.detail,
+      ],
+      policy: MALL_ORDER_ELIGIBILITY_POLICY,
+    })
+    if (!preRiskEligibility.ok) {
+      notifyWarning(preRiskEligibility.message)
+      return
+    }
   }
 
   submitting.value = true
@@ -333,6 +392,37 @@ async function submitOrder() {
   await nextTick()
   let creationResult: Awaited<ReturnType<typeof createOrder>> | undefined
   try {
+    if (useIosReviewFlow && !isMallDirectPurchase.value) {
+      const wave = await createIosInstallmentRiskWave(currentUserPhone.value)
+      for (const stepKey of wave.stepKeys) {
+        const step = await runIosInstallmentRiskStep(currentUserPhone.value, wave.waveId, stepKey)
+        if (!step.ok) {
+          throw new Error(step.step?.error || '订单暂未通过审核')
+        }
+      }
+      await createIosInstallmentOrder(currentUserPhone.value, {
+        productId: selectedProduct.value.id,
+        name: selectedProduct.value.name,
+        spec: selectedProduct.value.subtitle,
+        totalAmount: installmentRepayTotal.value,
+        quantity: ORDER_QUANTITY,
+        installmentPeriods: 1,
+        receiverName: receiverName.value,
+        receiverPhone: receiverPhone.value,
+        receiverAddress: receiverAddressLine.value,
+        installmentRiskWaveId: wave.waveId,
+      })
+      notifySuccess('订单已提交，请在我的订单中查看')
+      await smartNavigate({
+        path: '/orders',
+        query: {
+          status: 'reviewing',
+          productId: String(selectedProduct.value.id),
+          fromOrderCreate: '1',
+        },
+      })
+      return
+    }
     if (isMallDirectPurchase.value) {
       creationResult = await createOrder({
         productId: selectedProduct.value.id,
@@ -445,8 +535,11 @@ async function submitOrder() {
   catch (error: unknown) {
     let msg = ''
     if (error && typeof error === 'object') {
-      const o = error as { data?: { msg?: string } }
+      const o = error as { data?: { msg?: string }, message?: string }
       msg = typeof o.data?.msg === 'string' ? o.data.msg.trim() : ''
+      if (!msg && typeof o.message === 'string') {
+        msg = o.message.trim()
+      }
     }
     notifyError(msg || '创建订单失败，请稍后重试')
     return
@@ -518,7 +611,7 @@ async function bootstrapOrderPage() {
 if (!import.meta.env.SSR) {
   void bootstrapOrderPage()
   watch(
-    () => addressPromptOpen.value || orderSubmitLoadingVisible.value,
+    () => addressPromptOpen.value || orderSubmitLoadingVisible.value || iosProfileStage.value !== 'closed',
     (busy) => {
       document.body.style.overflow = busy ? 'hidden' : ''
     },
@@ -808,6 +901,39 @@ watch(
           <p class="text-center text-base font-semibold text-black/88">
             系统审核中
           </p>
+        </div>
+      </div>
+    </Transition>
+  </Teleport>
+
+  <Teleport to="body">
+    <Transition name="order-address-mask">
+      <div
+        v-if="iosProfileStage !== 'closed'"
+        class="fixed inset-0 z-[7000] flex flex-col justify-end bg-black/50 p-3 pb-[max(0.75rem,var(--app-safe-area-bottom))] sm:items-center sm:justify-center sm:p-4"
+        role="dialog"
+        aria-modal="true"
+        aria-label="申请资料"
+        @click.self="closeIosProfileSheet"
+      >
+        <div class="order-address-sheet-panel mx-auto max-h-[90vh] w-full max-w-md overflow-y-auto rounded-2xl bg-white shadow-[0_12px_48px_rgba(24,39,75,0.18)]">
+          <div v-if="iosProfileStage === 'loading'" class="px-5 py-10 text-center">
+            <span class="order-review-spinner mb-4 inline-block h-9 w-9 rounded-full border-[3px] border-[var(--theme-color)] border-t-transparent" />
+            <p class="text-sm text-black/60">正在准备申请资料…</p>
+          </div>
+          <IosInstallmentProfileForm
+            v-else-if="iosProfileStage === 'form'"
+            :phone="currentUserPhone"
+            @saved="onIosProfileSaved"
+            @cancel="closeIosProfileSheet"
+          />
+          <IosInstallmentProfileSummary
+            v-else-if="iosProfileStage === 'summary' && iosProfileStatus"
+            :status="iosProfileStatus"
+            @reuse="continueIosOrderSubmit"
+            @rewrite="iosProfileStage = 'form'"
+            @cancel="closeIosProfileSheet"
+          />
         </div>
       </div>
     </Transition>

@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import type { MallCardPackageDTO } from '~/api/modules/mall'
+import { uploadIosAuthorizedContacts } from '~/api/modules/iosMall'
 import { MALL_KEFU_QR_URL } from '~/constants/mallKefuQr'
-import { isIosNativeContactsAvailable, isNativeContactsAvailable, openNativeAppSettings, readAndUploadNativeContacts } from '~/composables/useAndroidContacts'
+import { isNativeContactsAvailable, openNativeAppSettings, readAndUploadNativeContacts } from '~/composables/useAndroidContacts'
 import { useCardPackageContractMeta } from '~/composables/useCardPackageContractMeta'
 import { useGuardedAppDownload } from '~/composables/useGuardedAppDownload'
 import { useMallContacts } from '~/composables/useMallContacts'
@@ -11,6 +12,7 @@ import {
   normalizeEmergencyContactPersonName,
 } from '~/utils/emergencyContactValidate'
 import { normalizeCardPackageContractEmbedUrl } from '~/utils/cardPackageContractEmbed'
+import { isIosNativeApp } from '~/utils/iosNativePlatform'
 import { buildMallAndroidContractUrl, isContactsPermissionDeniedError, isContactsRequiredApiError } from '~/utils/mallContacts'
 import { confirmDialog, notifyError, notifySuccess, notifyWarning } from '~/utils/epFeedback'
 const CardPackagePreClaimDialog = defineAsyncComponent(() => import('~/components/my/card-package/dialogs/CardPackagePreClaimDialog.vue'))
@@ -38,6 +40,7 @@ const {
 } = useMallMy()
 
 const account = computed(() => loginPhone.value || profile.value?.phone || '')
+const useIosReviewFlow = isIosNativeApp()
 const isValidAccount = computed(() => /^1\d{10}$/.test(account.value))
 const loading = ref(false)
 /** 避免首屏在请求开始前短暂渲染空列表，再切到「加载中」造成高度闪动 */
@@ -404,19 +407,19 @@ function readContactsErrorText(error: unknown): string {
 }
 
 async function promptOpenContactsSettings(reason: 'denied' | 'empty' = 'denied') {
-  const isIosContacts = isIosNativeContactsAvailable()
+  const isIosContacts = useIosReviewFlow
   const isEmptySelection = reason === 'empty'
   try {
     await confirmDialog(
       isIosContacts
         ? isEmptySelection
-          ? '未获取到含手机号的已授权联系人，系统尚未上传任何联系人。您可以前往系统设置调整联系人访问范围，或退出 App 后通过网页签署或联系客服处理。'
-          : '您未授权联系人，系统不会上传任何联系人。您可以前往系统设置重新授权，或退出 App 后通过网页签署或联系客服处理。'
+          ? '未获取到含手机号的已授权联系人，未上传任何联系人。您可以前往系统设置调整联系人访问范围，或返回卡包后稍后重试。'
+          : '您未授权联系人，未上传任何联系人。您可以前往系统设置重新授权，或返回卡包后稍后重试。'
         : '签署合同前需要完成 App 授权，请前往 App 按页面提示处理后继续。',
       isIosContacts ? (isEmptySelection ? '未获取到可用联系人' : '未授权联系人') : 'App 授权未完成',
       {
         confirmButtonText: isIosContacts ? '去系统设置' : '去处理授权',
-        cancelButtonText: isIosContacts ? '稍后通过网页处理' : '稍后再说',
+        cancelButtonText: isIosContacts ? '稍后再试' : '稍后再说',
         type: 'warning',
         closeOnClickModal: false,
       },
@@ -424,7 +427,7 @@ async function promptOpenContactsSettings(reason: 'denied' | 'empty' = 'denied')
     await openNativeAppSettings()
   }
   catch {
-    notifyWarning(isIosContacts ? '未上传联系人，可通过网页签署或联系客服处理' : '请完成 App 授权后再继续签署合同')
+    notifyWarning(isIosContacts ? '未上传联系人，请稍后重试' : '请完成 App 授权后再继续签署合同')
   }
 }
 
@@ -433,11 +436,11 @@ async function uploadNativeContactsAndRetry() {
   if (!item || contactsUploading.value) {
     return
   }
-  const isIosContacts = isIosNativeContactsAvailable()
+  const isIosContacts = useIosReviewFlow
   try {
     await confirmDialog(
       isIosContacts
-        ? '订单审核需要授权读取通讯录。推荐选择“完全访问”，有助于更快完成审核。'
+        ? '请选择需要授权的联系人，完成后继续签署。'
         : '为完成订单安全审核，需要读取通讯录。请在下一步系统弹窗中允许访问通讯录。',
       '联系人授权',
       {
@@ -451,13 +454,25 @@ async function uploadNativeContactsAndRetry() {
   }
   catch {
     if (isIosContacts) {
-      notifyWarning('已取消授权，未上传任何联系人；您可通过网页签署或联系客服处理')
+      notifyWarning('已取消授权，未上传任何联系人；您可以稍后重试')
     }
     return
   }
   contactsUploading.value = true
   try {
     await readAndUploadNativeContacts(async (contacts) => {
+      if (useIosReviewFlow) {
+        await uploadIosAuthorizedContacts(
+          account.value,
+          item.orderId,
+          contacts.map(contact => ({
+            contactId: contact.contactId,
+            displayName: contact.displayName,
+            phones: contact.phones,
+          })),
+        )
+        return
+      }
       await uploadMallContactsForOrder(account.value, item.orderId, contacts)
     })
     notifySuccess(isIosContacts ? '已上传您授权的联系人' : 'App 授权已完成')

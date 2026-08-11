@@ -164,10 +164,10 @@ async function submit() {
 </script>
 
 <template>
-  <section class="rounded-[24px] border border-[#173f35]/12 bg-white p-5 shadow-sm">
-    <p class="text-xs font-semibold tracking-[.16em] text-[#8a5b3d] uppercase">先享后付专用</p>
-    <h2 class="mt-2 text-xl font-semibold text-[#1f2925]">完善申请资料</h2>
-    <p class="mt-2 text-sm leading-6 text-[#64706a]">仅在您主动申请先享后付时收集，用于身份核验、风险评估和后续合同签署。普通购物无需填写。</p>
+  <section class="rounded-2xl bg-white p-5">
+    <p class="text-xs font-semibold tracking-[.16em] text-[var(--theme-color)]">先享后付</p>
+    <h2 class="mt-2 text-xl font-semibold text-black/85">完善申请资料</h2>
+    <p class="mt-2 text-sm leading-6 text-black/60">为完成本次先享后付服务，请填写并确认以下资料。</p>
 
     <div class="mt-5 space-y-4">
       <label class="block text-sm font-medium">真实姓名<el-input v-model="form.name" class="mt-2" size="large" /></label>
@@ -176,22 +176,22 @@ async function submit() {
         <p class="text-sm font-medium">身份证照片</p>
         <div class="mt-2 grid grid-cols-2 gap-3">
           <el-upload v-for="scene in (['front', 'back', 'handheld'] as IosIdCardScene[])" :key="scene" :class="scene === 'handheld' ? 'col-span-2' : ''" :auto-upload="false" :show-file-list="false" accept="image/*" @change="file => onImageChange(file, scene)">
-            <button type="button" class="min-h-24 w-full rounded-2xl border border-dashed border-[#173f35]/25 bg-[#f8f7f2] p-3 text-sm text-[#55625d]">
+            <button type="button" class="min-h-24 w-full rounded-xl border border-dashed border-black/15 bg-[#fafafa] p-3 text-sm text-black/60">
               {{ form[imageField(scene)] ? '已上传，可重新选择' : (scene === 'front' ? '身份证正面' : scene === 'back' ? '身份证反面' : '手持身份证') }}
               <span v-if="uploading[scene]" class="block text-xs">上传中…</span>
             </button>
           </el-upload>
         </div>
       </div>
-      <div v-for="(contact, index) in form.emergencyContacts" :key="index" class="rounded-2xl bg-[#f8f7f2] p-4">
+      <div v-for="(contact, index) in form.emergencyContacts" :key="index" class="rounded-xl border border-black/8 bg-[#fafafa] p-4">
         <p class="text-sm font-medium">紧急联系人 {{ index + 1 }}</p>
         <el-input v-model="contact.name" class="mt-3" placeholder="姓名" size="large" />
         <el-input v-model="contact.phone" class="mt-3" inputmode="numeric" maxlength="11" placeholder="手机号" size="large" />
       </div>
     </div>
     <div class="mt-5 grid gap-3">
-      <button type="button" class="rounded-2xl bg-[#c66c42] px-4 py-3 font-semibold text-white disabled:opacity-55" :disabled="submitting || Object.values(uploading).some(Boolean)" @click="submit">{{ submitting ? '保存中…' : '保存并继续风控' }}</button>
-      <button type="button" class="px-4 py-2 text-sm text-[#6b7771]" @click="$emit('cancel')">暂不申请</button>
+      <button type="button" class="rounded-xl bg-[var(--theme-color)] px-4 py-3 font-semibold text-white disabled:opacity-55" :disabled="submitting || Object.values(uploading).some(Boolean)" @click="submit">{{ submitting ? '保存中…' : '保存并继续' }}</button>
+      <button type="button" class="px-4 py-2 text-sm text-black/55" @click="$emit('cancel')">返回</button>
     </div>
   </section>
 </template>
