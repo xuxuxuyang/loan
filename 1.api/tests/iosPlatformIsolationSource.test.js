@@ -155,7 +155,11 @@ test('iOS personal center exposes complete in-app account deletion', () => {
   assert.match(center, /cardPackages\.value = \[\]/)
   assert.match(center, /bills\.value = \[\]/)
   assert.match(security, /currentPassword/)
-  assert.match(security, /永久注销账号/)
+  assert.match(security, /aria-label="返回我的"/)
+  assert.match(security, /tabler:chevron-left/)
+  assert.match(security, /如您不再使用当前账号，可以申请注销/)
+  assert.match(security, /注销账号/)
+  assert.doesNotMatch(security, /Account Security|联系方式|银行卡|身份证图片|去标识化|法定期限|永久注销/)
   assert.doesNotMatch(security, /联系客服|发送邮件|拨打电话/)
 })
 

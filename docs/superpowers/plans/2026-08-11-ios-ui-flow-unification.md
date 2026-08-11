@@ -250,7 +250,27 @@ const serviceList = computed(() => [
 
 清理只包含当前账号 Cookie、令牌、订单和商城缓存键；不得调用 `localStorage.clear()` 或修改其他账号、服务端订单与数据库数据。
 
-- [ ] **Step 4: 运行源码测试与前端构建**
+- [ ] **Step 4: 统一注销页面导航和用户文案**
+
+`IosAccountSecurity.vue` 顶部使用白色圆角导航卡片和 `tabler:chevron-left` 返回图标。页面保留“账号与安全”“注销账号”“当前密码”等用户操作信息，说明文案固定为“如您不再使用当前账号，可以申请注销。”；删除英文副标题以及数据字段、去标识化和法定期限说明。
+
+```vue
+<header class="rounded-2xl border border-black/5 bg-white p-3 shadow-sm">
+  <button type="button" aria-label="返回我的" @click="$emit('close')">
+    <Icon name="tabler:chevron-left" />
+    <span>返回我的</span>
+  </button>
+</header>
+```
+
+- [ ] **Step 5: 增加展示契约测试并运行前端构建**
+
+```js
+assert.match(security, /aria-label="返回我的"/)
+assert.match(security, /tabler:chevron-left/)
+assert.match(security, /如您不再使用当前账号，可以申请注销/)
+assert.doesNotMatch(security, /Account Security|联系方式|银行卡|身份证图片|去标识化|法定期限/)
+```
 
 Run: `node --test 1.api/tests/iosPlatformIsolationSource.test.js`
 
