@@ -8,6 +8,7 @@
 
 - `IosInstallmentProfileForm.vue` 只把服务端图片 URL 写入表单并显示“已上传”文字，模板没有渲染图片。
 - 通用 `ElMessage` 使用默认层级，低于 iOS 资料弹卡的 `z-index: 7000`，所以提示显示在遮罩下面。
+- 改为动态加载高层 `ElMessage` 后，校验提示仍依赖异步模块；保存成功流程还会等待提示完成。iOS WebView 中提示加载或渲染失败时，错误处理再次调用同一提示，导致用户看不到原因且成功流程无法继续。
 - `create.vue` 在资料弹卡打开时把 `document.body.style.overflow` 设为 `hidden`，组件离开时没有强制释放该滚动锁。
 - 商品详情依赖文档根节点滚动；在 Capacitor iOS WebView 中，固定高度的 `#app` 与残留的 `body` 滚动锁会使页面失去可滚动容器。
 
@@ -19,7 +20,7 @@
 
 ### 顶层提示
 
-资料组件新增 iOS 专用提示函数，直接调用 Element Plus `ElMessage` 的对象参数，并固定使用 `zIndex: 9000`、`appendTo: document.body` 和专用 `customClass`。成功、失败与表单校验全部走该提示；不修改通用 `epFeedback.ts`，因此不会改变 H5 和 Android 的提示行为。
+资料组件使用同步本地状态保存提示类型与文案，通过 `Teleport to="body"` 渲染固定顶部提示，层级为 `z-index: 10000`，并使用 `aria-live="assertive"` 让状态立即可感知。成功、失败与表单校验均不再依赖异步提示模块；保存成功后先触发后续流程，提示展示不能阻断订单提交。不修改通用 `epFeedback.ts`，因此不会改变 H5 和 Android 的提示行为。
 
 ### 商品详情滚动
 

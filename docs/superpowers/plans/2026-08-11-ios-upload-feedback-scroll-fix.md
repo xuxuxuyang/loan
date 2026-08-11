@@ -55,7 +55,7 @@ Expected: 新增断言因预览、顶层提示或滚动修复尚不存在而失�
 
 **Interfaces:**
 - Consumes: `uploadIosIdCard(phone, file, scene)` 返回的服务端 URL。
-- Produces: `previewUrls[scene]` 本地预览和 `showIosProfileFeedback(type, message)` 顶层提示。
+- Produces: `previewUrls[scene]` 本地预览和同步的 `showIosProfileFeedback(type, message)` 顶层提示状态。
 
 - [ ] **Step 1: 增加预览生命周期**
 
@@ -75,22 +75,25 @@ onBeforeUnmount(() => {
 - [ ] **Step 2: 增加 iOS 专用提示**
 
 ```ts
-async function showIosProfileFeedback(type: 'success' | 'warning' | 'error', message: string) {
-  const { ElMessage } = await import('element-plus/es/components/message/index')
-  ElMessage({
-    type,
-    message,
-    zIndex: 9000,
-    duration: 2400,
-    appendTo: document.body,
-    customClass: 'ios-profile-feedback',
-  })
+const feedback = ref<{ type: 'success' | 'warning' | 'error', message: string } | null>(null)
+let feedbackTimer: ReturnType<typeof setTimeout> | undefined
+
+function showIosProfileFeedback(type: 'success' | 'warning' | 'error', message: string) {
+  feedback.value = { type, message }
+  if (feedbackTimer) clearTimeout(feedbackTimer)
+  feedbackTimer = setTimeout(() => { feedback.value = null }, 3000)
 }
 ```
+
+模板使用 `<Teleport to="body">` 渲染 `z-[10000]` 的固定顶部提示，并设置 `role="status"` 与 `aria-live="assertive"`。不得动态导入 Element Plus Message。
 
 - [ ] **Step 3: 上传成功后渲染缩略图**
 
 上传完成后把本地 Object URL 写入 `previewUrls[scene]`，模板使用 `<img :src="previewUrls[scene]">` 铺满上传框，并增加底部“点击重新选择”遮罩。
+
+- [ ] **Step 4: 解除提示对业务流程的阻断**
+
+`onImageChange()`、`warn()` 和 `submit()` 同步调用 `showIosProfileFeedback()`，不得使用 `await showIosProfileFeedback(...)`。`saveIosInstallmentProfile()` 成功后立即执行 `emit('saved', status)`，提示展示失败不能阻止进入后续下单流程。
 
 ### Task 3: 修复 iOS 商品详情滚动与滚动锁泄漏
 

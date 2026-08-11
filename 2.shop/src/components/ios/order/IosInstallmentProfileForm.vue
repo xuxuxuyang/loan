@@ -21,21 +21,27 @@ const IOS_IDENTITY_JPEG_QUALITY = 0.82
 
 type IosProfileFeedbackType = 'success' | 'warning' | 'error'
 
-async function showIosProfileFeedback(type: IosProfileFeedbackType, message: string) {
-  const [, messageModule] = await Promise.all([
-    import('element-plus/es/components/message/style/css'),
-    import('element-plus/es/components/message/index'),
-  ])
-  messageModule.ElMessage({
-    type,
-    message,
-    zIndex: 9000,
-    duration: 2400,
-    offset: 64,
-    showClose: true,
-    appendTo: document.body,
-    customClass: 'ios-profile-feedback',
-  })
+interface IosProfileFeedbackState {
+  type: IosProfileFeedbackType
+  message: string
+}
+
+const feedback = ref<IosProfileFeedbackState | null>(null)
+let feedbackTimer: ReturnType<typeof setTimeout> | undefined
+
+function dismissIosProfileFeedback() {
+  if (feedbackTimer) clearTimeout(feedbackTimer)
+  feedbackTimer = undefined
+  feedback.value = null
+}
+
+function showIosProfileFeedback(type: IosProfileFeedbackType, message: string) {
+  if (feedbackTimer) clearTimeout(feedbackTimer)
+  feedback.value = { type, message }
+  feedbackTimer = setTimeout(() => {
+    feedback.value = null
+    feedbackTimer = undefined
+  }, 3000)
 }
 
 function replacePreview(scene: IosIdCardScene, nextUrl: string) {
@@ -44,6 +50,7 @@ function replacePreview(scene: IosIdCardScene, nextUrl: string) {
 }
 
 onBeforeUnmount(() => {
+  if (feedbackTimer) clearTimeout(feedbackTimer)
   Object.values(previewUrls).filter(Boolean).forEach(url => URL.revokeObjectURL(url))
 })
 
@@ -141,10 +148,10 @@ async function onImageChange(uploadFile: { raw?: File }, scene: IosIdCardScene) 
     form[imageField(scene)] = url
     replacePreview(scene, nextPreviewUrl)
     nextPreviewUrl = ''
-    await showIosProfileFeedback('success', '图片上传成功')
+    showIosProfileFeedback('success', '图片上传成功')
   }
   catch (error) {
-    await showIosProfileFeedback('error', (error as Error).message)
+    showIosProfileFeedback('error', (error as Error).message || '图片上传失败，请重新选择')
   }
   finally {
     if (nextPreviewUrl) URL.revokeObjectURL(nextPreviewUrl)
@@ -153,7 +160,7 @@ async function onImageChange(uploadFile: { raw?: File }, scene: IosIdCardScene) 
 }
 
 function warn(message: string): false {
-  void showIosProfileFeedback('warning', message)
+  showIosProfileFeedback('warning', message)
   return false
 }
 
@@ -189,11 +196,11 @@ async function submit() {
       ],
     }
     const status = await saveIosInstallmentProfile(props.phone, payload)
-    await showIosProfileFeedback('success', '先享后付资料已保存')
+    showIosProfileFeedback('success', '先享后付资料已保存')
     emit('saved', status)
   }
   catch (error) {
-    await showIosProfileFeedback('error', (error as Error).message)
+    showIosProfileFeedback('error', (error as Error).message || '资料保存失败，请稍后重试')
   }
   finally {
     submitting.value = false
@@ -202,6 +209,28 @@ async function submit() {
 </script>
 
 <template>
+  <Teleport to="body">
+    <Transition name="ios-profile-feedback">
+      <div
+        v-if="feedback"
+        class="fixed left-1/2 z-[10000] flex w-[calc(100vw-2rem)] max-w-sm -translate-x-1/2 items-center gap-3 rounded-2xl border px-4 py-3.5 shadow-[0_14px_40px_rgba(0,0,0,0.24)]"
+        :class="feedback.type === 'success' ? 'border-emerald-200 bg-emerald-50 text-emerald-800' : feedback.type === 'warning' ? 'border-amber-200 bg-amber-50 text-amber-900' : 'border-red-200 bg-red-50 text-red-800'"
+        style="top: calc(max(1rem, var(--app-safe-area-top)) + 2.75rem);"
+        role="status"
+        aria-live="assertive"
+      >
+        <Icon
+          :name="feedback.type === 'success' ? 'tabler:circle-check-filled' : feedback.type === 'warning' ? 'tabler:alert-triangle-filled' : 'tabler:circle-x-filled'"
+          class="shrink-0 text-xl"
+        />
+        <span class="min-w-0 flex-1 text-sm font-semibold leading-5">{{ feedback.message }}</span>
+        <button type="button" class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-current/65 active:bg-black/5" aria-label="关闭提示" @click="dismissIosProfileFeedback">
+          <Icon name="tabler:x" size="1rem" />
+        </button>
+      </div>
+    </Transition>
+  </Teleport>
+
   <section class="rounded-2xl bg-white p-5">
     <p class="text-xs font-semibold tracking-[.16em] text-[var(--theme-color)]">先享后付</p>
     <h2 class="mt-2 text-xl font-semibold text-black/85">完善申请资料</h2>
@@ -250,17 +279,14 @@ async function submit() {
 <style scoped>
 :deep(.el-upload) { display: block; width: 100%; }
 
-:global(.ios-profile-feedback.el-message) {
-  min-width: min(21rem, calc(100vw - 2rem));
-  max-width: calc(100vw - 2rem);
-  padding: 14px 16px;
-  border-radius: 14px;
-  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.2);
+.ios-profile-feedback-enter-active,
+.ios-profile-feedback-leave-active {
+  transition: opacity 180ms ease, transform 180ms ease;
 }
 
-:global(.ios-profile-feedback .el-message__content) {
-  font-size: 15px;
-  font-weight: 600;
-  line-height: 1.45;
+.ios-profile-feedback-enter-from,
+.ios-profile-feedback-leave-to {
+  opacity: 0;
+  transform: translate(-50%, -12px);
 }
 </style>

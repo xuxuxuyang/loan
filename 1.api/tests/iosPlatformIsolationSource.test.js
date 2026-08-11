@@ -141,9 +141,12 @@ test('iOS identity uploads show local previews and feedback above the profile sh
   assert.match(profileForm, /URL\.revokeObjectURL/)
   assert.match(profileForm, /:src="previewUrls\[scene\]"/)
   assert.match(profileForm, /点击重新选择/)
-  assert.match(profileForm, /zIndex:\s*9000/)
-  assert.match(profileForm, /appendTo:\s*document\.body/)
-  assert.match(profileForm, /customClass:\s*'ios-profile-feedback'/)
+  assert.match(profileForm, /<Teleport to="body">/)
+  assert.match(profileForm, /z-\[10000\]/)
+  assert.match(profileForm, /aria-live="assertive"/)
+  assert.match(profileForm, /function showIosProfileFeedback/)
+  assert.doesNotMatch(profileForm, /element-plus\/es\/components\/message/)
+  assert.doesNotMatch(profileForm, /await showIosProfileFeedback/)
 })
 
 test('iOS product detail owns its scroll container and releases checkout body locks', () => {
