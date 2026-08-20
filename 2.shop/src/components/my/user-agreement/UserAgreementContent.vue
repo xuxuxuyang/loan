@@ -1,8 +1,11 @@
 <script setup lang="ts">
+import { isIosBnplReviewHidden } from '~/utils/iosBnplReviewVisibility'
+
 /**
  * 用户注册协议正文：通用模板文案，实际运营请以法务审核为准。
  */
 const effectiveDate = '2026年5月13日'
+const hideIosBnplForReview = isIosBnplReviewHidden()
 </script>
 
 <template>
@@ -47,7 +50,23 @@ const effectiveDate = '2026年5月13日'
       </ul>
     </section>
 
-    <section class="mb-8">
+    <section
+      v-if="hideIosBnplForReview"
+      class="mb-8"
+    >
+      <h2 class="mb-3 text-base font-semibold text-black/85 md:text-lg">
+        四、商品与订单
+      </h2>
+      <p>
+        您理解并同意：商品信息（价格、库存、图文说明等）以页面展示为准，可能因系统或客观情况发生变动。订单提交成功后，双方成立合同关系，您应按约定完成支付、收货及售后流程。
+      </p>
+    </section>
+
+    <!-- App Store 审核期仅在原生 iOS 隐藏；原条款继续服务 H5/Android。 -->
+    <section
+      v-if="!hideIosBnplForReview"
+      class="mb-8"
+    >
       <h2 class="mb-3 text-base font-semibold text-black/85 md:text-lg">
         四、商品、订单与先享后付
       </h2>

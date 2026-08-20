@@ -11,24 +11,38 @@ import {
   ensureMallShowcaseProductsLoaded,
   ensureShopHomeProductsLoaded,
 } from '~/composables/useTeaProducts'
+import { isIosBnplReviewHidden } from '~/utils/iosBnplReviewVisibility'
 
+const hideIosBnplForReview = isIosBnplReviewHidden()
 const mallProducts = useMallShowcaseProducts({ immediate: false })
 const installmentProducts = useTeaProducts({ immediate: false })
 const route = useRoute()
-const categories = useMallCategories()
-const selectedCategory = ref<MallCategoryKey>('installment')
+const categories = useMallCategories().filter(item => !hideIosBnplForReview || item.key !== 'installment')
+const selectedCategory = ref<MallCategoryKey>(hideIosBnplForReview ? 'phones' : 'installment')
 
 if (typeof route.query.category === 'string' && isMallCategoryKey(route.query.category)) {
-  selectedCategory.value = route.query.category
+  if (!hideIosBnplForReview || route.query.category !== 'installment') {
+    selectedCategory.value = route.query.category
+  }
 }
 
 async function ensureProductsForCategory(category: MallCategoryKey) {
   if (category === 'installment') {
-    await ensureMallProductsLoaded()
+    if (hideIosBnplForReview) {
+      await ensureMallShowcaseProductsLoaded()
+    }
+    else {
+      await ensureMallProductsLoaded()
+    }
     return
   }
   if (category === 'all') {
-    await ensureShopHomeProductsLoaded()
+    if (hideIosBnplForReview) {
+      await ensureMallShowcaseProductsLoaded()
+    }
+    else {
+      await ensureShopHomeProductsLoaded()
+    }
     return
   }
   await ensureMallShowcaseProductsLoaded()
@@ -59,9 +73,15 @@ function sortedProducts(list: TeaProduct[]) {
 const filteredProducts = computed(() => {
   const mode = selectedCategory.value
   if (mode === 'installment') {
+    if (hideIosBnplForReview) {
+      return []
+    }
     return sortedProducts(installmentProducts.value)
   }
   if (mode === 'all') {
+    if (hideIosBnplForReview) {
+      return sortedProducts(mallProducts.value)
+    }
     return [
       ...sortedProducts(installmentProducts.value),
       ...sortedProducts(mallProducts.value),
@@ -71,6 +91,9 @@ const filteredProducts = computed(() => {
 })
 
 function handleSelectCategory(category: MallCategoryKey) {
+  if (hideIosBnplForReview && category === 'installment') {
+    return
+  }
   selectedCategory.value = category
 }
 </script>

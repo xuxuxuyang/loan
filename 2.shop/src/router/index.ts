@@ -2,6 +2,7 @@ import { nextTick } from 'vue'
 import { createRouter, createWebHistory } from 'vue-router'
 import MallOrderCreateView from '../views/MallOrderCreateView.vue'
 import MallProductDetailView from '../views/MallProductDetailView.vue'
+import { isIosBnplReviewHidden } from '../utils/iosBnplReviewVisibility'
 import {
   ensureMallProductsLoaded,
   ensureMallShowcaseProductsLoaded,
@@ -57,6 +58,21 @@ const router = createRouter({
   ],
 })
 
+const IOS_BNPL_RESTRICTED_ROUTE_NAMES = new Set([
+  'installment',
+  'bill',
+  'bill-risk-result',
+  'card-package',
+  'traffic-login',
+])
+
+router.beforeEach((to) => {
+  // App Store 审核期仅阻止原生 iOS 进入关联页，原路由继续服务 H5/Android。
+  if (isIosBnplReviewHidden() && IOS_BNPL_RESTRICTED_ROUTE_NAMES.has(String(to.name || ''))) {
+    return { path: '/', replace: true }
+  }
+})
+
 /** 从登录或其它页进入首页 / 列表时，若首次拉取早于组件 onMounted，或 getCurrentInstance 异常，仍可触发一次商品请求 */
 router.afterEach((to) => {
   if (import.meta.env.SSR) {
@@ -66,17 +82,32 @@ router.afterEach((to) => {
     return
   }
   nextTick(() => {
-    if (to.name === 'installment' || to.name === 'index') {
+    const hideIosBnplForReview = isIosBnplReviewHidden()
+    if (to.name === 'index' && hideIosBnplForReview) {
+      void ensureMallShowcaseProductsLoaded()
+    }
+    else if (to.name === 'installment' || to.name === 'index') {
       void ensureMallProductsLoaded()
     }
     else {
-      const raw = typeof to.query.category === 'string' ? to.query.category : 'installment'
-      const category = isMallCategoryKey(raw) ? raw : 'installment'
+      const defaultCategory = hideIosBnplForReview ? 'phones' : 'installment'
+      const raw = typeof to.query.category === 'string' ? to.query.category : defaultCategory
+      const category = isMallCategoryKey(raw) ? raw : defaultCategory
       if (category === 'installment') {
-        void ensureMallProductsLoaded()
+        if (hideIosBnplForReview) {
+          void ensureMallShowcaseProductsLoaded()
+        }
+        else {
+          void ensureMallProductsLoaded()
+        }
       }
       else if (category === 'all') {
-        void ensureShopHomeProductsLoaded()
+        if (hideIosBnplForReview) {
+          void ensureMallShowcaseProductsLoaded()
+        }
+        else {
+          void ensureShopHomeProductsLoaded()
+        }
       }
       else {
         void ensureMallShowcaseProductsLoaded()

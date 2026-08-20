@@ -1,14 +1,17 @@
 <script setup lang="ts">
 import type { TeaProduct } from '~/composables/useTeaProducts'
 import {
+  ensureMallShowcaseProductsLoaded,
   ensureShopHomeProductsLoaded,
   useMallShowcaseProducts,
   useTeaProducts,
 } from '~/composables/useTeaProducts'
+import { isIosBnplReviewHidden } from '~/utils/iosBnplReviewVisibility'
 
 const route = useRoute()
 const router = useRouter()
 const { smartNavigate } = useCustomRouting(route)
+const hideIosBnplForReview = isIosBnplReviewHidden()
 
 const installmentProducts = useTeaProducts({ immediate: false })
 const mallProducts = useMallShowcaseProducts({ immediate: false })
@@ -19,8 +22,10 @@ const catalogLoaded = ref(false)
 
 const catalog = computed(() => {
   const map = new Map<number, TeaProduct>()
-  for (const p of installmentProducts.value) {
-    map.set(p.id, p)
+  if (!hideIosBnplForReview) {
+    for (const p of installmentProducts.value) {
+      map.set(p.id, p)
+    }
   }
   for (const p of mallProducts.value) {
     map.set(p.id, p)
@@ -56,7 +61,12 @@ async function loadCatalog() {
   }
   loading.value = true
   try {
-    await ensureShopHomeProductsLoaded()
+    if (hideIosBnplForReview) {
+      await ensureMallShowcaseProductsLoaded()
+    }
+    else {
+      await ensureShopHomeProductsLoaded()
+    }
     catalogLoaded.value = true
   }
   finally {
@@ -182,7 +192,7 @@ onMounted(async () => {
             输入商品名称或关键词
           </p>
           <p class="mt-2 text-xs leading-relaxed text-[#5a6072]/85">
-            将搜索先享后付与商城专区的全部商品，找到心仪好物。
+            {{ hideIosBnplForReview ? '仅搜索商城专区的全部商品，找到心仪好物。' : '将搜索先享后付与商城专区的全部商品，找到心仪好物。' }}
           </p>
         </div>
 

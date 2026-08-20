@@ -7,6 +7,7 @@ import { MALL_RUNTIME_CONFIG } from '~/config/mallRuntime'
 import { useGuardedAppDownload } from '~/composables/useGuardedAppDownload'
 import { alertDialog, notifyInfo, notifySuccess } from '~/utils/epFeedback'
 import { isIosNativeApp } from '~/utils/iosNativePlatform'
+import { isIosBnplReviewHidden } from '~/utils/iosBnplReviewVisibility'
 
 const route = useRoute()
 const mallSiteUrl = MALL_RUNTIME_CONFIG.siteUrl || (typeof window !== 'undefined' ? window.location.origin : '')
@@ -24,8 +25,9 @@ const {
   fetchSummary,
   fetchCardPackages,
 } = useMallMy()
-const recommendProducts = useTeaProducts()
 const useIosReviewFlow = isIosNativeApp()
+const hideIosBnplForReview = isIosBnplReviewHidden()
+const recommendProducts = useTeaProducts({ immediate: !hideIosBnplForReview })
 const securityVisible = ref(false)
 
 /** 「我的」页先享后付推荐：按订单展示价（price）升序，再取前 4 个 */
@@ -72,7 +74,7 @@ const displayName = computed(() => {
 
 const displaySubText = computed(() => {
   if (!isLoggedIn.value) {
-    return '账户还款、资产信息登录后查看'
+    return hideIosBnplForReview ? '订单与账户信息登录后查看' : '账户还款、资产信息登录后查看'
   }
   return `登录账号：${loginPhone.value}`
 })
@@ -87,7 +89,9 @@ const displayOrderStatus = computed(() => {
   return orderStatus.map(item => ({
     ...item,
     count: isLoggedIn.value
-      ? summary.value.orderCount[item.key as keyof typeof summary.value.orderCount]
+      ? hideIosBnplForReview
+        ? orders.value.filter(order => order.payType !== 'installment' && order.status === item.key).length
+        : summary.value.orderCount[item.key as keyof typeof summary.value.orderCount]
       : 0,
     tone: toneMap[item.key as keyof typeof toneMap],
   }))
@@ -95,10 +99,14 @@ const displayOrderStatus = computed(() => {
 
 if (!import.meta.env.SSR) {
   syncFromStorage()
-  void ensureMallProductsLoaded()
+  if (!hideIosBnplForReview) {
+    void ensureMallProductsLoaded()
+  }
   if (isLoggedIn.value) {
     void fetchSummary(loginPhone.value)
-    void fetchCardPackages(loginPhone.value)
+    if (!hideIosBnplForReview) {
+      void fetchCardPackages(loginPhone.value)
+    }
   }
 }
 
@@ -108,7 +116,12 @@ watch([isLoggedIn, loginPhone], async ([loggedIn, phone]) => {
     return
   }
   await fetchSummary(phone)
-  await fetchCardPackages(phone)
+  if (!hideIosBnplForReview) {
+    await fetchCardPackages(phone)
+  }
+  else {
+    cardPackages.value = []
+  }
 })
 
 async function handleGoRegister() {
@@ -400,8 +413,13 @@ async function handleService(key: string) {
       </div>
     </div>
 
-    <div class="mb-3 grid grid-cols-3 gap-2 rounded-2xl bg-white p-2.5 sm:gap-3 sm:p-3">
+    <div
+      class="mb-3 grid gap-2 rounded-2xl bg-white p-2.5 sm:gap-3 sm:p-3"
+      :class="hideIosBnplForReview ? 'grid-cols-1' : 'grid-cols-3'"
+    >
+      <!-- App Store 审核期仅在原生 iOS 隐藏；原账单入口继续服务 H5/Android。 -->
       <button
+        v-if="!hideIosBnplForReview"
         type="button"
         class="flex min-h-[5rem] flex-col items-center justify-center gap-1.5 rounded-xl bg-[#fff6f6] px-1.5 py-3 text-center active:opacity-90 sm:min-h-[5.25rem] sm:py-3.5"
         @click="handleBankCard"
@@ -421,7 +439,9 @@ async function handleService(key: string) {
           {{ isLoggedIn ? `已绑定 ${summary.bankCardCount} 张` : '登录后查看' }}
         </p>
       </button>
+      <!-- App Store 审核期仅在原生 iOS 隐藏；原卡包入口继续服务 H5/Android。 -->
       <button
+        v-if="!hideIosBnplForReview"
         type="button"
         class="flex min-h-[5rem] flex-col items-center justify-center gap-1.5 rounded-xl bg-[#fff6f6] px-1.5 py-3 text-center active:opacity-90 sm:min-h-[5.25rem] sm:py-3.5"
         @click="handleBill"
@@ -489,8 +509,11 @@ async function handleService(key: string) {
       </div>
     </div>
 
-
-    <div class="normal-font">
+    <!-- App Store 审核期仅在原生 iOS 隐藏；原推荐区继续服务 H5/Android。 -->
+    <div
+      v-if="!hideIosBnplForReview"
+      class="normal-font"
+    >
       <div class="mb-4 text-center">
         <h3 class="text-2xl font-semibold text-black/85">
           先享后付

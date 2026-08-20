@@ -13,12 +13,14 @@ import {
 } from '~/composables/useTeaProducts'
 import { notifyWarning } from '~/utils/epFeedback'
 import { isIosNativeApp } from '~/utils/iosNativePlatform'
+import { isIosBnplReviewHidden } from '~/utils/iosBnplReviewVisibility'
 
 const route = useRoute()
 const { smartNavigate } = useCustomRouting(route)
 const runtimeConfig = useRuntimeConfig()
 const { ensureRegistered, profile, syncFromStorage } = useMallAuth()
 const isIosApp = isIosNativeApp()
+const hideIosBnplForReview = isIosBnplReviewHidden()
 
 const product = ref<TeaProduct | null>(null)
 const loadError = ref(false)
@@ -69,12 +71,26 @@ const detailOnlyImages = computed(() => {
 
 const isBnpl = computed(() => product.value?.salesMode === 'installment')
 
+async function redirectHiddenInstallmentProduct(candidate: TeaProduct): Promise<boolean> {
+  if (!hideIosBnplForReview || candidate.salesMode !== 'installment') {
+    return false
+  }
+  product.value = null
+  loadError.value = true
+  loading.value = false
+  await smartNavigate('/')
+  return true
+}
+
 async function resolveProduct(id: number) {
   loadError.value = false
   loading.value = true
   product.value = null
   const hit = [...mallProducts.value, ...installmentProducts.value].find(p => p.id === id)
   if (hit) {
+    if (await redirectHiddenInstallmentProduct(hit)) {
+      return
+    }
     product.value = hit
     loading.value = false
     return
@@ -83,7 +99,11 @@ async function resolveProduct(id: number) {
   try {
     const res = await $fetch<{ success: boolean, data: Record<string, unknown> }>(`${base}/products/${id}`)
     if (res?.success && res.data) {
-      product.value = normalizeApiProduct(res.data as Partial<TeaProduct>)
+      const resolved = normalizeApiProduct(res.data as Partial<TeaProduct>)
+      if (await redirectHiddenInstallmentProduct(resolved)) {
+        return
+      }
+      product.value = resolved
     }
     else {
       loadError.value = true
@@ -113,6 +133,10 @@ watch(
 
 async function goBuy() {
   if (!product.value) {
+    return
+  }
+  if (hideIosBnplForReview && product.value.salesMode === 'installment') {
+    await smartNavigate('/')
     return
   }
   const passed = await ensureRegistered()

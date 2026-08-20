@@ -7,6 +7,7 @@ const props = defineProps<{
   activeCategory: MallCategoryKey
   /** 首页当前展示的商品分区：默认先享后付；点「商城专区」切为 mall */
   homeProductZone: 'installment' | 'mall'
+  hideInstallmentZone: boolean
 }>()
 
 const emit = defineEmits<{
@@ -79,8 +80,13 @@ function openMallListFor(item: TeaProduct) {
         </p>
         <span class="tag-pill rounded-full px-2 py-0.5 text-[10px] text-white">正品保障 极速发货</span>
       </div>
-      <div class="grid grid-cols-2 gap-2">
+      <div
+        class="grid gap-2"
+        :class="hideInstallmentZone ? 'grid-cols-1' : 'grid-cols-2'"
+      >
+        <!-- App Store 审核期仅在原生 iOS 隐藏；原入口继续服务 H5/Android。 -->
         <article
+          v-if="!hideInstallmentZone"
           role="button"
           tabindex="0"
           class="quick-entry quick-entry-installment rounded-xl p-3 text-center cursor-pointer transition-all duration-200"

@@ -11,18 +11,20 @@ import {
   useTeaProducts,
   ensureMallShowcaseProductsLoaded,
 } from '~/composables/useTeaProducts'
+import { isIosBnplReviewHidden } from '~/utils/iosBnplReviewVisibility'
 
 const route = useRoute()
-const installmentProducts = useTeaProducts()
+const hideIosBnplForReview = isIosBnplReviewHidden()
+const installmentProducts = useTeaProducts({ immediate: !hideIosBnplForReview })
 const mallProducts = useMallShowcaseProducts({ immediate: false })
 /** 首页分类条仅展示商城品类；「先享后付」由顶部分区切换，避免与 installment 商品维度混淆 */
 const categories = useMallCategories().filter(item => item.key !== 'all' && item.key !== 'installment')
 const selectedCategory = ref<MallCategoryKey>('phones')
-/** 首页默认展示先享后付；点「商城专区」再切商城数据 */
-const activeHomeZone = ref<'installment' | 'mall'>('installment')
+/** App Store 审核期原生 iOS 默认固定到商城专区，H5/Android 保持原默认分区。 */
+const activeHomeZone = ref<'installment' | 'mall'>(hideIosBnplForReview ? 'mall' : 'installment')
 
 if (typeof route.query.category === 'string' && isMallCategoryKey(route.query.category)) {
-  if (route.query.category === 'installment') {
+  if (route.query.category === 'installment' && !hideIosBnplForReview) {
     activeHomeZone.value = 'installment'
   }
   else if (route.query.category !== 'all') {
@@ -84,6 +86,9 @@ function handleSelectCategory(category: MallCategoryKey) {
 }
 
 function handleSelectZone(zone: 'installment' | 'mall') {
+  if (hideIosBnplForReview && zone === 'installment') {
+    return
+  }
   activeHomeZone.value = zone
   if (zone === 'mall') {
     void ensureMallShowcaseProductsLoaded()
@@ -101,6 +106,7 @@ function handleSelectZone(zone: 'installment' | 'mall') {
       :categories="categories"
       :active-category="selectedCategory"
       :home-product-zone="activeHomeZone"
+      :hide-installment-zone="hideIosBnplForReview"
       @select-category="handleSelectCategory"
       @select-zone="handleSelectZone"
     />

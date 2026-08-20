@@ -12,6 +12,7 @@ import {
 import type { LakalaPreorderPayload } from '~/composables/useLakalaPayment'
 import LakalaPaySheet from '~/components/payment/LakalaPaySheet.vue'
 import { notifyInfo, notifySuccess } from '~/utils/epFeedback'
+import { isIosBnplReviewHidden } from '~/utils/iosBnplReviewVisibility'
 
 const route = useRoute()
 const { smartNavigate } = useCustomRouting(route)
@@ -21,11 +22,12 @@ const paySheetOpen = ref(false)
 const payPreorderPayload = ref<LakalaPreorderPayload | null>(null)
 const payAmountYuan = ref(0)
 const payOrderTitle = ref('订单支付')
+const hideIosBnplForReview = isIosBnplReviewHidden()
 
 const currentUserPhone = computed(() =>
   String(loginPhone.value || profile.value?.phone || '').replace(/\D/g, '').replace(/^86(\d{11})$/, '$1'),
 )
-const products = useTeaProducts()
+const products = useTeaProducts({ immediate: !hideIosBnplForReview })
 
 const statusStyleMap: Record<MallOrderStatus, { color: string, backgroundColor: string }> = {
   reviewing: {
@@ -63,7 +65,10 @@ const userOrders = computed(() => {
   if (!profile.value?.id) {
     return []
   }
-  return orders.value.filter(item => mallOrderBelongsToLoggedIn(item, profile.value?.id))
+  return orders.value.filter(item =>
+    mallOrderBelongsToLoggedIn(item, profile.value?.id)
+    && (!hideIosBnplForReview || item.payType !== 'installment'),
+  )
 })
 
 const filteredOrders = computed(() => {

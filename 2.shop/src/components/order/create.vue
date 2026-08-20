@@ -26,6 +26,7 @@ import { installmentRiskRejectToast } from '~/utils/installmentRiskMessage'
 import { validateMallOrderBeforeRisk } from '~/utils/orderEligibility'
 import { MALL_ORDER_ELIGIBILITY_POLICY } from '~/config/mallOrderEligibility'
 import { isIosNativeApp } from '~/utils/iosNativePlatform'
+import { isIosBnplReviewHidden } from '~/utils/iosBnplReviewVisibility'
 
 const route = useRoute()
 const router = useRouter()
@@ -37,6 +38,7 @@ const { addresses, fetchAddresses, fetchBills, fetchSummary, applyPostOrderCreat
 const { orders, createOrder, syncFromRemote } = useMallOrders()
 const runtimeConfig = useRuntimeConfig()
 const useIosReviewFlow = isIosNativeApp()
+const hideIosBnplForReview = isIosBnplReviewHidden()
 
 type IosProfileStage = 'closed' | 'loading' | 'form' | 'summary'
 const iosProfileStage = ref<IosProfileStage>('closed')
@@ -82,6 +84,10 @@ const selectedProduct = computed(() => {
   }
   return fetchedProductById.value
 })
+
+const isIosHiddenInstallmentProduct = computed(() =>
+  hideIosBnplForReview && selectedProduct.value?.salesMode === 'installment',
+)
 
 /** 商城专区直付；先享后付走提交订单 + 风控审核（全局开关仅作兜底） */
 const isMallDirectPurchase = computed(() => {
@@ -321,6 +327,12 @@ const estimatedRepayDateYmd = computed(() => {
 
 async function submitOrder() {
   if (submitting.value) {
+    return
+  }
+
+  if (isIosHiddenInstallmentProduct.value) {
+    notifyWarning('该商品在当前 iOS 版本暂不可用')
+    await smartNavigate('/')
     return
   }
 
@@ -679,6 +691,18 @@ watch(
 )
 
 watch(
+  isIosHiddenInstallmentProduct,
+  (hidden) => {
+    if (!hidden) {
+      return
+    }
+    notifyWarning('该商品在当前 iOS 版本暂不可用')
+    void smartNavigate('/')
+  },
+  { immediate: true },
+)
+
+watch(
   () => normalizeMallAccount(loginPhone.value || profile.value?.phone || ''),
   (account) => {
     if (/^1\d{10}$/.test(account)) {
@@ -701,7 +725,10 @@ watch(
 </script>
 
 <template>
-  <section class="bg-[#f3f4f8] pb-20 pt-4">
+  <section
+    v-if="!isIosHiddenInstallmentProduct"
+    class="bg-[#f3f4f8] pb-20 pt-4"
+  >
     <div class="mx-auto w-full max-w-[980px] px-4">
       <div
         v-if="selectedProduct"

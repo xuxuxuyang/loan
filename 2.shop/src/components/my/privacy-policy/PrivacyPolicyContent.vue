@@ -1,8 +1,11 @@
 <script setup lang="ts">
+import { isIosBnplReviewHidden } from '~/utils/iosBnplReviewVisibility'
+
 /**
  * 隐私政策正文：通用模板文案，实际运营请以法务审核为准。
  */
 const effectiveDate = '2026年5月13日'
+const hideIosBnplForReview = isIosBnplReviewHidden()
 </script>
 
 <template>
@@ -29,7 +32,9 @@ const effectiveDate = '2026年5月13日'
       </p>
       <ul class="list-disc space-y-2 pl-5">
         <li><span class="font-medium text-black/80">账户信息：</span>手机号码、登录凭证、昵称等用于注册、登录与身份校验的信息。</li>
-        <li><span class="font-medium text-black/80">订单与交易信息：</span>收货人姓名、联系电话、收货地址、订单内容、支付与先享后付相关信息等，用于完成交易与售后服务。</li>
+        <li v-if="hideIosBnplForReview"><span class="font-medium text-black/80">订单与交易信息：</span>收货人姓名、联系电话、收货地址、订单内容与支付信息等，用于完成交易与售后服务。</li>
+        <!-- App Store 审核期仅在原生 iOS 隐藏；原文继续服务 H5/Android。 -->
+        <li v-else><span class="font-medium text-black/80">订单与交易信息：</span>收货人姓名、联系电话、收货地址、订单内容、支付与先享后付相关信息等，用于完成交易与售后服务。</li>
         <li><span class="font-medium text-black/80">设备与日志信息：</span>设备型号、操作系统版本、浏览器类型、IP 地址、访问时间、页面路径、操作记录等，用于保障服务安全与改进体验。</li>
         <li><span class="font-medium text-black/80">客服与沟通信息：</span>您与客服沟通时提供的内容及附件，用于处理咨询与投诉。</li>
       </ul>
