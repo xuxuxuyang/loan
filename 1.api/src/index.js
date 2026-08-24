@@ -1127,16 +1127,16 @@ async function findAdminAccountByUsernameAcrossTenantsFromMongo(username, prefer
   }
   const preferred = normalizeTenantId(preferredTenantId || DEFAULT_TENANT_ID)
   const searched = new Set([preferred])
+  const foundCore = await findAdminAccountByUsernameInMongoScoped('core', DEFAULT_TENANT_ID, key)
+  if (foundCore && String(foundCore.scopeType || 'tenant') === 'platform') {
+    return foundCore
+  }
   let found = await findAdminAccountByUsernameInMongoScoped('tenant', preferred, key)
   if (found) {
     return found
   }
-  found = await findAdminAccountByUsernameInMongoScoped('core', DEFAULT_TENANT_ID, key)
-  if (found && String(found.scopeType || 'tenant') === 'platform') {
-    return found
-  }
-  if (found) {
-    return found
+  if (foundCore) {
+    return foundCore
   }
   const known = await collectKnownTenantIdsFromMongoMetaLight()
   for (const tenantId of known) {
@@ -1215,6 +1215,13 @@ async function getAdminAccountByUsernameAcrossTenants(username, preferredTenantI
     return foundMongo
   }
 
+  const dbCore = await readCoreDb({ forAdminAuth: true })
+  const foundCore = getAdminAccountByUsername(dbCore, key)
+  if (foundCore && String(foundCore.scopeType || 'tenant') === 'platform') {
+    writeAdminAuthAccountCache('username', preferredTenantId, key, foundCore)
+    return foundCore
+  }
+
   const dbPreferred = await readDbByTenantId(preferred, { forAdminAuth: true })
   const foundPreferred = getAdminAccountByUsername(dbPreferred, key)
   if (foundPreferred) {
@@ -1222,12 +1229,6 @@ async function getAdminAccountByUsernameAcrossTenants(username, preferredTenantI
     return foundPreferred
   }
 
-  const dbCore = await readCoreDb({ forAdminAuth: true })
-  const foundCore = getAdminAccountByUsername(dbCore, key)
-  if (foundCore && String(foundCore.scopeType || 'tenant') === 'platform') {
-    writeAdminAuthAccountCache('username', preferredTenantId, key, foundCore)
-    return foundCore
-  }
   if (foundCore) {
     writeAdminAuthAccountCache('username', preferredTenantId, key, foundCore)
     return foundCore
