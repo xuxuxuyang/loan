@@ -22,6 +22,7 @@ import {
 } from '@element-plus/icons-vue'
 import { useRoute, useRouter } from 'vue-router'
 import AdminRoleAvatar from './components/AdminRoleAvatar.vue'
+import SensitiveOperationConfirmDialog from './components/SensitiveOperationConfirmDialog.vue'
 import LoginFortuneRain from './components/auth/LoginFortuneRain.vue'
 import MallBrandLogo from './components/MallBrandLogo.vue'
 import { clearAdminSession, getAdminSession, isPlatformManagingTenantWorkspace, type AdminSession } from './composables/useAdminAuth'
@@ -140,6 +141,7 @@ const allMenus: MenuEntry[] = [
   /** 与各租户 mall 请求头一致，展示当前工作区订单汇总；非「仅总部」项以便子系统老板可见 */
   { label: '财务报表', path: '/dashboard', icon: DataAnalysis, roles: ['super_admin'] },
   { label: '财务汇算', path: '/dashboard/plan', icon: DataBoard, roles: ['super_admin', 'boss', 'reviewer', 'collector'] },
+  { label: '操作记录', path: '/security/operation-logs', icon: List, roles: ['super_admin', 'boss'] },
   {
     label: '子系统管理',
     path: '/tenants',
@@ -522,6 +524,7 @@ useAdminOrderReviewBadge(ordersSidebarBadgeEnabled)
         </section>
       </main>
     </div>
+    <SensitiveOperationConfirmDialog v-if="!isLoginPage" />
   </el-config-provider>
 </template>
 

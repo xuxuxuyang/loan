@@ -1,5 +1,7 @@
 import { ref } from 'vue'
+import { adminSecurityProofHeaders } from '../api/adminSecurity'
 import { apiErrorMessage, readApiErrorMessage, withMallTenantHeaders } from '../composables/useAdminApi'
+import { clearSensitiveOperationProof } from '../composables/useSensitiveOperationGuard'
 import { mergePatchedOrder } from '../utils/orderPatchMerge'
 import { resolveInstallmentEffectiveDueDate, resolveNegotiateRemainderAmountForDisplay } from '../utils/installmentEffectiveDueDate'
 
@@ -196,6 +198,11 @@ const MALL_INSTALLMENT_NEGOTIATION_HISTORY_PAID_ENDPOINT = `${MALL_ORDERS_ENDPOI
 const MALL_ORDER_RISK_DETAIL_ENDPOINT = `${MALL_ORDERS_ENDPOINT}/:id/risk-detail`
 const MALL_ORDER_CARD_PACKAGE_CONTRACT_ENDPOINT = `${MALL_ORDERS_ENDPOINT}/:id/card-package-contract`
 const orders = ref<OrderItem[]>([])
+
+function invalidateRejectedSecurityProof(response: Response) {
+  if (response.status === 403 || response.status === 428)
+    clearSensitiveOperationProof()
+}
 
 function formatDateTime(value: string) {
   const date = new Date(value)
@@ -508,13 +515,14 @@ async function fetchOrderById(orderId: string): Promise<OrderItem> {
   return mapped
 }
 
-async function updateInstallmentDueDate(orderId: string, period: number, addDays: number) {
+async function updateInstallmentDueDate(orderId: string, period: number, addDays: number, proofToken = '') {
   const response = await fetch(installmentDueDateUrl(orderId, period), {
     method: 'PATCH',
-    headers: withMallTenantHeaders({ 'Content-Type': 'application/json' }),
+    headers: withMallTenantHeaders({ 'Content-Type': 'application/json', ...adminSecurityProofHeaders(proofToken) }),
     body: JSON.stringify({ addDays }),
   })
   if (!response.ok) {
+    invalidateRejectedSecurityProof(response)
     const payload = await response.json().catch(() => ({})) as { msg?: string }
     throw new Error(apiErrorMessage(payload, '延期还款日失败'))
   }
@@ -526,13 +534,14 @@ async function updateInstallmentDueDate(orderId: string, period: number, addDays
   orders.value = orders.value.map(item => (item.id === mapped.id ? mergeOrderAfterPatch(item, mapped) : item))
 }
 
-async function setInstallmentRepaymentDueDate(orderId: string, period: number, dueDate: string) {
+async function setInstallmentRepaymentDueDate(orderId: string, period: number, dueDate: string, proofToken = '') {
   const response = await fetch(installmentDueDateUrl(orderId, period), {
     method: 'PATCH',
-    headers: withMallTenantHeaders({ 'Content-Type': 'application/json' }),
+    headers: withMallTenantHeaders({ 'Content-Type': 'application/json', ...adminSecurityProofHeaders(proofToken) }),
     body: JSON.stringify({ dueDate }),
   })
   if (!response.ok) {
+    invalidateRejectedSecurityProof(response)
     const payload = await response.json().catch(() => ({})) as { msg?: string }
     throw new Error(apiErrorMessage(payload, '修改协商还款日失败'))
   }
@@ -544,13 +553,14 @@ async function setInstallmentRepaymentDueDate(orderId: string, period: number, d
   orders.value = orders.value.map(item => (item.id === mapped.id ? mergeOrderAfterPatch(item, mapped) : item))
 }
 
-async function updateInstallmentSettleAmount(orderId: string, period: number, amount: number) {
+async function updateInstallmentSettleAmount(orderId: string, period: number, amount: number, proofToken = '') {
   const response = await fetch(installmentSettleAmountUrl(orderId, period), {
     method: 'PATCH',
-    headers: withMallTenantHeaders({ 'Content-Type': 'application/json' }),
+    headers: withMallTenantHeaders({ 'Content-Type': 'application/json', ...adminSecurityProofHeaders(proofToken) }),
     body: JSON.stringify({ amount }),
   })
   if (!response.ok) {
+    invalidateRejectedSecurityProof(response)
     const payload = await response.json().catch(() => ({})) as { msg?: string }
     throw new Error(apiErrorMessage(payload, '修改应还金额失败'))
   }
@@ -566,13 +576,15 @@ async function updateInstallmentNegotiate(
   orderId: string,
   period: number,
   body: { negotiatedAmount: number, remainderDueDate: string },
+  proofToken = '',
 ) {
   const response = await fetch(installmentNegotiateUrl(orderId, period), {
     method: 'PATCH',
-    headers: withMallTenantHeaders({ 'Content-Type': 'application/json' }),
+    headers: withMallTenantHeaders({ 'Content-Type': 'application/json', ...adminSecurityProofHeaders(proofToken) }),
     body: JSON.stringify(body),
   })
   if (!response.ok) {
+    invalidateRejectedSecurityProof(response)
     const payload = await response.json().catch(() => ({})) as { msg?: string }
     throw new Error(apiErrorMessage(payload, '协商还款失败'))
   }
@@ -584,13 +596,14 @@ async function updateInstallmentNegotiate(
   orders.value = orders.value.map(item => (item.id === mapped.id ? mergeOrderAfterPatch(item, mapped) : item))
 }
 
-async function updateInstallmentNegotiationHistoryPaid(orderId: string, period: number, historyIndex: number, paid: boolean) {
+async function updateInstallmentNegotiationHistoryPaid(orderId: string, period: number, historyIndex: number, paid: boolean, proofToken = '') {
   const response = await fetch(installmentNegotiationHistoryPaidUrl(orderId, period, historyIndex), {
     method: 'PATCH',
-    headers: withMallTenantHeaders({ 'Content-Type': 'application/json' }),
+    headers: withMallTenantHeaders({ 'Content-Type': 'application/json', ...adminSecurityProofHeaders(proofToken) }),
     body: JSON.stringify({ paid }),
   })
   if (!response.ok) {
+    invalidateRejectedSecurityProof(response)
     const payload = await response.json().catch(() => ({})) as { msg?: string }
     throw new Error(apiErrorMessage(payload, '更新协商还款状态失败'))
   }
@@ -602,13 +615,14 @@ async function updateInstallmentNegotiationHistoryPaid(orderId: string, period: 
   orders.value = orders.value.map(item => (item.id === mapped.id ? mergeOrderAfterPatch(item, mapped) : item))
 }
 
-async function updateInstallmentPaid(orderId: string, period: number, paid: boolean) {
+async function updateInstallmentPaid(orderId: string, period: number, paid: boolean, proofToken = '') {
   const response = await fetch(installmentPayUrl(orderId, period), {
     method: 'PATCH',
-    headers: withMallTenantHeaders({ 'Content-Type': 'application/json' }),
+    headers: withMallTenantHeaders({ 'Content-Type': 'application/json', ...adminSecurityProofHeaders(proofToken) }),
     body: JSON.stringify({ paid }),
   })
   if (!response.ok) {
+    invalidateRejectedSecurityProof(response)
     throw new Error(await readApiErrorMessage(response, '更新先享后付状态失败'))
   }
   const payload = await response.json() as { success?: boolean, data?: MallOrderPayload }
@@ -793,12 +807,13 @@ function recalculateOrderFields(order: OrderItem) {
   }
 }
 
-async function deleteOrder(orderId: string) {
+async function deleteOrder(orderId: string, proofToken = '') {
   const response = await fetch(`${MALL_ORDERS_ENDPOINT}/${encodeURIComponent(orderId)}`, {
     method: 'DELETE',
-    headers: withMallTenantHeaders(),
+    headers: withMallTenantHeaders(adminSecurityProofHeaders(proofToken)),
   })
   if (!response.ok) {
+    invalidateRejectedSecurityProof(response)
     const payload = await response.json().catch(() => ({})) as { msg?: string }
     throw new Error(apiErrorMessage(payload, '删除订单失败'))
   }

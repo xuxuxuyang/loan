@@ -27,6 +27,7 @@ export const ADMIN_PATH_PERMISSION_KEY: Record<string, string> = {
   '/traffic': 'traffic',
   '/dashboard': 'dashboard',
   '/dashboard/plan': 'dashboardSimulation',
+  '/security/operation-logs': 'security.audit',
   '/tenants': 'tenants.system',
   '/tenants/mall-users-data': 'tenants.mallUsersData',
 }
@@ -52,6 +53,7 @@ export const ADMIN_PERMISSION_KEY_ROUTE: Record<string, { name: string, path: st
   'traffic': { name: 'traffic', path: '/traffic' },
   'dashboard': { name: 'dashboard-overview', path: '/dashboard' },
   'dashboardSimulation': { name: 'dashboard-plan', path: '/dashboard/plan' },
+  'security.audit': { name: 'security-operation-logs', path: '/security/operation-logs' },
   'tenants.system': { name: 'tenants', path: '/tenants' },
   'tenants.mallUsersData': { name: 'tenants-mall-users-data', path: '/tenants/mall-users-data' },
 }
@@ -77,6 +79,7 @@ export const ADMIN_HOME_PERMISSION_ORDER = [
   'traffic',
   'dashboard',
   'dashboardSimulation',
+  'security.audit',
   'tenants.system',
   'tenants.mallUsersData',
 ] as const
@@ -139,6 +142,8 @@ export function adminHasPermissionAction(
     return true
   const key = String(permissionKey || '').trim()
   const act = String(action || 'view').trim() || 'view'
+  if (session.role === 'boss' && key === 'security.audit')
+    return act === 'view'
   if (!key)
     return false
   const permissions = session.permissions
@@ -161,6 +166,10 @@ export function adminHasMenuView(
     return true
   const key = String(permissionKey || '').trim()
   if (!key)
+    return true
+  if (session.role === 'super_admin' && key === 'security.audit')
+    return true
+  if (session.role === 'boss' && key === 'security.audit')
     return true
   if (!permissions.menus.includes(key))
     return false

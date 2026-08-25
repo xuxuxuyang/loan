@@ -80,6 +80,7 @@ const ADMIN_PERMISSION_TREE = [
   { key: 'traffic', label: '流量管理', actions: ['view', 'create', 'update', 'toggleStatus', 'remark', 'editChannel', 'bindPortalAccount', 'delete'] },
   { key: 'dashboard', label: '财务报表', actions: ['view'] },
   { key: 'dashboardSimulation', label: '财务汇算', actions: ['view'] },
+  { key: 'security.audit', label: '操作记录', actions: ['view'] },
   {
     key: 'tenants',
     label: '子系统管理',
@@ -192,7 +193,12 @@ function defaultAdminPermissionsForRole(role) {
     return fullAdminPermissions()
   }
   if (role === 'boss') {
-    return fullAdminPermissions({ excludeTenants: true })
+    const permissions = fullAdminPermissions({ excludeTenants: true })
+    if (!permissions.menus.includes('security.audit')) {
+      permissions.menus.push('security.audit')
+      permissions.actions['security.audit'] = ['view']
+    }
+    return permissions
   }
   if (role === 'collector') {
     return permissionsFromMenuActions(
@@ -306,6 +312,10 @@ function hasAdminPermission(accountOrRole, permissionKey, action = 'view') {
   }
   const key = String(permissionKey || '').trim()
   const act = String(action || 'view').trim() || 'view'
+  // 新增只读安全页无需迁移老板账号已有的权限快照。
+  if (role === 'boss' && key === 'security.audit') {
+    return act === 'view'
+  }
   if (!ADMIN_PERMISSION_KEY_SET.has(key)) {
     return false
   }

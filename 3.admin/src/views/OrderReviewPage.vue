@@ -13,6 +13,11 @@ import UserRiskDetailDialog, { type UserItem } from '../components/UserRiskDetai
 import { refreshOrdersMenuPendingReview } from '../composables/useAdminOrderReviewBadge'
 import { donePageProgress, startPageProgress } from '../utils/progress'
 import { trafficChannelDisplayKey } from '../utils/trafficChannelTagStyle'
+import { ACTION_CODES } from '../api/adminSecurity'
+import {
+  confirmSensitiveOperation,
+  isSensitiveOperationCancelled,
+} from '../composables/useSensitiveOperationGuard'
 import {
   mergeApiRiskViewToOrderSevenSnapshot,
   orderRiskDataReadyForAdminApprove,
@@ -482,7 +487,22 @@ async function handleDeleteOrder(order: OrderItem) {
   }
   deletingOrderId.value = order.id
   try {
-    await deleteOrder(order.id)
+    const proofToken = await confirmSensitiveOperation({
+      actionCode: ACTION_CODES.ORDER_DELETE,
+      target: { orderId: order.id },
+      input: {},
+      display: {
+        actionLabel: '删除订单',
+        user: order.user,
+        orderId: order.id,
+        changes: [
+          { label: '订单状态', before: order.status, after: '永久删除' },
+          { label: '订单金额', before: `¥${Number(order.totalAmount || 0).toFixed(2)}`, after: '-' },
+        ],
+        danger: true,
+      },
+    })
+    await deleteOrder(order.id, proofToken)
     ElMessage.success('订单已删除')
     if (userRiskDialogVisible.value) {
       userRiskDialogVisible.value = false
@@ -490,7 +510,8 @@ async function handleDeleteOrder(order: OrderItem) {
     void refreshOrdersMenuPendingReview()
   }
   catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '删除订单失败，请稍后重试')
+    if (!isSensitiveOperationCancelled(error))
+      ElMessage.error(error instanceof Error ? error.message : '删除订单失败，请稍后重试')
   }
   finally {
     deletingOrderId.value = ''

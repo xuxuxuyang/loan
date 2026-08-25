@@ -6,6 +6,11 @@ import { useRoute } from 'vue-router'
 import { apiErrorMessage, readApiErrorMessage, withMallTenantHeaders } from '../composables/useAdminApi'
 import { adminSessionRevision, getAdminSession, isSuperAdminRole } from '../composables/useAdminAuth'
 import { useAdminPagePermission } from '../composables/useAdminPagePermission'
+import { ACTION_CODES, adminSecurityProofHeaders } from '../api/adminSecurity'
+import {
+  confirmSensitiveOperation,
+  isSensitiveOperationCancelled,
+} from '../composables/useSensitiveOperationGuard'
 import TrafficChannelNameTag from '../components/TrafficChannelNameTag.vue'
 import UserRegistrationInfoScroll from '../components/UserRegistrationInfoScroll.vue'
 import UserRiskDetailDialog, {
@@ -611,9 +616,28 @@ async function exportUsersCsv() {
         }
       }
     }
+    const securityView = exportViewMode.value === 'cardPackageIssued' ? 'card-package-issued' : 'registered'
+    const proofToken = await confirmSensitiveOperation({
+      actionCode: ACTION_CODES.USER_EXPORT,
+      target: { view: securityView },
+      input: {
+        registerChannel: ch,
+        fields: fields.join(','),
+        maskPhone: exportViewMode.value === 'cardPackageIssued' && exportMaskPhone.value,
+        orderDateFrom: params.get('orderDateFrom') || '',
+        orderDateTo: params.get('orderDateTo') || '',
+      },
+      display: {
+        actionLabel: exportDialogTitle.value,
+        changes: [
+          { label: '导出字段', before: '-', after: fields.join('、') },
+          { label: '手机号', before: '-', after: exportMaskPhone.value ? '脱敏导出' : '原值导出' },
+        ],
+      },
+    })
     const response = await fetch(`${MALL_API_BASE}/users/export?${params}`, {
       method: 'GET',
-      headers: withMallTenantHeaders(),
+      headers: withMallTenantHeaders(adminSecurityProofHeaders(proofToken)),
     })
     if (!response.ok) {
       let msg = '导出失败'
@@ -643,6 +667,8 @@ async function exportUsersCsv() {
     ElMessage.success('导出成功')
   }
   catch (error) {
+    if (isSensitiveOperationCancelled(error))
+      return
     console.error('导出用户失败', error)
     ElMessage.error(error instanceof Error ? error.message : '导出失败')
   }
@@ -940,9 +966,20 @@ async function confirmDelete(user: ListedUser) {
   }
   deletingId.value = user.id
   try {
+    const proofToken = await confirmSensitiveOperation({
+      actionCode: ACTION_CODES.USER_DELETE,
+      target: { userId: user.id },
+      input: {},
+      display: {
+        actionLabel: '删除用户',
+        user: user.name || user.phone,
+        changes: [{ label: '用户状态', before: '存在', after: '永久删除' }],
+        danger: true,
+      },
+    })
     const response = await fetch(`${MALL_API_BASE}/users/${encodeURIComponent(user.id)}`, {
       method: 'DELETE',
-      headers: withMallTenantHeaders(),
+      headers: withMallTenantHeaders(adminSecurityProofHeaders(proofToken)),
     })
     const delPayload = await response.json() as { success?: boolean, msg?: string }
     if (!response.ok || delPayload.success === false) {
@@ -955,7 +992,10 @@ async function confirmDelete(user: ListedUser) {
     await fetchUsers()
   }
   catch (error) {
+    if (isSensitiveOperationCancelled(error))
+      return
     console.error('删除用户失败', error)
+    ElMessage.error(error instanceof Error ? error.message : '删除用户失败')
   }
   finally {
     deletingId.value = ''

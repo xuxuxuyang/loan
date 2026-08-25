@@ -98,6 +98,17 @@ const {
   canGrantAdminPermissions,
   canManageRolePermissions,
 } = require('./adminPermissions')
+const {
+  ACTION_CODES,
+  AdminSecurityError,
+  normalizeAdminPaidInput,
+  normalizeAuditDateFilter,
+  resolveAdminSecurityMode,
+  resolveTrustedClientIp,
+} = require('./adminSecurityCore')
+const { createMongoAdminSecurityStore } = require('./adminSecurityStore')
+const { createAdminSecurityService } = require('./adminSecurityService')
+const { createAdminSecuritySmsSender, isAdminSecuritySmsReady } = require('./adminSecuritySms')
 const crypto = require('node:crypto')
 const path = require('node:path')
 const fs = require('node:fs')
@@ -108,6 +119,26 @@ const serve = require('koa-static')
 const { imageSize } = require('image-size')
 const { deleteOwnedIdCardImage, getOssConfig, isOssConfigured, uploadIdCardImage, uploadPublicImage } = require('./oss')
 const { uploadIosIdCardImage, validateIosIdCardImageSet } = require('./ios/idCardStorage')
+
+const adminSecurityStore = createMongoAdminSecurityStore()
+const adminSecurityService = createAdminSecurityService({
+  store: adminSecurityStore,
+  secret: process.env.ADMIN_SECURITY_SECRET,
+  smsTemplate: process.env.ADMIN_SECURITY_SMS_MSG_TEMPLATE,
+  modeResolver: tenantId => resolveAdminSecurityMode(
+    process.env.ADMIN_SECURITY_MODE,
+    tenantId,
+    process.env.ADMIN_SECURITY_TENANTS,
+  ),
+  sendSms: createAdminSecuritySmsSender(),
+  smsReady: isAdminSecuritySmsReady,
+  logRetentionDays: Number(process.env.ADMIN_SECURITY_LOG_RETENTION_DAYS),
+  otpTtlMs: Number(process.env.ADMIN_SECURITY_OTP_TTL_MS),
+  resendMs: Number(process.env.ADMIN_SECURITY_OTP_RESEND_MS),
+  hourlySendLimit: Number(process.env.ADMIN_SECURITY_OTP_HOURLY_SEND_LIMIT),
+  maxAttempts: Number(process.env.ADMIN_SECURITY_OTP_MAX_ATTEMPTS),
+  repaymentProofTtlMs: Number(process.env.ADMIN_SECURITY_REPAYMENT_PROOF_TTL_MS),
+})
 
 const { router: riskControlRouter, PREFIX: RISK_CONTROL_PREFIX } = require('./riskControl/router')
 const {
@@ -1454,7 +1485,8 @@ async function requireAdminPermission(ctx, allowedRoles, actionLabel, options = 
     return ''
   }
   if (permissionKey) {
-    if (!ADMIN_ROLE_SET.has(role)) {
+    if (!ADMIN_ROLE_SET.has(role)
+      || (strictRoles && allowedRoles.length > 0 && !roleMatchesAllowedRoles(role, allowedRoles, true))) {
       fail(ctx, `当前角色【${getRoleLabel(role)}】无权限执行${actionLabel}`, 403)
       return ''
     }
@@ -1820,6 +1852,10 @@ async function requireAdminOrderDeletePermission(ctx) {
     fail(ctx, `当前角色【${getRoleLabel(role)}】无权限执行删除订单`, 403)
     return ''
   }
+  if (!hasAdminPermissionOnAny(account, ['orders.review', 'orders.approved'], 'delete')) {
+    fail(ctx, '当前账号无权限执行删除订单', 403)
+    return ''
+  }
   const db = readDb()
   const { id } = ctx.params
   const idx = db.orders.findIndex(item => item.id === id)
@@ -1839,7 +1875,7 @@ async function requireAdminOrderDeletePermission(ctx) {
     if (!(await enforcePlatformReadonlyForTenantWrite(ctx, '删除订单'))) {
       return ''
     }
-    ctx.state._orderDeleteCtx = { db, idx, id }
+    ctx.state._orderDeleteCtx = { db, id, account }
     return role || ADMIN_ROLES.SUPER
   }
   if (!(await resolveEffectiveTenantId(ctx))) {
@@ -1848,7 +1884,7 @@ async function requireAdminOrderDeletePermission(ctx) {
   if (!(await enforcePlatformReadonlyForTenantWrite(ctx, '删除订单'))) {
     return ''
   }
-  ctx.state._orderDeleteCtx = { db, idx, id }
+  ctx.state._orderDeleteCtx = { db, id, account }
   return role
 }
 
@@ -1880,6 +1916,248 @@ async function resolveEffectiveTenantId(ctx) {
     ctx.set('x-tenant-id', accountTenant)
   }
   return accountTenant
+}
+
+async function resolveAdminSecurityContext(ctx) {
+  const account = await resolveAdminAccount(ctx)
+  if (!account || !ADMIN_ROLE_SET.has(String(account.role || ''))) {
+    throw new AdminSecurityError('ADMIN_SECURITY_ACCOUNT_INVALID', '未识别到有效后台账号，请重新登录', 401)
+  }
+  const tenantId = await resolveEffectiveTenantId(ctx)
+  if (!tenantId) {
+    throw new AdminSecurityError('ADMIN_SECURITY_TENANT_INVALID', '无法识别当前子系统', 403)
+  }
+  return {
+    account,
+    tenantId,
+    ip: resolveTrustedClientIp(ctx),
+    userAgent: String(ctx.headers?.['user-agent'] || ''),
+  }
+}
+
+function handleAdminSecurityError(ctx, error) {
+  if (!(error instanceof AdminSecurityError)) {
+    return false
+  }
+  ctx.status = error.status || 400
+  ctx.body = {
+    success: false,
+    code: error.code,
+    msg: error.message,
+    data: null,
+  }
+  return true
+}
+
+function adminSecurityOrderTarget(db, order, period) {
+  const user = db.users.find(item => String(item.id || '') === String(order.mallUserId || ''))
+    || db.users.find(item => normalizePhone(item.phone) === normalizePhone(order.receiverPhone))
+  return {
+    orderId: String(order.id || ''),
+    userId: String(user?.id || order.mallUserId || ''),
+    userName: String(user?.name || order.receiverName || ''),
+    userPhone: String(user?.phone || order.receiverPhone || ''),
+    ...(period ? { period } : {}),
+  }
+}
+
+function findAdminSecurityInstallmentPlanItem(order, period) {
+  const orderCopy = structuredClone(order)
+  ensureOrderInstallmentPlan(orderCopy)
+  return findInstallmentPlanItemByPeriod(orderCopy.installmentPlan, period)
+}
+
+function revalidateAdminRepaymentOperation(db, orderId, period, validate) {
+  const target = db.orders.find(item => String(item.id) === String(orderId))
+  let failure = target ? null : { msg: '订单不存在', status: 404 }
+  const planItem = target ? findAdminSecurityInstallmentPlanItem(target, period) : null
+  if (!failure && !planItem) {
+    failure = { msg: '先享后付记录不存在', status: 404 }
+  }
+  if (!failure && typeof validate === 'function') {
+    failure = validate({ target, planItem }) || null
+  }
+  if (failure) {
+    return { failure }
+  }
+  return { target, planItem }
+}
+
+async function failAdminRepaymentRevalidation(ctx, operation, failure) {
+  await completeAdminSensitiveOperation(operation, {
+    status: 'failed',
+    summary: '还款操作状态复验失败',
+    error: failure.msg,
+  })
+  fail(ctx, failure.msg, failure.status || 400)
+}
+
+function normalizeAdminSecurityExportIntent(rawTarget = {}, rawInput = {}) {
+  const view = normalizeAdminUsersListView(rawTarget.view || rawInput.view || 'registered')
+  return {
+    target: { view },
+    input: {
+      registerChannel: String(rawInput.registerChannel || '').trim() || '__all__',
+      fields: parseRegisteredUserExportFields(rawInput.fields),
+      maskPhone: parseExportMaskPhone(rawInput.maskPhone),
+      orderDateFrom: String(rawInput.orderDateFrom || '').trim(),
+      orderDateTo: String(rawInput.orderDateTo || '').trim(),
+    },
+  }
+}
+
+function requireAdminSecurityChallengePermission(account, permissionKey, permissionAction, message) {
+  if (!hasAdminPermission(account, permissionKey, permissionAction)) {
+    throw new AdminSecurityError('ADMIN_SECURITY_FORBIDDEN', message || '当前账号无权执行该敏感操作', 403)
+  }
+}
+
+async function resolveAdminSecurityChallengeIntent(ctx, body = {}) {
+  const securityContext = await resolveAdminSecurityContext(ctx)
+  const actionCode = String(body.actionCode || '').trim()
+  const rawTarget = body.target && typeof body.target === 'object' ? body.target : {}
+  const rawInput = body.input && typeof body.input === 'object' ? body.input : {}
+  const db = readDb()
+
+  if (actionCode === ACTION_CODES.USER_DELETE) {
+    if (!hasAdminUsersPermissionOnAny(securityContext.account, 'delete')) {
+      throw new AdminSecurityError('ADMIN_SECURITY_FORBIDDEN', '当前账号无权删除用户', 403)
+    }
+    const user = db.users.find(item => String(item.id) === String(rawTarget.userId || ''))
+    if (!user) throw new AdminSecurityError('ADMIN_SECURITY_TARGET_NOT_FOUND', '用户不存在', 404)
+    return {
+      securityContext,
+      intent: {
+        actionCode,
+        target: { userId: String(user.id) },
+        input: {},
+      },
+    }
+  }
+
+  if (actionCode === ACTION_CODES.ORDER_DELETE) {
+    if (!hasAdminPermissionOnAny(securityContext.account, ['orders.review', 'orders.approved'], 'delete')) {
+      throw new AdminSecurityError('ADMIN_SECURITY_FORBIDDEN', '当前账号无权删除订单', 403)
+    }
+    const order = db.orders.find(item => String(item.id) === String(rawTarget.orderId || ''))
+    if (!order) throw new AdminSecurityError('ADMIN_SECURITY_TARGET_NOT_FOUND', '订单不存在', 404)
+    if (!hasAdminOrderDeletePermission(securityContext.account, order.status)) {
+      throw new AdminSecurityError('ADMIN_SECURITY_FORBIDDEN', '当前账号无权删除该订单', 403)
+    }
+    return {
+      securityContext,
+      intent: {
+        actionCode,
+        target: { orderId: String(order.id) },
+        input: {},
+      },
+    }
+  }
+
+  if (actionCode === ACTION_CODES.USER_EXPORT) {
+    const normalized = normalizeAdminSecurityExportIntent(rawTarget, rawInput)
+    const permissionKey = adminUsersPermissionKeyForView(normalized.target.view)
+    requireAdminSecurityChallengePermission(securityContext.account, permissionKey, 'export', '当前账号无权导出该用户数据')
+    return { securityContext, intent: { actionCode, ...normalized } }
+  }
+
+  let paidInput = null
+  if ([ACTION_CODES.REPAYMENT_MARK_PAID, ACTION_CODES.REPAYMENT_NEGOTIATION_PAID].includes(actionCode)) {
+    paidInput = normalizeAdminPaidInput(rawInput)
+    if (!paidInput) {
+      throw new AdminSecurityError('ADMIN_SECURITY_INPUT_INVALID', 'paid 必须为布尔值', 400)
+    }
+  }
+  const repaymentPermissions = {
+    [ACTION_CODES.REPAYMENT_MARK_PAID]: paidInput?.permissionAction,
+    [ACTION_CODES.REPAYMENT_CHANGE_DUE_DATE]: 'delayRepayment',
+    [ACTION_CODES.REPAYMENT_NEGOTIATE]: 'negotiateRepayment',
+    [ACTION_CODES.REPAYMENT_SETTLE_AMOUNT]: 'settleAmount',
+    [ACTION_CODES.REPAYMENT_NEGOTIATION_PAID]: paidInput?.permissionAction,
+  }
+  const permissionAction = repaymentPermissions[actionCode]
+  if (!permissionAction) {
+    throw new AdminSecurityError('ADMIN_SECURITY_ACTION_INVALID', '不支持的敏感操作类型', 400)
+  }
+  requireAdminSecurityChallengePermission(securityContext.account, 'orders.cardData', permissionAction, '当前账号无权操作还款详情')
+  const order = db.orders.find(item => String(item.id) === String(rawTarget.orderId || ''))
+  const period = Number(rawTarget.period)
+  if (!order) throw new AdminSecurityError('ADMIN_SECURITY_TARGET_NOT_FOUND', '订单不存在', 404)
+  if (!Number.isInteger(period) || period <= 0) {
+    throw new AdminSecurityError('ADMIN_SECURITY_TARGET_NOT_FOUND', '还款期次不正确', 404)
+  }
+  const orderCopy = structuredClone(order)
+  ensureOrderInstallmentPlan(orderCopy)
+  const planItem = findInstallmentPlanItemByPeriod(orderCopy.installmentPlan, period)
+  if (!planItem) throw new AdminSecurityError('ADMIN_SECURITY_TARGET_NOT_FOUND', '还款期次不存在', 404)
+  if (actionCode === ACTION_CODES.REPAYMENT_NEGOTIATION_PAID) {
+    const historyIndex = Number(rawTarget.historyIndex)
+    if (!Number.isInteger(historyIndex) || historyIndex < 0 || !planItem.negotiationHistory?.[historyIndex]) {
+      throw new AdminSecurityError('ADMIN_SECURITY_TARGET_NOT_FOUND', '协商记录不存在', 404)
+    }
+  }
+  return {
+    securityContext,
+    intent: {
+      actionCode,
+      target: adminSecurityOrderTarget(db, order, period),
+      input: paidInput ? { ...rawInput, paid: paidInput.paid } : rawInput,
+    },
+  }
+}
+
+async function beginAdminSensitiveOperation(requestContext, intent, auditDetail = {}) {
+  const securityContext = await resolveAdminSecurityContext(requestContext)
+  const authorization = await adminSecurityService.authorize(securityContext, {
+    ...intent,
+    proofToken: String(requestContext.headers?.['x-admin-security-proof'] || ''),
+  })
+  const log = await adminSecurityService.beginAudit(securityContext, {
+    ...auditDetail,
+    actionCode: intent.actionCode,
+    target: auditDetail.target || intent.target,
+    verificationMode: authorization.verificationMode,
+  })
+  return { log }
+}
+
+async function completeAdminSensitiveOperation(operation, result = {}) {
+  if (operation?.log) {
+    await adminSecurityService.completeAudit(operation.log, result)
+  }
+}
+
+async function failAdminSensitiveOperation(operation, error) {
+  if (operation?.log) {
+    await adminSecurityService.completeAudit(operation.log, {
+      status: 'failed',
+      summary: '敏感操作执行失败',
+      error: error?.message || String(error || ''),
+    })
+  }
+}
+
+function publicAdminSecurityAuditLog(row) {
+  if (!row) return null
+  return {
+    id: row.id,
+    requestId: row.requestId,
+    tenantId: row.tenantId,
+    actor: row.actor,
+    ip: row.ip,
+    userAgent: row.userAgent,
+    actionCode: row.actionCode,
+    actionLabel: row.actionLabel,
+    category: row.category,
+    target: row.target,
+    summary: row.summary,
+    changes: row.changes,
+    verificationMode: row.verificationMode,
+    status: row.status,
+    error: row.error,
+    createdAt: row.createdAt,
+    completedAt: row.completedAt,
+  }
 }
 
 /** 从副标题文案解析「赠送价值2000现金卡包」类金额（元），无匹配则 0 */
@@ -5322,6 +5600,83 @@ router.get('/admin/profile', async (ctx) => {
   })
 })
 
+router.get('/admin/security/status', async (ctx) => {
+  try {
+    const securityContext = await resolveAdminSecurityContext(ctx)
+    ctx.body = success(await adminSecurityService.getStatus(securityContext))
+  }
+  catch (error) {
+    if (!handleAdminSecurityError(ctx, error)) throw error
+  }
+})
+
+router.post('/admin/security/challenges', async (ctx) => {
+  try {
+    const { securityContext, intent } = await resolveAdminSecurityChallengeIntent(ctx, ctx.request.body || {})
+    ctx.body = success(await adminSecurityService.createChallenge(securityContext, intent))
+  }
+  catch (error) {
+    if (!handleAdminSecurityError(ctx, error)) throw error
+  }
+})
+
+router.post('/admin/security/challenges/:id/verify', async (ctx) => {
+  try {
+    const securityContext = await resolveAdminSecurityContext(ctx)
+    const result = await adminSecurityService.verifyChallenge(
+      securityContext,
+      ctx.params.id,
+      ctx.request.body?.code,
+    )
+    ctx.body = success(result)
+  }
+  catch (error) {
+    if (!handleAdminSecurityError(ctx, error)) throw error
+  }
+})
+
+router.get('/admin/security/audit-logs', async (ctx) => {
+  if (!await requireAdminPermission(ctx, [ADMIN_ROLES.SUPER, ADMIN_ROLES.BOSS], '查看操作记录', { permissionKey: 'security.audit', permissionAction: 'view', strictRoles: true })) {
+    return
+  }
+  try {
+    const securityContext = await resolveAdminSecurityContext(ctx)
+    const result = await adminSecurityService.listAuditLogs({
+      tenantId: securityContext.tenantId,
+      from: normalizeAuditDateFilter(ctx.query.from),
+      to: normalizeAuditDateFilter(ctx.query.to),
+      category: String(ctx.query.category || '').trim(),
+      status: String(ctx.query.status || '').trim(),
+      actorId: String(ctx.query.actorId || '').trim(),
+      keyword: String(ctx.query.keyword || '').trim(),
+      ip: String(ctx.query.ip || '').trim(),
+      page: Math.max(1, Number(ctx.query.page || 1)),
+      pageSize: Math.min(100, Math.max(1, Number(ctx.query.pageSize || 20))),
+    })
+    ctx.body = success({ ...result, items: result.items.map(publicAdminSecurityAuditLog) })
+  }
+  catch (error) {
+    if (!handleAdminSecurityError(ctx, error)) throw error
+  }
+})
+
+router.get('/admin/security/audit-logs/:id', async (ctx) => {
+  if (!await requireAdminPermission(ctx, [ADMIN_ROLES.SUPER, ADMIN_ROLES.BOSS], '查看操作记录详情', { permissionKey: 'security.audit', permissionAction: 'view', strictRoles: true })) {
+    return
+  }
+  try {
+    const securityContext = await resolveAdminSecurityContext(ctx)
+    const row = await adminSecurityService.getAuditLog(String(ctx.params.id || '').trim())
+    if (!row || row.tenantId !== securityContext.tenantId) {
+      throw new AdminSecurityError('ADMIN_SECURITY_LOG_NOT_FOUND', '操作记录不存在', 404)
+    }
+    ctx.body = success(publicAdminSecurityAuditLog(row))
+  }
+  catch (error) {
+    if (!handleAdminSecurityError(ctx, error)) throw error
+  }
+})
+
 function toAdminAccountView(account) {
   const tenantId = normalizeTenantId(account.tenantId || 'default')
   return {
@@ -8089,27 +8444,68 @@ router.get('/users/export', async (ctx) => {
   const maskPhone = ctx.query.maskPhone
   const orderDateFrom = String(ctx.query.orderDateFrom || '').trim()
   const orderDateTo = String(ctx.query.orderDateTo || '').trim()
-  const db = readDb()
-  const csv = buildRegisteredUsersExportCsv(db, {
+  const exportIntent = normalizeAdminSecurityExportIntent({ view }, {
     registerChannel,
     fields,
-    view,
     maskPhone,
     orderDateFrom,
     orderDateTo,
   })
-  const channelLabel = registerChannel === '__none__'
-    ? '商城注册'
-    : registerChannel === '__all__'
-      ? '全部'
-      : registerChannel
-  const safeName = channelLabel.replace(/[\\/:*?"<>|]/g, '_')
-  const filename = view === 'card-package-issued'
-    ? buildCardPackageIssuedExportFilename(orderDateFrom, orderDateTo, safeName)
-    : `注册用户_${safeName}_${exportFilenameDateStamp()}.csv`
-  ctx.set('Content-Type', 'text/csv; charset=utf-8')
-  ctx.set('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`)
-  ctx.body = `\uFEFF${csv}`
+  let securityOperation
+  try {
+    securityOperation = await beginAdminSensitiveOperation(ctx, {
+      actionCode: ACTION_CODES.USER_EXPORT,
+      ...exportIntent,
+    }, { summary: '准备导出用户数据' })
+  }
+  catch (error) {
+    if (handleAdminSecurityError(ctx, error)) return
+    throw error
+  }
+  try {
+    const db = readDb()
+    const csv = buildRegisteredUsersExportCsv(db, {
+      registerChannel,
+      fields,
+      view,
+      maskPhone,
+      orderDateFrom,
+      orderDateTo,
+    })
+    const exportedCount = listAdminUsersFilteredRows(db, {
+      registerChannel,
+      view,
+      orderDateFrom,
+      orderDateTo,
+    }).rows.length
+    const channelLabel = registerChannel === '__none__'
+      ? '商城注册'
+      : registerChannel === '__all__'
+        ? '全部'
+        : registerChannel
+    const safeName = channelLabel.replace(/[\\/:*?"<>|]/g, '_')
+    const filename = view === 'card-package-issued'
+      ? buildCardPackageIssuedExportFilename(orderDateFrom, orderDateTo, safeName)
+      : `注册用户_${safeName}_${exportFilenameDateStamp()}.csv`
+    ctx.set('Content-Type', 'text/csv; charset=utf-8')
+    ctx.set('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`)
+    ctx.body = `\uFEFF${csv}`
+    await completeAdminSensitiveOperation(securityOperation, {
+      status: 'success',
+      summary: `已导出 ${exportedCount} 条用户数据，文件 ${filename}`,
+      changes: [
+        { label: '注册渠道', before: '-', after: channelLabel },
+        { label: '订单日期', before: '-', after: `${orderDateFrom || '不限'} 至 ${orderDateTo || '不限'}` },
+        { label: '导出字段', before: '-', after: exportIntent.input.fields.join('、') },
+        { label: '手机号处理', before: '-', after: exportIntent.input.maskPhone ? '已脱敏' : '未脱敏' },
+        { label: '导出数量', before: 0, after: exportedCount },
+      ],
+    })
+  }
+  catch (error) {
+    await failAdminSensitiveOperation(securityOperation, error)
+    throw error
+  }
 })
 
 router.get('/users', async (ctx) => {
@@ -10100,13 +10496,48 @@ router.delete('/users/:id', async (ctx) => {
     fail(ctx, '用户不存在', 404)
     return
   }
-
-  db.users = db.users.filter(item => item.id !== id)
-  // 用户删除后，同步清理地址和银行卡等账号附属数据。
-  db.addresses = db.addresses.filter(item => item.userPhone !== target.phone)
-  db.bankCards = db.bankCards.filter(item => item.userPhone !== target.phone)
-  writeUsersAddressesBankCardsDb(db)
-  ctx.body = success({ id, phone: target.phone })
+  const addressCount = db.addresses.filter(item => item.userPhone === target.phone).length
+  const bankCardCount = db.bankCards.filter(item => item.userPhone === target.phone).length
+  let securityOperation
+  try {
+    securityOperation = await beginAdminSensitiveOperation(ctx, {
+      actionCode: ACTION_CODES.USER_DELETE,
+      target: { userId: String(target.id) },
+      input: {},
+    }, {
+      target: {
+        userId: String(target.id),
+        userName: String(target.name || ''),
+        userPhone: String(target.phone || ''),
+      },
+      summary: `准备删除用户${target.name || target.id}`,
+    })
+  }
+  catch (error) {
+    if (handleAdminSecurityError(ctx, error)) return
+    throw error
+  }
+  try {
+    db.users = db.users.filter(item => item.id !== id)
+    // 用户删除后，同步清理地址和银行卡等账号附属数据。
+    db.addresses = db.addresses.filter(item => item.userPhone !== target.phone)
+    db.bankCards = db.bankCards.filter(item => item.userPhone !== target.phone)
+    writeUsersAddressesBankCardsDb(db)
+    ctx.body = success({ id, phone: target.phone })
+    await completeAdminSensitiveOperation(securityOperation, {
+      status: 'success',
+      summary: `已删除用户${target.name || target.id}，同步删除地址 ${addressCount} 条、银行卡 ${bankCardCount} 张`,
+      changes: [
+        { label: '用户', before: '存在', after: '已删除' },
+        { label: '地址数量', before: addressCount, after: 0 },
+        { label: '银行卡数量', before: bankCardCount, after: 0 },
+      ],
+    })
+  }
+  catch (error) {
+    await failAdminSensitiveOperation(securityOperation, error)
+    throw error
+  }
 })
 
 /** 与 admin 侧栏角标、GET /orders?adminStatus= 展示口径一致 */
@@ -10807,7 +11238,7 @@ router.patch('/orders/:id/installments/:period/collection-remark', async (ctx) =
   const db = readDb()
   const { id, period } = ctx.params
   const payload = ctx.request.body || {}
-  const target = db.orders.find(item => String(item.id) === String(id))
+  let target = db.orders.find(item => String(item.id) === String(id))
   if (!target) {
     fail(ctx, '订单不存在', 404)
     return
@@ -11177,13 +11608,18 @@ router.patch('/orders/:id/pay', async (ctx) => {
 })
 
 router.patch('/orders/:id/installments/:period/pay', async (ctx) => {
-  if (!await requireAdminMarkPaidPermission(ctx, '标记还款状态')) {
+  const payload = ctx.request.body || {}
+  const paidInput = normalizeAdminPaidInput(payload)
+  if (!paidInput) {
+    fail(ctx, 'paid 必须为布尔值')
     return
   }
-  const db = readDb()
+  if (!await requireAdminMarkPaidPermission(ctx, '标记还款状态', paidInput.permissionAction)) {
+    return
+  }
+  let db = readDb()
   const { id, period } = ctx.params
-  const payload = ctx.request.body || {}
-  const target = db.orders.find(item => String(item.id) === String(id))
+  let target = db.orders.find(item => String(item.id) === String(id))
   if (!target) {
     fail(ctx, '订单不存在', 404)
     return
@@ -11195,37 +11631,74 @@ router.patch('/orders/:id/installments/:period/pay', async (ctx) => {
     return
   }
 
-  ensureOrderInstallmentPlan(target)
-  const planItem = findInstallmentPlanItemByPeriod(target.installmentPlan, periodNumber)
-  if (!planItem) {
+  const validationPlanItem = findAdminSecurityInstallmentPlanItem(target, periodNumber)
+  if (!validationPlanItem) {
     fail(ctx, '先享后付记录不存在', 404)
     return
   }
-
-  const wasSettled = isMallOrderRepaymentSettled(target)
-  planItem.paid = Boolean(payload.paid)
-  if (planItem.paid && planItem.negotiationPayPending) {
-    planItem.negotiationPayPending = null
+  let beforePaid = installmentItemIsPaid(validationPlanItem)
+  const nextPaid = paidInput.paid
+  let securityOperation
+  try {
+    securityOperation = await beginAdminSensitiveOperation(ctx, {
+      actionCode: ACTION_CODES.REPAYMENT_MARK_PAID,
+      target: { orderId: String(target.id), period: periodNumber },
+      input: { paid: nextPaid },
+    }, {
+      target: adminSecurityOrderTarget(db, target, periodNumber),
+      summary: `准备将第 ${periodNumber} 期还款状态改为${nextPaid ? '已还' : '未还'}`,
+      changes: [{ label: '还款状态', before: beforePaid ? '已还' : '未还', after: nextPaid ? '已还' : '未还' }],
+    })
   }
-  if (!planItem.paid) {
-    restoreNegotiationPayPendingFromLastHistoryIfNeeded(planItem)
+  catch (error) {
+    if (handleAdminSecurityError(ctx, error)) return
+    throw error
   }
+  try {
+    db = readDb()
+    const live = revalidateAdminRepaymentOperation(db, id, periodNumber)
+    if (live.failure) {
+      await failAdminRepaymentRevalidation(ctx, securityOperation, live.failure)
+      return
+    }
+    target = live.target
+    beforePaid = installmentItemIsPaid(live.planItem)
+    ensureOrderInstallmentPlan(target)
+    const planItem = findInstallmentPlanItemByPeriod(target.installmentPlan, periodNumber)
+    if (!planItem) throw new Error('先享后付记录不存在')
+    const wasSettled = isMallOrderRepaymentSettled(target)
+    planItem.paid = nextPaid
+    if (planItem.paid && planItem.negotiationPayPending) {
+      planItem.negotiationPayPending = null
+    }
+    if (!planItem.paid) {
+      restoreNegotiationPayPendingFromLastHistoryIfNeeded(planItem)
+    }
 
-  target.installmentScheduleExplicit = true
+    target.installmentScheduleExplicit = true
+    applyInstallmentCompletionOrderStatus(target, { ignoreAdminSkip: true })
 
-  applyInstallmentCompletionOrderStatus(target, { ignoreAdminSkip: true })
-
-  writeOrdersDb(db)
-  await flushMongoPersist()
-  if (!wasSettled && isMallOrderRepaymentSettled(target)) {
-    queueDuodiandianOrderNotify('repaid', target, readDb())
+    writeOrdersDb(db)
+    await flushMongoPersist()
+    if (!wasSettled && isMallOrderRepaymentSettled(target)) {
+      queueDuodiandianOrderNotify('repaid', target, readDb())
+    }
+    ctx.body = success(target)
+    await completeAdminSensitiveOperation(securityOperation, {
+      status: 'success',
+      summary: `已将订单${target.id}第 ${periodNumber} 期标记为${nextPaid ? '已还' : '未还'}`,
+      changes: [{ label: '还款状态', before: beforePaid ? '已还' : '未还', after: nextPaid ? '已还' : '未还' }],
+    })
   }
-  ctx.body = success(target)
+  catch (error) {
+    await failAdminSensitiveOperation(securityOperation, error)
+    throw error
+  }
 })
 
 /** 管理端：修改指定期次还款日——支持顺延若干天（addDays）或直接指定协商还款日（dueDate） */
 router.patch('/orders/:id/installments/:period/due-date', async (ctx) => {
-  const db = readDb()
+  let db = readDb()
   const { id, period } = ctx.params
   const payload = ctx.request.body || {}
   const dueDateRaw = String(payload.dueDate || '').trim()
@@ -11251,7 +11724,7 @@ router.patch('/orders/:id/installments/:period/due-date', async (ctx) => {
     return
   }
 
-  const target = db.orders.find(item => String(item.id) === String(id))
+  let target = db.orders.find(item => String(item.id) === String(id))
   if (!target) {
     fail(ctx, '订单不存在', 404)
     return
@@ -11263,74 +11736,152 @@ router.patch('/orders/:id/installments/:period/due-date', async (ctx) => {
     return
   }
 
-  ensureOrderInstallmentPlan(target)
-  const planItem = findInstallmentPlanItemByPeriod(target.installmentPlan, periodNumber)
-  if (!planItem) {
+  const validationPlanItem = findAdminSecurityInstallmentPlanItem(target, periodNumber)
+  if (!validationPlanItem) {
     fail(ctx, '先享后付记录不存在', 404)
     return
   }
 
-  if (installmentItemIsPaid(planItem)) {
+  if (installmentItemIsPaid(validationPlanItem)) {
     fail(ctx, isSetDueDate ? '已还款期次不可修改还款日' : '已还款期次不可延期')
     return
   }
 
+  let beforeDueDate = resolveDeferRepaymentBaseDueDateKey(validationPlanItem)
+  let nextDueDate = ''
+  let addDaysNum = null
   if (isSetDueDate) {
     const todayKey = formatDate(new Date().toISOString())
     if (!isDueDateOnOrAfterToday(dueDateRaw, todayKey)) {
       fail(ctx, '还款日须为今天或之后的日期')
       return
     }
-    if (!hasNegotiatedRepaymentDueDateTarget(planItem)) {
+    if (!hasNegotiatedRepaymentDueDateTarget(validationPlanItem)) {
       fail(ctx, '当前期无协商记录，无法修改协商还款日')
       return
     }
-    const applied = applyNegotiatedRepaymentDueDate(planItem, dueDateRaw)
+    const applied = applyNegotiatedRepaymentDueDate(structuredClone(validationPlanItem), dueDateRaw)
     if (!applied.ok) {
       fail(ctx, applied.error || '还款日无效')
       return
+    }
+    nextDueDate = dueDateRaw
+  }
+  else {
+    addDaysNum = Number(addDaysRaw)
+    if (!Number.isInteger(addDaysNum) || addDaysNum < 1 || addDaysNum > 3650) {
+      fail(ctx, 'addDays 须为 1～3650 的整数')
+      return
+    }
+    if (!beforeDueDate || !/^\d{4}-\d{2}-\d{2}$/.test(beforeDueDate)) {
+      fail(ctx, '当前期还款日无效，无法延期')
+      return
+    }
+    nextDueDate = addDays(`${beforeDueDate}T12:00:00`, addDaysNum)
+    if (!nextDueDate || !/^\d{4}-\d{2}-\d{2}$/.test(nextDueDate)) {
+      fail(ctx, '计算新还款日失败')
+      return
+    }
+  }
+  let securityOperation
+  try {
+    securityOperation = await beginAdminSensitiveOperation(ctx, {
+      actionCode: ACTION_CODES.REPAYMENT_CHANGE_DUE_DATE,
+      target: { orderId: String(target.id), period: periodNumber },
+      input: { dueDate: nextDueDate, addDays: addDaysNum },
+    }, {
+      target: adminSecurityOrderTarget(db, target, periodNumber),
+      summary: `准备将第 ${periodNumber} 期还款日改为 ${nextDueDate}`,
+      changes: [
+        { label: '还款日', before: beforeDueDate, after: nextDueDate },
+        ...(addDaysNum ? [{ label: '延期天数', before: 0, after: addDaysNum }] : []),
+      ],
+    })
+  }
+  catch (error) {
+    if (handleAdminSecurityError(ctx, error)) return
+    throw error
+  }
+  try {
+    db = readDb()
+    const live = revalidateAdminRepaymentOperation(
+      db,
+      id,
+      periodNumber,
+      ({ planItem }) => {
+        if (installmentItemIsPaid(planItem)) {
+          return { msg: isSetDueDate ? '已还款期次不可修改还款日' : '已还款期次不可延期', status: 400 }
+        }
+        const currentBeforeDueDate = resolveDeferRepaymentBaseDueDateKey(planItem)
+        if (isSetDueDate) {
+          const todayKey = formatDate(new Date().toISOString())
+          if (!isDueDateOnOrAfterToday(dueDateRaw, todayKey)) {
+            return { msg: '还款日须为今天或之后的日期', status: 400 }
+          }
+          if (!hasNegotiatedRepaymentDueDateTarget(planItem)) {
+            return { msg: '当前期无协商记录，无法修改协商还款日', status: 400 }
+          }
+          const applied = applyNegotiatedRepaymentDueDate(structuredClone(planItem), dueDateRaw)
+          if (!applied.ok) {
+            return { msg: applied.error || '还款日无效', status: 400 }
+          }
+          beforeDueDate = currentBeforeDueDate
+          nextDueDate = dueDateRaw
+          return null
+        }
+        if (!currentBeforeDueDate || !/^\d{4}-\d{2}-\d{2}$/.test(currentBeforeDueDate)) {
+          return { msg: '当前期还款日无效，无法延期', status: 400 }
+        }
+        const currentNextDueDate = addDays(`${currentBeforeDueDate}T12:00:00`, addDaysNum)
+        if (!currentNextDueDate || !/^\d{4}-\d{2}-\d{2}$/.test(currentNextDueDate)) {
+          return { msg: '计算新还款日失败', status: 400 }
+        }
+        beforeDueDate = currentBeforeDueDate
+        nextDueDate = currentNextDueDate
+        return null
+      },
+    )
+    if (live.failure) {
+      await failAdminRepaymentRevalidation(ctx, securityOperation, live.failure)
+      return
+    }
+    target = live.target
+    ensureOrderInstallmentPlan(target)
+    const planItem = findInstallmentPlanItemByPeriod(target.installmentPlan, periodNumber)
+    if (!planItem) throw new Error('先享后付记录不存在')
+    if (isSetDueDate) {
+      applyNegotiatedRepaymentDueDate(planItem, nextDueDate)
+    }
+    else {
+      const todayKeyForDisplay = formatDate(new Date().toISOString())
+      if (beforeDueDate === todayKeyForDisplay) {
+        recordDeferRepaymentDisplayEvent(planItem, {
+          orderId: target.id,
+          period: periodNumber,
+          fromDueDate: beforeDueDate,
+          toDueDate: nextDueDate,
+        })
+      }
+      applyDeferRepaymentDueDate(planItem, nextDueDate)
+      applyInstallmentCompletionOrderStatus(target, { ignoreAdminSkip: true })
     }
     target.installmentScheduleExplicit = true
     writeOrdersDb(db)
     await flushMongoPersist()
     ctx.body = success(target)
-    return
-  }
-
-  const addDaysNum = Number(addDaysRaw)
-  if (!Number.isInteger(addDaysNum) || addDaysNum < 1 || addDaysNum > 3650) {
-    fail(ctx, 'addDays 须为 1～3650 的整数')
-    return
-  }
-
-  const key = resolveDeferRepaymentBaseDueDateKey(planItem)
-  if (!key || !/^\d{4}-\d{2}-\d{2}$/.test(key)) {
-    fail(ctx, '当前期还款日无效，无法延期')
-    return
-  }
-
-  const nextYmd = addDays(`${key}T12:00:00`, addDaysNum)
-  if (!nextYmd || !/^\d{4}-\d{2}-\d{2}$/.test(nextYmd)) {
-    fail(ctx, '计算新还款日失败')
-    return
-  }
-
-  const todayKeyForDisplay = formatDate(new Date().toISOString())
-  if (key === todayKeyForDisplay) {
-    recordDeferRepaymentDisplayEvent(planItem, {
-      orderId: target.id,
-      period: periodNumber,
-      fromDueDate: key,
-      toDueDate: nextYmd,
+    await completeAdminSensitiveOperation(securityOperation, {
+      status: 'success',
+      summary: `已将订单${target.id}第 ${periodNumber} 期还款日从 ${beforeDueDate} 改为 ${nextDueDate}`,
+      changes: [
+        { label: '还款日', before: beforeDueDate, after: nextDueDate },
+        ...(addDaysNum ? [{ label: '延期天数', before: 0, after: addDaysNum }] : []),
+      ],
     })
   }
-  applyDeferRepaymentDueDate(planItem, nextYmd)
-  target.installmentScheduleExplicit = true
-  applyInstallmentCompletionOrderStatus(target, { ignoreAdminSkip: true })
-
-  writeOrdersDb(db)
-  await flushMongoPersist()
-  ctx.body = success(target)
+  catch (error) {
+    await failAdminSensitiveOperation(securityOperation, error)
+    throw error
+  }
 })
 
 /** 管理端：协商结清金额——将未还款期次的应还总额与本金直接改为指定值 */
@@ -11338,10 +11889,10 @@ router.patch('/orders/:id/installments/:period/settle-amount', async (ctx) => {
   if (!await requireAdminMarkPaidPermission(ctx, '协商结清金额', 'settleAmount')) {
     return
   }
-  const db = readDb()
+  let db = readDb()
   const { id, period } = ctx.params
   const payload = ctx.request.body || {}
-  const target = db.orders.find(item => String(item.id) === String(id))
+  let target = db.orders.find(item => String(item.id) === String(id))
   if (!target) {
     fail(ctx, '订单不存在', 404)
     return
@@ -11359,17 +11910,16 @@ router.patch('/orders/:id/installments/:period/settle-amount', async (ctx) => {
     fail(ctx, '期数参数不正确')
     return
   }
-  ensureOrderInstallmentPlan(target)
-  const planItem = findInstallmentPlanItemByPeriod(target.installmentPlan, periodNumber)
-  if (!planItem) {
+  const validationPlanItem = findAdminSecurityInstallmentPlanItem(target, periodNumber)
+  if (!validationPlanItem) {
     fail(ctx, '先享后付记录不存在', 404)
     return
   }
-  if (installmentItemIsPaid(planItem)) {
+  if (installmentItemIsPaid(validationPlanItem)) {
     fail(ctx, '已还款期次不可修改应还金额', 400)
     return
   }
-  if (planItem.negotiationPayPending && Number(planItem.negotiationPayPending.negotiatedAmount || 0) > 0) {
+  if (validationPlanItem.negotiationPayPending && Number(validationPlanItem.negotiationPayPending.negotiatedAmount || 0) > 0) {
     fail(ctx, '本期尚有协商款项待用户完成支付，请先完成后再修改', 400)
     return
   }
@@ -11383,16 +11933,74 @@ router.patch('/orders/:id/installments/:period/settle-amount', async (ctx) => {
     fail(ctx, '应还金额过大')
     return
   }
-  planItem.amount = nextAmount
-  planItem.principal = nextAmount
-  if (planItem.fee != null) {
-    planItem.fee = 0
+  let beforeAmount = Number(Number(validationPlanItem.amount || 0).toFixed(2))
+  let securityOperation
+  try {
+    securityOperation = await beginAdminSensitiveOperation(ctx, {
+      actionCode: ACTION_CODES.REPAYMENT_SETTLE_AMOUNT,
+      target: { orderId: String(target.id), period: periodNumber },
+      input: { amount: nextAmount },
+    }, {
+      target: adminSecurityOrderTarget(db, target, periodNumber),
+      summary: `准备修改第 ${periodNumber} 期协商结清金额`,
+      changes: [{ label: '应还金额', before: beforeAmount, after: nextAmount }],
+    })
   }
-  target.installmentScheduleExplicit = true
-  applyInstallmentCompletionOrderStatus(target, { ignoreAdminSkip: true })
-  writeOrdersDb(db)
-  await flushMongoPersist()
-  ctx.body = success(target)
+  catch (error) {
+    if (handleAdminSecurityError(ctx, error)) return
+    throw error
+  }
+  try {
+    db = readDb()
+    const live = revalidateAdminRepaymentOperation(
+      db,
+      id,
+      periodNumber,
+      ({ target: liveTarget, planItem }) => {
+        if (liveTarget.payType !== 'installment') {
+          return { msg: '仅先享后付订单可修改应还金额', status: 400 }
+        }
+        if (!liveTarget.cardPackageIssued) {
+          return { msg: '卡包未发放，暂不可修改应还金额', status: 400 }
+        }
+        if (installmentItemIsPaid(planItem)) {
+          return { msg: '已还款期次不可修改应还金额', status: 400 }
+        }
+        if (planItem.negotiationPayPending && Number(planItem.negotiationPayPending.negotiatedAmount || 0) > 0) {
+          return { msg: '本期尚有协商款项待用户完成支付，请先完成后再修改', status: 400 }
+        }
+        beforeAmount = Number(Number(planItem.amount || 0).toFixed(2))
+        return null
+      },
+    )
+    if (live.failure) {
+      await failAdminRepaymentRevalidation(ctx, securityOperation, live.failure)
+      return
+    }
+    target = live.target
+    ensureOrderInstallmentPlan(target)
+    const planItem = findInstallmentPlanItemByPeriod(target.installmentPlan, periodNumber)
+    if (!planItem) throw new Error('先享后付记录不存在')
+    planItem.amount = nextAmount
+    planItem.principal = nextAmount
+    if (planItem.fee != null) {
+      planItem.fee = 0
+    }
+    target.installmentScheduleExplicit = true
+    applyInstallmentCompletionOrderStatus(target, { ignoreAdminSkip: true })
+    writeOrdersDb(db)
+    await flushMongoPersist()
+    ctx.body = success(target)
+    await completeAdminSensitiveOperation(securityOperation, {
+      status: 'success',
+      summary: `已将订单${target.id}第 ${periodNumber} 期应还金额从 ${beforeAmount} 改为 ${nextAmount}`,
+      changes: [{ label: '应还金额', before: beforeAmount, after: nextAmount }],
+    })
+  }
+  catch (error) {
+    await failAdminSensitiveOperation(securityOperation, error)
+    throw error
+  }
 })
 
 /** 管理端：协商还款——登记延期费与协商还款日，写入协商历史（不扣减本期应还金额） */
@@ -11400,10 +12008,10 @@ router.patch('/orders/:id/installments/:period/negotiate', async (ctx) => {
   if (!await requireAdminMarkPaidPermission(ctx, '协商还款', 'negotiateRepayment')) {
     return
   }
-  const db = readDb()
+  let db = readDb()
   const { id, period } = ctx.params
   const payload = ctx.request.body || {}
-  const target = db.orders.find(item => String(item.id) === String(id))
+  let target = db.orders.find(item => String(item.id) === String(id))
   if (!target) {
     fail(ctx, '订单不存在', 404)
     return
@@ -11421,17 +12029,16 @@ router.patch('/orders/:id/installments/:period/negotiate', async (ctx) => {
     fail(ctx, '期数参数不正确')
     return
   }
-  ensureOrderInstallmentPlan(target)
-  const planItem = findInstallmentPlanItemByPeriod(target.installmentPlan, periodNumber)
-  if (!planItem) {
+  const validationPlanItem = findAdminSecurityInstallmentPlanItem(target, periodNumber)
+  if (!validationPlanItem) {
     fail(ctx, '先享后付记录不存在', 404)
     return
   }
-  if (installmentItemIsPaid(planItem)) {
+  if (installmentItemIsPaid(validationPlanItem)) {
     fail(ctx, '已还款期次不可协商', 400)
     return
   }
-  if (planItem.negotiationPayPending && Number(planItem.negotiationPayPending.negotiatedAmount || 0) > 0) {
+  if (validationPlanItem.negotiationPayPending && Number(validationPlanItem.negotiationPayPending.negotiatedAmount || 0) > 0) {
     fail(ctx, '本期尚有协商款项待用户在前台完成支付，暂不可再次协商', 400)
     return
   }
@@ -11440,13 +12047,13 @@ router.patch('/orders/:id/installments/:period/negotiate', async (ctx) => {
     fail(ctx, '协商还款金额须为大于 0 的数字')
     return
   }
-  const curAmount = Number(Number(planItem.amount || 0).toFixed(2))
+  let curAmount = Number(Number(validationPlanItem.amount || 0).toFixed(2))
   const nAmt = Number(negotiatedAmountRaw.toFixed(2))
   if (nAmt > 99_999_999) {
     fail(ctx, '协商还款金额过大')
     return
   }
-  const remainder = negotiateExtensionFeeRemainderAmount(planItem)
+  let remainder = negotiateExtensionFeeRemainderAmount(validationPlanItem)
   if (remainder <= 0) {
     fail(ctx, '当前应还金额无效，无法协商')
     return
@@ -11456,47 +12063,122 @@ router.patch('/orders/:id/installments/:period/negotiate', async (ctx) => {
     fail(ctx, '请提供有效的协商还款日（YYYY-MM-DD）')
     return
   }
-  const originalEffectiveDue = resolveDeferRepaymentBaseDueDateKey(planItem)
-  if (!Array.isArray(planItem.negotiationHistory)) {
-    planItem.negotiationHistory = []
+  let originalEffectiveDue = resolveDeferRepaymentBaseDueDateKey(validationPlanItem)
+  let securityOperation
+  try {
+    securityOperation = await beginAdminSensitiveOperation(ctx, {
+      actionCode: ACTION_CODES.REPAYMENT_NEGOTIATE,
+      target: { orderId: String(target.id), period: periodNumber },
+      input: { negotiatedAmount: nAmt, remainderAmount: remainder, remainderDueDate: remainderDue },
+    }, {
+      target: adminSecurityOrderTarget(db, target, periodNumber),
+      summary: `准备登记第 ${periodNumber} 期协商还款`,
+      changes: [
+        { label: '协商金额', before: '-', after: nAmt },
+        { label: '剩余金额', before: curAmount, after: remainder },
+        { label: '剩余还款日', before: originalEffectiveDue, after: remainderDue },
+      ],
+    })
   }
-  planItem.negotiationHistory.push({
-    negotiatedAmount: nAmt,
-    remainderAmount: remainder,
-    remainderDueDate: remainderDue,
-    originalDueDate: String(planItem.dueDate || '').trim(),
-    createdAt: new Date().toISOString(),
-  })
-  /** 待用户在前台完成「协商支付」后再更新还款日；此前本期应还总额保持不变 */
-  planItem.negotiationPayPending = {
-    negotiatedAmount: nAmt,
-    remainderAmount: remainder,
-    remainderDueDate: remainderDue,
-    createdAt: new Date().toISOString(),
+  catch (error) {
+    if (handleAdminSecurityError(ctx, error)) return
+    throw error
   }
-  recordNegotiationDeferAsCollectedEvent(planItem, {
-    orderId: target.id,
-    period: periodNumber,
-    fromDueDate: originalEffectiveDue,
-    toDueDate: remainderDue,
-  })
-  target.installmentScheduleExplicit = true
-  applyInstallmentCompletionOrderStatus(target, { ignoreAdminSkip: true })
-  writeOrdersDb(db)
-  await flushMongoPersist()
-  ctx.body = success(target)
+  try {
+    db = readDb()
+    const live = revalidateAdminRepaymentOperation(
+      db,
+      id,
+      periodNumber,
+      ({ target: liveTarget, planItem }) => {
+        if (liveTarget.payType !== 'installment') {
+          return { msg: '仅先享后付订单可协商还款', status: 400 }
+        }
+        if (!liveTarget.cardPackageIssued) {
+          return { msg: '卡包未发放，暂不可协商还款', status: 400 }
+        }
+        if (installmentItemIsPaid(planItem)) {
+          return { msg: '已还款期次不可协商', status: 400 }
+        }
+        if (planItem.negotiationPayPending && Number(planItem.negotiationPayPending.negotiatedAmount || 0) > 0) {
+          return { msg: '本期尚有协商款项待用户在前台完成支付，暂不可再次协商', status: 400 }
+        }
+        const currentRemainder = negotiateExtensionFeeRemainderAmount(planItem)
+        if (currentRemainder <= 0) {
+          return { msg: '当前应还金额无效，无法协商', status: 400 }
+        }
+        curAmount = Number(Number(planItem.amount || 0).toFixed(2))
+        remainder = currentRemainder
+        originalEffectiveDue = resolveDeferRepaymentBaseDueDateKey(planItem)
+        return null
+      },
+    )
+    if (live.failure) {
+      await failAdminRepaymentRevalidation(ctx, securityOperation, live.failure)
+      return
+    }
+    target = live.target
+    ensureOrderInstallmentPlan(target)
+    const planItem = findInstallmentPlanItemByPeriod(target.installmentPlan, periodNumber)
+    if (!planItem) throw new Error('先享后付记录不存在')
+    if (!Array.isArray(planItem.negotiationHistory)) {
+      planItem.negotiationHistory = []
+    }
+    planItem.negotiationHistory.push({
+      negotiatedAmount: nAmt,
+      remainderAmount: remainder,
+      remainderDueDate: remainderDue,
+      originalDueDate: String(planItem.dueDate || '').trim(),
+      createdAt: new Date().toISOString(),
+    })
+    /** 待用户在前台完成「协商支付」后再更新还款日；此前本期应还总额保持不变 */
+    planItem.negotiationPayPending = {
+      negotiatedAmount: nAmt,
+      remainderAmount: remainder,
+      remainderDueDate: remainderDue,
+      createdAt: new Date().toISOString(),
+    }
+    recordNegotiationDeferAsCollectedEvent(planItem, {
+      orderId: target.id,
+      period: periodNumber,
+      fromDueDate: originalEffectiveDue,
+      toDueDate: remainderDue,
+    })
+    target.installmentScheduleExplicit = true
+    applyInstallmentCompletionOrderStatus(target, { ignoreAdminSkip: true })
+    writeOrdersDb(db)
+    await flushMongoPersist()
+    ctx.body = success(target)
+    await completeAdminSensitiveOperation(securityOperation, {
+      status: 'success',
+      summary: `已登记订单${target.id}第 ${periodNumber} 期协商还款 ${nAmt}，余款日期 ${remainderDue}`,
+      changes: [
+        { label: '协商金额', before: '-', after: nAmt },
+        { label: '剩余金额', before: curAmount, after: remainder },
+        { label: '剩余还款日', before: originalEffectiveDue, after: remainderDue },
+      ],
+    })
+  }
+  catch (error) {
+    await failAdminSensitiveOperation(securityOperation, error)
+    throw error
+  }
 })
 
 /** 管理端：协商记录中单条「协商金额还款状态」标记已还 / 未还（与商城协商支付落库一致，可撤销末条已应用状态） */
 router.patch('/orders/:id/installments/:period/negotiation/history/:historyIndex/paid', async (ctx) => {
-  const historyAction = ctx.request.body && ctx.request.body.paid === false ? 'revokePaid' : 'markPaid'
-  if (!await requireAdminMarkPaidPermission(ctx, 'admin action', historyAction)) {
+  const payload = ctx.request.body || {}
+  const paidInput = normalizeAdminPaidInput(payload)
+  if (!paidInput) {
+    fail(ctx, 'paid 必须为布尔值')
     return
   }
-  const db = readDb()
+  if (!await requireAdminMarkPaidPermission(ctx, 'admin action', paidInput.permissionAction)) {
+    return
+  }
+  let db = readDb()
   const { id, period, historyIndex: historyIndexRaw } = ctx.params
-  const payload = ctx.request.body || {}
-  const target = db.orders.find(item => String(item.id) === String(id))
+  let target = db.orders.find(item => String(item.id) === String(id))
   if (!target) {
     fail(ctx, '订单不存在', 404)
     return
@@ -11519,58 +12201,124 @@ router.patch('/orders/:id/installments/:period/negotiation/history/:historyIndex
     fail(ctx, '协商记录序号不正确')
     return
   }
-  ensureOrderInstallmentPlan(target)
-  const planItem = findInstallmentPlanItemByPeriod(target.installmentPlan, periodNumber)
-  if (!planItem) {
+  const validationPlanItem = findAdminSecurityInstallmentPlanItem(target, periodNumber)
+  if (!validationPlanItem) {
     fail(ctx, '先享后付记录不存在', 404)
     return
   }
-  if (installmentItemIsPaid(planItem)) {
+  if (installmentItemIsPaid(validationPlanItem)) {
     fail(ctx, '该期已结清，不可再改协商记录', 400)
     return
   }
-  const hist = planItem.negotiationHistory
-  if (!Array.isArray(hist) || !hist[historyIndex]) {
+  const validationHistory = validationPlanItem.negotiationHistory
+  if (!Array.isArray(validationHistory) || !validationHistory[historyIndex]) {
     fail(ctx, '协商记录不存在', 404)
     return
   }
-  const row = hist[historyIndex]
-  const isLast = historyIndex === hist.length - 1
-  const paid = Boolean(payload.paid)
-  const wasSettled = isMallOrderRepaymentSettled(target)
+  const validationRow = validationHistory[historyIndex]
+  const paid = paidInput.paid
+  let beforePaid = Boolean(validationRow.userPaidAt)
+  let securityOperation
+  try {
+    securityOperation = await beginAdminSensitiveOperation(ctx, {
+      actionCode: ACTION_CODES.REPAYMENT_NEGOTIATION_PAID,
+      target: { orderId: String(target.id), period: periodNumber, historyIndex },
+      input: { paid },
+    }, {
+      target: { ...adminSecurityOrderTarget(db, target, periodNumber), historyIndex },
+      summary: `准备将第 ${periodNumber} 期第 ${historyIndex + 1} 条协商记录改为${paid ? '已支付' : '未支付'}`,
+      changes: [{ label: '协商支付状态', before: beforePaid ? '已支付' : '未支付', after: paid ? '已支付' : '未支付' }],
+    })
+  }
+  catch (error) {
+    if (handleAdminSecurityError(ctx, error)) return
+    throw error
+  }
+  try {
+    db = readDb()
+    const live = revalidateAdminRepaymentOperation(
+      db,
+      id,
+      periodNumber,
+      ({ target: liveTarget, planItem }) => {
+        if (liveTarget.payType !== 'installment') {
+          return { msg: '仅先享后付订单可操作', status: 400 }
+        }
+        if (!liveTarget.cardPackageIssued) {
+          return { msg: '卡包未发放，暂不可操作', status: 400 }
+        }
+        if (installmentItemIsPaid(planItem)) {
+          return { msg: '该期已结清，不可再改协商记录', status: 400 }
+        }
+        const history = planItem.negotiationHistory
+        if (!Array.isArray(history) || !history[historyIndex]) {
+          return { msg: '协商记录不存在', status: 404 }
+        }
+        beforePaid = Boolean(history[historyIndex].userPaidAt)
+        return null
+      },
+    )
+    if (live.failure) {
+      await failAdminRepaymentRevalidation(ctx, securityOperation, live.failure)
+      return
+    }
+    target = live.target
+    ensureOrderInstallmentPlan(target)
+    const planItem = findInstallmentPlanItemByPeriod(target.installmentPlan, periodNumber)
+    if (!planItem) throw new Error('先享后付记录不存在')
+    const hist = planItem.negotiationHistory
+    const row = Array.isArray(hist) ? hist[historyIndex] : null
+    if (!row) throw new Error('协商记录不存在')
+    const isLast = historyIndex === hist.length - 1
+    const wasSettled = isMallOrderRepaymentSettled(target)
 
-  if (paid) {
-    if (isLast && planItem.negotiationPayPending && Number(planItem.negotiationPayPending.negotiatedAmount || 0) > 0) {
-      const applied = applyInstallmentNegotiationPayCompleted(planItem)
-      if (!applied.ok) {
-        fail(ctx, applied.msg, 400)
-        return
+    if (paid) {
+      if (isLast && planItem.negotiationPayPending && Number(planItem.negotiationPayPending.negotiatedAmount || 0) > 0) {
+        const applied = applyInstallmentNegotiationPayCompleted(planItem)
+        if (!applied.ok) {
+          fail(ctx, applied.msg, 400)
+          await completeAdminSensitiveOperation(securityOperation, {
+            status: 'failed',
+            summary: '协商支付状态修改失败',
+            error: applied.msg,
+          })
+          return
+        }
+      }
+      else {
+        row.userPaidAt = new Date().toISOString()
       }
     }
     else {
-      row.userPaidAt = new Date().toISOString()
-    }
-  }
-  else {
-    if (isLast && !planItem.negotiationPayPending) {
-      const rev = revertLastNegotiationPayCompletion(planItem)
-      if (!rev.ok) {
+      if (isLast && !planItem.negotiationPayPending) {
+        const rev = revertLastNegotiationPayCompletion(planItem)
+        if (!rev.ok) {
+          delete row.userPaidAt
+        }
+      }
+      else {
         delete row.userPaidAt
       }
     }
-    else {
-      delete row.userPaidAt
-    }
-  }
 
-  target.installmentScheduleExplicit = true
-  applyInstallmentCompletionOrderStatus(target, { ignoreAdminSkip: true })
-  writeOrdersDb(db)
-  await flushMongoPersist()
-  if (!wasSettled && isMallOrderRepaymentSettled(target)) {
-    queueDuodiandianOrderNotify('repaid', target, readDb())
+    target.installmentScheduleExplicit = true
+    applyInstallmentCompletionOrderStatus(target, { ignoreAdminSkip: true })
+    writeOrdersDb(db)
+    await flushMongoPersist()
+    if (!wasSettled && isMallOrderRepaymentSettled(target)) {
+      queueDuodiandianOrderNotify('repaid', target, readDb())
+    }
+    ctx.body = success(target)
+    await completeAdminSensitiveOperation(securityOperation, {
+      status: 'success',
+      summary: `已将订单${target.id}第 ${periodNumber} 期协商记录标记为${paid ? '已支付' : '未支付'}`,
+      changes: [{ label: '协商支付状态', before: beforePaid ? '已支付' : '未支付', after: paid ? '已支付' : '未支付' }],
+    })
   }
-  ctx.body = success(target)
+  catch (error) {
+    await failAdminSensitiveOperation(securityOperation, error)
+    throw error
+  }
 })
 
 router.patch('/orders/:id/status', async (ctx) => {
@@ -11886,18 +12634,71 @@ router.delete('/orders/:id', async (ctx) => {
     return
   }
   const cached = ctx.state._orderDeleteCtx
-  const db = cached?.db || readDb()
+  let db = readDb()
   const id = cached?.id || ctx.params.id
-  const idx = typeof cached?.idx === 'number'
-    ? cached.idx
-    : db.orders.findIndex(item => item.id === id)
+  const idx = db.orders.findIndex(item => item.id === id)
   if (idx < 0) {
     fail(ctx, '订单不存在', 404)
     return
   }
-  db.orders.splice(idx, 1)
-  writeOrdersDb(db)
-  ctx.body = success({ id })
+  const target = db.orders[idx]
+  let securityOperation
+  try {
+    securityOperation = await beginAdminSensitiveOperation(ctx, {
+      actionCode: ACTION_CODES.ORDER_DELETE,
+      target: { orderId: String(target.id) },
+      input: {},
+    }, {
+      target: adminSecurityOrderTarget(db, target),
+      summary: `准备删除订单${target.id}`,
+      changes: [
+        { label: '删除前状态', before: String(target.status || ''), after: '已删除' },
+        { label: '订单金额', before: Number(target.totalAmount || 0), after: '-' },
+      ],
+    })
+  }
+  catch (error) {
+    if (handleAdminSecurityError(ctx, error)) return
+    throw error
+  }
+  try {
+    db = readDb()
+    const liveIdx = db.orders.findIndex(item => item.id === id)
+    if (liveIdx < 0) {
+      fail(ctx, '订单不存在', 404)
+      await completeAdminSensitiveOperation(securityOperation, {
+        status: 'failed',
+        summary: '删除订单失败',
+        error: '订单在安全验证期间已不存在',
+      })
+      return
+    }
+    const deletedTarget = db.orders[liveIdx]
+    if (!hasAdminOrderDeletePermission(cached?.account, deletedTarget.status)) {
+      fail(ctx, '订单状态已变化，当前账号无权限执行删除订单', 403)
+      await completeAdminSensitiveOperation(securityOperation, {
+        status: 'failed',
+        summary: '删除订单失败',
+        error: '订单状态在安全验证期间发生变化',
+      })
+      return
+    }
+    db.orders.splice(liveIdx, 1)
+    writeOrdersDb(db)
+    ctx.body = success({ id })
+    await completeAdminSensitiveOperation(securityOperation, {
+      status: 'success',
+      summary: `已删除订单${deletedTarget.id}，删除前状态为${deletedTarget.status || '未知'}`,
+      changes: [
+        { label: '订单状态', before: String(deletedTarget.status || ''), after: '已删除' },
+        { label: '订单金额', before: Number(deletedTarget.totalAmount || 0), after: '-' },
+      ],
+    })
+  }
+  catch (error) {
+    await failAdminSensitiveOperation(securityOperation, error)
+    throw error
+  }
 })
 
 /** ---------- 商城 / 管理端：在线客服（持久化 csSessions，轮询拉取） ---------- */

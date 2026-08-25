@@ -17,6 +17,8 @@ declare module 'vue-router' {
     platformOnly?: boolean
     /** true：仅超级管理员（不含主系统老板蹭 super_admin） */
     strictSuperAdminOnly?: boolean
+    /** true：即使账号配置了菜单权限，也必须同时满足 roles */
+    strictRoles?: boolean
     receivableOffsetDays?: number
     receivableDatePicker?: boolean
     permissionKey?: string
@@ -26,6 +28,7 @@ declare module 'vue-router' {
 const LoginPage = () => import('../views/LoginPage.vue')
 const DashboardPage = () => import('../views/DashboardPage.vue')
 const DashboardSimulationPage = () => import('../views/DashboardSimulationPage.vue')
+const OperationLogsPage = () => import('../views/OperationLogsPage.vue')
 const OrdersPage = () => import('../views/OrdersPage.vue')
 const OrderReviewPage = () => import('../views/OrderReviewPage.vue')
 const ReceivableByDatePage = () => import('../views/ReceivableByDatePage.vue')
@@ -97,6 +100,12 @@ const router = createRouter({
       name: 'dashboard-plan',
       component: DashboardSimulationPage,
       meta: { title: '财务汇算1', roles: ['super_admin', 'boss', 'reviewer', 'collector'], permissionKey: 'dashboardSimulation' },
+    },
+    {
+      path: '/security/operation-logs',
+      name: 'security-operation-logs',
+      component: OperationLogsPage,
+      meta: { title: '操作记录', roles: ['super_admin', 'boss'], permissionKey: 'security.audit', strictRoles: true },
     },
     {
       path: '/dashboard/receivable/today',
@@ -243,9 +252,10 @@ router.beforeEach((to) => {
   }
   const allowRoles = Array.isArray(to.meta.roles) ? to.meta.roles : []
   const strictSuperAdminOnly = Boolean(to.meta.strictSuperAdminOnly)
+  const strictRoles = Boolean(to.meta.strictRoles)
   if (
     allowRoles.length > 0
-    && !adminHasConfiguredPermissions(session)
+    && (strictRoles || !adminHasConfiguredPermissions(session))
     && !adminSessionRoleAllowed(session?.role, allowRoles, {
       inheritBossAsSuperAdmin: !strictSuperAdminOnly,
     })
