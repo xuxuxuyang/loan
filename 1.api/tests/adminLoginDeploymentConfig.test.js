@@ -162,3 +162,38 @@ test('preserves the required deployment routes, TLS paths, and proxy audit heade
     }
   }
 });
+
+test('default port 80 redirects only admin authentication and protected API requests to HTTPS', () => {
+  assert.match(
+    nginx,
+    /map\s+"\$request_method:\$uri"\s+\$admin_plain_http_https\s*\{/,
+    'plain HTTP admin classification must be method and path aware',
+  );
+  assert.match(nginx, /map\s+"\$request_method:\$uri"\s+\$admin_plain_http_https\s*\{\s*default\s+1;/);
+  for (const expectedPattern of [
+    String.raw`(?:GET|HEAD):/api/(?:health|geocode/reverse)`,
+    String.raw`(?:GET|HEAD):/api/products(?:/[^/]+)?`,
+    String.raw`(?:GET|HEAD):/api/static/`,
+    String.raw`POST:/api/auth/(?:register/sms/send|login/sms/send|register|login)`,
+    String.raw`(?:GET|HEAD):/api/users/by-phone`,
+    String.raw`POST:/api/orders`,
+    String.raw`(?:GET|HEAD|POST|PUT|PATCH|DELETE):/api/(?:mall|my|card-packages|addresses|bank-cards|bills|payment/lakala|ios)(?:/|$)`,
+    String.raw`POST:/api/(?:bill-risk/callback|uploads/id-card|traffic/channel-click)`,
+    String.raw`(?:GET|HEAD|POST):/api/traffic-partner(?:/|$)`,
+    String.raw`POST:/api/open/partners/`,
+    String.raw`POST:/api/market/halfFlow/[^/]+/open/`,
+  ]) {
+    assert.ok(nginx.includes(expectedPattern), `missing HTTP storefront exception: ${expectedPattern}`);
+  }
+
+  const defaultHttp = getServerBlock(
+    'default HTTP storefront',
+    (block) => /listen\s+80\s+default_server;/.test(block) && /server_name\s+_;/.test(block),
+  );
+  const apiLocation = getLocationBlock(defaultHttp, /location\s+\/api\//, 'default HTTP API');
+  assert.match(
+    apiLocation,
+    /if\s*\(\$admin_plain_http_https\)\s*\{\s*return\s+308\s+https:\/\/admin\.wenshuosc\.com\$request_uri;\s*\}/,
+  );
+  assert.match(apiLocation, /proxy_pass\s+http:\/\/127\.0\.0\.1:3110\/api\/;/, 'storefront HTTP API proxy must remain available');
+});

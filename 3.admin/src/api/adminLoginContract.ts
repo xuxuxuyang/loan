@@ -58,6 +58,11 @@ function nonEmptyString(value: unknown): string | null {
   return normalized || null
 }
 
+export function isAdminSessionToken(value: unknown): value is string {
+  return typeof value === 'string'
+    && /^admin-session-v1\.[A-Za-z0-9_-]{43}$/.test(value.trim())
+}
+
 export function validateVerifiedAdminLogin(input: unknown, nowMs = Date.now()): VerifiedAdminLoginContract {
   if (!input || typeof input !== 'object') {
     return responseInvalid()
@@ -70,7 +75,7 @@ export function validateVerifiedAdminLogin(input: unknown, nowMs = Date.now()): 
   if (!username || !token || !expiresAt || !role) {
     return responseInvalid()
   }
-  if (!/^admin-session-v1\.[A-Za-z0-9_-]+$/.test(token)) {
+  if (!isAdminSessionToken(token)) {
     return responseInvalid()
   }
   if (!ADMIN_LOGIN_ROLES.has(role as AdminLoginRole)) {

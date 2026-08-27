@@ -6,11 +6,18 @@ import LoginWelcomeCelebration from '../components/auth/LoginWelcomeCelebration.
 import { syncAdminSessionProfile } from '../composables/useAdminApi'
 import {
   createAdminLoginChallenge,
+  revokeAdminLoginSession,
   verifyAdminLoginChallenge,
   type AdminLoginChallenge,
   type VerifiedAdminLogin,
 } from '../api/adminLogin'
 import { challengeResetMessage, shouldExpireChallengeForError } from '../api/adminLoginContract'
+import {
+  isAdminLoginFlowCurrent,
+  settleAdminLoginChallenge,
+  settleAdminLoginVerification,
+  type AdminLoginFlowSnapshot,
+} from '../api/adminLoginFlow'
 import {
   adminCanAccessMenuPath,
   resolveAdminHomeRoute,
@@ -36,6 +43,7 @@ const verificationCode = ref('')
 const loginCardResetKey = ref(0)
 const now = ref(Date.now())
 let challengeTimer: ReturnType<typeof setInterval> | undefined
+let loginFlowRevision = 0
 
 const loginStep = computed(() => challenge.value ? 'verification' : 'credentials')
 const challengeExpiresAtMs = computed(() => Date.parse(challenge.value?.expiresAt || ''))
@@ -83,7 +91,16 @@ function clearChallengeTimer() {
   }
 }
 
+function currentFlowSnapshot(): AdminLoginFlowSnapshot {
+  return {
+    revision: loginFlowRevision,
+    challengeId: challenge.value?.challengeId || '',
+  }
+}
+
 function clearLoginFlow() {
+  loginFlowRevision += 1
+  loading.value = false
   credentials.value = null
   challenge.value = null
   verificationCode.value = ''
@@ -125,18 +142,31 @@ async function handleCredentialsSubmit(payload: { username: string, password: st
   welcomeRoleName.value = ''
   clearLoginWelcomeTimer()
   loginWelcomeOpen.value = false
+  clearLoginFlow()
+  credentials.value = { ...payload }
+  const snapshot = currentFlowSnapshot()
+  const requestCredentials = { ...credentials.value }
   loading.value = true
   try {
-    credentials.value = { ...payload }
-    challenge.value = await createAdminLoginChallenge(credentials.value)
-    verificationCode.value = ''
+    await settleAdminLoginChallenge({
+      snapshot,
+      request: () => createAdminLoginChallenge(requestCredentials),
+      current: currentFlowSnapshot,
+      accept: (nextChallenge) => {
+        challenge.value = nextChallenge
+        verificationCode.value = ''
+      },
+    })
   }
   catch (err) {
+    if (!isAdminLoginFlowCurrent(snapshot, currentFlowSnapshot())) return
     clearLoginFlow()
     error.value = err instanceof Error ? err.message : '登录失败，请稍后重试'
   }
   finally {
-    loading.value = false
+    if (snapshot.revision === loginFlowRevision) {
+      loading.value = false
+    }
   }
 }
 
@@ -220,12 +250,20 @@ async function handleVerificationSubmit(code: string) {
     return
   }
   error.value = ''
+  const snapshot = currentFlowSnapshot()
   loading.value = true
   try {
-    const data = await verifyAdminLoginChallenge(challenge.value.challengeId, code)
-    await completeLogin(data)
+    const result = await settleAdminLoginVerification({
+      snapshot,
+      request: () => verifyAdminLoginChallenge(snapshot.challengeId, code),
+      current: currentFlowSnapshot,
+      accept: completeLogin,
+      revoke: token => revokeAdminLoginSession(token),
+    })
+    if (result === 'stale') return
   }
   catch (err) {
+    if (!isAdminLoginFlowCurrent(snapshot, currentFlowSnapshot())) return
     if (shouldExpireChallengeForError(err)) {
       expireChallenge(challengeResetMessage(err, '验证码已过期，请重新登录'))
       return
@@ -235,10 +273,12 @@ async function handleVerificationSubmit(code: string) {
     loginWelcomeOpen.value = false
   }
   finally {
-    loading.value = false
-    loginSuccess.value = false
-    enteringSystem.value = false
-    welcomeRoleName.value = ''
+    if (snapshot.revision === loginFlowRevision) {
+      loading.value = false
+      loginSuccess.value = false
+      enteringSystem.value = false
+      welcomeRoleName.value = ''
+    }
   }
 }
 
@@ -249,16 +289,28 @@ async function handleResend() {
     return
   }
   error.value = ''
+  const snapshot = currentFlowSnapshot()
+  const requestCredentials = { ...credentials.value }
   loading.value = true
   try {
-    challenge.value = await createAdminLoginChallenge(credentials.value)
-    verificationCode.value = ''
+    await settleAdminLoginChallenge({
+      snapshot,
+      request: () => createAdminLoginChallenge(requestCredentials),
+      current: currentFlowSnapshot,
+      accept: (nextChallenge) => {
+        challenge.value = nextChallenge
+        verificationCode.value = ''
+      },
+    })
   }
   catch (err) {
+    if (!isAdminLoginFlowCurrent(snapshot, currentFlowSnapshot())) return
     error.value = err instanceof Error ? err.message : '重新发送失败，请稍后重试'
   }
   finally {
-    loading.value = false
+    if (snapshot.revision === loginFlowRevision) {
+      loading.value = false
+    }
   }
 }
 

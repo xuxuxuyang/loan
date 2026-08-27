@@ -18,6 +18,29 @@ function accountId(account) {
   return String(account?.id || account?.username || '').trim()
 }
 
+const SESSION_TTL_MS = 43_200_000
+const OTP_TTL_RANGE_MS = [120_000, 600_000]
+const RESEND_RANGE_MS = [30_000, 300_000]
+const HOURLY_SEND_LIMIT_RANGE = [1, 10]
+const MAX_ATTEMPTS_RANGE = [3, 5]
+
+function isIntegerInRange(value, [minimum, maximum]) {
+  return Number.isInteger(value) && value >= minimum && value <= maximum
+}
+
+function hasStrongEncodedSecret(secret) {
+  if (!/^[A-Za-z0-9_-]+$/.test(secret)) return false
+  try {
+    const bytes = Buffer.from(secret, 'base64url')
+    return bytes.length >= 32
+      && bytes.toString('base64url') === secret
+      && new Set(bytes).size >= 16
+  }
+  catch {
+    return false
+  }
+}
+
 function createAdminLoginSecurityService(options = {}) {
   const store = options.store
   const now = options.now || Date.now
@@ -33,11 +56,17 @@ function createAdminLoginSecurityService(options = {}) {
   const maxAttempts = Number(options.maxAttempts)
   const sessionTtlMs = Number(options.sessionTtlMs)
 
-  const digest = value => crypto.createHmac('sha256', secret).update(String(value)).digest('hex')
-
-  function validPositiveInteger(value) {
-    return Number.isInteger(value) && value > 0
+  if (!hasStrongEncodedSecret(secret)
+    || !isIntegerInRange(otpTtlMs, OTP_TTL_RANGE_MS)
+    || !isIntegerInRange(resendMs, RESEND_RANGE_MS)
+    || resendMs > otpTtlMs
+    || !isIntegerInRange(hourlySendLimit, HOURLY_SEND_LIMIT_RANGE)
+    || !isIntegerInRange(maxAttempts, MAX_ATTEMPTS_RANGE)
+    || sessionTtlMs !== SESSION_TTL_MS) {
+    throw new AdminLoginSecurityError('ADMIN_LOGIN_UNAVAILABLE', 'Admin login security configuration is incomplete', 503)
   }
+
+  const digest = value => crypto.createHmac('sha256', secret).update(String(value)).digest('hex')
 
   function ensureStoreReady() {
     if (!store || typeof store.isReady !== 'function' || !store.isReady()) {
@@ -46,14 +75,7 @@ function createAdminLoginSecurityService(options = {}) {
   }
 
   function ensureRuntimeConfig() {
-    if (secret.length < 16
-      || !validPositiveInteger(otpTtlMs)
-      || !validPositiveInteger(resendMs)
-      || !validPositiveInteger(hourlySendLimit)
-      || !validPositiveInteger(maxAttempts)
-      || !validPositiveInteger(sessionTtlMs)) {
-      throw new AdminLoginSecurityError('ADMIN_LOGIN_UNAVAILABLE', 'Admin login security configuration is incomplete', 503)
-    }
+    return true
   }
 
   function ensureSmsReady() {
@@ -124,7 +146,7 @@ function createAdminLoginSecurityService(options = {}) {
       role: String(account.role || '').trim(),
       codeHash: digest(code),
       attempts: 0,
-      status: 'pending',
+      status: 'send_pending',
       createdAt,
       resendAt: new Date(nowMs + resendMs),
       expireAt: new Date(nowMs + otpTtlMs),
@@ -132,12 +154,48 @@ function createAdminLoginSecurityService(options = {}) {
       userAgent: String(context.userAgent || '').slice(0, 500),
     }
     await store.insertChallenge(row)
+    async function recoverReplacement() {
+      const results = await Promise.allSettled([
+        store.markChallengeSendFailed(challengeId),
+        store.restoreSuspendedChallenges({ replacementId: challengeId }),
+      ])
+      return results.every(result => result.status === 'fulfilled')
+    }
+    try {
+      await store.suspendPendingChallengesForResend({
+        accountId: id,
+        tenantId: row.tenantId,
+        exceptId: challengeId,
+        replacementId: challengeId,
+        now: createdAt,
+      })
+    }
+    catch {
+      await recoverReplacement()
+      throw new AdminLoginSecurityError('ADMIN_LOGIN_UNAVAILABLE', 'Admin login security storage is unavailable', 503)
+    }
     try {
       await sendSms(phone, formatSmsMessage(code, context))
     }
     catch {
-      await store.markChallengeSendFailed(challengeId)
-      throw new AdminLoginSecurityError('ADMIN_LOGIN_SMS_UNAVAILABLE', 'Admin login SMS delivery is unavailable', 503)
+      const recovered = await recoverReplacement()
+      const errorCode = recovered ? 'ADMIN_LOGIN_SMS_UNAVAILABLE' : 'ADMIN_LOGIN_UNAVAILABLE'
+      const message = recovered
+        ? 'Admin login SMS delivery is unavailable'
+        : 'Admin login security storage is unavailable'
+      throw new AdminLoginSecurityError(errorCode, message, 503)
+    }
+    try {
+      await store.supersedeSuspendedChallenges({
+        replacementId: challengeId,
+        now: createdAt,
+      })
+      const activated = await store.activateChallenge(challengeId, createdAt)
+      if (!activated) throw new Error('Replacement challenge activation failed')
+    }
+    catch {
+      await recoverReplacement()
+      throw new AdminLoginSecurityError('ADMIN_LOGIN_UNAVAILABLE', 'Admin login security storage is unavailable', 503)
     }
     return {
       challengeId,

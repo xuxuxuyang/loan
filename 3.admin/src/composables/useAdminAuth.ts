@@ -1,6 +1,6 @@
 import { ref } from 'vue'
 import type { AdminPermissions } from './useAdminPermissions'
-import { shouldClearCapturedSession } from '../api/adminLoginContract'
+import { isAdminSessionToken, shouldClearCapturedSession } from '../api/adminLoginContract'
 
 export type AdminRole = 'super_admin' | 'boss' | 'reviewer' | 'collector'
 
@@ -138,6 +138,7 @@ function safeParseSession(value: string | null): AdminSession | null {
     const parsed = JSON.parse(value) as Partial<AdminSession>
     if (!parsed || typeof parsed !== 'object') return discardInvalidStoredSession()
     if (!parsed.token || !parsed.username || !parsed.role || !parsed.loginAt || !parsed.expiresAt) return discardInvalidStoredSession()
+    if (!isAdminSessionToken(parsed.token)) return discardInvalidStoredSession()
     const expiresAt = String(parsed.expiresAt)
     const expiresAtMs = Date.parse(expiresAt)
     if (!Number.isFinite(expiresAtMs) || expiresAtMs <= Date.now()) return discardInvalidStoredSession()

@@ -10,6 +10,8 @@ const {
   createMongoAdminLoginSecurityStore,
 } = require('../src/adminLoginSecurityStore')
 
+const VALID_SECRET = Buffer.from(Array.from({ length: 48 }, (_, index) => index + 1)).toString('base64url')
+
 function createFixture(options = {}) {
   let nowMs = options.nowMs || Date.parse('2026-08-27T08:00:00.000Z')
   let randomSequence = 1
@@ -17,7 +19,7 @@ function createFixture(options = {}) {
   const code = options.code || '123456'
   const service = createAdminLoginSecurityService({
     store,
-    secret: 'test-admin-login-secret-with-enough-entropy',
+    secret: VALID_SECRET,
     now: () => nowMs,
     randomInt: () => Number(code),
     randomBytes: (size) => Buffer.alloc(size, randomSequence++),
@@ -78,10 +80,10 @@ test('verified code issues a 12 hour opaque session that is not bound to IP', as
 })
 
 test('a session stops resolving after its fixed expiry', async () => {
-  const fixture = createFixture({ sessionTtlMs: 1000 })
+  const fixture = createFixture()
   const challenge = await fixture.service.createChallenge(fixture.context)
   const login = await fixture.service.verifyChallenge({ challengeId: challenge.challengeId, code: fixture.code })
-  fixture.setNow(fixture.nowMs + 1001)
+  fixture.setNow(fixture.nowMs + 43_200_001)
   await assert.rejects(() => fixture.service.resolveSession(login.token), { code: 'ADMIN_LOGIN_SESSION_EXPIRED' })
 })
 
@@ -133,6 +135,77 @@ test('resending within sixty seconds is limited', async () => {
   )
 })
 
+test('a successful resend supersedes every older pending challenge for the account and tenant', async () => {
+  const fixture = createFixture()
+  const first = await fixture.service.createChallenge(fixture.context)
+  fixture.advance(60_000)
+  const second = await fixture.service.createChallenge(fixture.context)
+
+  const results = await Promise.allSettled([
+    fixture.service.verifyChallenge({ challengeId: first.challengeId, code: fixture.code }),
+    fixture.service.verifyChallenge({ challengeId: second.challengeId, code: fixture.code }),
+  ])
+  assert.equal(results[0].status, 'rejected')
+  assert.equal(results[0].reason.code, 'ADMIN_LOGIN_CHALLENGE_INVALID')
+  assert.equal(results[1].status, 'fulfilled')
+  const rows = fixture.store.dump().challenges.filter(item => item.kind === 'challenge')
+  assert.equal(rows.find(item => item.id === first.challengeId).status, 'superseded')
+  assert.equal(rows.find(item => item.id === second.challengeId).status, 'verified')
+})
+
+test('an older challenge cannot be consumed while replacement SMS delivery is in flight', async () => {
+  let sendCount = 0
+  let signalSecondSend
+  let releaseSecondSend
+  const secondSendStarted = new Promise((resolve) => {
+    signalSecondSend = resolve
+  })
+  const secondSendGate = new Promise((resolve) => {
+    releaseSecondSend = resolve
+  })
+  const fixture = createFixture({
+    sendSms: async () => {
+      sendCount += 1
+      if (sendCount !== 2) return
+      signalSecondSend()
+      await secondSendGate
+    },
+  })
+  const first = await fixture.service.createChallenge(fixture.context)
+  fixture.advance(60_000)
+  const resend = fixture.service.createChallenge(fixture.context)
+  await secondSendStarted
+
+  try {
+    await assert.rejects(
+      () => fixture.service.verifyChallenge({ challengeId: first.challengeId, code: fixture.code }),
+      { code: 'ADMIN_LOGIN_CHALLENGE_INVALID' },
+    )
+  }
+  finally {
+    releaseSecondSend()
+    await resend
+  }
+})
+
+test('a failed resend preserves the prior pending challenge', async () => {
+  let rejectSms = false
+  const fixture = createFixture({
+    sendSms: async () => {
+      if (rejectSms) throw new Error('sms unavailable')
+    },
+  })
+  const first = await fixture.service.createChallenge(fixture.context)
+  fixture.advance(60_000)
+  rejectSms = true
+  await assert.rejects(
+    () => fixture.service.createChallenge(fixture.context),
+    { code: 'ADMIN_LOGIN_SMS_UNAVAILABLE' },
+  )
+  const verified = await fixture.service.verifyChallenge({ challengeId: first.challengeId, code: fixture.code })
+  assert.match(verified.token, /^admin-session-v1\./)
+})
+
 test('the eleventh hourly send is limited', async () => {
   const fixture = createFixture()
   await fixture.service.createChallenge(fixture.context)
@@ -179,15 +252,35 @@ test('missing phone, unavailable SMS, and incomplete configuration never create 
     { code: 'ADMIN_LOGIN_SMS_UNAVAILABLE' },
   )
 
-  const incompleteConfig = createFixture({ secret: '' })
-  await assert.rejects(
-    () => incompleteConfig.service.createChallenge(incompleteConfig.context),
-    { code: 'ADMIN_LOGIN_UNAVAILABLE' },
-  )
+  assert.throws(() => createFixture({ secret: '' }), { code: 'ADMIN_LOGIN_UNAVAILABLE' })
 
   assert.equal(missingPhone.store.dump().sessions.length, 0)
   assert.equal(unavailableSms.store.dump().sessions.length, 0)
-  assert.equal(incompleteConfig.store.dump().sessions.length, 0)
+})
+
+test('service initialization rejects weak secrets, non-12-hour sessions, and unsafe OTP limits', () => {
+  const weakSecrets = [
+    Buffer.from(Array.from({ length: 31 }, (_, index) => index + 1)).toString('base64url'),
+    'A'.repeat(64),
+    'this is a long but not randomly encoded secret value',
+  ]
+  for (const secret of weakSecrets) {
+    assert.throws(() => createFixture({ secret }), { code: 'ADMIN_LOGIN_UNAVAILABLE' })
+  }
+  for (const overrides of [
+    { sessionTtlMs: 43_199_999 },
+    { sessionTtlMs: 43_200_001 },
+    { otpTtlMs: 119_999 },
+    { otpTtlMs: 600_001 },
+    { resendMs: 29_999 },
+    { resendMs: 300_001 },
+    { hourlySendLimit: 0 },
+    { hourlySendLimit: 11 },
+    { maxAttempts: 2 },
+    { maxAttempts: 6 },
+  ]) {
+    assert.throws(() => createFixture(overrides), { code: 'ADMIN_LOGIN_UNAVAILABLE' })
+  }
 })
 
 test('an unverified password context cannot create a challenge', async () => {
@@ -258,6 +351,73 @@ test('Mongo challenge claim uses pending, attempts, and expiry conditions atomic
   })
   assert.deepEqual(captured.update, { $set: { status: 'verified', verifiedAt: now } })
   assert.deepEqual(captured.options, { returnDocument: 'after' })
+})
+
+test('Mongo resend transitions suspend old challenges before activating the delivered replacement', async () => {
+  const captured = []
+  const challenges = {
+    async updateMany(query, update) {
+      captured.push({ operation: 'updateMany', query, update })
+      return { matchedCount: 2, modifiedCount: 2 }
+    },
+    async findOneAndUpdate(query, update, options) {
+      captured.push({ operation: 'findOneAndUpdate', query, update, options })
+      return { id: 'challenge-new', status: 'pending' }
+    },
+  }
+  const store = createMongoAdminLoginSecurityStore({
+    getMongoClient: () => ({
+      db: () => ({
+        databaseName: 'root-security-db',
+        collection: () => challenges,
+      }),
+    }),
+    getMongoConfig: () => ({ dbName: 'root-security-db' }),
+  })
+  const now = new Date('2026-08-27T08:00:00.000Z')
+  await store.suspendPendingChallengesForResend({
+    accountId: 'A1',
+    tenantId: 'tenant-a',
+    exceptId: 'challenge-new',
+    replacementId: 'challenge-new',
+    now,
+  })
+  await store.supersedeSuspendedChallenges({ replacementId: 'challenge-new', now })
+  await store.activateChallenge('challenge-new', now)
+  assert.deepEqual(captured, [
+    {
+      operation: 'updateMany',
+      query: {
+        kind: 'challenge',
+        accountId: 'A1',
+        tenantId: 'tenant-a',
+        status: 'pending',
+        _id: { $ne: 'challenge-new' },
+      },
+      update: {
+        $set: {
+          status: 'resend_pending',
+          replacementId: 'challenge-new',
+          suspendedAt: now,
+        },
+      },
+    },
+    {
+      operation: 'updateMany',
+      query: {
+        kind: 'challenge',
+        status: 'resend_pending',
+        replacementId: 'challenge-new',
+      },
+      update: { $set: { status: 'superseded', supersededAt: now } },
+    },
+    {
+      operation: 'findOneAndUpdate',
+      query: { _id: 'challenge-new', kind: 'challenge', status: 'send_pending' },
+      update: { $set: { status: 'pending', activatedAt: now } },
+      options: { returnDocument: 'after' },
+    },
+  ])
 })
 
 test('AdminLoginSecurityError exposes stable response fields', () => {

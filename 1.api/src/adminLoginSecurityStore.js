@@ -94,8 +94,57 @@ function createMemoryAdminLoginSecurityStore() {
     },
     async markChallengeSendFailed(id) {
       const row = challenges.get(id)
-      if (!row || row.kind !== 'challenge') return null
+      if (!row
+        || row.kind !== 'challenge'
+        || (row.status !== 'send_pending' && row.status !== 'pending')) return null
       row.status = 'send_failed'
+      return clone(row)
+    },
+    async suspendPendingChallengesForResend({ accountId, tenantId, exceptId, replacementId, now }) {
+      let modifiedCount = 0
+      for (const row of challenges.values()) {
+        if (row.kind !== 'challenge'
+          || row.accountId !== accountId
+          || row.tenantId !== tenantId
+          || row.id === exceptId
+          || row.status !== 'pending') continue
+        row.status = 'resend_pending'
+        row.replacementId = replacementId
+        row.suspendedAt = new Date(now)
+        modifiedCount += 1
+      }
+      return modifiedCount
+    },
+    async restoreSuspendedChallenges({ replacementId }) {
+      let modifiedCount = 0
+      for (const row of challenges.values()) {
+        if (row.kind !== 'challenge'
+          || row.status !== 'resend_pending'
+          || row.replacementId !== replacementId) continue
+        row.status = 'pending'
+        delete row.replacementId
+        delete row.suspendedAt
+        modifiedCount += 1
+      }
+      return modifiedCount
+    },
+    async supersedeSuspendedChallenges({ replacementId, now }) {
+      let modifiedCount = 0
+      for (const row of challenges.values()) {
+        if (row.kind !== 'challenge'
+          || row.status !== 'resend_pending'
+          || row.replacementId !== replacementId) continue
+        row.status = 'superseded'
+        row.supersededAt = new Date(now)
+        modifiedCount += 1
+      }
+      return modifiedCount
+    },
+    async activateChallenge(id, now) {
+      const row = challenges.get(id)
+      if (!row || row.kind !== 'challenge' || row.status !== 'send_pending') return null
+      row.status = 'pending'
+      row.activatedAt = new Date(now)
       return clone(row)
     },
     async insertSession(row) {
@@ -277,8 +326,53 @@ function createMongoAdminLoginSecurityStore(options = {}) {
     },
     async markChallengeSendFailed(id) {
       const result = await requireCollections().challenges.findOneAndUpdate(
-        { _id: id, kind: 'challenge', status: 'pending' },
+        { _id: id, kind: 'challenge', status: { $in: ['send_pending', 'pending'] } },
         { $set: { status: 'send_failed' } },
+        { returnDocument: 'after' },
+      )
+      return unwrapFindOneAndUpdate(result)
+    },
+    async suspendPendingChallengesForResend({ accountId, tenantId, exceptId, replacementId, now }) {
+      const result = await requireCollections().challenges.updateMany(
+        {
+          kind: 'challenge',
+          accountId,
+          tenantId,
+          status: 'pending',
+          _id: { $ne: exceptId },
+        },
+        {
+          $set: {
+            status: 'resend_pending',
+            replacementId,
+            suspendedAt: new Date(now),
+          },
+        },
+      )
+      return Number(result?.modifiedCount || 0)
+    },
+    async restoreSuspendedChallenges({ replacementId }) {
+      const result = await requireCollections().challenges.updateMany(
+        { kind: 'challenge', status: 'resend_pending', replacementId },
+        {
+          $set: { status: 'pending' },
+          $unset: { replacementId: '', suspendedAt: '' },
+        },
+      )
+      return Number(result?.modifiedCount || 0)
+    },
+    async supersedeSuspendedChallenges({ replacementId, now }) {
+      const result = await requireCollections().challenges.updateMany(
+        { kind: 'challenge', status: 'resend_pending', replacementId },
+        { $set: { status: 'superseded', supersededAt: new Date(now) } },
+      )
+      return Number(result?.modifiedCount || 0)
+    },
+    async activateChallenge(id, now) {
+      const activatedAt = new Date(now)
+      const result = await requireCollections().challenges.findOneAndUpdate(
+        { _id: id, kind: 'challenge', status: 'send_pending' },
+        { $set: { status: 'pending', activatedAt } },
         { returnDocument: 'after' },
       )
       return unwrapFindOneAndUpdate(result)

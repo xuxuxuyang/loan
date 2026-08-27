@@ -111,6 +111,7 @@ const { createAdminSecurityService } = require('./adminSecurityService')
 const { createAdminSecuritySmsSender, isAdminSecuritySmsReady } = require('./adminSecuritySms')
 const { AdminLoginSecurityError, createAdminLoginSecurityService } = require('./adminLoginSecurity')
 const { createMongoAdminLoginSecurityStore } = require('./adminLoginSecurityStore')
+const { createAdminLoginHttpHandlers, createAdminLoginSessionMiddleware } = require('./adminLoginHttp')
 const {
   isAdminLoginPublicRequest,
   isAdminOptionalSessionRequest,
@@ -600,8 +601,6 @@ function normalizeUserQuota(value) {
   }
   return Math.round(n)
 }
-/** 默认开启：禁止「未解析到角色时默认 super_admin」。本地调试可设 ENFORCE_ADMIN_RBAC=false */
-const ENFORCE_ADMIN_RBAC = normalizeBoolean(process.env.ENFORCE_ADMIN_RBAC, true)
 const ADMIN_ACCOUNT_STATUS_SET = new Set(['active', 'disabled'])
 const ADMIN_SCOPE_TYPES = new Set(['tenant', 'platform'])
 
@@ -1324,22 +1323,6 @@ async function getAdminAccountByUsernameAcrossTenants(username, preferredTenantI
   return cacheAccount(null)
 }
 
-/**
- * core/self 映射到独立 MongoDB，仅信任 Authorization 中 Bearer 对应「平台 scope」且状态为 active 的后台账号；
- * 子系统后台、商城会话或伪造 x-workspace-type 时一律回落到 tenant 库，避免未授权读平台库。
- */
-async function isPlatformAdminBearerForWorkspace(ctx, preferredTenantId) {
-  const phone = normalizePhone(parsePhoneFromToken(ctx.headers && ctx.headers.authorization))
-  if (!phone) {
-    return false
-  }
-  const account = await getAdminAccountByPhoneAcrossTenants(
-    phone,
-    normalizeTenantId(preferredTenantId || DEFAULT_TENANT_ID),
-  )
-  return Boolean(account && account.scopeType === 'platform' && account.status === 'active')
-}
-
 async function clampIncomingWorkspaceType(ctx, tenantId, workspaceType) {
   const ws = normalizeWorkspaceType(workspaceType)
   if (ws !== 'core' && ws !== 'self') {
@@ -1398,122 +1381,16 @@ async function resolveAccountForAdminSession(session, requestedTenant = session?
   return account
 }
 
-function lookupActiveAdminAccountInCurrentScope(username, phone) {
-  const key = String(username || '').trim()
-  const normalizedPhone = normalizePhone(phone)
-  if (!key || !normalizedPhone) {
-    return null
-  }
-  const db = readDb()
-  ensureAdminAccounts(db)
-  const account = getAdminAccountByUsername(db, key)
-  if (
-    account
-    && account.status === 'active'
-    && normalizePhone(account.phone) === normalizedPhone
-  ) {
-    return account
-  }
-  return null
-}
-
 async function resolveAdminRole(ctx) {
   if (ctx.state && ctx.state._resolvedAdminRole) {
     return ctx.state.adminRole || ''
   }
-  if (isAdminProtectedRequest(ctx.method, ctx.path)) {
-    ctx.state.adminRole = ''
-    ctx.state.adminAccount = null
-    ctx.state._resolvedAdminRole = true
-    ctx.state._resolvedAdminAccount = true
-    return ''
-  }
-  const requestTenantId = normalizeTenantId(ctx.state && ctx.state.tenantId ? ctx.state.tenantId : DEFAULT_TENANT_ID)
-  const tokenPhone = normalizePhone(parsePhoneFromToken(ctx.headers.authorization))
-  const hintUsername = String(ctx.headers['x-admin-username'] || ctx.headers['x-user-username'] || '').trim()
-  // 优化模式：直连 Mongo adminAccounts（不经 hydrate），避免与中间件 refresh 串行排队。
-  if (isAdminReadOptimizeEnabled() && isMongoPersistenceEnabled() && tokenPhone) {
-    const ws = normalizeWorkspaceType(ctx.state && ctx.state.workspaceType ? ctx.state.workspaceType : 'tenant')
-    let mongoAccount = null
-    if (hintUsername) {
-      mongoAccount = await lookupActiveAdminAccountFromMongo('tenant', requestTenantId, hintUsername, tokenPhone)
-      if (!mongoAccount && ws !== 'core') {
-        mongoAccount = await lookupActiveAdminAccountFromMongo('core', DEFAULT_TENANT_ID, hintUsername, tokenPhone)
-      }
-    }
-    else {
-      mongoAccount = await findAdminAccountByPhoneInMongoScoped('tenant', requestTenantId, tokenPhone)
-      if (!mongoAccount && ws !== 'core') {
-        mongoAccount = await findAdminAccountByPhoneInMongoScoped('core', DEFAULT_TENANT_ID, tokenPhone)
-      }
-    }
-    if (mongoAccount) {
-      ctx.state.adminRole = mongoAccount.role
-      ctx.state.adminAccount = mongoAccount
-      ctx.state._resolvedAdminRole = true
-      return ctx.state.adminRole
-    }
-    if (hintUsername) {
-      const localAccount = await runWithTenant(requestTenantId, async () => lookupActiveAdminAccountInCurrentScope(hintUsername, tokenPhone))
-      if (localAccount) {
-        ctx.state.adminRole = localAccount.role
-        ctx.state.adminAccount = localAccount
-        ctx.state._resolvedAdminRole = true
-        return ctx.state.adminRole
-      }
-    }
-  }
-  // 仅用 token（手机）跨库查找时可能与平台或其它子系统的同手机号账号混淆；可与登录会话中的用户名交叉校验。
-  if (tokenPhone && hintUsername) {
-    const byUsername = await getAdminAccountByUsernameAcrossTenants(hintUsername, requestTenantId)
-    if (
-      byUsername
-      && byUsername.status === 'active'
-      && normalizePhone(byUsername.phone) === tokenPhone
-    ) {
-      ctx.state.adminRole = byUsername.role
-      ctx.state.adminAccount = byUsername
-      ctx.state._resolvedAdminRole = true
-      return ctx.state.adminRole
-    }
-  }
-  const tokenAccount = tokenPhone ? await getAdminAccountByPhoneAcrossTenants(tokenPhone, requestTenantId) : null
-  const tokenPhoneRole = tokenAccount ? tokenAccount.role : ''
-  if (tokenPhoneRole) {
-    ctx.state.adminRole = tokenPhoneRole
-    ctx.state.adminAccount = tokenAccount
-    ctx.state._resolvedAdminRole = true
-    return ctx.state.adminRole
-  }
-
-  const headerPhone = normalizePhone(ctx.headers['x-admin-phone'] || ctx.headers['x-user-phone'])
-  const headerPhoneAccount = headerPhone ? await getAdminAccountByPhoneAcrossTenants(headerPhone, requestTenantId) : null
-  const headerPhoneRole = headerPhoneAccount ? headerPhoneAccount.role : ''
-  if (headerPhoneRole) {
-    ctx.state.adminRole = headerPhoneRole
-    ctx.state.adminAccount = headerPhoneAccount
-    ctx.state._resolvedAdminRole = true
-    return ctx.state.adminRole
-  }
-
-  const headerRole = normalizeAdminRole(ctx.headers['x-admin-role'] || ctx.headers['x-user-role'])
-  if (headerRole) {
-    ctx.state.adminRole = headerRole
-    ctx.state._resolvedAdminRole = true
-    return headerRole
-  }
-
-  const queryRole = normalizeAdminRole(ctx.query?.adminRole)
-  if (queryRole) {
-    ctx.state.adminRole = queryRole
-    ctx.state._resolvedAdminRole = true
-    return queryRole
-  }
-
-  // 兼容旧前端：未携带角色信息时默认超管；开启 ENFORCE_ADMIN_RBAC 后必须显式传入角色。
-  ctx.state.adminRole = ENFORCE_ADMIN_RBAC ? '' : ADMIN_ROLES.SUPER
+  ctx.state = ctx.state || {}
+  ctx.state.adminAccount = null
   ctx.state._resolvedAdminRole = true
-  return ctx.state.adminRole
+  ctx.state._resolvedAdminAccount = true
+  ctx.state.adminRole = ''
+  return ''
 }
 
 async function resolveAdminAccount(ctx) {
@@ -2023,12 +1900,6 @@ function handleAdminSecurityError(ctx, error) {
     msg: error.message,
     data: null,
   }
-  return true
-}
-
-function handleAdminLoginSecurityError(ctx, error) {
-  if (!(error instanceof AdminLoginSecurityError)) return false
-  fail(ctx, error.message, error.status || 400, error.code)
   return true
 }
 
@@ -5617,57 +5488,6 @@ router.post('/auth/login', async (ctx) => {
   })
 })
 
-async function handleAdminLogin(ctx) {
-  const payload = ctx.request.body || {}
-  const username = String(payload.username || '').trim()
-  const password = String(payload.password || '').trim()
-  const requestTenantId = normalizeTenantId(ctx.state && ctx.state.tenantId ? ctx.state.tenantId : DEFAULT_TENANT_ID)
-  const account = await getAdminAccountByUsernameAcrossTenants(username, requestTenantId)
-  if (!account || account.password !== password) {
-    fail(ctx, '账号或密码错误', 401)
-    return
-  }
-  if (account.status !== 'active') {
-    fail(ctx, '账号已被禁用，请联系超级管理员', 403)
-    return
-  }
-
-  const effectiveTenant = account.scopeType === 'platform'
-    ? requestTenantId
-    : normalizeTenantId(account.tenantId || DEFAULT_TENANT_ID)
-  if (!accountCanAccessTenant(account, effectiveTenant)) {
-    fail(ctx, '当前账号无权访问该子系统', 403)
-    return
-  }
-  if (!/^1\d{10}$/.test(normalizePhone(account.phone))) {
-    fail(ctx, '后台账号未绑定有效手机号，请联系超级管理员', 409, 'ADMIN_LOGIN_PHONE_MISSING')
-    return
-  }
-
-  try {
-    const challenge = await adminLoginSecurityService.createChallenge({
-      passwordVerified: true,
-      account,
-      tenantId: effectiveTenant,
-      ip: resolveTrustedClientIp(ctx),
-      userAgent: String(ctx.headers?.['user-agent'] || ''),
-    })
-    ctx.body = success({
-      verificationRequired: true,
-      challengeId: challenge.challengeId,
-      phoneMasked: challenge.phoneMasked,
-      expiresAt: challenge.expiresAt,
-      resendAt: challenge.resendAt,
-    })
-  }
-  catch (error) {
-    if (!handleAdminLoginSecurityError(ctx, error)) {
-      console.error('[admin-login] challenge failed:', error?.message || error)
-      fail(ctx, '后台登录服务暂不可用，请稍后重试', 503, 'ADMIN_LOGIN_UNAVAILABLE')
-    }
-  }
-}
-
 function buildAdminLoginProfile(account, effectiveTenant) {
   return {
     username: account.username,
@@ -5682,66 +5502,36 @@ function buildAdminLoginProfile(account, effectiveTenant) {
   }
 }
 
-async function handleAdminLoginVerify(ctx) {
-  const payload = ctx.request.body || {}
-  let verified = null
-  try {
-    verified = await adminLoginSecurityService.verifyChallenge({
-      challengeId: String(payload.challengeId || '').trim(),
-      code: String(payload.code || '').trim(),
-    })
-    const session = await adminLoginSecurityService.resolveSession(verified.token)
-    const account = await resolveAccountForAdminSession(session)
-    if (!account || account.status !== 'active') {
-      await adminLoginSecurityService.revokeSession(verified.token)
-      fail(ctx, '后台登录已失效，请重新登录', 401, 'ADMIN_LOGIN_SESSION_INVALID')
-      return
-    }
-    ctx.body = success({
-      ...buildAdminLoginProfile(account, normalizeTenantId(session.tenantId)),
-      token: verified.token,
-      expiresAt: verified.expiresAt,
-    })
-  }
-  catch (error) {
-    if (verified?.token) {
-      await adminLoginSecurityService.revokeSession(verified.token).catch(() => {})
-    }
-    if (!handleAdminLoginSecurityError(ctx, error)) {
-      console.error('[admin-login] verification failed:', error?.message || error)
-      fail(ctx, '后台登录服务暂不可用，请稍后重试', 503, 'ADMIN_LOGIN_UNAVAILABLE')
-    }
-  }
-}
+const adminLoginHttpHandlers = createAdminLoginHttpHandlers({
+  securityService: adminLoginSecurityService,
+  findAccount: (username, requestTenantId) => getAdminAccountByUsernameAcrossTenants(username, requestTenantId),
+  resolveAccountForSession: resolveAccountForAdminSession,
+  resolveTenantId: ctx => normalizeTenantId(ctx.state && ctx.state.tenantId ? ctx.state.tenantId : DEFAULT_TENANT_ID),
+  normalizeTenantId,
+  accountCanAccessTenant,
+  resolveClientIp: resolveTrustedClientIp,
+  buildProfile: buildAdminLoginProfile,
+})
 
 router.post('/admin/login', async (ctx) => {
-  await handleAdminLogin(ctx)
+  await adminLoginHttpHandlers.login(ctx)
 })
 
 router.post('/admin/login/verify', async (ctx) => {
-  await handleAdminLoginVerify(ctx)
+  await adminLoginHttpHandlers.verify(ctx)
 })
 
 // 兼容部分前端将后台登录请求到 /api/login 的场景。
 router.post('/login', async (ctx) => {
-  await handleAdminLogin(ctx)
+  await adminLoginHttpHandlers.login(ctx)
 })
 
 router.post('/login/verify', async (ctx) => {
-  await handleAdminLoginVerify(ctx)
+  await adminLoginHttpHandlers.verify(ctx)
 })
 
 router.post('/admin/logout', async (ctx) => {
-  try {
-    const revoked = await adminLoginSecurityService.revokeSession(readBearer(ctx))
-    ctx.body = success({ revoked })
-  }
-  catch (error) {
-    if (!handleAdminLoginSecurityError(ctx, error)) {
-      console.error('[admin-login] logout failed:', error?.message || error)
-      fail(ctx, '退出登录失败，请稍后重试', 503, 'ADMIN_LOGIN_UNAVAILABLE')
-    }
-  }
+  await adminLoginHttpHandlers.logout(ctx)
 })
 
 router.get('/admin/profile', async (ctx) => {
@@ -6316,26 +6106,6 @@ function normalizeAdminAccountsListInTenantContext(tenantId, accounts) {
     ensureAdminAccounts(db)
     return db.adminAccounts
   })
-}
-
-async function lookupActiveAdminAccountFromMongo(workspaceType, tenantId, username, phone) {
-  const accounts = await readAdminAccountsFromMongoScoped(workspaceType, tenantId)
-  if (!Array.isArray(accounts) || !accounts.length) {
-    return null
-  }
-  const t = normalizeTenantId(tenantId || DEFAULT_TENANT_ID)
-  const normalized = normalizeAdminAccountsListInTenantContext(t, accounts)
-  const key = String(username || '').trim()
-  const normalizedPhone = normalizePhone(phone)
-  const account = normalized.find(item => item && item.username === key) || null
-  if (
-    account
-    && account.status === 'active'
-    && normalizePhone(account.phone) === normalizedPhone
-  ) {
-    return account
-  }
-  return null
 }
 
 function buildAdminAccountsListView(accounts, scopeTypeQuery, currentAccount) {
@@ -13328,37 +13098,16 @@ app.use(bodyParser({
   textLimit: '12mb',
 }))
 
-async function enforceAdminLoginSession(ctx, next) {
-  const protectedRequest = isAdminProtectedRequest(ctx.method, ctx.path)
-  const bearer = readBearer(ctx)
-  const optionalAdminSession = isAdminOptionalSessionRequest(ctx.method, ctx.path)
-    && bearer.startsWith('admin-session-v1.')
-  if (isAdminLoginPublicRequest(ctx.method, ctx.path) || (!protectedRequest && !optionalAdminSession)) {
-    await next()
-    return
-  }
-  try {
-    const session = await adminLoginSecurityService.resolveSession(bearer)
-    const requestedTenantId = resolveTenantIdFromRequest(ctx)
-    const account = await resolveAccountForAdminSession(session, requestedTenantId)
-    if (!account || account.status !== 'active') {
-      fail(ctx, '后台登录已失效，请重新登录', 401, 'ADMIN_LOGIN_SESSION_INVALID')
-      return
-    }
-    ctx.state.adminLoginSession = session
-    ctx.state.adminAccount = account
-    ctx.state.adminRole = account.role
-    ctx.state._resolvedAdminRole = true
-    ctx.state._resolvedAdminAccount = true
-    await next()
-  }
-  catch (error) {
-    if (!handleAdminLoginSecurityError(ctx, error)) {
-      console.error('[admin-login] session gateway failed:', error?.message || error)
-      fail(ctx, '后台登录服务暂不可用，请稍后重试', 503, 'ADMIN_LOGIN_UNAVAILABLE')
-    }
-  }
-}
+const enforceAdminLoginSession = createAdminLoginSessionMiddleware({
+  securityService: adminLoginSecurityService,
+  resolveTenantId: resolveTenantIdFromRequest,
+  resolveAccountForSession: resolveAccountForAdminSession,
+  routePolicy: {
+    isAdminLoginPublicRequest,
+    isAdminOptionalSessionRequest,
+    isAdminProtectedRequest,
+  },
+})
 
 app.use(enforceAdminLoginSession)
 
@@ -13492,7 +13241,7 @@ app.use(duodiandianPublicRouter.allowedMethods())
 app.use(riskControlRouter.routes())
 app.use(riskControlRouter.allowedMethods())
 
-;(async () => {
+async function startServer() {
   let mongoPersistenceActive = false
   try {
     await mongo.connectMongo()
@@ -13567,9 +13316,22 @@ app.use(riskControlRouter.allowedMethods())
     console.warn('[api] 启动时先享后付/订单状态对账失败:', err?.message || err)
   }
 
-  app.listen(PORT, () => {
+  return app.listen(PORT, () => {
     console.log(`Mall API listening on http://localhost:${PORT}/api`)
     console.log(`Risk control API prefix http://localhost:${PORT}${RISK_CONTROL_PREFIX}`)
     console.log(`Static files http://localhost:${PORT}/static/ (→ ${API_PUBLIC_DIR})`)
   })
-})()
+}
+
+if (require.main === module) {
+  void startServer()
+}
+
+module.exports = {
+  app,
+  duodiandianPublicRouter,
+  riskControlRouter,
+  resolveAdminRole,
+  router,
+  startServer,
+}

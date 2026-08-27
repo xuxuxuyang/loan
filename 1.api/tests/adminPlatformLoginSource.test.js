@@ -27,7 +27,7 @@ test('admin username login checks core platform account before default tenant le
 test('admin username login fallback checks core before default tenant in JSON mode too', () => {
   const source = read('1.api/src/index.js')
   const start = source.indexOf('async function getAdminAccountByUsernameAcrossTenants')
-  const end = source.indexOf('async function isPlatformAdminBearerForWorkspace', start)
+  const end = source.indexOf('async function clampIncomingWorkspaceType', start)
   assert.ok(start >= 0, 'JSON username login lookup function must exist')
   assert.ok(end > start, 'JSON username login lookup function must have a bounded body')
   const body = source.slice(start, end)

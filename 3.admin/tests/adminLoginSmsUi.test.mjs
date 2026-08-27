@@ -16,9 +16,44 @@ async function loadContract() {
   return import(`data:text/javascript;base64,${Buffer.from(output).toString('base64')}`)
 }
 
+async function loadFlow() {
+  const source = read('src/api/adminLoginFlow.ts')
+  const output = ts.transpileModule(source, {
+    compilerOptions: {
+      module: ts.ModuleKind.ESNext,
+      target: ts.ScriptTarget.ES2022,
+    },
+  }).outputText
+  return import(`data:text/javascript;base64,${Buffer.from(output).toString('base64')}`)
+}
+
+async function loadTenantFetch() {
+  const source = read('src/utils/tenant.ts')
+    .replace('import.meta.env.VITE_TENANT_ID', "''")
+  const output = ts.transpileModule(source, {
+    compilerOptions: {
+      module: ts.ModuleKind.ESNext,
+      target: ts.ScriptTarget.ES2022,
+    },
+  }).outputText
+  return import(`data:text/javascript;base64,${Buffer.from(output).toString('base64')}`)
+}
+
+function deferred() {
+  let resolve
+  let reject
+  const promise = new Promise((onResolve, onReject) => {
+    resolve = onResolve
+    reject = onReject
+  })
+  return { promise, resolve, reject }
+}
+
+const validAdminToken = `admin-session-v1.${'A'.repeat(43)}`
+
 const validVerifiedLogin = () => ({
   username: 'reviewer-1',
-  token: 'admin-session-v1.valid-token',
+  token: validAdminToken,
   expiresAt: new Date(Date.now() + 60_000).toISOString(),
   adminRole: 'reviewer',
 })
@@ -34,11 +69,108 @@ test('verified admin login responses require a valid server session shape', asyn
     { ...valid, adminRole: undefined },
     { ...valid, adminRole: 'not-a-role' },
     { ...valid, expiresAt: new Date(Date.now() - 1).toISOString() },
+    { ...valid, token: 'mock-token-13800138000' },
+    { ...valid, token: 'admin-session-v1.short' },
+    { ...valid, token: `admin-session-v1.${'A'.repeat(42)}!` },
+    { ...valid, token: `admin-session-v1.${'A'.repeat(44)}` },
   ]) {
     assert.throws(
       () => validateVerifiedAdminLogin(malformed),
       error => error instanceof AdminLoginApiError && error.code === 'ADMIN_LOGIN_RESPONSE_INVALID',
     )
+  }
+})
+
+test('late verification success is ignored and its orphaned session is revoked', async () => {
+  const {
+    settleAdminLoginVerification,
+  } = await loadFlow()
+  const pending = deferred()
+  let revision = 7
+  let challengeId = 'challenge-old'
+  const accepted = []
+  const revoked = []
+  const snapshot = { revision, challengeId }
+  const task = settleAdminLoginVerification({
+    snapshot,
+    request: () => pending.promise,
+    current: () => ({ revision, challengeId }),
+    accept: value => accepted.push(value),
+    revoke: token => revoked.push(token),
+  })
+
+  revision += 1
+  challengeId = ''
+  pending.resolve({ token: validAdminToken })
+
+  assert.equal(await task, 'stale')
+  assert.deepEqual(accepted, [])
+  assert.deepEqual(revoked, [validAdminToken])
+})
+
+test('late resend success cannot recreate a challenge after the flow was cleared', async () => {
+  const {
+    settleAdminLoginChallenge,
+  } = await loadFlow()
+  const pending = deferred()
+  let revision = 11
+  let challengeId = 'challenge-old'
+  const accepted = []
+  const snapshot = { revision, challengeId }
+  const task = settleAdminLoginChallenge({
+    snapshot,
+    request: () => pending.promise,
+    current: () => ({ revision, challengeId }),
+    accept: value => accepted.push(value),
+  })
+
+  revision += 1
+  challengeId = ''
+  pending.resolve({ challengeId: 'challenge-new' })
+
+  assert.equal(await task, 'stale')
+  assert.deepEqual(accepted, [])
+})
+
+test('global authenticated fetch handling reports invalid and expired server sessions without consuming responses', async () => {
+  const originalWindow = globalThis.window
+  const responseCodes = [
+    'ADMIN_LOGIN_SESSION_INVALID',
+    'ADMIN_LOGIN_SESSION_EXPIRED',
+    'ADMIN_LOGIN_CODE_INVALID',
+  ]
+  const invalidatedTokens = []
+  globalThis.window = {
+    location: { hostname: 'admin.wenshuosc.com' },
+    fetch: async () => {
+      const code = responseCodes.shift()
+      return new Response(JSON.stringify({ code }), {
+        status: 401,
+        headers: { 'content-type': 'application/json' },
+      })
+    },
+  }
+
+  try {
+    const { installTenantFetchInterceptor } = await loadTenantFetch()
+    installTenantFetchInterceptor({
+      onAdminSessionInvalid: capturedToken => invalidatedTokens.push(capturedToken),
+    })
+    for (const expectedCode of [
+      'ADMIN_LOGIN_SESSION_INVALID',
+      'ADMIN_LOGIN_SESSION_EXPIRED',
+      'ADMIN_LOGIN_CODE_INVALID',
+    ]) {
+      const response = await window.fetch('/api/admin/profile', {
+        headers: { Authorization: `Bearer ${validAdminToken}` },
+      })
+      assert.equal((await response.json()).code, expectedCode)
+    }
+    assert.deepEqual(invalidatedTokens, [validAdminToken, validAdminToken])
+  }
+  finally {
+    if (originalWindow === undefined) delete globalThis.window
+    else globalThis.window = originalWindow
   }
 })
 
@@ -106,6 +238,7 @@ test('admin login uses an in-memory SMS challenge before storing a session', () 
   assert.match(loginPage, /const credentials = ref/)
   assert.match(loginPage, /const challenge = ref/)
   assert.match(loginPage, /const verificationCode = ref/)
+  assert.match(loginPage, /function clearLoginFlow\(\)[\s\S]*loading\.value = false/)
   assert.match(loginPage, /setAdminSession\([\s\S]*expiresAt/)
   assert.doesNotMatch(loginPage, /localStorage/)
   assert.match(loginCard, /验证码/)
@@ -119,15 +252,19 @@ test('admin login uses an in-memory SMS challenge before storing a session', () 
 test('admin sessions require a non-expired server expiry and trusted auth headers only', () => {
   const adminAuth = read('src/composables/useAdminAuth.ts')
   const adminApi = read('src/composables/useAdminApi.ts')
+  const main = read('src/main.ts')
 
   assert.match(adminAuth, /expiresAt: string/)
   assert.match(adminAuth, /Date\.parse/)
   assert.match(adminAuth, /window\.localStorage\.removeItem\(STORAGE_KEY\)/)
+  assert.match(adminAuth, /isAdminSessionToken\(parsed\.token\)/)
   assert.doesNotMatch(adminApi, /headers\.set\('x-admin-role'/)
   assert.doesNotMatch(adminApi, /headers\.set\('x-admin-username'/)
   assert.match(adminApi, /headers\.set\('Authorization'/)
   assert.match(adminApi, /headers\.set\('x-tenant-id'/)
   assert.match(adminApi, /headers\.set\('x-workspace-type'/)
+  assert.match(main, /clearAdminSessionIfTokenMatches\(capturedToken\)/)
+  assert.match(main, /router\.replace\([^)]*login/)
 })
 
 test('app starts revoke before conditionally clearing an expired session on timer and browser wakeups', () => {
