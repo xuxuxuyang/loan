@@ -71,6 +71,30 @@ test('captured logout clears only the still-current token', async () => {
   assert.equal(shouldClearCapturedSession(null, 'admin-session-v1.old'), false)
 })
 
+test('logout cleanup always handles absent storage but preserves a newer token', async () => {
+  const { shouldClearLogoutState, shouldRequestLogoutRevoke } = await loadContract()
+
+  assert.equal(shouldRequestLogoutRevoke(null), false)
+  assert.equal(shouldRequestLogoutRevoke('   '), false)
+  assert.equal(shouldRequestLogoutRevoke('admin-session-v1.old'), true)
+
+  assert.equal(shouldClearLogoutState(null, null), true)
+  assert.equal(shouldClearLogoutState(null, 'admin-session-v1.old'), true)
+  assert.equal(shouldClearLogoutState('admin-session-v1.old', 'admin-session-v1.old'), true)
+  assert.equal(shouldClearLogoutState('admin-session-v1.new', 'admin-session-v1.old'), false)
+})
+
+test('terminal challenge cleanup retains a non-empty server message', async () => {
+  const { AdminLoginApiError, challengeResetMessage } = await loadContract()
+  const fallback = '验证码已过期，请重新登录'
+
+  assert.equal(
+    challengeResetMessage(new AdminLoginApiError('验证码错误次数过多，请稍后再试', 403, 'ADMIN_LOGIN_CHALLENGE_BLOCKED'), fallback),
+    '验证码错误次数过多，请稍后再试',
+  )
+  assert.equal(challengeResetMessage(new Error(''), fallback), fallback)
+})
+
 test('admin login uses an in-memory SMS challenge before storing a session', () => {
   const loginPage = read('src/views/LoginPage.vue')
   const loginCard = read('src/components/auth/LoginCard.vue')
@@ -106,7 +130,7 @@ test('admin sessions require a non-expired server expiry and trusted auth header
   assert.match(adminApi, /headers\.set\('x-workspace-type'/)
 })
 
-test('app revokes then clears an expired session on timer and browser wakeups', () => {
+test('app starts revoke before conditionally clearing an expired session on timer and browser wakeups', () => {
   const app = read('src/App.vue')
   const adminAuth = read('src/composables/useAdminAuth.ts')
 
@@ -116,7 +140,13 @@ test('app revokes then clears an expired session on timer and browser wakeups', 
   assert.match(app, /window\.addEventListener\('focus'/)
   assert.match(app, /document\.addEventListener\('visibilitychange'/)
   assert.match(adminAuth, /clearAdminSessionIfTokenMatches/)
-  assert.match(app, /clearAdminSessionIfTokenMatches\(token\)/)
+  assert.match(app, /clearAdminSessionIfTokenMatches\(capturedToken\)/)
+  assert.match(app, /shouldClearLogoutState/)
+  assert.match(app, /shouldRequestLogoutRevoke/)
+  const logoutBody = app.slice(app.indexOf('function logout('))
+  const tokenRevoke = logoutBody.indexOf('revokeAdminLoginSession(token)')
+  const tokenCleanup = logoutBody.indexOf('clearLocalLogoutState(token)', tokenRevoke)
+  assert.ok(tokenRevoke >= 0 && tokenRevoke < tokenCleanup)
   assert.match(app, /logoutRequests = new Map/)
   assert.match(app, /request\.then\(/)
   assert.doesNotMatch(app, /request\.finally\(/)

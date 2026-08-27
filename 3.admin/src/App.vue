@@ -27,6 +27,7 @@ import LoginFortuneRain from './components/auth/LoginFortuneRain.vue'
 import MallBrandLogo from './components/MallBrandLogo.vue'
 import {
   adminSessionRevision,
+  clearAdminSession,
   clearAdminSessionIfTokenMatches,
   getAdminSession,
   isPlatformManagingTenantWorkspace,
@@ -48,6 +49,7 @@ import {
 } from './composables/useAdminVisitedTags'
 import { syncAdminSessionProfile } from './composables/useAdminApi'
 import { revokeAdminLoginSession } from './api/adminLogin'
+import { shouldClearLogoutState, shouldRequestLogoutRevoke } from './api/adminLoginContract'
 import { adminHomeRoute } from './router'
 
 type Role = NonNullable<AdminSession['role']>
@@ -276,14 +278,7 @@ function scheduleSessionExpiry() {
 function recheckSessionExpiry() {
   const current = getAdminSession()
   if (!current) {
-    clearSessionExpiryTimer()
-    const staleSession = session.value
-    session.value = null
-    clearAdminVisitedTags()
-    void router.replace('/login').catch(() => {})
-    if (staleSession) {
-      void logout(staleSession)
-    }
+    void logout(session.value)
     return
   }
   if (Date.parse(current.expiresAt) <= Date.now()) {
@@ -299,31 +294,36 @@ function onVisibilityChange() {
   }
 }
 
+function clearLocalLogoutState(capturedToken: string) {
+  const currentToken = getAdminSession()?.token ?? null
+  if (!shouldClearLogoutState(currentToken, capturedToken)) {
+    return
+  }
+  clearSessionExpiryTimer()
+  if (!capturedToken || !currentToken) {
+    clearAdminSession()
+  }
+  else {
+    clearAdminSessionIfTokenMatches(capturedToken)
+  }
+  clearAdminVisitedTags()
+  session.value = null
+  void router.replace('/login').catch(() => {})
+}
+
 function logout(sessionToRevoke: AdminSession | null = getAdminSession()): Promise<void> {
   const token = String(sessionToRevoke?.token || '').trim()
-  if (!token) {
+  if (!shouldRequestLogoutRevoke(token)) {
+    clearLocalLogoutState(token)
     return Promise.resolve()
   }
   const existing = logoutRequests.get(token)
   if (existing) {
     return existing
   }
-  clearSessionExpiryTimer()
-  const clearedCurrentSession = clearAdminSessionIfTokenMatches(token)
-  if (clearedCurrentSession) {
-    clearAdminVisitedTags()
-    session.value = null
-    void router.replace('/login').catch(() => {})
-  }
-  const request = (async () => {
-    try {
-      await revokeAdminLoginSession(token)
-    }
-    catch {
-      // Local state was cleared before this best-effort revoke request.
-    }
-  })()
+  const request = revokeAdminLoginSession(token).catch(() => {})
   logoutRequests.set(token, request)
+  clearLocalLogoutState(token)
   void request.then(
     () => {
       if (logoutRequests.get(token) === request) {

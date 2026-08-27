@@ -96,3 +96,23 @@ export function shouldExpireChallengeForError(error: unknown): boolean {
 export function shouldClearCapturedSession(currentToken: string | null | undefined, capturedToken: string | null | undefined): boolean {
   return Boolean(currentToken && capturedToken && currentToken === capturedToken)
 }
+
+function normalizedToken(value: string | null | undefined): string {
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+export function shouldRequestLogoutRevoke(token: string | null | undefined): boolean {
+  return Boolean(normalizedToken(token))
+}
+
+/** A missing stored token cannot represent a newer session, so local cleanup remains safe. */
+export function shouldClearLogoutState(currentToken: string | null | undefined, capturedToken: string | null | undefined): boolean {
+  const current = normalizedToken(currentToken)
+  const captured = normalizedToken(capturedToken)
+  return !captured || !current || current === captured
+}
+
+export function challengeResetMessage(error: unknown, fallback: string): string {
+  const message = error instanceof Error ? error.message.trim() : ''
+  return message || fallback
+}

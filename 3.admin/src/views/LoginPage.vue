@@ -10,7 +10,7 @@ import {
   type AdminLoginChallenge,
   type VerifiedAdminLogin,
 } from '../api/adminLogin'
-import { shouldExpireChallengeForError } from '../api/adminLoginContract'
+import { challengeResetMessage, shouldExpireChallengeForError } from '../api/adminLoginContract'
 import {
   adminCanAccessMenuPath,
   resolveAdminHomeRoute,
@@ -91,9 +91,9 @@ function clearLoginFlow() {
   clearChallengeTimer()
 }
 
-function expireChallenge() {
+function expireChallenge(message = '验证码已过期，请重新登录') {
   clearLoginFlow()
-  error.value = '验证码已过期，请重新登录'
+  error.value = message
 }
 
 function isChallengeExpired() {
@@ -227,7 +227,7 @@ async function handleVerificationSubmit(code: string) {
   }
   catch (err) {
     if (shouldExpireChallengeForError(err)) {
-      expireChallenge()
+      expireChallenge(challengeResetMessage(err, '验证码已过期，请重新登录'))
       return
     }
     error.value = err instanceof Error ? err.message : '登录失败，请稍后重试'
