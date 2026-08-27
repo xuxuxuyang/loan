@@ -112,6 +112,7 @@ const { createAdminSecuritySmsSender, isAdminSecuritySmsReady } = require('./adm
 const { AdminLoginSecurityError, createAdminLoginSecurityService } = require('./adminLoginSecurity')
 const { createMongoAdminLoginSecurityStore } = require('./adminLoginSecurityStore')
 const { createAdminLoginHttpHandlers, createAdminLoginSessionMiddleware } = require('./adminLoginHttp')
+const { createAdminLoginPreflightGuard } = require('./adminLoginPreflight')
 const {
   isAdminLoginPublicRequest,
   isAdminOptionalSessionRequest,
@@ -13087,7 +13088,26 @@ router.post('/uploads/public-image', async (ctx) => {
   }
 })
 
-app.use(cors())
+const adminLoginRoutePolicy = {
+  isAdminLoginPublicRequest,
+  isAdminOptionalSessionRequest,
+  isAdminProtectedRequest,
+}
+const enforceAdminLoginPreflight = createAdminLoginPreflightGuard({
+  routers: [router, duodiandianPublicRouter, riskControlRouter],
+  routePolicy: adminLoginRoutePolicy,
+  resolveMode: () => process.env.ADMIN_LOGIN_SMS_MODE,
+  resolveTrustedOrigin: () => process.env.ADMIN_LOGIN_TRUSTED_ORIGIN,
+})
+
+app.use(enforceAdminLoginPreflight)
+app.use(cors({
+  origin: (ctx) => {
+    if (!ctx.get('Origin')) return ''
+    if (ctx.state.adminLoginCorsRestricted) return ctx.state.adminLoginCorsOrigin || ''
+    return '*'
+  },
+}))
 app.use(mount('/static', serve(API_PUBLIC_DIR)))
 /** 与 /api 同一网关反代时，上传图走 /api/static/...，避免单独配置 /static */
 app.use(mount('/api/static', serve(API_PUBLIC_DIR)))
@@ -13102,11 +13122,7 @@ const enforceAdminLoginSession = createAdminLoginSessionMiddleware({
   securityService: adminLoginSecurityService,
   resolveTenantId: resolveTenantIdFromRequest,
   resolveAccountForSession: resolveAccountForAdminSession,
-  routePolicy: {
-    isAdminLoginPublicRequest,
-    isAdminOptionalSessionRequest,
-    isAdminProtectedRequest,
-  },
+  routePolicy: adminLoginRoutePolicy,
 })
 
 app.use(enforceAdminLoginSession)

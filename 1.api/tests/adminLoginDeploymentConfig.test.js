@@ -56,6 +56,7 @@ function assertProxyLocation(serverBlock, locationPattern, target, label) {
 test('records all admin SMS login deployment settings in the example environment', () => {
   const requiredSettings = {
     ADMIN_LOGIN_SMS_MODE: 'enforce',
+    ADMIN_LOGIN_TRUSTED_ORIGIN: 'https://admin.wenshuosc.com',
     ADMIN_LOGIN_SECURITY_SECRET: undefined,
     ADMIN_LOGIN_SMS_MSG_TEMPLATE: undefined,
     ADMIN_LOGIN_OTP_TTL_MS: '300000',
@@ -81,6 +82,9 @@ test('records all admin SMS login deployment settings in the example environment
   assert.ok(/^ADMIN_LOGIN_SECURITY_SECRET=$/m.test(envExample), 'the example must not contain a committed login security secret');
   assert.ok(/必须替换为当前环境短信平台已备案签名/.test(envExample), 'the SMS template must explain registered-signature replacement');
   assert.ok(/开发、生产环境.*独立.*密钥/.test(envExample), 'Chinese comments must require independent development and production secrets');
+  assert.ok(/后台管理端可信来源.*协议、主机和可选端口/.test(envExample), 'Chinese comments must require an exact admin origin');
+  assert.ok(/不得使用.*\*.*路径、查询参数或哈希/.test(envExample), 'Chinese comments must reject wildcard and URL suffixes');
+  assert.ok(/enforce.*不得留空/.test(envExample), 'Chinese comments must reject an empty enforce origin');
   assert.ok(/43200000 表示 12 小时/.test(envExample), 'Chinese comments must document the 12-hour session TTL');
 });
 

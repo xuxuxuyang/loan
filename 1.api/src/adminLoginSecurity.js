@@ -302,12 +302,12 @@ function createAdminLoginSecurityService(options = {}) {
   }
 
   async function resolveSession(token) {
-    ensureStoreReady()
-    ensureRuntimeConfig()
     const rawToken = String(token || '').trim()
     if (!rawToken.startsWith('admin-session-v1.')) {
       throw new AdminLoginSecurityError('ADMIN_LOGIN_SESSION_INVALID', 'Admin login session is invalid', 401)
     }
+    ensureStoreReady()
+    ensureRuntimeConfig()
     const tokenHash = digest(rawToken)
     const nowDate = new Date(Number(now()))
     const active = await store.findActiveSession(tokenHash, nowDate)

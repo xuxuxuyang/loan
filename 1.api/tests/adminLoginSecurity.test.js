@@ -95,6 +95,14 @@ test('revocation invalidates a live session immediately', async () => {
   await assert.rejects(() => fixture.service.resolveSession(login.token), { code: 'ADMIN_LOGIN_SESSION_INVALID' })
 })
 
+test('a malformed session is rejected before unavailable storage is consulted', async () => {
+  const fixture = createFixture({ store: { isReady: () => false } })
+  await assert.rejects(
+    () => fixture.service.resolveSession(''),
+    { code: 'ADMIN_LOGIN_SESSION_INVALID', status: 401 },
+  )
+})
+
 test('a verified challenge cannot issue a second session', async () => {
   const fixture = createFixture()
   const challenge = await fixture.service.createChallenge(fixture.context)
