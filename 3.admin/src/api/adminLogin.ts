@@ -1,5 +1,12 @@
 import type { AdminPermissions } from '../composables/useAdminPermissions'
 import { getAdminSession, type AdminRole } from '../composables/useAdminAuth'
+import {
+  adminLoginApiErrorFromResponse,
+  validateVerifiedAdminLogin,
+  type VerifiedAdminLoginContract,
+} from './adminLoginContract'
+
+export { AdminLoginApiError } from './adminLoginContract'
 
 const MALL_API_BASE = `${(import.meta.env.VITE_MALL_API_BASE || 'http://localhost:3110/api').replace(/\/$/, '')}`
 
@@ -10,22 +17,15 @@ export interface AdminLoginChallenge {
   resendAt: string
 }
 
-export interface VerifiedAdminLogin {
-  username: string
-  name?: string
-  token: string
-  expiresAt: string
+export interface VerifiedAdminLogin extends Omit<VerifiedAdminLoginContract, 'adminRole' | 'permissions'> {
   adminRole: AdminRole
-  roleLabel?: string
-  scopeType?: 'platform' | 'tenant'
-  tenantId?: string
-  scopeTenantIds?: string[]
   permissions?: AdminPermissions
 }
 
 type ApiEnvelope<T> = {
   success?: boolean
   msg?: string
+  code?: string
   data?: T
 }
 
@@ -50,7 +50,7 @@ async function postAdminLogin<T>(path: string, body?: Record<string, string>, to
     result = { msg: rawText || '请求失败，请检查接口地址' }
   }
   if (!response.ok || !result.data) {
-    throw new Error(String(result.msg || '请求失败'))
+    throw adminLoginApiErrorFromResponse(result, response.status)
   }
   return result.data
 }
@@ -60,7 +60,8 @@ export async function createAdminLoginChallenge(credentials: { username: string,
 }
 
 export async function verifyAdminLoginChallenge(challengeId: string, code: string) {
-  return postAdminLogin<VerifiedAdminLogin>('/admin/login/verify', { challengeId, code })
+  const result = await postAdminLogin<unknown>('/admin/login/verify', { challengeId, code })
+  return validateVerifiedAdminLogin(result) as VerifiedAdminLogin
 }
 
 /** Server revocation is best effort; callers always clear the browser session themselves. */

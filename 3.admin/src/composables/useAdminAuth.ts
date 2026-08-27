@@ -1,5 +1,6 @@
 import { ref } from 'vue'
 import type { AdminPermissions } from './useAdminPermissions'
+import { shouldClearCapturedSession } from '../api/adminLoginContract'
 
 export type AdminRole = 'super_admin' | 'boss' | 'reviewer' | 'collector'
 
@@ -195,6 +196,27 @@ export function clearAdminSession() {
   if (typeof window === 'undefined') return
   window.localStorage.removeItem(STORAGE_KEY)
   adminSessionRevision.value += 1
+}
+
+/** Do not let a stale asynchronous logout remove a newer authenticated session. */
+export function clearAdminSessionIfTokenMatches(capturedToken: string | null | undefined): boolean {
+  if (typeof window === 'undefined') {
+    return false
+  }
+  let currentToken: string | null = null
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY)
+    const stored = raw ? JSON.parse(raw) as { token?: unknown } : null
+    currentToken = typeof stored?.token === 'string' ? stored.token : null
+  }
+  catch {
+    currentToken = null
+  }
+  if (!shouldClearCapturedSession(currentToken, capturedToken)) {
+    return false
+  }
+  clearAdminSession()
+  return true
 }
 
 export function isAdminAuthenticated() {

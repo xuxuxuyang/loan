@@ -27,7 +27,7 @@ import LoginFortuneRain from './components/auth/LoginFortuneRain.vue'
 import MallBrandLogo from './components/MallBrandLogo.vue'
 import {
   adminSessionRevision,
-  clearAdminSession,
+  clearAdminSessionIfTokenMatches,
   getAdminSession,
   isPlatformManagingTenantWorkspace,
   type AdminSession,
@@ -77,7 +77,7 @@ const pageTitle = computed(() => String(route.meta.title || '后台管理'))
 const session = ref<AdminSession | null>(getAdminSession())
 const isLoginPage = computed(() => route.name === 'login')
 let sessionExpiryTimer: ReturnType<typeof setTimeout> | undefined
-let logoutInFlight: Promise<void> | null = null
+const logoutRequests = new Map<string, Promise<void>>()
 
 /** 平台总览账号已切到具体子系统的 mall__tenant_x 工作区：侧栏与顶栏按「子系统后台」呈现 */
 const isPlatformManagingTenant = computed(() => isPlatformManagingTenantWorkspace(session.value))
@@ -277,11 +277,12 @@ function recheckSessionExpiry() {
   const current = getAdminSession()
   if (!current) {
     clearSessionExpiryTimer()
-    if (session.value) {
-      void logout(session.value)
-    }
-    else {
-      session.value = null
+    const staleSession = session.value
+    session.value = null
+    clearAdminVisitedTags()
+    void router.replace('/login').catch(() => {})
+    if (staleSession) {
+      void logout(staleSession)
     }
     return
   }
@@ -299,30 +300,42 @@ function onVisibilityChange() {
 }
 
 function logout(sessionToRevoke: AdminSession | null = getAdminSession()): Promise<void> {
-  if (logoutInFlight) {
-    return logoutInFlight
+  const token = String(sessionToRevoke?.token || '').trim()
+  if (!token) {
+    return Promise.resolve()
+  }
+  const existing = logoutRequests.get(token)
+  if (existing) {
+    return existing
   }
   clearSessionExpiryTimer()
+  const clearedCurrentSession = clearAdminSessionIfTokenMatches(token)
+  if (clearedCurrentSession) {
+    clearAdminVisitedTags()
+    session.value = null
+    void router.replace('/login').catch(() => {})
+  }
   const request = (async () => {
     try {
-      await revokeAdminLoginSession(sessionToRevoke?.token)
+      await revokeAdminLoginSession(token)
     }
     catch {
-      // Local logout must complete even when the server revoke is unavailable.
-    }
-    finally {
-      clearAdminSession()
-      clearAdminVisitedTags()
-      session.value = null
-      await router.replace('/login')
+      // Local state was cleared before this best-effort revoke request.
     }
   })()
-  logoutInFlight = request
-  void request.finally(() => {
-    if (logoutInFlight === request) {
-      logoutInFlight = null
+  logoutRequests.set(token, request)
+  void request.then(
+    () => {
+      if (logoutRequests.get(token) === request) {
+        logoutRequests.delete(token)
+      }
+    },
+    () => {
+      if (logoutRequests.get(token) === request) {
+        logoutRequests.delete(token)
+      }
     }
-  })
+  )
   return request
 }
 

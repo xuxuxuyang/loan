@@ -10,6 +10,7 @@ import {
   type AdminLoginChallenge,
   type VerifiedAdminLogin,
 } from '../api/adminLogin'
+import { shouldExpireChallengeForError } from '../api/adminLoginContract'
 import {
   adminCanAccessMenuPath,
   resolveAdminHomeRoute,
@@ -150,7 +151,7 @@ async function completeLogin(data: VerifiedAdminLogin) {
     throw new Error('登录会话无效，请重新登录')
   }
 
-  const role = (data.adminRole || 'super_admin') as AdminRole
+  const role = data.adminRole
   const roleName = String(data.roleLabel || '').trim() || adminRoleDisplayLabel(role)
   const username = data.username || sourceCredentials.username
   const displayName = String(data.name || '').trim()
@@ -225,6 +226,10 @@ async function handleVerificationSubmit(code: string) {
     await completeLogin(data)
   }
   catch (err) {
+    if (shouldExpireChallengeForError(err)) {
+      expireChallenge()
+      return
+    }
     error.value = err instanceof Error ? err.message : '登录失败，请稍后重试'
     clearLoginWelcomeTimer()
     loginWelcomeOpen.value = false
