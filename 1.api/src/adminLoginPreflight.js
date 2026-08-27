@@ -12,12 +12,15 @@ function resolveExactHttpOrigin(value) {
   }
 }
 
-function isRegisteredRequest(routers, mountedRoutes, pathValue, method) {
-  const registeredOnRouter = routers.some((router) => {
+function isRegisteredRouterRequest(routers, pathValue, method) {
+  return routers.some((router) => {
     if (!router || typeof router.match !== 'function') return false
     return Boolean(router.match(pathValue, method).route)
   })
-  if (registeredOnRouter) return true
+}
+
+function isRegisteredRequest(routers, mountedRoutes, pathValue, method) {
+  if (isRegisteredRouterRequest(routers, pathValue, method)) return true
   return mountedRoutes.some(rule => rule.methods.includes(method) && rule.path.test(pathValue))
 }
 
@@ -43,15 +46,22 @@ function createAdminLoginPreflightGuard(options = {}) {
   return async function enforceAdminLoginPreflight(ctx, next) {
     const requestOrigin = String(ctx.get('Origin') || '')
     const requestedMethod = String(ctx.get('Access-Control-Request-Method') || '').trim().toUpperCase()
-    if (ctx.method !== 'OPTIONS' && requestOrigin && isDisallowedMountedRequest(mountedRoutes, ctx.path, ctx.method)) {
+    if (ctx.method !== 'OPTIONS'
+      && requestOrigin
+      && !isRegisteredRouterRequest(routers, ctx.path, ctx.method)
+      && isDisallowedMountedRequest(mountedRoutes, ctx.path, ctx.method)) {
       ctx.state.adminLoginCorsRestricted = true
       await next()
       return
     }
     if (ctx.method !== 'OPTIONS' && requestOrigin && isAdminRequest(ctx.method, ctx.path)) {
+      ctx.state.adminLoginCorsRestricted = true
+      if (!isRegisteredRequest(routers, mountedRoutes, ctx.path, ctx.method)) {
+        await next()
+        return
+      }
       const trustedOrigin = resolveExactHttpOrigin(resolveTrustedOrigin())
       const mode = String(resolveMode() || '').trim().toLowerCase()
-      ctx.state.adminLoginCorsRestricted = true
       if (['off', 'audit', 'enforce'].includes(mode) && requestOrigin === trustedOrigin) {
         ctx.state.adminLoginCorsOrigin = trustedOrigin
       }

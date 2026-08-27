@@ -1,8 +1,12 @@
 const assert = require('node:assert/strict')
 const http = require('node:http')
 const test = require('node:test')
+const cors = require('@koa/cors')
+const Router = require('@koa/router')
+const Koa = require('koa')
 
 const { app } = require('../src/index')
+const { createAdminLoginPreflightGuard } = require('../src/adminLoginPreflight')
 
 function request(server, method, requestPath, headers = {}) {
   const address = server.address()
@@ -33,8 +37,8 @@ function request(server, method, requestPath, headers = {}) {
   })
 }
 
-async function withProductionServer(run) {
-  const server = app.listen(0, '127.0.0.1')
+async function withServer(application, run) {
+  const server = application.listen(0, '127.0.0.1')
   await new Promise((resolve, reject) => {
     server.once('listening', resolve)
     server.once('error', reject)
@@ -45,6 +49,10 @@ async function withProductionServer(run) {
   finally {
     await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()))
   }
+}
+
+async function withProductionServer(run) {
+  return withServer(app, run)
 }
 
 function preflightHeaders(origin, requestedMethod) {
@@ -123,19 +131,42 @@ test('real production app allows only registered browser preflights across the a
       )
       assertRejectedPreflight(untrustedAdmin, 403)
 
-      const protectedWithoutSession = await request(server, 'GET', '/api/admin/profile', { origin: trustedOrigin })
-      assert.equal(protectedWithoutSession.status, 401)
-      assert.equal(protectedWithoutSession.body.code, 'ADMIN_LOGIN_SESSION_INVALID')
-      assert.equal(protectedWithoutSession.headers['access-control-allow-origin'], trustedOrigin)
+      for (const origin of [trustedOrigin, publicOrigin]) {
+        for (const [method, requestPath] of [
+          ['GET', '/api/future-admin-report'],
+          ['POST', '/api/health'],
+          ['GET', '/api/ios/admin/export'],
+          ['POST', '/api/payment/lakala/admin/refund-all'],
+        ]) {
+          const response = await request(server, method, requestPath, { origin })
+          assert.equal(response.status, 401, `${origin} ${method} ${requestPath}`)
+          assert.equal(response.body.code, 'ADMIN_LOGIN_SESSION_INVALID', `${origin} ${method} ${requestPath}`)
+          assert.equal(response.headers['access-control-allow-origin'], undefined, `${origin} ${method} ${requestPath}`)
+        }
 
-      const untrustedProtectedRequest = await request(server, 'GET', '/api/admin/profile', { origin: publicOrigin })
-      assert.equal(untrustedProtectedRequest.status, 401)
-      assert.equal(untrustedProtectedRequest.body.code, 'ADMIN_LOGIN_SESSION_INVALID')
-      assert.equal(untrustedProtectedRequest.headers['access-control-allow-origin'], undefined)
+        const expectedAdminOrigin = origin === trustedOrigin ? trustedOrigin : undefined
+        for (const [method, requestPath] of [
+          ['POST', '/api/admin/login'],
+          ['GET', '/api/admin/profile'],
+        ]) {
+          const response = await request(server, method, requestPath, { origin })
+          assert.equal(response.status, 401, `${origin} ${method} ${requestPath}`)
+          assert.equal(response.headers['access-control-allow-origin'], expectedAdminOrigin, `${origin} ${method} ${requestPath}`)
+        }
 
-      const publicBusinessRequest = await request(server, 'GET', '/api/health', { origin: publicOrigin })
-      assert.equal(publicBusinessRequest.status, 200)
-      assert.equal(publicBusinessRequest.headers['access-control-allow-origin'], '*')
+        const publicBusinessRequest = await request(server, 'GET', '/api/health', { origin })
+        assert.equal(publicBusinessRequest.status, 200, origin)
+        assert.equal(publicBusinessRequest.headers['access-control-allow-origin'], '*', origin)
+
+        for (const requestPath of [
+          '/static/contracts/card-package-claim-template.pdf',
+          '/api/static/contracts/card-package-claim-template.pdf',
+        ]) {
+          const staticResponse = await request(server, 'GET', requestPath, { origin })
+          assert.equal(staticResponse.status, 200, `${origin} GET ${requestPath}`)
+          assert.equal(staticResponse.headers['access-control-allow-origin'], '*', `${origin} GET ${requestPath}`)
+        }
+      }
     })
   }
   finally {
@@ -177,6 +208,56 @@ test('real production app exposes mounted static routes only for GET and HEAD CO
       const actualWrite = await request(server, 'POST', requestPath, { origin: publicOrigin })
       assert.equal(actualWrite.headers['access-control-allow-origin'], undefined, `POST ${requestPath}`)
     }
+  })
+})
+
+test('actual and preflight CORS agree when Router and mounted inventories overlap', async () => {
+  const trustedOrigin = 'https://trusted-admin.example.test'
+  const publicOrigin = 'https://shopper.example.test'
+  const application = new Koa()
+  const router = new Router()
+  const mountedRoutes = [{ methods: ['GET', 'HEAD'], path: /^\/api\/static\// }]
+  const routePolicy = {
+    isAdminLoginPublicRequest: () => false,
+    isAdminProtectedRequest: (_method, pathValue) => pathValue.startsWith('/api/'),
+  }
+
+  router.post('/api/static/upload', (ctx) => {
+    ctx.body = { success: true }
+  })
+  application.use(createAdminLoginPreflightGuard({
+    routers: [router],
+    mountedRoutes,
+    routePolicy,
+    resolveMode: () => 'enforce',
+    resolveTrustedOrigin: () => trustedOrigin,
+  }))
+  application.use(cors({
+    origin: (ctx) => {
+      if (!ctx.get('Origin')) return ''
+      if (ctx.state.adminLoginCorsRestricted) return ctx.state.adminLoginCorsOrigin || ''
+      return '*'
+    },
+  }))
+  application.use(router.routes())
+
+  await withServer(application, async (server) => {
+    const preflight = await request(
+      server,
+      'OPTIONS',
+      '/api/static/upload',
+      preflightHeaders(trustedOrigin, 'POST'),
+    )
+    assert.equal(preflight.status, 204)
+    assert.equal(preflight.headers['access-control-allow-origin'], trustedOrigin)
+
+    const trustedActual = await request(server, 'POST', '/api/static/upload', { origin: trustedOrigin })
+    assert.equal(trustedActual.status, 200)
+    assert.equal(trustedActual.headers['access-control-allow-origin'], trustedOrigin)
+
+    const untrustedActual = await request(server, 'POST', '/api/static/upload', { origin: publicOrigin })
+    assert.equal(untrustedActual.status, 200)
+    assert.equal(untrustedActual.headers['access-control-allow-origin'], undefined)
   })
 })
 
