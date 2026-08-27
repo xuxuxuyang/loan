@@ -43,6 +43,7 @@ function loadAdminSessionGateway(service) {
   return Function(
     'isAdminProtectedRequest',
     'isAdminLoginPublicRequest',
+    'isAdminOptionalSessionRequest',
     'readBearer',
     'adminLoginSecurityService',
     'resolveTenantIdFromRequest',
@@ -54,6 +55,7 @@ function loadAdminSessionGateway(service) {
   )(
     routePolicy.isAdminProtectedRequest,
     routePolicy.isAdminLoginPublicRequest,
+    routePolicy.isAdminOptionalSessionRequest,
     ctx => String(ctx.headers.authorization || '').replace(/^Bearer\s+/i, ''),
     service,
     ctx => String(ctx.headers['x-tenant-id'] || ctx.query.tenantId || 'default'),
@@ -65,6 +67,20 @@ function loadAdminSessionGateway(service) {
       return true
     },
     { error() {} },
+  )
+}
+
+function loadCsAgentNameResolver() {
+  const source = sourceBetween('function resolveCsAgentName(ctx, db)', 'function csUserOnline(session)')
+  return Function(
+    'ensureAdminAccounts',
+    'normalizePhone',
+    'parsePhoneFromToken',
+    `return (${source.trim()})`,
+  )(
+    () => {},
+    value => String(value || '').trim(),
+    authorization => String(authorization || '').replace(/^Bearer\s+mock-token-/i, ''),
   )
 }
 
@@ -114,6 +130,24 @@ test('route catalog preserves storefront, callback, partner, and risk APIs', () 
     assert.equal(routePolicy.isAdminLoginPublicRequest(method, requestPath), true, `${method} ${requestPath}`)
   }
   assert.equal(routePolicy.isAdminLoginPublicRequest('GET', '/api/admin/profile'), false)
+})
+
+test('optional admin sessions are scoped only to public product GET requests', () => {
+  assert.equal(typeof routePolicy.isAdminOptionalSessionRequest, 'function')
+  if (typeof routePolicy.isAdminOptionalSessionRequest !== 'function') return
+
+  assert.equal(routePolicy.isAdminOptionalSessionRequest('GET', '/api/products'), true)
+  assert.equal(routePolicy.isAdminOptionalSessionRequest('GET', '/api/products/1'), true)
+  const ignoredCases = [
+    ['POST', '/api/orders'],
+    ['POST', '/api/payment/lakala/notify'],
+    ['POST', '/api/traffic-partner/login'],
+    ['POST', '/api/bill-risk/callback'],
+    ['POST', '/risk-api/risk.v4/courtDetailPro'],
+  ]
+  for (const [method, requestPath] of ignoredCases) {
+    assert.equal(routePolicy.isAdminOptionalSessionRequest(method, requestPath), false, `${method} ${requestPath}`)
+  }
 })
 
 test('opaque session resolver rejects every legacy admin credential shape', async () => {
@@ -180,6 +214,78 @@ test('the installed gateway rejects legacy token, role, phone, and query hints o
     assert.equal(ctx.state.adminAccount, undefined)
     assert.equal(reachedRoute, false)
   }
+})
+
+test('malformed admin-like tokens are ignored outside public product GET routes', async () => {
+  const service = createAdminLoginSecurityService({
+    store: createMemoryAdminLoginSecurityStore(),
+    secret: 'integration-admin-login-secret-with-enough-entropy',
+    sendSms: async () => {},
+    smsReady: () => true,
+    otpTtlMs: 300_000,
+    resendMs: 60_000,
+    hourlySendLimit: 10,
+    maxAttempts: 5,
+    sessionTtlMs: 43_200_000,
+  })
+  const gateway = loadAdminSessionGateway(service)
+  const publicCases = [
+    ['POST', '/api/orders'],
+    ['POST', '/api/payment/lakala/notify'],
+    ['POST', '/api/traffic-partner/login'],
+    ['POST', '/api/bill-risk/callback'],
+    ['POST', '/risk-api/risk.v4/courtDetailPro'],
+  ]
+
+  for (const [method, requestPath] of publicCases) {
+    let reachedRoute = false
+    const ctx = {
+      method,
+      path: requestPath,
+      headers: { authorization: 'Bearer admin-session-v1.malformed' },
+      query: {},
+      state: {},
+    }
+    await gateway(ctx, async () => { reachedRoute = true })
+    assert.equal(reachedRoute, true, `${method} ${requestPath}`)
+    assert.equal(ctx.status, undefined, `${method} ${requestPath}`)
+  }
+
+  let reachedProduct = false
+  const productCtx = {
+    method: 'GET',
+    path: '/api/products',
+    headers: { authorization: 'Bearer admin-session-v1.malformed' },
+    query: {},
+    state: {},
+  }
+  await gateway(productCtx, async () => { reachedProduct = true })
+  assert.equal(reachedProduct, false)
+  assert.equal(productCtx.status, 401)
+})
+
+test('CS agent display name only uses the gateway-established account', () => {
+  const resolveCsAgentName = loadCsAgentNameResolver()
+  const db = {
+    adminAccounts: [
+      { phone: '13900139000', status: 'active', name: 'Forged Agent' },
+    ],
+  }
+  const trustedState = {
+    adminLoginSession: { accountId: 'A1' },
+    adminAccount: { id: 'A1', status: 'active', name: 'Trusted Agent', username: 'trusted' },
+  }
+  const forgedRequests = [
+    { 'x-admin-phone': '13900139000' },
+    { authorization: 'Bearer mock-token-13900139000' },
+  ]
+  for (const headers of forgedRequests) {
+    assert.equal(resolveCsAgentName({ headers, state: trustedState }, db), 'Trusted Agent')
+  }
+
+  const resolverSource = sourceBetween('function resolveCsAgentName(ctx, db)', 'function csUserOnline(session)')
+  assert.match(resolverSource, /ctx\.state\??\.adminAccount/)
+  assert.doesNotMatch(resolverSource, /x-admin-phone|parsePhoneFromToken|authorization|adminAccounts/)
 })
 
 test('Koa wiring creates challenges first and returns a token only after verification', () => {

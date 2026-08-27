@@ -111,7 +111,11 @@ const { createAdminSecurityService } = require('./adminSecurityService')
 const { createAdminSecuritySmsSender, isAdminSecuritySmsReady } = require('./adminSecuritySms')
 const { AdminLoginSecurityError, createAdminLoginSecurityService } = require('./adminLoginSecurity')
 const { createMongoAdminLoginSecurityStore } = require('./adminLoginSecurityStore')
-const { isAdminLoginPublicRequest, isAdminProtectedRequest } = require('./adminLoginRoutePolicy')
+const {
+  isAdminLoginPublicRequest,
+  isAdminOptionalSessionRequest,
+  isAdminProtectedRequest,
+} = require('./adminLoginRoutePolicy')
 const crypto = require('node:crypto')
 const path = require('node:path')
 const fs = require('node:fs')
@@ -3994,16 +3998,11 @@ function createCsSessionRecord({ mallUser, visitorKey }) {
 }
 
 function resolveCsAgentName(ctx, db) {
-  ensureAdminAccounts(db)
-  const phone = normalizePhone(ctx.headers['x-admin-phone'] || parsePhoneFromToken(ctx.headers.authorization))
-  if (!phone) {
+  const account = ctx.state?.adminAccount
+  if (!account || account.status !== 'active') {
     return '客服'
   }
-  const acc = db.adminAccounts.find(a => a.phone === phone && a.status === 'active')
-  if (acc) {
-    return String(acc.name || acc.username || '客服').trim() || '客服'
-  }
-  return '客服'
+  return String(account.name || account.username || '客服').trim() || '客服'
 }
 
 function csUserOnline(session) {
@@ -13332,7 +13331,8 @@ app.use(bodyParser({
 async function enforceAdminLoginSession(ctx, next) {
   const protectedRequest = isAdminProtectedRequest(ctx.method, ctx.path)
   const bearer = readBearer(ctx)
-  const optionalAdminSession = !protectedRequest && bearer.startsWith('admin-session-v1.')
+  const optionalAdminSession = isAdminOptionalSessionRequest(ctx.method, ctx.path)
+    && bearer.startsWith('admin-session-v1.')
   if (isAdminLoginPublicRequest(ctx.method, ctx.path) || (!protectedRequest && !optionalAdminSession)) {
     await next()
     return

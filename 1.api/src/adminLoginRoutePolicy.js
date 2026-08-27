@@ -16,6 +16,12 @@ function isAdminLoginPublicRequest(method, pathValue) {
   return ADMIN_LOGIN_PUBLIC_REQUESTS.has(`${request.method} ${request.path}`)
 }
 
+function isAdminOptionalSessionRequest(method, pathValue) {
+  const request = normalizeRequest(method, pathValue)
+  return request.method === 'GET'
+    && (request.path === '/api/products' || /^\/api\/products\/[^/]+$/.test(request.path))
+}
+
 function isAdminProtectedRequest(method, pathValue) {
   const request = normalizeRequest(method, pathValue)
   if (isAdminLoginPublicRequest(request.method, request.path)) return false
@@ -35,5 +41,6 @@ function isAdminProtectedRequest(method, pathValue) {
 
 module.exports = {
   isAdminLoginPublicRequest,
+  isAdminOptionalSessionRequest,
   isAdminProtectedRequest,
 }
