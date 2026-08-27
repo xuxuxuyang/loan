@@ -5,7 +5,37 @@ const ADMIN_LOGIN_PUBLIC_REQUESTS = new Set([
   'POST /api/login/verify',
 ])
 
-const ALL_BUSINESS_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE'])
+const PUBLIC_BUSINESS_REQUEST_RULES = Object.freeze([
+  { methods: ['GET'], path: /^\/api\/(?:health|geocode\/reverse)$/ },
+  { methods: ['GET'], path: /^\/api\/static\// },
+  { methods: ['GET'], path: /^\/api\/products(?:\/[^/]+)?$/ },
+  { methods: ['POST'], path: /^\/api\/auth\/(?:register\/sms\/send|login\/sms\/send|register|login)$/ },
+  { methods: ['GET'], path: /^\/api\/users\/by-phone$/ },
+  { methods: ['POST'], path: /^\/api\/orders$/ },
+  { methods: ['POST'], path: /^\/api\/mall\/(?:me\/emergency-contacts|installment-risk\/wave(?:\/[^/]+\/step\/[^/]+)?)$/ },
+  { methods: ['GET'], path: /^\/api\/mall\/(?:me\/bill-risk|contacts\/status|contract-pending|cs\/session)$/ },
+  { methods: ['POST'], path: /^\/api\/mall\/contacts\/upload\/(?:start|batch|complete)$/ },
+  { methods: ['POST'], path: /^\/api\/mall\/cs\/(?:session\/open|messages(?:\/image)?)$/ },
+  { methods: ['GET'], path: /^\/api\/my\/(?:summary|orders)$/ },
+  { methods: ['GET'], path: /^\/api\/card-packages(?:\/[^/]+\/(?:contract-view|contract-flow))?$/ },
+  { methods: ['POST'], path: /^\/api\/card-packages\/[^/]+\/(?:contract-ack|contract-sign-reset)$/ },
+  { methods: ['GET', 'POST'], path: /^\/api\/addresses$/ },
+  { methods: ['PATCH'], path: /^\/api\/addresses\/[^/]+(?:\/default)?$/ },
+  { methods: ['GET', 'POST'], path: /^\/api\/bank-cards$/ },
+  { methods: ['DELETE'], path: /^\/api\/bank-cards\/[^/]+$/ },
+  { methods: ['GET'], path: /^\/api\/bills$/ },
+  { methods: ['POST'], path: /^\/api\/bills\/(?:repay|repay-negotiated)$/ },
+  { methods: ['POST'], path: /^\/api\/payment\/lakala\/(?:preorder|sync-pending|mock-complete\/[^/]+|notify)$/ },
+  { methods: ['GET'], path: /^\/api\/payment\/lakala\/(?:status\/[^/]+|config)$/ },
+  { methods: ['POST'], path: /^\/api\/ios\/(?:auth\/register(?:\/sms\/send)?|uploads\/id-card|installment-risk\/wave(?:\/[^/]+\/step\/[^/]+)?|installment\/orders|orders\/[^/]+\/contacts\/upload\/(?:start|batch|complete)|account\/delete)$/ },
+  { methods: ['PUT'], path: /^\/api\/ios\/installment\/profile$/ },
+  { methods: ['GET'], path: /^\/api\/ios\/(?:installment\/profile|account\/deletion-eligibility)$/ },
+  { methods: ['POST'], path: /^\/api\/(?:bill-risk\/callback|uploads\/id-card|traffic\/channel-click)$/ },
+  { methods: ['POST'], path: /^\/api\/traffic-partner\/login$/ },
+  { methods: ['GET'], path: /^\/api\/traffic-partner\/stats$/ },
+  { methods: ['POST'], path: /^\/api\/open\/partners\/[^/]+\/(?:admission|contracts|credit\/(?:apply|query)|app\/link|login\/consume|apply|checkPrefix|checkPrefIx|contractQuery|getUrl|order\/(?:status|bindCard|replayPlan|replay|sign)\/notify)$/ },
+  { methods: ['POST'], path: /^\/api\/market\/halfFlow\/[^/]+\/open\/(?:checkPrefix|checkPrefIx|contractQuery|apply|login\/consume|getUrl|order\/(?:status|bindCard|replayPlan|replay|sign)\/notify)$/ },
+])
 
 function normalizeRequest(method, pathValue) {
   const rawMethod = String(method || 'GET').trim().toUpperCase()
@@ -28,20 +58,10 @@ function isAdminOptionalSessionRequest(method, pathValue) {
 function isPublicBusinessRequest(method, pathValue) {
   const request = normalizeRequest(method, pathValue)
   const { method: requestMethod, path } = request
-  if (requestMethod === 'GET' && (path === '/api/health' || path === '/api/geocode/reverse')) return true
-  if (requestMethod === 'GET' && path.startsWith('/api/static/')) return true
-  if (isAdminOptionalSessionRequest(requestMethod, path)) return true
-  if (requestMethod === 'POST' && /^\/api\/auth\/(?:register\/sms\/send|login\/sms\/send|register|login)$/.test(path)) return true
-  if (requestMethod === 'GET' && path === '/api/users/by-phone') return true
-  if (requestMethod === 'POST' && path === '/api/orders') return true
-  if (ALL_BUSINESS_METHODS.has(requestMethod)
-    && /^\/api\/(?:mall|my|card-packages|addresses|bank-cards|bills|payment\/lakala|ios)(?:\/|$)/.test(path)) return true
-  if (requestMethod === 'POST'
-    && /^\/api\/(?:bill-risk\/callback|uploads\/id-card|traffic\/channel-click)$/.test(path)) return true
-  if ((requestMethod === 'GET' || requestMethod === 'POST')
-    && /^\/api\/traffic-partner(?:\/|$)/.test(path)) return true
-  if (requestMethod === 'POST' && /^\/api\/open\/partners\//.test(path)) return true
-  return requestMethod === 'POST' && /^\/api\/market\/halfFlow\/[^/]+\/open\//.test(path)
+  if (requestMethod === 'OPTIONS') {
+    return PUBLIC_BUSINESS_REQUEST_RULES.some(rule => rule.path.test(path))
+  }
+  return PUBLIC_BUSINESS_REQUEST_RULES.some(rule => rule.methods.includes(requestMethod) && rule.path.test(path))
 }
 
 function isAdminProtectedRequest(method, pathValue) {

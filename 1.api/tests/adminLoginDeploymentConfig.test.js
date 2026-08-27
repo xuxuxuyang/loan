@@ -6,6 +6,8 @@ const test = require('node:test');
 const projectRoot = path.resolve(__dirname, '..', '..');
 const envExample = fs.readFileSync(path.join(__dirname, '..', '.env.example'), 'utf8');
 const nginx = fs.readFileSync(path.join(projectRoot, 'nginx.conf'), 'utf8');
+const { router: productionRouter } = require('../src/index');
+const { routeRequests: expectedRouteRequests } = require('./adminLoginRouteExpectations');
 
 function extractBlocks(source, opener) {
   const blocks = [];
@@ -171,17 +173,26 @@ test('default port 80 redirects only admin authentication and protected API requ
   );
   assert.match(nginx, /map\s+"\$request_method:\$uri"\s+\$admin_plain_http_https\s*\{\s*default\s+1;/);
   for (const expectedPattern of [
-    String.raw`(?:GET|HEAD):/api/(?:health|geocode/reverse)`,
-    String.raw`(?:GET|HEAD):/api/products(?:/[^/]+)?`,
-    String.raw`(?:GET|HEAD):/api/static/`,
-    String.raw`POST:/api/auth/(?:register/sms/send|login/sms/send|register|login)`,
-    String.raw`(?:GET|HEAD):/api/users/by-phone`,
-    String.raw`POST:/api/orders`,
-    String.raw`(?:GET|HEAD|POST|PUT|PATCH|DELETE):/api/(?:mall|my|card-packages|addresses|bank-cards|bills|payment/lakala|ios)(?:/|$)`,
-    String.raw`POST:/api/(?:bill-risk/callback|uploads/id-card|traffic/channel-click)`,
-    String.raw`(?:GET|HEAD|POST):/api/traffic-partner(?:/|$)`,
-    String.raw`POST:/api/open/partners/`,
-    String.raw`POST:/api/market/halfFlow/[^/]+/open/`,
+    String.raw`(?:GET|HEAD|OPTIONS):/api/(?:health|geocode/reverse)`,
+    String.raw`(?:GET|HEAD|OPTIONS):/api/products(?:/[^/]+)?`,
+    String.raw`(?:GET|HEAD|OPTIONS):/api/static/`,
+    String.raw`(?:POST|OPTIONS):/api/auth/(?:register/sms/send|login/sms/send|register|login)`,
+    String.raw`(?:GET|HEAD|OPTIONS):/api/users/by-phone`,
+    String.raw`(?:POST|OPTIONS):/api/orders`,
+    String.raw`(?:POST|OPTIONS):/api/mall/(?:me/emergency-contacts|installment-risk/wave(?:/[^/]+/step/[^/]+)?)`,
+    String.raw`(?:GET|HEAD|OPTIONS):/api/mall/(?:me/bill-risk|contacts/status|contract-pending|cs/session)`,
+    String.raw`(?:GET|HEAD|OPTIONS):/api/my/(?:summary|orders)`,
+    String.raw`(?:GET|HEAD|OPTIONS):/api/card-packages(?:/[^/]+/(?:contract-view|contract-flow))?`,
+    String.raw`(?:GET|HEAD|POST|OPTIONS):/api/addresses`,
+    String.raw`(?:GET|HEAD|POST|OPTIONS):/api/bank-cards`,
+    String.raw`(?:GET|HEAD|OPTIONS):/api/bills`,
+    String.raw`(?:POST|OPTIONS):/api/payment/lakala/(?:preorder|sync-pending|mock-complete/[^/]+|notify)`,
+    String.raw`(?:POST|OPTIONS):/api/ios/(?:auth/register(?:/sms/send)?|uploads/id-card|installment-risk/wave(?:/[^/]+/step/[^/]+)?|installment/orders|orders/[^/]+/contacts/upload/(?:start|batch|complete)|account/delete)`,
+        String.raw`(?:POST|OPTIONS):/api/(?:bill-risk/callback|uploads/id-card|traffic/channel-click)`,
+    String.raw`(?:POST|OPTIONS):/api/traffic-partner/login`,
+    String.raw`(?:GET|HEAD|OPTIONS):/api/traffic-partner/stats`,
+    String.raw`(?:POST|OPTIONS):/api/open/partners/[^/]+/`,
+    String.raw`(?:POST|OPTIONS):/api/market/halfFlow/[^/]+/open/`,
   ]) {
     assert.ok(nginx.includes(expectedPattern), `missing HTTP storefront exception: ${expectedPattern}`);
   }
@@ -196,4 +207,37 @@ test('default port 80 redirects only admin authentication and protected API requ
     /if\s*\(\$admin_plain_http_https\)\s*\{\s*return\s+308\s+https:\/\/admin\.wenshuosc\.com\$request_uri;\s*\}/,
   );
   assert.match(apiLocation, /proxy_pass\s+http:\/\/127\.0\.0\.1:3110\/api\/;/, 'storefront HTTP API proxy must remain available');
+});
+
+test('default port 80 keeps preflight only for the independent public production route inventory', () => {
+  const mapBlock = extractBlocks(nginx, /map\s+"\$request_method:\$uri"\s+\$admin_plain_http_https\s*\{/)[0];
+  assert.ok(mapBlock, 'plain HTTP classification map must exist');
+  const proxyRules = [...mapBlock.matchAll(/^\s*~(\^\S+)\s+0;\s*$/gm)]
+    .map(match => new RegExp(match[1]));
+  assert.ok(proxyRules.length > 5, 'plain HTTP classification must expose explicit proxy rules');
+  const isProxied = (method, requestPath) => proxyRules.some(rule => rule.test(`${method}:${requestPath}`));
+
+  const requests = expectedRouteRequests(productionRouter);
+  for (const request of requests) {
+    assert.equal(request.matches.length, 1, `${request.method} ${request.routePath} expectation coverage`);
+    const category = request.matches[0].category;
+    if (category === 'business-public') {
+      assert.equal(isProxied(request.method, request.path), true, `${request.method} ${request.path}`);
+      assert.equal(isProxied('OPTIONS', request.path), true, `OPTIONS ${request.path}`);
+    }
+    else {
+      assert.equal(isProxied(request.method, request.path), false, `${request.method} ${request.path}`);
+    }
+  }
+
+  for (const requestPath of ['/api/admin/profile', '/api/admin/login', '/api/future-admin-report']) {
+    assert.equal(isProxied('OPTIONS', requestPath), false, `OPTIONS ${requestPath}`);
+  }
+  for (const [method, requestPath] of [
+    ['GET', '/api/ios/admin/export'],
+    ['POST', '/api/payment/lakala/admin/refund-all'],
+  ]) {
+    assert.equal(isProxied(method, requestPath), false, `${method} ${requestPath}`);
+    assert.equal(isProxied('OPTIONS', requestPath), false, `OPTIONS ${requestPath}`);
+  }
 });

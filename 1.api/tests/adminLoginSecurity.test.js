@@ -206,6 +206,152 @@ test('a failed resend preserves the prior pending challenge', async () => {
   assert.match(verified.token, /^admin-session-v1\./)
 })
 
+test('activation null or pre-write failure restores the prior challenge without leaving all challenges locked', async (t) => {
+  for (const scenario of ['null', 'throw-before-write']) {
+    await t.test(scenario, async () => {
+      const baseStore = createMemoryAdminLoginSecurityStore()
+      let activationCalls = 0
+      const store = {
+        ...baseStore,
+        async activateChallenge(...args) {
+          activationCalls += 1
+          if (activationCalls === 1) return baseStore.activateChallenge(...args)
+          if (scenario === 'null') return null
+          throw new Error('activation unavailable before write')
+        },
+      }
+      const fixture = createFixture({ store })
+      const first = await fixture.service.createChallenge(fixture.context)
+      fixture.advance(60_000)
+
+      await assert.rejects(
+        () => fixture.service.createChallenge(fixture.context),
+        { code: 'ADMIN_LOGIN_UNAVAILABLE' },
+      )
+      const rows = store.dump().challenges.filter(item => item.kind === 'challenge')
+      assert.equal(rows.find(item => item.id === first.challengeId).status, 'pending')
+      assert.equal(rows.find(item => item.id !== first.challengeId).status, 'send_failed')
+      const verified = await fixture.service.verifyChallenge({ challengeId: first.challengeId, code: fixture.code })
+      assert.match(verified.token, /^admin-session-v1\./)
+    })
+  }
+})
+
+test('an activation result lost after the write keeps the replacement usable and the old challenge non-consumable', async () => {
+  const baseStore = createMemoryAdminLoginSecurityStore()
+  let activationCalls = 0
+  const store = {
+    ...baseStore,
+    async activateChallenge(...args) {
+      activationCalls += 1
+      const result = await baseStore.activateChallenge(...args)
+      if (activationCalls === 2) throw new Error('activation result lost after write')
+      return result
+    },
+  }
+  const fixture = createFixture({ store })
+  const first = await fixture.service.createChallenge(fixture.context)
+  fixture.advance(60_000)
+  const replacement = await fixture.service.createChallenge(fixture.context)
+
+  const rows = store.dump().challenges.filter(item => item.kind === 'challenge')
+  assert.equal(rows.filter(item => item.status === 'pending').length, 1)
+  assert.equal(rows.find(item => item.id === replacement.challengeId).status, 'pending')
+  await assert.rejects(
+    () => fixture.service.verifyChallenge({ challengeId: first.challengeId, code: fixture.code }),
+    { code: 'ADMIN_LOGIN_CHALLENGE_INVALID' },
+  )
+  const verified = await fixture.service.verifyChallenge({ challengeId: replacement.challengeId, code: fixture.code })
+  assert.match(verified.token, /^admin-session-v1\./)
+})
+
+test('supersede null or failure leaves the activated replacement as the only consumable challenge', async (t) => {
+  for (const scenario of ['null', 'throw-before-write', 'throw-after-write']) {
+    await t.test(scenario, async () => {
+      const baseStore = createMemoryAdminLoginSecurityStore()
+      let supersedeCalls = 0
+      const store = {
+        ...baseStore,
+        async supersedeSuspendedChallenges(...args) {
+          supersedeCalls += 1
+          if (supersedeCalls === 1) return baseStore.supersedeSuspendedChallenges(...args)
+          if (scenario === 'null') return null
+          if (scenario === 'throw-before-write') throw new Error('supersede unavailable before write')
+          await baseStore.supersedeSuspendedChallenges(...args)
+          throw new Error('supersede result lost after write')
+        },
+      }
+      const fixture = createFixture({ store })
+      const first = await fixture.service.createChallenge(fixture.context)
+      fixture.advance(60_000)
+      const replacement = await fixture.service.createChallenge(fixture.context)
+
+      const rows = store.dump().challenges.filter(item => item.kind === 'challenge')
+      assert.equal(rows.filter(item => item.status === 'pending').length, 1)
+      assert.equal(rows.find(item => item.id === replacement.challengeId).status, 'pending')
+      assert.ok(['resend_pending', 'superseded'].includes(rows.find(item => item.id === first.challengeId).status))
+      await assert.rejects(
+        () => fixture.service.verifyChallenge({ challengeId: first.challengeId, code: fixture.code }),
+        { code: 'ADMIN_LOGIN_CHALLENGE_INVALID' },
+      )
+      const verified = await fixture.service.verifyChallenge({ challengeId: replacement.challengeId, code: fixture.code })
+      assert.match(verified.token, /^admin-session-v1\./)
+    })
+  }
+})
+
+test('the replacement can be claimed once while supersede cleanup is failing', async () => {
+  const baseStore = createMemoryAdminLoginSecurityStore()
+  let supersedeCalls = 0
+  let signalCleanup
+  let releaseCleanup
+  const cleanupStarted = new Promise((resolve) => {
+    signalCleanup = resolve
+  })
+  const cleanupGate = new Promise((resolve) => {
+    releaseCleanup = resolve
+  })
+  const store = {
+    ...baseStore,
+    async supersedeSuspendedChallenges(...args) {
+      supersedeCalls += 1
+      if (supersedeCalls === 1) return baseStore.supersedeSuspendedChallenges(...args)
+      signalCleanup()
+      await cleanupGate
+      throw new Error('supersede unavailable')
+    },
+  }
+  const fixture = createFixture({ store })
+  const first = await fixture.service.createChallenge(fixture.context)
+  fixture.advance(60_000)
+  const resend = fixture.service.createChallenge(fixture.context)
+  await cleanupStarted
+  const replacement = store.dump().challenges.find(item => item.id !== first.challengeId)
+
+  let assertionError = null
+  try {
+    assert.equal(replacement.status, 'pending')
+    const results = await Promise.allSettled([
+      fixture.service.verifyChallenge({ challengeId: first.challengeId, code: fixture.code }),
+      fixture.service.verifyChallenge({ challengeId: replacement.id, code: fixture.code }),
+      fixture.service.verifyChallenge({ challengeId: replacement.id, code: fixture.code }),
+    ])
+    assert.equal(results.filter(result => result.status === 'fulfilled').length, 1)
+    assert.equal(results[0].status, 'rejected')
+  }
+  catch (error) {
+    assertionError = error
+  }
+  finally {
+    releaseCleanup()
+  }
+  const [resendResult] = await Promise.allSettled([resend])
+  if (assertionError) throw assertionError
+  assert.equal(resendResult.status, 'fulfilled')
+  const response = resendResult.value
+  assert.equal(response.challengeId, replacement.id)
+})
+
 test('the eleventh hourly send is limited', async () => {
   const fixture = createFixture()
   await fixture.service.createChallenge(fixture.context)
@@ -353,7 +499,35 @@ test('Mongo challenge claim uses pending, attempts, and expiry conditions atomic
   assert.deepEqual(captured.options, { returnDocument: 'after' })
 })
 
-test('Mongo resend transitions suspend old challenges before activating the delivered replacement', async () => {
+test('Mongo send-failed transition cannot invalidate an activated replacement', async () => {
+  const captured = {}
+  const challenges = {
+    async findOneAndUpdate(query, update, options) {
+      Object.assign(captured, { query, update, options })
+      return { id: 'challenge-new', status: 'send_failed' }
+    },
+  }
+  const store = createMongoAdminLoginSecurityStore({
+    getMongoClient: () => ({
+      db: () => ({
+        databaseName: 'root-security-db',
+        collection: () => challenges,
+      }),
+    }),
+    getMongoConfig: () => ({ dbName: 'root-security-db' }),
+  })
+
+  await store.markChallengeSendFailed('challenge-new')
+  assert.deepEqual(captured.query, {
+    _id: 'challenge-new',
+    kind: 'challenge',
+    status: { $in: ['send_pending', 'send_failed'] },
+  })
+  assert.deepEqual(captured.update, { $set: { status: 'send_failed' } })
+  assert.deepEqual(captured.options, { returnDocument: 'after' })
+})
+
+test('Mongo resend transitions activate the delivered replacement before superseding old challenges', async () => {
   const captured = []
   const challenges = {
     async updateMany(query, update) {
@@ -382,8 +556,8 @@ test('Mongo resend transitions suspend old challenges before activating the deli
     replacementId: 'challenge-new',
     now,
   })
-  await store.supersedeSuspendedChallenges({ replacementId: 'challenge-new', now })
   await store.activateChallenge('challenge-new', now)
+  await store.supersedeSuspendedChallenges({ replacementId: 'challenge-new', now })
   assert.deepEqual(captured, [
     {
       operation: 'updateMany',
@@ -403,6 +577,12 @@ test('Mongo resend transitions suspend old challenges before activating the deli
       },
     },
     {
+      operation: 'findOneAndUpdate',
+      query: { _id: 'challenge-new', kind: 'challenge', status: 'send_pending' },
+      update: { $set: { status: 'pending', activatedAt: now } },
+      options: { returnDocument: 'after' },
+    },
+    {
       operation: 'updateMany',
       query: {
         kind: 'challenge',
@@ -410,12 +590,6 @@ test('Mongo resend transitions suspend old challenges before activating the deli
         replacementId: 'challenge-new',
       },
       update: { $set: { status: 'superseded', supersededAt: now } },
-    },
-    {
-      operation: 'findOneAndUpdate',
-      query: { _id: 'challenge-new', kind: 'challenge', status: 'send_pending' },
-      update: { $set: { status: 'pending', activatedAt: now } },
-      options: { returnDocument: 'after' },
     },
   ])
 })

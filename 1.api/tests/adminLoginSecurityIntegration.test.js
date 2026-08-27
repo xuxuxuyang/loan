@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict')
+const fs = require('node:fs')
 const http = require('node:http')
 const test = require('node:test')
 const Koa = require('koa')
@@ -23,6 +24,11 @@ const {
   resolveAdminRole,
   router: productionRouter,
 } = require('../src/index')
+const {
+  INDEPENDENT_PUBLIC_EXPECTATIONS,
+  isExpectedPublicBusinessPath,
+  routeRequests: expectedRouteRequests,
+} = require('./adminLoginRouteExpectations')
 
 const SESSION_TTL_MS = 43_200_000
 
@@ -190,19 +196,14 @@ async function loginAndVerify(server, fixture, prefix = '/api/admin') {
   return verified.body.data.token
 }
 
-function samplePath(routePath) {
-  return String(routePath).replace(/:([A-Za-z0-9_]+)/g, 'sample-$1')
-}
-
-function routeRequests(router) {
-  const requests = []
-  for (const layer of router.stack) {
-    for (const method of layer.methods || []) {
-      if (method === 'HEAD') continue
-      requests.push({ method, path: samplePath(layer.path) })
-    }
+function assertSingleExpectation(requests) {
+  for (const request of requests) {
+    assert.equal(
+      request.matches.length,
+      1,
+      `${request.method} ${request.routePath} must match exactly one independent expectation; matched ${request.matches.map(item => item.name).join(', ') || 'none'}`,
+    )
   }
-  return requests
 }
 
 function createInventoryHarness(service) {
@@ -304,8 +305,10 @@ test('real Koa gateway rechecks account status, tenant scope, and logout revocat
 
 test('shopper mock tokens still reach every explicitly public storefront route', async () => {
   const fixture = createFixture()
-  const requests = routeRequests(productionRouter)
-    .filter(request => isPublicBusinessRequest(request.method, request.path))
+  const inventory = expectedRouteRequests(productionRouter)
+  assertSingleExpectation(inventory)
+  const requests = inventory
+    .filter(request => request.matches[0].category === 'business-public')
   assert.ok(requests.length > 30, 'the real storefront route inventory must be substantial')
 
   await withServer(createInventoryHarness(fixture.service), async (server) => {
@@ -319,10 +322,86 @@ test('shopper mock tokens still reach every explicitly public storefront route',
   })
 })
 
+test('production Router layers match exactly one policy-independent expectation', () => {
+  const source = fs.readFileSync(__filename, 'utf8')
+  assert.doesNotMatch(
+    source,
+    /\.filter\(request => is(?:PublicBusiness|AdminProtected)Request\(/,
+    'real Router expectations must not be selected by the production policy under test',
+  )
+
+  const requests = expectedRouteRequests(productionRouter)
+  assertSingleExpectation(requests)
+  assert.ok(requests.length > 100, 'the real production Router inventory must be substantial')
+  for (const request of requests) {
+    const category = request.matches[0].category
+    assert.equal(
+      isAdminLoginPublicRequest(request.method, request.path),
+      category === 'admin-login-public',
+      `${request.method} ${request.routePath} admin-login classification`,
+    )
+    assert.equal(
+      isPublicBusinessRequest(request.method, request.path),
+      category === 'business-public',
+      `${request.method} ${request.routePath} business classification`,
+    )
+    assert.equal(
+      isAdminProtectedRequest(request.method, request.path),
+      category === 'admin-protected',
+      `${request.method} ${request.routePath} protected classification`,
+    )
+  }
+
+  const adminNamespace = requests.filter(request => request.routePath.startsWith('/api/admin/'))
+  assert.ok(adminNamespace.length > 20)
+  assert.ok(adminNamespace.every(request => request.matches[0].category === 'admin-protected'
+    || request.matches[0].category === 'admin-login-public'))
+})
+
+test('independent public expectations do not auto-approve future sensitive routes inside public policy prefixes', () => {
+  const syntheticRouter = {
+    stack: [
+      { methods: ['GET'], path: '/api/ios/admin/export' },
+      { methods: ['POST'], path: '/api/payment/lakala/admin/refund-all' },
+    ],
+  }
+  const requests = expectedRouteRequests(syntheticRouter)
+  for (const request of requests) {
+    assert.equal(request.matches.length, 0)
+    assert.equal(isPublicBusinessRequest(request.method, request.path), false, `${request.method} ${request.path}`)
+    assert.equal(isPublicBusinessRequest('OPTIONS', request.path), false, `OPTIONS ${request.path}`)
+    assert.equal(isAdminProtectedRequest(request.method, request.path), true, `${request.method} ${request.path}`)
+    assert.equal(isAdminProtectedRequest('OPTIONS', request.path), true, `OPTIONS ${request.path}`)
+  }
+})
+
+test('policy-independent public route inventory allows preflight while admin and unknown preflight fail closed', async () => {
+  const fixture = createFixture()
+  const publicRequests = expectedRouteRequests(productionRouter)
+    .filter(request => request.matches.length === 1 && request.matches[0].category === 'business-public')
+  assert.ok(publicRequests.length > 30)
+
+  await withServer(createInventoryHarness(fixture.service), async (server) => {
+    for (const request of publicRequests) {
+      assert.equal(isExpectedPublicBusinessPath(request.routePath), true)
+      const response = await requestJson(server, 'OPTIONS', request.path)
+      assert.equal(response.status, 200, `OPTIONS ${request.path}`)
+      assert.equal(response.body.reached, true, `OPTIONS ${request.path}`)
+    }
+    for (const requestPath of ['/api/admin/profile', '/api/admin/login', '/api/future-admin-report']) {
+      const response = await requestJson(server, 'OPTIONS', requestPath)
+      assert.equal(response.status, 401, `OPTIONS ${requestPath}`)
+      assert.equal(response.body.code, 'ADMIN_LOGIN_SESSION_INVALID', `OPTIONS ${requestPath}`)
+    }
+  })
+})
+
 test('every non-public route from the real Koa API stack rejects all legacy admin credentials', async () => {
   const fixture = createFixture()
-  const requests = routeRequests(productionRouter)
-    .filter(request => isAdminProtectedRequest(request.method, request.path))
+  const inventory = expectedRouteRequests(productionRouter)
+  assertSingleExpectation(inventory)
+  const requests = inventory
+    .filter(request => request.matches[0].category === 'admin-protected')
   assert.ok(requests.length > 50, 'the real protected route inventory must be substantial')
   const legacyCredentials = [
     { authorization: 'Bearer mock-token-13800138000' },
@@ -346,10 +425,11 @@ test('every non-public route from the real Koa API stack rejects all legacy admi
 test('independent partner and risk Koa router stacks remain outside admin session enforcement', async () => {
   const fixture = createFixture()
   const publicRequests = [
-    ...routeRequests(duodiandianPublicRouter),
-    ...routeRequests(riskControlRouter),
+    ...expectedRouteRequests(duodiandianPublicRouter, INDEPENDENT_PUBLIC_EXPECTATIONS),
+    ...expectedRouteRequests(riskControlRouter, INDEPENDENT_PUBLIC_EXPECTATIONS),
   ]
   assert.ok(publicRequests.length > 20)
+  assertSingleExpectation(publicRequests)
   await withServer(createInventoryHarness(fixture.service), async (server) => {
     for (const request of publicRequests) {
       const response = await requestJson(server, request.method, request.path, {

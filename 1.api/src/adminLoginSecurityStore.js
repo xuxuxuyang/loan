@@ -94,9 +94,9 @@ function createMemoryAdminLoginSecurityStore() {
     },
     async markChallengeSendFailed(id) {
       const row = challenges.get(id)
-      if (!row
-        || row.kind !== 'challenge'
-        || (row.status !== 'send_pending' && row.status !== 'pending')) return null
+      if (!row || row.kind !== 'challenge') return null
+      if (row.status === 'send_failed') return clone(row)
+      if (row.status !== 'send_pending') return null
       row.status = 'send_failed'
       return clone(row)
     },
@@ -326,7 +326,7 @@ function createMongoAdminLoginSecurityStore(options = {}) {
     },
     async markChallengeSendFailed(id) {
       const result = await requireCollections().challenges.findOneAndUpdate(
-        { _id: id, kind: 'challenge', status: { $in: ['send_pending', 'pending'] } },
+        { _id: id, kind: 'challenge', status: { $in: ['send_pending', 'send_failed'] } },
         { $set: { status: 'send_failed' } },
         { returnDocument: 'after' },
       )

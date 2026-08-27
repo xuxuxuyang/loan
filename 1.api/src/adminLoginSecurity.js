@@ -155,11 +155,29 @@ function createAdminLoginSecurityService(options = {}) {
     }
     await store.insertChallenge(row)
     async function recoverReplacement() {
-      const results = await Promise.allSettled([
-        store.markChallengeSendFailed(challengeId),
-        store.restoreSuspendedChallenges({ replacementId: challengeId }),
-      ])
-      return results.every(result => result.status === 'fulfilled')
+      let failed = null
+      try {
+        failed = await store.markChallengeSendFailed(challengeId)
+      }
+      catch {
+        // A write may have committed before its result was lost, so confirm state before restoring old codes.
+      }
+      if (failed?.status !== 'send_failed') {
+        try {
+          failed = await store.getChallenge(challengeId)
+        }
+        catch {
+          return false
+        }
+      }
+      if (failed?.status !== 'send_failed') return false
+      try {
+        await store.restoreSuspendedChallenges({ replacementId: challengeId })
+        return true
+      }
+      catch {
+        return false
+      }
     }
     try {
       await store.suspendPendingChallengesForResend({
@@ -185,17 +203,33 @@ function createAdminLoginSecurityService(options = {}) {
         : 'Admin login security storage is unavailable'
       throw new AdminLoginSecurityError(errorCode, message, 503)
     }
+    let activated = null
+    try {
+      activated = await store.activateChallenge(challengeId, createdAt)
+    }
+    catch {
+      // Read-after-write distinguishes a failed activation from a committed write with a lost result.
+    }
+    if (activated?.status !== 'pending') {
+      try {
+        activated = await store.getChallenge(challengeId)
+      }
+      catch {
+        activated = null
+      }
+    }
+    if (activated?.status !== 'pending') {
+      await recoverReplacement()
+      throw new AdminLoginSecurityError('ADMIN_LOGIN_UNAVAILABLE', 'Admin login security storage is unavailable', 503)
+    }
     try {
       await store.supersedeSuspendedChallenges({
         replacementId: challengeId,
         now: createdAt,
       })
-      const activated = await store.activateChallenge(challengeId, createdAt)
-      if (!activated) throw new Error('Replacement challenge activation failed')
     }
     catch {
-      await recoverReplacement()
-      throw new AdminLoginSecurityError('ADMIN_LOGIN_UNAVAILABLE', 'Admin login security storage is unavailable', 503)
+      // The replacement is already the only consumable challenge; old rows remain safely suspended.
     }
     return {
       challengeId,
