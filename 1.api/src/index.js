@@ -109,6 +109,9 @@ const {
 const { createMongoAdminSecurityStore } = require('./adminSecurityStore')
 const { createAdminSecurityService } = require('./adminSecurityService')
 const { createAdminSecuritySmsSender, isAdminSecuritySmsReady } = require('./adminSecuritySms')
+const { AdminLoginSecurityError, createAdminLoginSecurityService } = require('./adminLoginSecurity')
+const { createMongoAdminLoginSecurityStore } = require('./adminLoginSecurityStore')
+const { isAdminLoginPublicRequest, isAdminProtectedRequest } = require('./adminLoginRoutePolicy')
 const crypto = require('node:crypto')
 const path = require('node:path')
 const fs = require('node:fs')
@@ -138,6 +141,33 @@ const adminSecurityService = createAdminSecurityService({
   hourlySendLimit: Number(process.env.ADMIN_SECURITY_OTP_HOURLY_SEND_LIMIT),
   maxAttempts: Number(process.env.ADMIN_SECURITY_OTP_MAX_ATTEMPTS),
   repaymentProofTtlMs: Number(process.env.ADMIN_SECURITY_REPAYMENT_PROOF_TTL_MS),
+})
+
+function formatAdminLoginSmsMessage(code) {
+  const template = String(process.env.ADMIN_LOGIN_SMS_MSG_TEMPLATE ?? '')
+  if (!template.includes('{code}')) {
+    throw new AdminLoginSecurityError(
+      'ADMIN_LOGIN_SMS_UNAVAILABLE',
+      '后台登录短信模板未配置或缺少 {code}',
+      503,
+    )
+  }
+  return template.replace('{code}', code)
+}
+
+const adminLoginSecurityStore = createMongoAdminLoginSecurityStore()
+const adminLoginSecurityService = createAdminLoginSecurityService({
+  store: adminLoginSecurityStore,
+  secret: process.env.ADMIN_LOGIN_SECURITY_SECRET,
+  sendSms: createAdminSecuritySmsSender(),
+  smsReady: () => String(process.env.ADMIN_LOGIN_SMS_MODE).trim().toLowerCase() === 'enforce'
+    && isAdminSecuritySmsReady(),
+  formatSmsMessage: formatAdminLoginSmsMessage,
+  otpTtlMs: Number(process.env.ADMIN_LOGIN_OTP_TTL_MS),
+  resendMs: Number(process.env.ADMIN_LOGIN_OTP_RESEND_MS),
+  hourlySendLimit: Number(process.env.ADMIN_LOGIN_OTP_HOURLY_SEND_LIMIT),
+  maxAttempts: Number(process.env.ADMIN_LOGIN_OTP_MAX_ATTEMPTS),
+  sessionTtlMs: Number(process.env.ADMIN_LOGIN_SESSION_TTL_MS),
 })
 
 const { router: riskControlRouter, PREFIX: RISK_CONTROL_PREFIX } = require('./riskControl/router')
@@ -775,6 +805,11 @@ function parsePhoneFromToken(authorization) {
   return token.slice('mock-token-'.length)
 }
 
+function readBearer(ctx) {
+  const match = /^Bearer\s+(.+)$/i.exec(String(ctx.headers?.authorization || '').trim())
+  return match ? match[1].trim() : ''
+}
+
 /** Bearer mock-token-{手机} → 下单/归属统计均绑定该注册商城账号（与客服会话一致） */
 function resolvePlacingMallUserFromBearer(ctx, db) {
   const tokenPhone = normalizePhone(parsePhoneFromToken(ctx.headers && ctx.headers.authorization))
@@ -1228,41 +1263,46 @@ async function getAdminAccountByPhoneAcrossTenants(phone, preferredTenantId) {
   return null
 }
 
-async function getAdminAccountByUsernameAcrossTenants(username, preferredTenantId) {
+async function getAdminAccountByUsernameAcrossTenants(username, preferredTenantId, options = {}) {
   const key = String(username || '').trim()
   if (!key) {
     return null
   }
-  const cached = readAdminAuthAccountCache('username', preferredTenantId, key)
-  if (cached !== undefined) {
-    return cached
+  const bypassCache = options.bypassCache === true
+  const cacheAccount = (account) => {
+    if (!bypassCache) {
+      writeAdminAuthAccountCache('username', preferredTenantId, key, account)
+    }
+    return account
+  }
+  if (!bypassCache) {
+    const cached = readAdminAuthAccountCache('username', preferredTenantId, key)
+    if (cached !== undefined) {
+      return cached
+    }
   }
   const preferred = normalizeTenantId(preferredTenantId || DEFAULT_TENANT_ID)
   const searched = new Set([preferred])
 
-  if (isAdminReadOptimizeEnabled() && isMongoPersistenceEnabled()) {
+  if ((bypassCache || isAdminReadOptimizeEnabled()) && isMongoPersistenceEnabled()) {
     const foundMongo = await findAdminAccountByUsernameAcrossTenantsFromMongo(key, preferred)
-    writeAdminAuthAccountCache('username', preferredTenantId, key, foundMongo)
-    return foundMongo
+    return cacheAccount(foundMongo)
   }
 
   const dbCore = await readCoreDb({ forAdminAuth: true })
   const foundCore = getAdminAccountByUsername(dbCore, key)
   if (foundCore && String(foundCore.scopeType || 'tenant') === 'platform') {
-    writeAdminAuthAccountCache('username', preferredTenantId, key, foundCore)
-    return foundCore
+    return cacheAccount(foundCore)
   }
 
   const dbPreferred = await readDbByTenantId(preferred, { forAdminAuth: true })
   const foundPreferred = getAdminAccountByUsername(dbPreferred, key)
   if (foundPreferred) {
-    writeAdminAuthAccountCache('username', preferredTenantId, key, foundPreferred)
-    return foundPreferred
+    return cacheAccount(foundPreferred)
   }
 
   if (foundCore) {
-    writeAdminAuthAccountCache('username', preferredTenantId, key, foundCore)
-    return foundCore
+    return cacheAccount(foundCore)
   }
 
   const known = await collectKnownTenantIds()
@@ -1274,12 +1314,10 @@ async function getAdminAccountByUsernameAcrossTenants(username, preferredTenantI
     const db = await readDbByTenantId(tenantId, { forAdminAuth: true })
     const found = getAdminAccountByUsername(db, key)
     if (found) {
-      writeAdminAuthAccountCache('username', preferredTenantId, key, found)
-      return found
+      return cacheAccount(found)
     }
   }
-  writeAdminAuthAccountCache('username', preferredTenantId, key, null)
-  return null
+  return cacheAccount(null)
 }
 
 /**
@@ -1303,7 +1341,17 @@ async function clampIncomingWorkspaceType(ctx, tenantId, workspaceType) {
   if (ws !== 'core' && ws !== 'self') {
     return ws
   }
-  return (await isPlatformAdminBearerForWorkspace(ctx, tenantId)) ? ws : 'tenant'
+  const session = ctx.state?.adminLoginSession
+  const account = ctx.state?.adminAccount
+  const trustedPlatformAccount = Boolean(
+    session
+    && account
+    && account.status === 'active'
+    && account.scopeType === 'platform'
+    && String(account.id || '') === String(session.accountId || '')
+    && accountCanAccessTenant(account, normalizeTenantId(tenantId || session.tenantId)),
+  )
+  return trustedPlatformAccount ? ws : 'tenant'
 }
 
 function effectiveScopeTenantIds(account) {
@@ -1328,6 +1376,24 @@ function accountCanAccessTenant(account, tenantId) {
   return allows.includes(tenant)
 }
 
+async function resolveAccountForAdminSession(session, requestedTenant = session?.tenantId) {
+  const accountId = String(session?.accountId || '').trim()
+  const username = String(session?.username || '').trim()
+  const sessionTenantValue = String(session?.tenantId || '').trim()
+  if (!accountId || !username || !sessionTenantValue) return null
+  const sessionTenantId = normalizeTenantId(sessionTenantValue)
+  const requestedTenantId = normalizeTenantId(requestedTenant || sessionTenantId)
+  const account = await getAdminAccountByUsernameAcrossTenants(username, sessionTenantId, { bypassCache: true })
+  if (!account
+    || String(account.id || '') !== accountId
+    || account.status !== 'active'
+    || !accountCanAccessTenant(account, sessionTenantId)
+    || !accountCanAccessTenant(account, requestedTenantId)) {
+    return null
+  }
+  return account
+}
+
 function lookupActiveAdminAccountInCurrentScope(username, phone) {
   const key = String(username || '').trim()
   const normalizedPhone = normalizePhone(phone)
@@ -1350,6 +1416,13 @@ function lookupActiveAdminAccountInCurrentScope(username, phone) {
 async function resolveAdminRole(ctx) {
   if (ctx.state && ctx.state._resolvedAdminRole) {
     return ctx.state.adminRole || ''
+  }
+  if (isAdminProtectedRequest(ctx.method, ctx.path)) {
+    ctx.state.adminRole = ''
+    ctx.state.adminAccount = null
+    ctx.state._resolvedAdminRole = true
+    ctx.state._resolvedAdminAccount = true
+    return ''
   }
   const requestTenantId = normalizeTenantId(ctx.state && ctx.state.tenantId ? ctx.state.tenantId : DEFAULT_TENANT_ID)
   const tokenPhone = normalizePhone(parsePhoneFromToken(ctx.headers.authorization))
@@ -1946,6 +2019,12 @@ function handleAdminSecurityError(ctx, error) {
     msg: error.message,
     data: null,
   }
+  return true
+}
+
+function handleAdminLoginSecurityError(ctx, error) {
+  if (!(error instanceof AdminLoginSecurityError)) return false
+  fail(ctx, error.message, error.status || 400, error.code)
   return true
 }
 
@@ -3267,9 +3346,9 @@ function isOrderCardPackageEligible(order) {
   return ['shipping', 'receiving', 'enjoying'].includes(order.status)
 }
 
-function fail(ctx, msg, code = 400) {
-  ctx.status = code
-  ctx.body = { success: false, code, msg, data: null }
+function fail(ctx, msg, status = 400, responseCode = status) {
+  ctx.status = status
+  ctx.body = { success: false, code: responseCode, msg, data: null }
 }
 
 function shouldRequireMallContactsForClient(ctx) {
@@ -5236,9 +5315,9 @@ router.get('/products', async (ctx) => {
   } = ctx.query
   const categoryKey = String(category || '').trim()
   const searchKey = String(keyword || '').trim()
-  const showAll = includeAll === '1'
+  const showAll = includeAll === '1' && Boolean(ctx.state.adminLoginSession)
   const salesMode = String(salesModeQ || ctx.query.zone || '').trim()
-  if (ctx.headers.authorization || ctx.headers['x-admin-role']) {
+  if (ctx.state.adminLoginSession) {
     const permissionKey = adminProductPermissionKeyForSalesMode(salesMode)
     if (!await requireAdminPermission(ctx, [ADMIN_ROLES.SUPER], 'admin action', { permissionKey, permissionAction: 'view' })) {
       return
@@ -5354,7 +5433,7 @@ router.get('/products/:id', async (ctx) => {
     fail(ctx, '商品不存在', 404)
     return
   }
-  if (ctx.headers.authorization || ctx.headers['x-admin-role']) {
+  if (ctx.state.adminLoginSession) {
     const permissionKey = adminProductPermissionKeyForSalesMode(target.salesMode)
     if (!await requireAdminPermission(ctx, [ADMIN_ROLES.SUPER], 'view detail', { permissionKey, permissionAction: 'view' })) {
       return
@@ -5561,28 +5640,109 @@ async function handleAdminLogin(ctx) {
     fail(ctx, '当前账号无权访问该子系统', 403)
     return
   }
+  if (!/^1\d{10}$/.test(normalizePhone(account.phone))) {
+    fail(ctx, '后台账号未绑定有效手机号，请联系超级管理员', 409, 'ADMIN_LOGIN_PHONE_MISSING')
+    return
+  }
 
-  ctx.body = success({
-    username,
+  try {
+    const challenge = await adminLoginSecurityService.createChallenge({
+      passwordVerified: true,
+      account,
+      tenantId: effectiveTenant,
+      ip: resolveTrustedClientIp(ctx),
+      userAgent: String(ctx.headers?.['user-agent'] || ''),
+    })
+    ctx.body = success({
+      verificationRequired: true,
+      challengeId: challenge.challengeId,
+      phoneMasked: challenge.phoneMasked,
+      expiresAt: challenge.expiresAt,
+      resendAt: challenge.resendAt,
+    })
+  }
+  catch (error) {
+    if (!handleAdminLoginSecurityError(ctx, error)) {
+      console.error('[admin-login] challenge failed:', error?.message || error)
+      fail(ctx, '后台登录服务暂不可用，请稍后重试', 503, 'ADMIN_LOGIN_UNAVAILABLE')
+    }
+  }
+}
+
+function buildAdminLoginProfile(account, effectiveTenant) {
+  return {
+    username: account.username,
     name: String(account.name || '').trim(),
-    token: `mock-token-${account.phone}`,
     adminRole: account.role,
     roleLabel: getRoleLabel(account.role),
     scopeType: account.scopeType || 'tenant',
-    tenantId: normalizeTenantId(account.tenantId || 'default'),
+    tenantId: normalizeTenantId(account.tenantId || DEFAULT_TENANT_ID),
     tenantName: effectiveTenant === DEFAULT_TENANT_ID ? '主系统' : effectiveTenant,
     scopeTenantIds: effectiveScopeTenantIds(account),
     permissions: effectiveAdminPermissions(account.role, account.permissions),
-  })
+  }
+}
+
+async function handleAdminLoginVerify(ctx) {
+  const payload = ctx.request.body || {}
+  let verified = null
+  try {
+    verified = await adminLoginSecurityService.verifyChallenge({
+      challengeId: String(payload.challengeId || '').trim(),
+      code: String(payload.code || '').trim(),
+    })
+    const session = await adminLoginSecurityService.resolveSession(verified.token)
+    const account = await resolveAccountForAdminSession(session)
+    if (!account || account.status !== 'active') {
+      await adminLoginSecurityService.revokeSession(verified.token)
+      fail(ctx, '后台登录已失效，请重新登录', 401, 'ADMIN_LOGIN_SESSION_INVALID')
+      return
+    }
+    ctx.body = success({
+      ...buildAdminLoginProfile(account, normalizeTenantId(session.tenantId)),
+      token: verified.token,
+      expiresAt: verified.expiresAt,
+    })
+  }
+  catch (error) {
+    if (verified?.token) {
+      await adminLoginSecurityService.revokeSession(verified.token).catch(() => {})
+    }
+    if (!handleAdminLoginSecurityError(ctx, error)) {
+      console.error('[admin-login] verification failed:', error?.message || error)
+      fail(ctx, '后台登录服务暂不可用，请稍后重试', 503, 'ADMIN_LOGIN_UNAVAILABLE')
+    }
+  }
 }
 
 router.post('/admin/login', async (ctx) => {
   await handleAdminLogin(ctx)
 })
 
+router.post('/admin/login/verify', async (ctx) => {
+  await handleAdminLoginVerify(ctx)
+})
+
 // 兼容部分前端将后台登录请求到 /api/login 的场景。
 router.post('/login', async (ctx) => {
   await handleAdminLogin(ctx)
+})
+
+router.post('/login/verify', async (ctx) => {
+  await handleAdminLoginVerify(ctx)
+})
+
+router.post('/admin/logout', async (ctx) => {
+  try {
+    const revoked = await adminLoginSecurityService.revokeSession(readBearer(ctx))
+    ctx.body = success({ revoked })
+  }
+  catch (error) {
+    if (!handleAdminLoginSecurityError(ctx, error)) {
+      console.error('[admin-login] logout failed:', error?.message || error)
+      fail(ctx, '退出登录失败，请稍后重试', 503, 'ADMIN_LOGIN_UNAVAILABLE')
+    }
+  }
 })
 
 router.get('/admin/profile', async (ctx) => {
@@ -13169,6 +13329,39 @@ app.use(bodyParser({
   textLimit: '12mb',
 }))
 
+async function enforceAdminLoginSession(ctx, next) {
+  const protectedRequest = isAdminProtectedRequest(ctx.method, ctx.path)
+  const bearer = readBearer(ctx)
+  const optionalAdminSession = !protectedRequest && bearer.startsWith('admin-session-v1.')
+  if (isAdminLoginPublicRequest(ctx.method, ctx.path) || (!protectedRequest && !optionalAdminSession)) {
+    await next()
+    return
+  }
+  try {
+    const session = await adminLoginSecurityService.resolveSession(bearer)
+    const requestedTenantId = resolveTenantIdFromRequest(ctx)
+    const account = await resolveAccountForAdminSession(session, requestedTenantId)
+    if (!account || account.status !== 'active') {
+      fail(ctx, '后台登录已失效，请重新登录', 401, 'ADMIN_LOGIN_SESSION_INVALID')
+      return
+    }
+    ctx.state.adminLoginSession = session
+    ctx.state.adminAccount = account
+    ctx.state.adminRole = account.role
+    ctx.state._resolvedAdminRole = true
+    ctx.state._resolvedAdminAccount = true
+    await next()
+  }
+  catch (error) {
+    if (!handleAdminLoginSecurityError(ctx, error)) {
+      console.error('[admin-login] session gateway failed:', error?.message || error)
+      fail(ctx, '后台登录服务暂不可用，请稍后重试', 503, 'ADMIN_LOGIN_UNAVAILABLE')
+    }
+  }
+}
+
+app.use(enforceAdminLoginSession)
+
 function isManagedApiPath(pathValue) {
   const pathRaw = String(pathValue || '')
   const isZheyinPath = zheyinTrafficGateway
@@ -13303,6 +13496,7 @@ app.use(riskControlRouter.allowedMethods())
   let mongoPersistenceActive = false
   try {
     await mongo.connectMongo()
+    await adminLoginSecurityService.ensureIndexes()
     mongoPersistenceActive = await hydrateFromMongoAfterConnect()
     if (mongoPersistenceActive) {
       console.log(`[mongo] 已启用 MongoDB 持久化（分集合: ${mongo.SHARDED_ENTITY_KEYS.join(', ')}；元数据: ${mongo.APP_META}）`)
