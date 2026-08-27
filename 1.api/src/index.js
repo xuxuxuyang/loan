@@ -114,6 +114,7 @@ const { createMongoAdminLoginSecurityStore } = require('./adminLoginSecurityStor
 const { createAdminLoginHttpHandlers, createAdminLoginSessionMiddleware } = require('./adminLoginHttp')
 const { createAdminLoginPreflightGuard } = require('./adminLoginPreflight')
 const {
+  PUBLIC_MOUNTED_ROUTE_RULES,
   isAdminLoginPublicRequest,
   isAdminOptionalSessionRequest,
   isAdminProtectedRequest,
@@ -13095,6 +13096,7 @@ const adminLoginRoutePolicy = {
 }
 const enforceAdminLoginPreflight = createAdminLoginPreflightGuard({
   routers: [router, duodiandianPublicRouter, riskControlRouter],
+  mountedRoutes: PUBLIC_MOUNTED_ROUTE_RULES,
   routePolicy: adminLoginRoutePolicy,
   resolveMode: () => process.env.ADMIN_LOGIN_SMS_MODE,
   resolveTrustedOrigin: () => process.env.ADMIN_LOGIN_TRUSTED_ORIGIN,

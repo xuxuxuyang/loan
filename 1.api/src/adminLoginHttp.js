@@ -1,4 +1,4 @@
-const { AdminLoginSecurityError } = require('./adminLoginSecurity')
+const { AdminLoginSecurityError, isAdminLoginSessionToken } = require('./adminLoginSecurity')
 
 function success(data) {
   return { success: true, code: 0, msg: 'ok', data }
@@ -134,7 +134,7 @@ function createAdminLoginSessionMiddleware(options = {}) {
     const protectedRequest = routePolicy.isAdminProtectedRequest(ctx.method, ctx.path)
     const bearer = readBearer(ctx)
     const optionalAdminSession = routePolicy.isAdminOptionalSessionRequest(ctx.method, ctx.path)
-      && /^admin-session-v1\.[A-Za-z0-9_-]+$/.test(bearer)
+      && isAdminLoginSessionToken(bearer)
     if (routePolicy.isAdminLoginPublicRequest(ctx.method, ctx.path) || (!protectedRequest && !optionalAdminSession)) {
       await next()
       return

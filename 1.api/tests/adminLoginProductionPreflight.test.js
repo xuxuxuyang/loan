@@ -146,6 +146,40 @@ test('real production app allows only registered browser preflights across the a
   }
 })
 
+test('real production app exposes mounted static routes only for GET and HEAD CORS requests', async () => {
+  const publicOrigin = 'https://shopper.example.test'
+
+  await withProductionServer(async (server) => {
+    for (const requestPath of [
+      '/static/contracts/card-package-claim-template.pdf',
+      '/api/static/contracts/card-package-claim-template.pdf',
+    ]) {
+      for (const requestedMethod of ['GET', 'HEAD']) {
+        const response = await request(
+          server,
+          'OPTIONS',
+          requestPath,
+          preflightHeaders(publicOrigin, requestedMethod),
+        )
+        assert.equal(response.status, 204, `${requestedMethod} ${requestPath}`)
+        assert.equal(response.headers['access-control-allow-origin'], '*', `${requestedMethod} ${requestPath}`)
+        assert.match(response.headers['access-control-allow-methods'] || '', new RegExp(requestedMethod))
+        assert.equal(response.headers['access-control-allow-headers'], 'authorization,content-type')
+
+        const actualResponse = await request(server, requestedMethod, requestPath, { origin: publicOrigin })
+        assert.equal(actualResponse.status, 200, `${requestedMethod} ${requestPath}`)
+        assert.equal(actualResponse.headers['access-control-allow-origin'], '*', `${requestedMethod} ${requestPath}`)
+      }
+
+      const writePreflight = await request(server, 'OPTIONS', requestPath, preflightHeaders(publicOrigin, 'POST'))
+      assertRejectedPreflight(writePreflight, 404)
+
+      const actualWrite = await request(server, 'POST', requestPath, { origin: publicOrigin })
+      assert.equal(actualWrite.headers['access-control-allow-origin'], undefined, `POST ${requestPath}`)
+    }
+  })
+})
+
 test('real production app fails admin preflight closed for invalid origin config in every mode', async () => {
   const originalMode = process.env.ADMIN_LOGIN_SMS_MODE
   const originalOrigin = process.env.ADMIN_LOGIN_TRUSTED_ORIGIN

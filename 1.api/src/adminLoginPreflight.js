@@ -12,11 +12,18 @@ function resolveExactHttpOrigin(value) {
   }
 }
 
-function isRegisteredRequest(routers, pathValue, method) {
-  return routers.some((router) => {
+function isRegisteredRequest(routers, mountedRoutes, pathValue, method) {
+  const registeredOnRouter = routers.some((router) => {
     if (!router || typeof router.match !== 'function') return false
     return Boolean(router.match(pathValue, method).route)
   })
+  if (registeredOnRouter) return true
+  return mountedRoutes.some(rule => rule.methods.includes(method) && rule.path.test(pathValue))
+}
+
+function isDisallowedMountedRequest(mountedRoutes, pathValue, method) {
+  const matchingRules = mountedRoutes.filter(rule => rule.path.test(pathValue))
+  return matchingRules.length > 0 && matchingRules.every(rule => !rule.methods.includes(method))
 }
 
 function fail(ctx, status, code, message) {
@@ -26,6 +33,7 @@ function fail(ctx, status, code, message) {
 
 function createAdminLoginPreflightGuard(options = {}) {
   const routers = Array.isArray(options.routers) ? options.routers : []
+  const mountedRoutes = Array.isArray(options.mountedRoutes) ? options.mountedRoutes : []
   const routePolicy = options.routePolicy
   const resolveMode = options.resolveMode || (() => '')
   const resolveTrustedOrigin = options.resolveTrustedOrigin || (() => '')
@@ -35,6 +43,11 @@ function createAdminLoginPreflightGuard(options = {}) {
   return async function enforceAdminLoginPreflight(ctx, next) {
     const requestOrigin = String(ctx.get('Origin') || '')
     const requestedMethod = String(ctx.get('Access-Control-Request-Method') || '').trim().toUpperCase()
+    if (ctx.method !== 'OPTIONS' && requestOrigin && isDisallowedMountedRequest(mountedRoutes, ctx.path, ctx.method)) {
+      ctx.state.adminLoginCorsRestricted = true
+      await next()
+      return
+    }
     if (ctx.method !== 'OPTIONS' && requestOrigin && isAdminRequest(ctx.method, ctx.path)) {
       const trustedOrigin = resolveExactHttpOrigin(resolveTrustedOrigin())
       const mode = String(resolveMode() || '').trim().toLowerCase()
@@ -51,7 +64,7 @@ function createAdminLoginPreflightGuard(options = {}) {
       return
     }
 
-    if (!isRegisteredRequest(routers, ctx.path, requestedMethod)) {
+    if (!isRegisteredRequest(routers, mountedRoutes, ctx.path, requestedMethod)) {
       fail(ctx, 404, 'CORS_ROUTE_NOT_FOUND', '预检请求未命中已注册接口')
       return
     }

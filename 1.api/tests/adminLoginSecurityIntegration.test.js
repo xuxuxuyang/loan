@@ -269,6 +269,39 @@ test('real Koa gateway rejects missing, legacy, revoked, and expired sessions', 
   })
 })
 
+test('real Koa gateway treats only exact session tokens as optional admin credentials', async () => {
+  const fixture = createFixture()
+  const malformedTokens = [
+    'admin-session-v1.short',
+    `admin-session-v1.${'A'.repeat(42)}`,
+    `admin-session-v1.${'A'.repeat(44)}`,
+    `admin-session-v1.${'A'.repeat(42)}!`,
+  ]
+
+  await withServer(fixture.app, async (server) => {
+    for (const token of malformedTokens) {
+      const publicResponse = await requestJson(server, 'GET', '/api/products', {
+        headers: { authorization: `Bearer ${token}` },
+      })
+      assert.equal(publicResponse.status, 200, token)
+      assert.equal(publicResponse.body.data.shopperToken, `Bearer ${token}`, token)
+
+      const protectedResponse = await requestJson(server, 'GET', '/api/admin/profile', {
+        headers: { authorization: `Bearer ${token}` },
+      })
+      assert.equal(protectedResponse.status, 401, token)
+      assert.equal(protectedResponse.body.code, 'ADMIN_LOGIN_SESSION_INVALID', token)
+    }
+
+    const exactButUnknown = `admin-session-v1.${'A'.repeat(43)}`
+    const exactCandidate = await requestJson(server, 'GET', '/api/products', {
+      headers: { authorization: `Bearer ${exactButUnknown}` },
+    })
+    assert.equal(exactCandidate.status, 401)
+    assert.equal(exactCandidate.body.code, 'ADMIN_LOGIN_SESSION_INVALID')
+  })
+})
+
 test('real Koa gateway rechecks account status, tenant scope, and logout revocation', async () => {
   const fixture = createFixture()
   await withServer(fixture.app, async (server) => {

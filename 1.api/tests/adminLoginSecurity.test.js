@@ -95,12 +95,52 @@ test('revocation invalidates a live session immediately', async () => {
   await assert.rejects(() => fixture.service.resolveSession(login.token), { code: 'ADMIN_LOGIN_SESSION_INVALID' })
 })
 
-test('a malformed session is rejected before unavailable storage is consulted', async () => {
-  const fixture = createFixture({ store: { isReady: () => false } })
-  await assert.rejects(
-    () => fixture.service.resolveSession(''),
-    { code: 'ADMIN_LOGIN_SESSION_INVALID', status: 401 },
-  )
+test('every malformed session token is rejected before unavailable storage is consulted', async () => {
+  let storeCalls = 0
+  const fixture = createFixture({
+    store: {
+      isReady() {
+        storeCalls += 1
+        return false
+      },
+    },
+  })
+  for (const token of [
+    '',
+    'admin-session-v1.short',
+    `admin-session-v1.${'A'.repeat(42)}`,
+    `admin-session-v1.${'A'.repeat(44)}`,
+    `admin-session-v1.${'A'.repeat(42)}!`,
+  ]) {
+    await assert.rejects(
+      () => fixture.service.resolveSession(token),
+      { code: 'ADMIN_LOGIN_SESSION_INVALID', status: 401 },
+      token,
+    )
+  }
+  assert.equal(storeCalls, 0)
+})
+
+test('malformed session revocation returns false without consulting unavailable storage', async () => {
+  let storeCalls = 0
+  const fixture = createFixture({
+    store: {
+      isReady() {
+        storeCalls += 1
+        return false
+      },
+    },
+  })
+  for (const token of [
+    '',
+    'admin-session-v1.short',
+    `admin-session-v1.${'A'.repeat(42)}`,
+    `admin-session-v1.${'A'.repeat(44)}`,
+    `admin-session-v1.${'A'.repeat(42)}!`,
+  ]) {
+    assert.equal(await fixture.service.revokeSession(token), false, token)
+  }
+  assert.equal(storeCalls, 0)
 })
 
 test('a verified challenge cannot issue a second session', async () => {

@@ -23,6 +23,11 @@ const OTP_TTL_RANGE_MS = [120_000, 600_000]
 const RESEND_RANGE_MS = [30_000, 300_000]
 const HOURLY_SEND_LIMIT_RANGE = [1, 10]
 const MAX_ATTEMPTS_RANGE = [3, 5]
+const ADMIN_LOGIN_SESSION_TOKEN_PATTERN = /^admin-session-v1\.[A-Za-z0-9_-]{43}$/
+
+function isAdminLoginSessionToken(value) {
+  return ADMIN_LOGIN_SESSION_TOKEN_PATTERN.test(String(value || '').trim())
+}
 
 function isIntegerInRange(value, [minimum, maximum]) {
   return Number.isInteger(value) && value >= minimum && value <= maximum
@@ -303,7 +308,7 @@ function createAdminLoginSecurityService(options = {}) {
 
   async function resolveSession(token) {
     const rawToken = String(token || '').trim()
-    if (!rawToken.startsWith('admin-session-v1.')) {
+    if (!isAdminLoginSessionToken(rawToken)) {
       throw new AdminLoginSecurityError('ADMIN_LOGIN_SESSION_INVALID', 'Admin login session is invalid', 401)
     }
     ensureStoreReady()
@@ -320,10 +325,10 @@ function createAdminLoginSecurityService(options = {}) {
   }
 
   async function revokeSession(token) {
+    const rawToken = String(token || '').trim()
+    if (!isAdminLoginSessionToken(rawToken)) return false
     ensureStoreReady()
     ensureRuntimeConfig()
-    const rawToken = String(token || '').trim()
-    if (!rawToken.startsWith('admin-session-v1.')) return false
     return Boolean(await store.revokeSession(digest(rawToken), new Date(Number(now()))))
   }
 
@@ -339,4 +344,5 @@ function createAdminLoginSecurityService(options = {}) {
 module.exports = {
   AdminLoginSecurityError,
   createAdminLoginSecurityService,
+  isAdminLoginSessionToken,
 }

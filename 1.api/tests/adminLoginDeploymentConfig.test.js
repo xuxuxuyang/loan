@@ -7,6 +7,10 @@ const projectRoot = path.resolve(__dirname, '..', '..');
 const envExample = fs.readFileSync(path.join(__dirname, '..', '.env.example'), 'utf8');
 const nginx = fs.readFileSync(path.join(projectRoot, 'nginx.conf'), 'utf8');
 const { router: productionRouter } = require('../src/index');
+const {
+  PUBLIC_MOUNTED_ROUTE_RULES,
+  isPublicBusinessRequest,
+} = require('../src/adminLoginRoutePolicy');
 const { routeRequests: expectedRouteRequests } = require('./adminLoginRouteExpectations');
 
 function extractBlocks(source, opener) {
@@ -167,6 +171,41 @@ test('preserves the required deployment routes, TLS paths, and proxy audit heade
       }
     }
   }
+});
+
+test('keeps the mounted static route description, public policy, and Nginx boundary aligned', () => {
+  assert.ok(Array.isArray(PUBLIC_MOUNTED_ROUTE_RULES), 'mounted static routes must have an explicit description');
+  assert.ok(Object.isFrozen(PUBLIC_MOUNTED_ROUTE_RULES), 'mounted static route descriptions must be read-only');
+  assert.equal(PUBLIC_MOUNTED_ROUTE_RULES.length, 1);
+  assert.ok(PUBLIC_MOUNTED_ROUTE_RULES.every(rule => Object.isFrozen(rule) && Object.isFrozen(rule.methods)));
+
+  const expectedPaths = ['/static/contracts/example.pdf', '/api/static/contracts/example.pdf'];
+  for (const requestPath of expectedPaths) {
+    assert.equal(isPublicBusinessRequest('GET', requestPath), true, `GET ${requestPath}`);
+    assert.equal(isPublicBusinessRequest('HEAD', requestPath), true, `HEAD ${requestPath}`);
+    assert.equal(isPublicBusinessRequest('OPTIONS', requestPath), true, `OPTIONS ${requestPath}`);
+    assert.equal(isPublicBusinessRequest('POST', requestPath), false, `POST ${requestPath}`);
+  }
+
+  const mapBlock = extractBlocks(nginx, /map\s+"\$request_method:\$uri"\s+\$admin_plain_http_https\s*\{/)[0];
+  const proxyRules = [...mapBlock.matchAll(/^\s*~(\^\S+)\s+0;\s*$/gm)].map(match => new RegExp(match[1]));
+  const isProxied = (method, requestPath) => proxyRules.some(rule => rule.test(`${method}:${requestPath}`));
+  const apiStaticPath = '/api/static/contracts/example.pdf';
+  for (const method of ['GET', 'HEAD', 'OPTIONS']) {
+    assert.equal(isProxied(method, apiStaticPath), true, `${method} ${apiStaticPath}`);
+  }
+  assert.equal(isProxied('POST', apiStaticPath), false, `POST ${apiStaticPath}`);
+
+  const defaultHttp = getServerBlock(
+    'default HTTP storefront',
+    block => /listen\s+80\s+default_server;/.test(block) && /server_name\s+_;/.test(block),
+  );
+  assertProxyLocation(
+    defaultHttp,
+    /location\s+\/static\//,
+    'http://127.0.0.1:3110/static/',
+    'default HTTP mounted static',
+  );
 });
 
 test('default port 80 redirects only admin authentication and protected API requests to HTTPS', () => {

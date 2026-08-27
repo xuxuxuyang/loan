@@ -5,9 +5,15 @@ const ADMIN_LOGIN_PUBLIC_REQUESTS = new Set([
   'POST /api/login/verify',
 ])
 
+const PUBLIC_MOUNTED_ROUTE_RULES = Object.freeze([
+  Object.freeze({
+    methods: Object.freeze(['GET', 'HEAD']),
+    path: Object.freeze(/^\/(?:api\/)?static\//),
+  }),
+])
+
 const PUBLIC_BUSINESS_REQUEST_RULES = Object.freeze([
   { methods: ['GET'], path: /^\/api\/(?:health|geocode\/reverse)$/ },
-  { methods: ['GET'], path: /^\/api\/static\// },
   { methods: ['GET'], path: /^\/api\/products(?:\/[^/]+)?$/ },
   { methods: ['POST'], path: /^\/api\/auth\/(?:register\/sms\/send|login\/sms\/send|register|login)$/ },
   { methods: ['GET'], path: /^\/api\/users\/by-phone$/ },
@@ -55,9 +61,16 @@ function isAdminOptionalSessionRequest(method, pathValue) {
     && (request.path === '/api/products' || /^\/api\/products\/[^/]+$/.test(request.path))
 }
 
+function isPublicMountedRequest(method, pathValue) {
+  const request = normalizeRequest(method, pathValue)
+  return PUBLIC_MOUNTED_ROUTE_RULES.some(rule => rule.path.test(request.path)
+    && (request.method === 'OPTIONS' || rule.methods.includes(request.method)))
+}
+
 function isPublicBusinessRequest(method, pathValue) {
   const request = normalizeRequest(method, pathValue)
   const { method: requestMethod, path } = request
+  if (isPublicMountedRequest(requestMethod, path)) return true
   if (requestMethod === 'OPTIONS') {
     return PUBLIC_BUSINESS_REQUEST_RULES.some(rule => rule.path.test(path))
   }
@@ -72,8 +85,10 @@ function isAdminProtectedRequest(method, pathValue) {
 }
 
 module.exports = {
+  PUBLIC_MOUNTED_ROUTE_RULES,
   isAdminLoginPublicRequest,
   isAdminOptionalSessionRequest,
   isAdminProtectedRequest,
   isPublicBusinessRequest,
+  isPublicMountedRequest,
 }
