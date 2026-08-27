@@ -1,13 +1,18 @@
 <script setup lang="ts">
-import { onUnmounted, ref } from 'vue'
+import { computed, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import LoginCard from '../components/auth/LoginCard.vue'
 import LoginWelcomeCelebration from '../components/auth/LoginWelcomeCelebration.vue'
-import { apiErrorMessage, syncAdminSessionProfile } from '../composables/useAdminApi'
+import { syncAdminSessionProfile } from '../composables/useAdminApi'
+import {
+  createAdminLoginChallenge,
+  verifyAdminLoginChallenge,
+  type AdminLoginChallenge,
+  type VerifiedAdminLogin,
+} from '../api/adminLogin'
 import {
   adminCanAccessMenuPath,
   resolveAdminHomeRoute,
-  type AdminPermissions,
 } from '../composables/useAdminPermissions'
 import {
   adminRoleDisplayLabel,
@@ -24,7 +29,22 @@ const loading = ref(false)
 const error = ref('')
 const loginSuccess = ref(false)
 const enteringSystem = ref(false)
-const MALL_API_BASE = `${(import.meta.env.VITE_MALL_API_BASE || 'http://localhost:3110/api').replace(/\/$/, '')}`
+const credentials = ref<{ username: string, password: string } | null>(null)
+const challenge = ref<AdminLoginChallenge | null>(null)
+const verificationCode = ref('')
+const loginCardResetKey = ref(0)
+const now = ref(Date.now())
+let challengeTimer: ReturnType<typeof setInterval> | undefined
+
+const loginStep = computed(() => challenge.value ? 'verification' : 'credentials')
+const challengeExpiresAtMs = computed(() => Date.parse(challenge.value?.expiresAt || ''))
+const resendSeconds = computed(() => {
+  if (!challenge.value) return 0
+  const resendAtMs = Date.parse(challenge.value.resendAt)
+  if (!Number.isFinite(resendAtMs)) return 0
+  return Math.max(0, Math.ceil((resendAtMs - now.value) / 1000))
+})
+const canResend = computed(() => Boolean(challenge.value) && resendSeconds.value === 0)
 
 const welcomeRoleName = ref('')
 const loginWelcomeOpen = ref(false)
@@ -55,11 +75,48 @@ function clearLoginWelcomeTimer() {
   }
 }
 
-onUnmounted(() => {
-  clearLoginWelcomeTimer()
+function clearChallengeTimer() {
+  if (challengeTimer) {
+    clearInterval(challengeTimer)
+    challengeTimer = undefined
+  }
+}
+
+function clearLoginFlow() {
+  credentials.value = null
+  challenge.value = null
+  verificationCode.value = ''
+  loginCardResetKey.value += 1
+  clearChallengeTimer()
+}
+
+function expireChallenge() {
+  clearLoginFlow()
+  error.value = '验证码已过期，请重新登录'
+}
+
+function isChallengeExpired() {
+  return !Number.isFinite(challengeExpiresAtMs.value) || challengeExpiresAtMs.value <= Date.now()
+}
+
+watch(challenge, (next) => {
+  clearChallengeTimer()
+  if (!next) return
+  now.value = Date.now()
+  challengeTimer = setInterval(() => {
+    now.value = Date.now()
+    if (isChallengeExpired()) {
+      expireChallenge()
+    }
+  }, 1000)
 })
 
-async function handleLogin(payload: { username: string, password: string }) {
+onUnmounted(() => {
+  clearLoginWelcomeTimer()
+  clearLoginFlow()
+})
+
+async function handleCredentialsSubmit(payload: { username: string, password: string }) {
   if (loading.value) return
   error.value = ''
   loginSuccess.value = false
@@ -69,112 +126,103 @@ async function handleLogin(payload: { username: string, password: string }) {
   loginWelcomeOpen.value = false
   loading.value = true
   try {
-    const response = await fetch(`${MALL_API_BASE}/admin/login`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(payload),
-    })
-    const rawText = await response.text()
-    let result: {
-      success?: boolean
-      msg?: string
-      data?: {
-        username: string
-        name?: string
-        token: string
-        adminRole: AdminRole
-        roleLabel?: string
-        scopeType?: 'platform' | 'tenant'
-        workspaceType?: 'core' | 'self' | 'tenant'
-        tenantId?: string
-        scopeTenantIds?: string[]
-        permissions?: AdminPermissions
-      }
-    } = {}
-    try {
-      result = JSON.parse(rawText)
+    credentials.value = { ...payload }
+    challenge.value = await createAdminLoginChallenge(credentials.value)
+    verificationCode.value = ''
+  }
+  catch (err) {
+    clearLoginFlow()
+    error.value = err instanceof Error ? err.message : '登录失败，请稍后重试'
+  }
+  finally {
+    loading.value = false
+  }
+}
+
+function sessionWorkspaceType(data: VerifiedAdminLogin, username: string, role: AdminRole): 'core' | 'self' | 'tenant' {
+  return inferSessionScopeType(username, role, data.scopeType) === 'platform' ? 'core' : 'tenant'
+}
+
+async function completeLogin(data: VerifiedAdminLogin) {
+  const sourceCredentials = credentials.value
+  if (!sourceCredentials || !data.token || !Number.isFinite(Date.parse(data.expiresAt))) {
+    clearLoginFlow()
+    throw new Error('登录会话无效，请重新登录')
+  }
+
+  const role = (data.adminRole || 'super_admin') as AdminRole
+  const roleName = String(data.roleLabel || '').trim() || adminRoleDisplayLabel(role)
+  const username = data.username || sourceCredentials.username
+  const displayName = String(data.name || '').trim()
+
+  setAdminSession({
+    username,
+    ...(displayName ? { name: displayName } : {}),
+    token: data.token,
+    expiresAt: data.expiresAt,
+    role,
+    loginAt: new Date().toISOString(),
+    scopeType: inferSessionScopeType(username, role, data.scopeType),
+    workspaceType: sessionWorkspaceType(data, username, role),
+    tenantId: String(data.tenantId || 'default'),
+    scopeTenantIds: Array.isArray(data.scopeTenantIds)
+      ? data.scopeTenantIds.map(item => String(item || '').trim()).filter(Boolean)
+      : undefined,
+    ...(data.permissions ? { permissions: data.permissions } : {}),
+  })
+  clearLoginFlow()
+
+  loginWelcomeRole.value = role
+  loginWelcomeName.value = roleName
+  loginWelcomeOpen.value = true
+  clearLoginWelcomeTimer()
+  loginWelcomeTimer = setTimeout(() => {
+    loginWelcomeOpen.value = false
+  }, 3200)
+
+  welcomeRoleName.value = roleName
+  loginSuccess.value = true
+  await new Promise(r => setTimeout(r, 1000))
+  enteringSystem.value = true
+  await new Promise(r => setTimeout(r, 1400))
+
+  if (!data.permissions) {
+    await syncAdminSessionProfile()
+  }
+
+  clearAdminVisitedTags()
+
+  const session = getAdminSession()
+  const homeTarget = resolveAdminHomeRoute(session)
+  const rawRedirect = String(route.query.redirect || '').trim()
+  let target: ReturnType<typeof resolveAdminHomeRoute> | string = homeTarget
+
+  if (rawRedirect && rawRedirect !== '/' && rawRedirect.startsWith('/')) {
+    const resolved = router.resolve(rawRedirect)
+    const allowRoles = Array.isArray(resolved.meta?.roles) ? resolved.meta.roles : undefined
+    if (
+      resolved.matched.length
+      && resolved.name !== 'login'
+      && adminCanAccessMenuPath(session, resolved.path, allowRoles)
+    ) {
+      target = resolved.fullPath
     }
-    catch {
-      result = { msg: rawText || '登录失败，请检查接口地址' }
-    }
-    if (!response.ok || !result?.data?.token) {
-      throw new Error(apiErrorMessage(result, '登录失败'))
-    }
+  }
 
-    const role = (result.data.adminRole || 'super_admin') as AdminRole
-    const roleName = String(result.data.roleLabel || '').trim() || adminRoleDisplayLabel(role)
+  await router.replace(target)
+}
 
-    const displayName = String(result.data.name || '').trim()
-
-    setAdminSession({
-      username: result.data.username || payload.username,
-      ...(displayName ? { name: displayName } : {}),
-      token: result.data.token,
-      role,
-      loginAt: new Date().toISOString(),
-      scopeType: inferSessionScopeType(
-        result.data.username || payload.username,
-        role,
-        result.data.scopeType,
-      ),
-      workspaceType: ((): 'core' | 'self' | 'tenant' => {
-        const raw = String(result.data.workspaceType || '').trim().toLowerCase()
-        if (raw === 'core' || raw === 'self' || raw === 'tenant') {
-          return raw
-        }
-        return inferSessionScopeType(
-          result.data.username || payload.username,
-          role,
-          result.data.scopeType,
-        ) === 'platform' ? 'core' : 'tenant'
-      })(),
-      tenantId: String(result.data.tenantId || 'default'),
-      scopeTenantIds: Array.isArray(result.data.scopeTenantIds)
-        ? result.data.scopeTenantIds.map(item => String(item || '').trim()).filter(Boolean)
-        : undefined,
-      ...(result.data.permissions ? { permissions: result.data.permissions } : {}),
-    })
-
-    loginWelcomeRole.value = role
-    loginWelcomeName.value = roleName
-    loginWelcomeOpen.value = true
-    clearLoginWelcomeTimer()
-    loginWelcomeTimer = setTimeout(() => {
-      loginWelcomeOpen.value = false
-    }, 3200)
-
-    welcomeRoleName.value = roleName
-    loginSuccess.value = true
-    await new Promise(r => setTimeout(r, 1000))
-    enteringSystem.value = true
-    await new Promise(r => setTimeout(r, 1400))
-
-    if (!result.data.permissions) {
-      await syncAdminSessionProfile()
-    }
-
-    clearAdminVisitedTags()
-
-    const session = getAdminSession()
-    const homeTarget = resolveAdminHomeRoute(session)
-    const rawRedirect = String(route.query.redirect || '').trim()
-    let target: ReturnType<typeof resolveAdminHomeRoute> | string = homeTarget
-
-    if (rawRedirect && rawRedirect !== '/' && rawRedirect.startsWith('/')) {
-      const resolved = router.resolve(rawRedirect)
-      const allowRoles = Array.isArray(resolved.meta?.roles) ? resolved.meta.roles : undefined
-      if (
-        resolved.matched.length
-        && resolved.name !== 'login'
-        && adminCanAccessMenuPath(session, resolved.path, allowRoles)
-      ) {
-        target = resolved.fullPath
-      }
-    }
-
-    await router.replace(target)
+async function handleVerificationSubmit(code: string) {
+  if (loading.value || !challenge.value) return
+  if (isChallengeExpired()) {
+    expireChallenge()
+    return
+  }
+  error.value = ''
+  loading.value = true
+  try {
+    const data = await verifyAdminLoginChallenge(challenge.value.challengeId, code)
+    await completeLogin(data)
   }
   catch (err) {
     error.value = err instanceof Error ? err.message : '登录失败，请稍后重试'
@@ -187,6 +235,31 @@ async function handleLogin(payload: { username: string, password: string }) {
     enteringSystem.value = false
     welcomeRoleName.value = ''
   }
+}
+
+async function handleResend() {
+  if (loading.value || !canResend.value || !credentials.value) return
+  if (isChallengeExpired()) {
+    expireChallenge()
+    return
+  }
+  error.value = ''
+  loading.value = true
+  try {
+    challenge.value = await createAdminLoginChallenge(credentials.value)
+    verificationCode.value = ''
+  }
+  catch (err) {
+    error.value = err instanceof Error ? err.message : '重新发送失败，请稍后重试'
+  }
+  finally {
+    loading.value = false
+  }
+}
+
+function handleReturnToCredentials() {
+  error.value = ''
+  clearLoginFlow()
 }
 </script>
 
@@ -210,10 +283,20 @@ async function handleLogin(payload: { username: string, password: string }) {
     <LoginCard
       :loading="loading"
       :error="error"
+      :step="loginStep"
+      :phone-masked="challenge?.phoneMasked || ''"
+      :resend-seconds="resendSeconds"
+      :resend-available="canResend"
+      :verification-code="verificationCode"
+      :reset-key="loginCardResetKey"
       :success="loginSuccess"
       :entering-system="enteringSystem"
       :welcome-role-name="welcomeRoleName"
-      @submit="handleLogin"
+      @submit="handleCredentialsSubmit"
+      @verify="handleVerificationSubmit"
+      @resend="handleResend"
+      @back="handleReturnToCredentials"
+      @update:verification-code="verificationCode = $event"
     />
 
     <div

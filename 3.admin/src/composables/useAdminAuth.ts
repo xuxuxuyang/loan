@@ -67,6 +67,8 @@ export interface AdminSession {
   role: AdminRole
   token: string
   loginAt: string
+  /** 服务端签发的会话到期时间；旧会话没有该字段时必须重新登录。 */
+  expiresAt: string
   scopeType?: 'platform' | 'tenant'
   workspaceType?: 'core' | 'self' | 'tenant'
   tenantId?: string
@@ -122,18 +124,28 @@ function normalizeStoredPermissions(raw: unknown): AdminPermissions | undefined 
   return { menus, actions }
 }
 
+function discardInvalidStoredSession(): null {
+  if (typeof window !== 'undefined') {
+    window.localStorage.removeItem(STORAGE_KEY)
+  }
+  return null
+}
+
 function safeParseSession(value: string | null): AdminSession | null {
   if (!value) return null
   try {
     const parsed = JSON.parse(value) as Partial<AdminSession>
-    if (!parsed || typeof parsed !== 'object') return null
-    if (!parsed.token || !parsed.username || !parsed.role || !parsed.loginAt) return null
+    if (!parsed || typeof parsed !== 'object') return discardInvalidStoredSession()
+    if (!parsed.token || !parsed.username || !parsed.role || !parsed.loginAt || !parsed.expiresAt) return discardInvalidStoredSession()
+    const expiresAt = String(parsed.expiresAt)
+    const expiresAtMs = Date.parse(expiresAt)
+    if (!Number.isFinite(expiresAtMs) || expiresAtMs <= Date.now()) return discardInvalidStoredSession()
     let r = String(parsed.role).trim()
     /** 历史「客服」角色已并入审核员 */
     if (r === 'customer_service' || r === 'customer-service') {
       r = 'reviewer'
     }
-    if (r !== 'super_admin' && r !== 'boss' && r !== 'reviewer' && r !== 'collector') return null
+    if (r !== 'super_admin' && r !== 'boss' && r !== 'reviewer' && r !== 'collector') return discardInvalidStoredSession()
     const role = r as AdminRole
     const name = String(parsed.name || '').trim()
     return {
@@ -142,6 +154,7 @@ function safeParseSession(value: string | null): AdminSession | null {
       ...(name ? { name } : {}),
       role,
       loginAt: String(parsed.loginAt),
+      expiresAt,
       scopeType: inferScopeTypeFromLegacySession(parsed, role),
       workspaceType: ((): 'core' | 'self' | 'tenant' => {
         const raw = String(parsed.workspaceType || '').trim().toLowerCase()
@@ -158,13 +171,18 @@ function safeParseSession(value: string | null): AdminSession | null {
     }
   }
   catch {
-    return null
+    return discardInvalidStoredSession()
   }
 }
 
 export function getAdminSession(): AdminSession | null {
   if (typeof window === 'undefined') return null
-  return safeParseSession(window.localStorage.getItem(STORAGE_KEY))
+  const session = safeParseSession(window.localStorage.getItem(STORAGE_KEY))
+  if (!session) {
+    // Legacy, malformed, and expired sessions are never allowed to survive a read.
+    window.localStorage.removeItem(STORAGE_KEY)
+  }
+  return session
 }
 
 export function setAdminSession(session: AdminSession) {

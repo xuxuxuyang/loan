@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { Component } from 'vue'
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import zhCn from 'element-plus/es/locale/lang/zh-cn'
 import {
   Avatar,
@@ -25,7 +25,13 @@ import AdminRoleAvatar from './components/AdminRoleAvatar.vue'
 import SensitiveOperationConfirmDialog from './components/SensitiveOperationConfirmDialog.vue'
 import LoginFortuneRain from './components/auth/LoginFortuneRain.vue'
 import MallBrandLogo from './components/MallBrandLogo.vue'
-import { clearAdminSession, getAdminSession, isPlatformManagingTenantWorkspace, type AdminSession } from './composables/useAdminAuth'
+import {
+  adminSessionRevision,
+  clearAdminSession,
+  getAdminSession,
+  isPlatformManagingTenantWorkspace,
+  type AdminSession,
+} from './composables/useAdminAuth'
 import { adminCanAccessMenuPath, adminHasMenuView, permissionKeyForPath } from './composables/useAdminPermissions'
 import { useTenantScope } from './composables/useTenantScope'
 import { csMenuHasUnread, useAdminCsUnreadBadge } from './composables/useAdminCsUnreadBadge'
@@ -41,6 +47,7 @@ import {
   syncAdminVisitedTag,
 } from './composables/useAdminVisitedTags'
 import { syncAdminSessionProfile } from './composables/useAdminApi'
+import { revokeAdminLoginSession } from './api/adminLogin'
 import { adminHomeRoute } from './router'
 
 type Role = NonNullable<AdminSession['role']>
@@ -69,6 +76,8 @@ const { switchWorkspace } = useTenantScope()
 const pageTitle = computed(() => String(route.meta.title || '后台管理'))
 const session = ref<AdminSession | null>(getAdminSession())
 const isLoginPage = computed(() => route.name === 'login')
+let sessionExpiryTimer: ReturnType<typeof setTimeout> | undefined
+let logoutInFlight: Promise<void> | null = null
 
 /** 平台总览账号已切到具体子系统的 mall__tenant_x 工作区：侧栏与顶栏按「子系统后台」呈现 */
 const isPlatformManagingTenant = computed(() => isPlatformManagingTenantWorkspace(session.value))
@@ -239,11 +248,82 @@ function roleText(role?: AdminSession['role']) {
   return '访客'
 }
 
-function logout() {
-  clearAdminSession()
-  clearAdminVisitedTags()
-  session.value = null
-  void router.replace('/login')
+function clearSessionExpiryTimer() {
+  if (sessionExpiryTimer) {
+    clearTimeout(sessionExpiryTimer)
+    sessionExpiryTimer = undefined
+  }
+}
+
+function scheduleSessionExpiry() {
+  clearSessionExpiryTimer()
+  const current = getAdminSession()
+  if (!current) {
+    session.value = null
+    return
+  }
+  const expiresAtMs = Date.parse(current.expiresAt)
+  const delay = expiresAtMs - Date.now()
+  if (!Number.isFinite(expiresAtMs) || delay <= 0) {
+    void logout(current)
+    return
+  }
+  sessionExpiryTimer = window.setTimeout(() => {
+    void logout(current)
+  }, delay)
+}
+
+function recheckSessionExpiry() {
+  const current = getAdminSession()
+  if (!current) {
+    clearSessionExpiryTimer()
+    if (session.value) {
+      void logout(session.value)
+    }
+    else {
+      session.value = null
+    }
+    return
+  }
+  if (Date.parse(current.expiresAt) <= Date.now()) {
+    void logout(current)
+    return
+  }
+  scheduleSessionExpiry()
+}
+
+function onVisibilityChange() {
+  if (document.visibilityState === 'visible') {
+    recheckSessionExpiry()
+  }
+}
+
+function logout(sessionToRevoke: AdminSession | null = getAdminSession()): Promise<void> {
+  if (logoutInFlight) {
+    return logoutInFlight
+  }
+  clearSessionExpiryTimer()
+  const request = (async () => {
+    try {
+      await revokeAdminLoginSession(sessionToRevoke?.token)
+    }
+    catch {
+      // Local logout must complete even when the server revoke is unavailable.
+    }
+    finally {
+      clearAdminSession()
+      clearAdminVisitedTags()
+      session.value = null
+      await router.replace('/login')
+    }
+  })()
+  logoutInFlight = request
+  void request.finally(() => {
+    if (logoutInFlight === request) {
+      logoutInFlight = null
+    }
+  })
+  return request
 }
 
 function onVisitedTagClick(fullPath: string) {
@@ -277,6 +357,14 @@ watch(
   { immediate: true },
 )
 
+watch(
+  () => adminSessionRevision.value,
+  () => {
+    session.value = getAdminSession()
+    scheduleSessionExpiry()
+  },
+)
+
 watch(isLoginPage, (login) => {
   if (login) {
     clearAdminVisitedTags()
@@ -284,6 +372,9 @@ watch(isLoginPage, (login) => {
 })
 
 onMounted(() => {
+  window.addEventListener('focus', recheckSessionExpiry)
+  document.addEventListener('visibilitychange', onVisibilityChange)
+  recheckSessionExpiry()
   if (isLoginPage.value || !session.value) {
     return
   }
@@ -302,6 +393,12 @@ onMounted(() => {
       void router.replace(adminHomeRoute(sess))
     }
   })
+})
+
+onBeforeUnmount(() => {
+  clearSessionExpiryTimer()
+  window.removeEventListener('focus', recheckSessionExpiry)
+  document.removeEventListener('visibilitychange', onVisibilityChange)
 })
 
 const csSidebarBadgeEnabled = computed(() => {
@@ -471,7 +568,7 @@ useAdminOrderReviewBadge(ordersSidebarBadgeEnabled)
               title="确定退出登录吗？"
               confirm-button-text="确定"
               cancel-button-text="取消"
-              @confirm="logout"
+              @confirm="() => logout()"
             >
               <template #reference>
                 <button

@@ -6,6 +6,12 @@ import MallBrandLogo from '../MallBrandLogo.vue'
 const props = defineProps<{
   loading: boolean
   error: string
+  step: 'credentials' | 'verification'
+  phoneMasked: string
+  resendSeconds: number
+  resendAvailable: boolean
+  verificationCode: string
+  resetKey: number
   success?: boolean
   /** 登录成功后、路由跳转前的过渡阶段 */
   enteringSystem?: boolean
@@ -15,6 +21,10 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   submit: [payload: { username: string, password: string }]
+  verify: [code: string]
+  resend: []
+  back: []
+  'update:verificationCode': [code: string]
 }>()
 
 const form = reactive({
@@ -35,6 +45,14 @@ watch(
   },
 )
 
+watch(
+  () => props.resetKey,
+  () => {
+    form.username = ''
+    form.password = ''
+  },
+)
+
 function handleSubmit() {
   if (!form.username.trim() || !form.password.trim()) {
     return
@@ -43,6 +61,19 @@ function handleSubmit() {
     username: form.username.trim(),
     password: form.password.trim(),
   })
+}
+
+function handleVerify() {
+  const code = props.verificationCode.trim()
+  if (!/^\d{6}$/.test(code)) {
+    return
+  }
+  emit('verify', code)
+}
+
+function updateVerificationCode(event: Event) {
+  const value = (event.target as HTMLInputElement).value.replace(/\D/g, '').slice(0, 6)
+  emit('update:verificationCode', value)
 }
 </script>
 
@@ -77,48 +108,83 @@ function handleSubmit() {
           </div>
         </div>
 
-        <label class="login-field">
-          <span>账号</span>
-          <div class="login-field__input-wrap">
-            <span class="login-field__icon login-field__icon--user" aria-hidden="true">
-              <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                <circle cx="12" cy="7.8" r="3.4" fill="#7c2d12" />
-                <path
-                  d="M6.2 19.8c.7-3.1 2.75-4.8 5.8-4.8s5.1 1.7 5.8 4.8H6.2Z"
-                  fill="#7c2d12"
-                />
-              </svg>
-            </span>
-            <input
-              v-model="form.username"
-              type="text"
-              autocomplete="username"
-              placeholder="请输入账号"
-            >
-          </div>
-        </label>
+        <template v-if="props.step === 'credentials'">
+          <label class="login-field">
+            <span>账号</span>
+            <div class="login-field__input-wrap">
+              <span class="login-field__icon login-field__icon--user" aria-hidden="true">
+                <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                  <circle cx="12" cy="7.8" r="3.4" fill="#7c2d12" />
+                  <path
+                    d="M6.2 19.8c.7-3.1 2.75-4.8 5.8-4.8s5.1 1.7 5.8 4.8H6.2Z"
+                    fill="#7c2d12"
+                  />
+                </svg>
+              </span>
+              <input
+                v-model="form.username"
+                type="text"
+                autocomplete="username"
+                placeholder="请输入账号"
+              >
+            </div>
+          </label>
 
-        <label class="login-field">
-          <span>密码</span>
-          <div class="login-field__input-wrap">
-            <span class="login-field__icon login-field__icon--lock" aria-hidden="true">
-              <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                <path
-                  d="M7.2 10.6V8.6a4.8 4.8 0 0 1 9.6 0v2h.9a2.6 2.6 0 0 1 2.6 2.6v7.2a2.6 2.6 0 0 1-2.6 2.6H6.7a2.6 2.6 0 0 1-2.6-2.6v-7.2a2.6 2.6 0 0 1 2.6-2.6h.9Z"
-                  fill="#991b1b"
-                />
-                <circle cx="12" cy="15.8" r="1.35" fill="#ffffff" />
-              </svg>
-            </span>
-            <input
-              v-model="form.password"
-              type="password"
-              autocomplete="current-password"
-              placeholder="请输入密码"
-              @keyup.enter="handleSubmit"
-            >
+          <label class="login-field">
+            <span>密码</span>
+            <div class="login-field__input-wrap">
+              <span class="login-field__icon login-field__icon--lock" aria-hidden="true">
+                <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                  <path
+                    d="M7.2 10.6V8.6a4.8 4.8 0 0 1 9.6 0v2h.9a2.6 2.6 0 0 1 2.6 2.6v7.2a2.6 2.6 0 0 1-2.6 2.6H6.7a2.6 2.6 0 0 1-2.6-2.6v-7.2a2.6 2.6 0 0 1 2.6-2.6h.9Z"
+                    fill="#991b1b"
+                  />
+                  <circle cx="12" cy="15.8" r="1.35" fill="#ffffff" />
+                </svg>
+              </span>
+              <input
+                v-model="form.password"
+                type="password"
+                autocomplete="current-password"
+                placeholder="请输入密码"
+                @keyup.enter="handleSubmit"
+              >
+            </div>
+          </label>
+        </template>
+
+        <template v-else>
+          <div class="login-verification-copy">
+            <span>验证码</span>
+            <p>验证码已发送至 {{ props.phoneMasked }}</p>
           </div>
-        </label>
+          <label class="login-field">
+            <span>六位验证码</span>
+            <div class="login-field__input-wrap">
+              <input
+                :value="props.verificationCode"
+                type="text"
+                inputmode="numeric"
+                autocomplete="one-time-code"
+                maxlength="6"
+                placeholder="请输入六位验证码"
+                @input="updateVerificationCode"
+                @keyup.enter="handleVerify"
+              >
+            </div>
+          </label>
+          <div class="login-verification-actions">
+            <span v-if="props.resendSeconds > 0">{{ props.resendSeconds }} 秒后可重新发送</span>
+            <button
+              type="button"
+              :disabled="props.loading || !props.resendAvailable"
+              @click="emit('resend')"
+            >重新发送</button>
+          </div>
+          <button class="login-back-btn" type="button" :disabled="props.loading" @click="emit('back')">
+            返回修改账号
+          </button>
+        </template>
 
         <div class="login-error-slot" aria-live="polite">
           <p
@@ -131,6 +197,7 @@ function handleSubmit() {
         </div>
 
         <button
+          v-if="props.step === 'credentials'"
           class="login-btn"
           type="button"
           :disabled="props.loading"
@@ -151,6 +218,18 @@ function handleSubmit() {
                   ? '登录中…'
                   : '立即登录'
           }}</span>
+        </button>
+
+        <button
+          v-else
+          class="login-btn"
+          type="button"
+          :disabled="props.loading || !/^\d{6}$/.test(props.verificationCode.trim())"
+          :class="{ 'login-btn--loading': props.loading }"
+          @click="handleVerify"
+        >
+          <span class="login-btn__spinner" aria-hidden="true" />
+          <span class="login-btn__label">{{ props.loading ? '验证中…' : '确认登录' }}</span>
         </button>
 
         <Transition name="login-enter-mask">
@@ -180,6 +259,55 @@ function handleSubmit() {
 </template>
 
 <style scoped>
+.login-verification-copy {
+  margin: 2px 0 14px;
+  color: rgba(120, 53, 15, 0.8);
+  font-size: 13px;
+}
+
+.login-verification-copy > span {
+  display: block;
+  margin-bottom: 5px;
+  color: #7c2d12;
+  font-weight: 700;
+}
+
+.login-verification-copy p {
+  margin: 0;
+}
+
+.login-verification-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 28px;
+  margin: -6px 0 12px;
+  color: rgba(120, 53, 15, 0.72);
+  font-size: 12px;
+}
+
+.login-verification-actions button,
+.login-back-btn {
+  border: 0;
+  background: transparent;
+  color: #b45309;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.login-verification-actions button:disabled,
+.login-back-btn:disabled {
+  color: rgba(120, 53, 15, 0.4);
+  cursor: not-allowed;
+}
+
+.login-back-btn {
+  display: block;
+  margin: -2px auto 14px;
+  font-size: 13px;
+}
+
 @property --login-spin {
   syntax: '<angle>';
   inherits: false;
