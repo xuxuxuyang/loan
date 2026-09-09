@@ -4,16 +4,38 @@ const lakala = require('./lakalaClient')
 let deps = {}
 const settlementInflight = new Map()
 const paymentWriteQueues = new Map()
+const failedPaymentWrites = new Map()
 
 function paymentScopeKey() {
   return deps.getPaymentScopeKey ? deps.getPaymentScopeKey() : 'default'
 }
 
+function paymentTargetSnapshots(db, entries) {
+  return entries.map(({ entityKey, item }) => {
+    const idKey = entityKey === 'lakalaPayments' ? 'outTradeNo' : 'id'
+    return (db[entityKey] || []).find(row => String(row[idKey]) === String(item[idKey])) || null
+  })
+}
+
 function runPaymentWrite(work) {
   const key = paymentScopeKey()
   const previous = paymentWriteQueues.get(key) || Promise.resolve()
-  // Read the working copy after earlier settlements publish, including other periods of this order.
-  const job = previous.catch(() => {}).then(work)
+  const job = previous.catch(() => {}).then(async () => {
+    const recovery = failedPaymentWrites.get(key)
+    if (recovery) {
+      // A strict refresh may already have replaced the failed snapshot with trustworthy state.
+      if (!deps.isPaymentCacheReady?.()) {
+        const current = paymentTargetSnapshots(deps.readDb(), recovery.entries)
+        if (JSON.stringify(current) !== JSON.stringify(recovery.baseTargets)) {
+          throw Object.assign(new Error('支付缓存已变化，请重试以刷新状态'), { lakalaPersistenceError: true, statusCode: 500 })
+        }
+        const retry = structuredClone(recovery)
+        await persistLakalaEntities(retry.db, retry.entries, { recoverOnFailure: false })
+      }
+      failedPaymentWrites.delete(key)
+    }
+    return work()
+  })
   paymentWriteQueues.set(key, job)
   const clean = () => {
     if (paymentWriteQueues.get(key) === job) paymentWriteQueues.delete(key)
@@ -32,11 +54,15 @@ function runSettlementOnce(outTradeNo, work) {
   return job
 }
 
-async function persistLakalaEntities(db, entries) {
+async function persistLakalaEntities(db, entries, { recoverOnFailure = true } = {}) {
+  const recovery = recoverOnFailure
+    ? structuredClone({ db, entries, baseTargets: paymentTargetSnapshots(deps.readDb(), entries) })
+    : null
   try {
     await deps.writeDbEntities(db, entries)
   }
   catch (cause) {
+    if (recovery) failedPaymentWrites.set(paymentScopeKey(), recovery)
     const err = cause instanceof Error ? cause : new Error(String(cause?.message || cause))
     err.lakalaPersistenceError = true
     err.statusCode = 500
@@ -44,13 +70,13 @@ async function persistLakalaEntities(db, entries) {
   }
 }
 
-function persistPaymentObservation(outTradeNo, update) {
+function persistPaymentObservation(outTradeNo, update, options) {
   return runPaymentWrite(async () => {
     const db = structuredClone(deps.readDb())
     const record = findPayment(db, outTradeNo)
     if (!record) throw Object.assign(new Error('未知支付单'), { statusCode: 500 })
     update(record)
-    await persistLakalaEntities(db, [{ entityKey: 'lakalaPayments', item: record }])
+    await persistLakalaEntities(db, [{ entityKey: 'lakalaPayments', item: record }], options)
     return record
   })
 }
@@ -222,7 +248,7 @@ async function refreshActualPayChannelFromLakala(db, record) {
   await persistPaymentObservation(record.outTradeNo, (current) => {
     current.actualPayChannel = channel.actualPayChannel
     if (channel.actualPayChannelRaw) current.actualPayChannelRaw = channel.actualPayChannelRaw
-  })
+  }, { recoverOnFailure: false })
   return true
 }
 
@@ -339,7 +365,7 @@ async function createMallPayment(ctx, payload, mallUser) {
     notifyUrl = resolveNotifyUrl()
   }
 
-  await persistLakalaEntities(db, [{ entityKey: 'lakalaPayments', item: record }])
+  await runPaymentWrite(() => persistLakalaEntities(structuredClone(deps.readDb()), [{ entityKey: 'lakalaPayments', item: record }]))
 
   const preorder = await lakala.createCounterOrder({
     outOrderNo: record.outTradeNo,
@@ -434,7 +460,7 @@ function fulfillPaymentRecord(outTradeNo, { tradeState, notifyRaw, actualPayChan
 
     let billing
     if (!already && /^1\d{10}$/.test(phone)) {
-      const dbAfter = deps.readDb()
+      const dbAfter = structuredClone(deps.readDb())
       billing = deps.buildMallBillsSuccessData(dbAfter, phone)
     }
     return { already, billing }
