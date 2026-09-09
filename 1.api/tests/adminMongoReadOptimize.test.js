@@ -2,6 +2,73 @@
 const test = require('node:test')
 
 const opt = require('../src/adminMongoReadOptimize')
+const fs = require('node:fs')
+const path = require('node:path')
+const vm = require('node:vm')
+
+for (const name of ['readAdminAccountsFromMongoScoped', 'readOrdersFromMongoScoped', 'readProductsFromMongoScoped', 'buildAdminOrderMongoEnrichDb']) {
+  test(`${name} propagates actual query failures without reading fallback data`, async () => {
+    const source = fs.readFileSync(path.join(__dirname, '../src/index.js'), 'utf8')
+    const match = source.match(new RegExp(`async function ${name}\\([^]*?\\n\\}`))
+    assert.ok(match)
+    const collection = { find() { return this }, toArray: async () => { throw new Error('fake query failure') } }
+    const mongo = { getMongoClient: () => ({ db: () => ({ collection: () => collection }) }), COLLECTIONS: {} }
+    const read = vm.runInNewContext(`(${match[0]})`, {
+      mongo, MongoDirectReadError: opt.MongoDirectReadError,
+      resolveMongoScopedDbName: () => 'fake', mapMongoEntityDoc: d => d, normalizeAdminAccount: d => d,
+      getMongoScopedCollection: () => collection,
+      readMongoEntityDocsByIds: async () => { throw new Error('fake query failure') },
+    })
+    await assert.rejects(() => read('tenant', 'fake', {}, [{ mallUserId: 'u1' }]), {
+      code: 'MONGO_DIRECT_READ_FAILED', statusCode: 503,
+    })
+  })
+}
+
+test('entrypoint direct helpers return null when their collection is unavailable', async () => {
+  const source = fs.readFileSync(path.join(__dirname, '../src/index.js'), 'utf8')
+  for (const name of ['readAdminAccountsFromMongoScoped', 'readOrdersFromMongoScoped', 'readProductsFromMongoScoped']) {
+    const match = source.match(new RegExp(`async function ${name}\\([^]*?\\n\\}`))
+    const read = vm.runInNewContext(`(${match[0]})`, {
+      mongo: { getMongoClient: () => ({ db: () => ({ collection: () => null }) }), COLLECTIONS: {} },
+      MongoDirectReadError: opt.MongoDirectReadError, resolveMongoScopedDbName: () => 'fake',
+    })
+    assert.equal(await read('tenant', 'fake'), null, name)
+  }
+})
+
+for (const operation of ['orders count', 'orders list', 'sidebar count', 'users count', 'users list', 'register channel users']) {
+  test(`propagates ${operation} query failure as a MongoDirectReadError`, async () => {
+    const cause = new Error('fake query unavailable')
+    const broken = {
+      countDocuments: async () => { if (operation.includes('count')) throw cause; return 0 },
+      find() { return this }, sort() { return this }, skip() { return this }, limit() { return this },
+      toArray: async () => { throw cause },
+    }
+    const run = operation.startsWith('sidebar')
+      ? () => opt.countAdminOrderSidebarCountsFromMongoScoped(() => broken)
+      : operation.startsWith('users')
+        ? () => opt.readAdminUsersPageFromMongoScoped(() => broken, {})
+        : () => opt.readAdminOrdersPageFromMongoScoped(() => broken,
+          operation === 'register channel users' ? { registerChannel: 'fake-channel' } : {}, 1, 20)
+    await assert.rejects(run, (error) => {
+      assert.equal(error.code, 'MONGO_DIRECT_READ_FAILED')
+      assert.equal(error.statusCode, 503)
+      assert.equal(error.name, 'MongoDirectReadError')
+      assert.equal(error.cause, cause)
+      return true
+    })
+  })
+}
+
+test('unavailable collections and unsupported filters still permit fallback', async () => {
+  assert.equal(await opt.readAdminOrdersPageFromMongoScoped(() => null, {}, 1, 20), null)
+  assert.equal(await opt.countAdminOrderSidebarCountsFromMongoScoped(() => null), null)
+  assert.equal(await opt.readAdminUsersPageFromMongoScoped(() => null), null)
+  const unexpected = () => { throw new Error('unsupported filters must not query') }
+  assert.equal(await opt.readAdminOrdersPageFromMongoScoped(unexpected, { keyword: 'complex' }, 1, 20), null)
+  assert.equal(await opt.readAdminUsersPageFromMongoScoped(unexpected, { key: 'complex' }), null)
+})
 
 class FakeCursor {
   constructor(docs) {

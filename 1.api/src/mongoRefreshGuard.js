@@ -1,7 +1,7 @@
-const MUTATION_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
-
-function shouldBlockRequestOnMongoRefreshError(method) {
-  return MUTATION_METHODS.has(String(method || '').trim().toUpperCase())
+function shouldBlockRequestOnMongoRefreshError(method, options) {
+  return String(method || '').trim().toUpperCase() !== 'GET'
+    || options?.requiresFresh !== false
+    || options?.hasUsableSnapshot !== true
 }
 
 module.exports = {

@@ -5,6 +5,8 @@ const cloudConfig = require('./cloudConfig')
 const mongoConfig = require('./mongoConfig')
 const mongo = require('./mongo')
 const adminMongoReadOptimize = require('./adminMongoReadOptimize')
+const { MongoDirectReadError } = adminMongoReadOptimize
+const { resolveCoreApiMongoRefreshPlan } = require('./apiMongoRefreshPlan')
 const { shouldBlockRequestOnMongoRefreshError } = require('./mongoRefreshGuard')
 const {
   filterDueOnDateRowRefs,
@@ -54,6 +56,7 @@ const {
   evictTenantMemoryCache,
   refreshScopeCacheFromMongo,
   refreshScopePartialFromMongo,
+  getScopeCacheReadiness,
   refreshScopeForAdminAuth,
   refreshTenantCacheFromMongo,
   runWithMongoRequestDedup,
@@ -4188,127 +4191,52 @@ function isAdminReadOptimizeEnabled() {
   return mongoConfig.isAdminReadOptimizeEnabled()
 }
 
-/**
- * 管理端轻量 GET：仅增量刷新所需分集合（须 API 只读优化开关开启）。
- * @returns {{ mode: 'full' } | { mode: 'partial', keys: string[], allowColdPartial: boolean } | { mode: 'skip' }}
- */
-function isPaginatedListQuery(ctx) {
-  const pageRaw = ctx.query && ctx.query.page
-  return pageRaw != null && String(pageRaw).trim() !== ''
+function normalizeApiMongoRefreshPlan(result, method) {
+  return {
+    ...result,
+    keys: result.mode === 'full' ? [...mongo.SHARDED_ENTITY_KEYS] : [...(result.keys || [])],
+    requiresFresh: method !== 'GET' || result.requiresFresh === true,
+  }
 }
 
 function resolveApiMongoRefreshPlan(ctx) {
-  const method = String(ctx.method || 'GET').toUpperCase()
+  const method = String(ctx.method || 'GET').trim().toUpperCase()
   const path = String(ctx.path || '')
   const duodiandianPlan = resolveDuodiandianMongoRefreshPlan(method, path)
   if (duodiandianPlan) {
-    return duodiandianPlan
+    return normalizeApiMongoRefreshPlan(duodiandianPlan, method)
   }
   const zheyinPlan = zheyinTrafficGateway
     && typeof zheyinTrafficGateway.resolveZheyinTrafficMongoRefreshPlan === 'function'
     ? zheyinTrafficGateway.resolveZheyinTrafficMongoRefreshPlan(method, path)
     : null
   if (zheyinPlan) {
-    return zheyinPlan
+    return normalizeApiMongoRefreshPlan(zheyinPlan, method)
   }
   const halfFlowPlan = halfFlowTrafficGateway
     && typeof halfFlowTrafficGateway.resolveHalfFlowTrafficMongoRefreshPlan === 'function'
     ? halfFlowTrafficGateway.resolveHalfFlowTrafficMongoRefreshPlan(method, path)
     : null
   if (halfFlowPlan) {
-    return halfFlowPlan
+    return normalizeApiMongoRefreshPlan(halfFlowPlan, method)
   }
-  if (!isAdminReadOptimizeEnabled()) {
-    return { mode: 'full' }
-  }
-  if (method !== 'GET') {
-    return { mode: 'full' }
-  }
-  /** 直连 Mongo 单集合，跳过 hydrate 队列（账号页 / 侧栏角标 / 商品列表） */
-  if (
-    path === '/api/admin/accounts'
-    || path === '/api/platform/accounts'
-    || path === '/api/admin/orders/sidebar-counts'
-    || path === '/api/products'
-  ) {
-    return { mode: 'skip' }
-  }
-  if (path === '/api/orders' && isPaginatedListQuery(ctx)) {
-    const safeOrderFilter = adminMongoReadOptimize.buildAdminOrderMongoFilter({
-      keyword: ctx.query.keyword,
-      status: ctx.query.status,
-      adminStatus: ctx.query.adminStatus,
-      payType: ctx.query.payType,
-      date: ctx.query.date,
-      scope: ctx.query.listScope,
-      repay: ctx.query.repayFilter,
-      risk: ctx.query.riskStatus,
-      registerChannel: ctx.query.registerChannel,
+  const query = ctx.query || {}
+  const safeOrderFilter = method === 'GET' && path === '/api/orders'
+    ? adminMongoReadOptimize.buildAdminOrderMongoFilter({
+      keyword: query.keyword,
+      status: query.status,
+      adminStatus: query.adminStatus,
+      payType: query.payType,
+      date: query.date,
+      scope: query.listScope,
+      repay: query.repayFilter,
+      risk: query.riskStatus,
+      registerChannel: query.registerChannel,
     })
-    if (safeOrderFilter) {
-      return { mode: 'skip' }
-    }
-  }
-  /** 流量管理 overview：渠道 + 流量商账号 + 用户/订单统计（非 11 集合全量） */
-  const trafficOverviewKeys = ['adminAccounts', 'trafficChannels', 'trafficPartners', 'users', 'orders']
-  const trafficListKeys = ['adminAccounts', 'trafficChannels', 'trafficPartners', 'users']
-  const csSessionsWithUsersKeys = ['csSessions', 'users']
-  const adminOrdersUsersKeys = ['orders', 'users']
-  const adminOrdersUsersAuthKeys = ['adminAccounts', 'orders', 'users']
-  const adminUsersAuthKeys = ['adminAccounts', 'users', 'orders', 'trafficChannels']
-  const mallOrdersUsersKeys = ['users', 'orders']
-  const byPath = {
-    '/api/admin/dashboard/kpis': ['orders'],
-    '/api/admin/cs/badge': ['csSessions'],
-    '/api/admin/cs/unread-sum': ['csSessions'],
-    '/api/admin/traffic-channels/overview': trafficOverviewKeys,
-    '/api/admin/traffic-channels/portal-stats': trafficOverviewKeys,
-    '/api/admin/traffic-channels/quality': trafficOverviewKeys,
-    '/api/admin/traffic-channels/daily-disbursement': trafficOverviewKeys,
-    '/api/traffic-partner/stats': trafficOverviewKeys,
-    '/api/admin/traffic-channels': trafficListKeys,
-    '/api/admin/cs/sessions': csSessionsWithUsersKeys,
-    '/api/my/summary': ['users', 'orders', 'bankCards'],
-    '/api/my/orders': mallOrdersUsersKeys,
-    '/api/mall/me/bill-risk': ['users'],
-    '/api/mall/contacts/status': mallOrdersUsersKeys,
-    '/api/mall/contacts/upload/start': mallOrdersUsersKeys,
-    '/api/mall/contacts/upload/complete': mallOrdersUsersKeys,
-    '/api/mall/contract-pending': mallOrdersUsersKeys,
-    '/api/card-packages': mallOrdersUsersKeys,
-    '/api/bills': mallOrdersUsersKeys,
-    '/api/addresses': ['addresses'],
-    '/api/bank-cards': ['bankCards'],
-  }
-  const keys = byPath[path]
-  if (keys) {
-    return { mode: 'partial', keys, allowColdPartial: true }
-  }
-  if (/^\/api\/products\/[^/]+$/.test(path)) {
-    return { mode: 'partial', keys: ['products'], allowColdPartial: true }
-  }
-  if (/^\/api\/admin\/cs\/sessions\/[^/]+$/.test(path)) {
-    return { mode: 'partial', keys: csSessionsWithUsersKeys, allowColdPartial: true }
-  }
-  if (path === '/api/mall/contacts/upload/batch') {
-    return { mode: 'skip' }
-  }
-  if (/^\/api\/orders\/[^/]+$/.test(path)) {
-    return { mode: 'partial', keys: adminOrdersUsersAuthKeys, allowColdPartial: true }
-  }
-  if (/^\/api\/users\/[^/]+$/.test(path)) {
-    return { mode: 'partial', keys: adminUsersAuthKeys, allowColdPartial: true }
-  }
-  if (/^\/api\/card-packages\/[^/]+\/contract-(view|flow)$/.test(path)) {
-    return { mode: 'partial', keys: mallOrdersUsersKeys, allowColdPartial: true }
-  }
-  if (path === '/api/orders' && isPaginatedListQuery(ctx)) {
-    return { mode: 'partial', keys: adminOrdersUsersKeys, allowColdPartial: true }
-  }
-  if (path === '/api/users' && isPaginatedListQuery(ctx)) {
-    return { mode: 'partial', keys: adminOrdersUsersKeys, allowColdPartial: true }
-  }
-  return { mode: 'full' }
+    : null
+  return resolveCoreApiMongoRefreshPlan({
+    method, path, query, safeOrderFilter, optimizeEnabled: isAdminReadOptimizeEnabled(),
+  })
 }
 
 /** @deprecated 别名，与 isAdminReadOptimizeEnabled 相同 */
@@ -6010,8 +5938,8 @@ async function buildAdminOrderMongoEnrichDb(workspaceType, tenantId, fallbackDb,
       orders,
     }
   }
-  catch {
-    return fallbackDb
+  catch (error) {
+    throw new MongoDirectReadError(error)
   }
 }
 
@@ -6036,14 +5964,16 @@ async function readAdminAccountsFromMongoScoped(workspaceType, tenantId) {
   }
   try {
     const scopedDbName = resolveMongoScopedDbName(workspaceType, tenantId)
-    const docs = await client.db(scopedDbName).collection(mongo.COLLECTIONS.adminAccounts).find({}).toArray()
+    const collection = client.db(scopedDbName).collection(mongo.COLLECTIONS.adminAccounts)
+    if (!collection) return null
+    const docs = await collection.find({}).toArray()
     return docs
       .map(mapMongoEntityDoc)
       .map(item => normalizeAdminAccount(item))
       .filter(item => item && item.username)
   }
-  catch {
-    return null
+  catch (error) {
+    throw new MongoDirectReadError(error)
   }
 }
 
@@ -6054,11 +5984,13 @@ async function readOrdersFromMongoScoped(workspaceType, tenantId) {
   }
   try {
     const scopedDbName = resolveMongoScopedDbName(workspaceType, tenantId)
-    const docs = await client.db(scopedDbName).collection(mongo.COLLECTIONS.orders).find({}).toArray()
+    const collection = client.db(scopedDbName).collection(mongo.COLLECTIONS.orders)
+    if (!collection) return null
+    const docs = await collection.find({}).toArray()
     return docs.map(mapMongoEntityDoc).filter(Boolean)
   }
-  catch {
-    return null
+  catch (error) {
+    throw new MongoDirectReadError(error)
   }
 }
 
@@ -6069,11 +6001,13 @@ async function readProductsFromMongoScoped(workspaceType, tenantId) {
   }
   try {
     const scopedDbName = resolveMongoScopedDbName(workspaceType, tenantId)
-    const docs = await client.db(scopedDbName).collection(mongo.COLLECTIONS.products).find({}).toArray()
+    const collection = client.db(scopedDbName).collection(mongo.COLLECTIONS.products)
+    if (!collection) return null
+    const docs = await collection.find({}).toArray()
     return docs.map(mapMongoEntityDoc).filter(Boolean)
   }
-  catch {
-    return null
+  catch (error) {
+    throw new MongoDirectReadError(error)
   }
 }
 
@@ -13127,6 +13061,17 @@ const enforceAdminLoginSession = createAdminLoginSessionMiddleware({
   routePolicy: adminLoginRoutePolicy,
 })
 
+async function mongoReadErrorBoundary(ctx, next) {
+  try {
+    await next()
+  }
+  catch (error) {
+    if (error?.code !== 'MONGO_DIRECT_READ_FAILED' && error?.code !== 'MONGO_SNAPSHOT_UNAVAILABLE') throw error
+    fail(ctx, '数据库读取暂时不可用，请稍后重试', 503)
+  }
+}
+
+app.use(mongoReadErrorBoundary)
 app.use(enforceAdminLoginSession)
 
 function isManagedApiPath(pathValue) {
@@ -13167,12 +13112,12 @@ app.use(async (ctx, next) => {
  * Mongo 模式：每个 /api 请求执行业务前检查是否需要 refresh 内存快照。
  * 默认 MONGO_REFRESH_MODE=version：仅 app_meta.updatedAt 变化时才全量读 Mongo；非 every_request 全量读。
  */
-app.use(async (ctx, next) => {
+async function refreshMongoForRequest(ctx, next) {
   if (isManagedApiPath(ctx.path) && isMongoPersistenceEnabled()) {
+    const tenantId = normalizeTenantId(ctx.state && ctx.state.tenantId ? ctx.state.tenantId : DEFAULT_TENANT_ID)
+    const workspaceType = normalizeWorkspaceType(ctx.state && ctx.state.workspaceType ? ctx.state.workspaceType : 'tenant')
+    const plan = resolveApiMongoRefreshPlan(ctx)
     try {
-      const tenantId = normalizeTenantId(ctx.state && ctx.state.tenantId ? ctx.state.tenantId : DEFAULT_TENANT_ID)
-      const workspaceType = normalizeWorkspaceType(ctx.state && ctx.state.workspaceType ? ctx.state.workspaceType : 'tenant')
-      const plan = resolveApiMongoRefreshPlan(ctx)
       if (plan.mode === 'skip') {
         // handler 内直连 Mongo 单集合
       }
@@ -13184,16 +13129,24 @@ app.use(async (ctx, next) => {
       }
     }
     catch (err) {
-      if (shouldBlockRequestOnMongoRefreshError(ctx.method)) {
-        console.error('[mongo] refresh failed before mutation; request blocked:', err?.message || err)
-        fail(ctx, '数据库刷新失败，为保护线上数据，本次写入已拦截，请稍后重试', 503)
+      const readiness = getScopeCacheReadiness(workspaceType, tenantId, plan.keys)
+      const blocked = shouldBlockRequestOnMongoRefreshError(ctx.method, {
+        requiresFresh: plan.requiresFresh,
+        hasUsableSnapshot: readiness.usable,
+      })
+      const safeFields = { method: ctx.method, workspaceType, tenantId, mode: plan.mode, keys: plan.keys }
+      if (blocked) {
+        console.error('[mongo] refresh failed; request blocked', safeFields)
+        fail(ctx, '数据库读取暂时不可用，请稍后重试', 503)
         return
       }
-      // Reads may fall back to the in-memory snapshot; writes must not.
+      ctx.set('X-Data-Stale', '1')
+      console.warn('[mongo] refresh failed; serving last durable snapshot', safeFields)
     }
   }
   await next()
-})
+}
+app.use(refreshMongoForRequest)
 app.use(async (ctx, next) => {
   if (isManagedApiPath(ctx.path)) {
     try {

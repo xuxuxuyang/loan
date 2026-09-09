@@ -1,3 +1,12 @@
+class MongoDirectReadError extends Error {
+  constructor(cause) {
+    super('Mongo direct read failed', { cause })
+    this.name = 'MongoDirectReadError'
+    this.code = 'MONGO_DIRECT_READ_FAILED'
+    this.statusCode = 503
+  }
+}
+
 function normalizePage(page) {
   return Math.max(1, parseInt(String(page || '1'), 10) || 1)
 }
@@ -109,8 +118,8 @@ async function readAdminOrdersPageFromMongoScoped(getCollection, filters, pageRa
     ])
     return { orders: list, total, page, pageSize }
   }
-  catch {
-    return null
+  catch (error) {
+    throw new MongoDirectReadError(error)
   }
 }
 
@@ -130,8 +139,8 @@ async function countAdminOrderSidebarCountsFromMongoScoped(getCollection) {
     ])
     return { pendingReview, reviewedOrdersList }
   }
-  catch {
-    return null
+  catch (error) {
+    throw new MongoDirectReadError(error)
   }
 }
 
@@ -164,12 +173,13 @@ async function readAdminUsersPageFromMongoScoped(getCollection, query = {}) {
     ])
     return { users: list, total, page, pageSize }
   }
-  catch {
-    return null
+  catch (error) {
+    throw new MongoDirectReadError(error)
   }
 }
 
 module.exports = {
+  MongoDirectReadError,
   buildAdminOrderMongoFilter,
   buildAdminUserMongoFilter,
   readAdminOrdersPageFromMongoScoped,
