@@ -6,7 +6,8 @@ function plan(mode, keys, requiresFresh) {
 
 function resolveCoreApiMongoRefreshPlan({ method = 'GET', path = '', query = {}, optimizeEnabled = false, safeOrderFilter = null } = {}) {
   method = String(method).trim().toUpperCase()
-  path = String(path)
+  // Match Router defaults using a local copy; never rewrite request paths or parameter values.
+  path = String(path).toLowerCase().replace(/\/$/, '')
   if (method === 'GET' && path === '/api/payment/lakala/config') return plan('skip', [], false)
 
   const paymentKeys = ['users', 'orders', 'lakalaPayments']
@@ -81,9 +82,9 @@ function resolveCoreApiMongoRefreshPlan({ method = 'GET', path = '', query = {},
   if (/^\/api\/products\/[^/]+$/.test(path)) return plan('partial', ['products'], false)
   if (/^\/api\/admin\/cs\/sessions\/[^/]+$/.test(path)) return plan('partial', csSessionsWithUsersKeys, false)
   if (path === '/api/mall/contacts/upload/batch') return plan('skip', [], false)
-  if (/^\/api\/orders\/[^/]+$/.test(path)) return plan('partial', ['adminAccounts', 'orders', 'users'], false)
+  if (/^\/api\/orders\/[^/]+$/.test(path)) return plan('partial', ['adminAccounts', 'orders', 'users', 'trafficChannels'], false)
   if (/^\/api\/users\/[^/]+$/.test(path)) return plan('partial', ['adminAccounts', 'users', 'orders', 'trafficChannels'], false)
-  if (path === '/api/users' && paginated) return plan('partial', ['orders', 'users'], false)
+  if (path === '/api/users' && paginated) return plan('partial', ['orders', 'users', 'trafficChannels'], false)
   return plan('full', ALL_ENTITY_KEYS, false)
 }
 

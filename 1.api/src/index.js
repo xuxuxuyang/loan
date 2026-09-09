@@ -4221,7 +4221,7 @@ function resolveApiMongoRefreshPlan(ctx) {
     return normalizeApiMongoRefreshPlan(halfFlowPlan, method)
   }
   const query = ctx.query || {}
-  const safeOrderFilter = method === 'GET' && path === '/api/orders'
+  const safeOrderFilter = method === 'GET' && /^\/api\/orders\/?$/i.test(path)
     ? adminMongoReadOptimize.buildAdminOrderMongoFilter({
       keyword: query.keyword,
       status: query.status,
@@ -13082,7 +13082,7 @@ function isManagedApiPath(pathValue) {
   const isHalfFlowPath = halfFlowTrafficGateway
     && typeof halfFlowTrafficGateway.isHalfFlowTrafficPublicPath === 'function'
     && halfFlowTrafficGateway.isHalfFlowTrafficPublicPath(pathRaw)
-  return pathRaw.startsWith('/api/')
+  return pathRaw.toLowerCase().startsWith('/api/')
     || isDuodiandianPublicPath(pathRaw)
     || Boolean(isZheyinPath)
     || Boolean(isHalfFlowPath)

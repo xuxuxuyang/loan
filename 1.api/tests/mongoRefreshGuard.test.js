@@ -8,12 +8,79 @@ const vm = require('node:vm')
 const source = fs.readFileSync(path.join(__dirname, '../src/index.js'), 'utf8')
 const { resolveCoreApiMongoRefreshPlan } = require('../src/apiMongoRefreshPlan')
 const mongo = require('../src/mongo')
+const Koa = require('koa')
+const Router = require('@koa/router')
+
+for (const [route, requestPath, query, param] of [
+  ['/payment/lakala/status/:outTradeNo', '/api/payment/lakala/status/LP1/', {}, ['outTradeNo', 'LP1']],
+  ['/payment/lakala/status/:outTradeNo', '/api/Payment/Lakala/status/LP1', {}, ['outTradeNo', 'LP1']],
+  ['/card-packages/:orderId/contract-view', '/api/card-packages/O1/contract-view/', {}, ['orderId', 'O1']],
+  ['/card-packages/:orderId/contract-flow', '/API/CARD-PACKAGES/O1/CONTRACT-FLOW/', {}, ['orderId', 'O1']],
+  ['/mall/cs/session', '/api/mall/cs/session/', {}, null],
+  ['/admin/cs/sessions/:sessionId', '/API/ADMIN/CS/SESSIONS/S1/', {}, ['sessionId', 'S1']],
+  ['/orders', '/api/orders/', { listScope: 'card-data', page: '1' }, null],
+  ['/platform/accounts', '/API/PLATFORM/ACCOUNTS/', {}, null],
+]) {
+  test(`real Router keeps ${requestPath} behind strict refresh and preserves parameters`, async () => {
+    let calls = 0
+    const router = new Router({ prefix: '/api' })
+    router.get(route, ctx => {
+      calls++
+      assert.equal(ctx.path, requestPath)
+      assert.deepEqual(ctx.query, query)
+      if (param) assert.equal(ctx.params[param[0]], param[1])
+      ctx.body = { ok: true }
+    })
+    const zheyinTrafficGateway = null
+    const halfFlowTrafficGateway = null
+    const isManagedApiPath = loadFunction('isManagedApiPath', {
+      zheyinTrafficGateway, halfFlowTrafficGateway, isDuodiandianPublicPath: () => false,
+    })
+    const resolveApiMongoRefreshPlan = loadFunction('resolveApiMongoRefreshPlan', {
+      zheyinTrafficGateway, halfFlowTrafficGateway, resolveDuodiandianMongoRefreshPlan: () => null,
+      isAdminReadOptimizeEnabled: () => true, adminMongoReadOptimize: require('../src/adminMongoReadOptimize'),
+      resolveCoreApiMongoRefreshPlan,
+    })
+    for (const refreshFails of [false, true]) {
+      const app = new Koa()
+      const headers = {}
+      const response = { statusCode: 404, getHeader: key => headers[key], setHeader: (key, value) => { headers[key] = value }, removeHeader: key => { delete headers[key] } }
+      const ctx = app.createContext({ method: 'GET', url: requestPath + '?' + new URLSearchParams(query), headers: {} }, response)
+      const refresh = async () => { if (refreshFails) throw new Error('fake refresh failure') }
+      const middleware = loadFunction('refreshMongoForRequest', {
+        isManagedApiPath, resolveApiMongoRefreshPlan, isMongoPersistenceEnabled: () => true,
+        normalizeTenantId: v => v, normalizeWorkspaceType: v => v, DEFAULT_TENANT_ID: 'default',
+        refreshScopePartialFromMongo: refresh, refreshScopeCacheFromMongo: refresh,
+        getScopeCacheReadiness: () => ({ usable: true }), shouldBlockRequestOnMongoRefreshError,
+        fail: (context, message, status) => { context.status = status; context.body = { message } },
+        console: { error() {}, warn() {} },
+      })
+      await middleware(ctx, () => router.routes()(ctx, async () => {}))
+      assert.equal(ctx.status, refreshFails ? 503 : 200)
+      assert.equal(calls, 1, 'failed refresh must not reach the matched handler')
+      assert.equal(headers['X-Data-Stale'], undefined)
+    }
+  })
+}
 
 function loadFunction(name, dependencies) {
   const match = source.match(new RegExp(`(?:async )?function ${name}\\([^]*?\\n\\}`))
   assert.ok(match, `${name} must be present`)
   return vm.runInNewContext(`(${match[0]})`, dependencies)
 }
+
+test('entrypoint uses safe pagination plans for every accepted orders path variant', () => {
+  const resolve = loadFunction('resolveApiMongoRefreshPlan', {
+    zheyinTrafficGateway: null, halfFlowTrafficGateway: null, resolveDuodiandianMongoRefreshPlan: () => null,
+    isAdminReadOptimizeEnabled: () => true, adminMongoReadOptimize: require('../src/adminMongoReadOptimize'),
+    resolveCoreApiMongoRefreshPlan,
+  })
+  for (const path of ['/api/orders', '/api/orders/', '/API/ORDERS/']) {
+    const ctx = { method: 'GET', path, query: { page: '1' } }
+    assert.equal(resolve(ctx).mode, 'skip', path)
+    assert.equal(ctx.path, path)
+  }
+})
 
 for (const [method, requiresFresh, usable, blocked] of [
   ['GET', false, true, false], ['GET', false, false, true],
