@@ -65,12 +65,17 @@ function createFixture(options = {}) {
   let cacheReady = true
   const persistCalls = []
   const events = []
+  const externalCalls = []
   const billingPhones = []
   const outcomes = [...(options.persistOutcomes || [])]
   const client = {
     readEnvTrim: () => '', isLakalaMockEnabled: () => true, isLakalaConfigured: () => true,
     yuanToCents: value => Math.round(value * 100), mapPayChannelToAccountType: () => 'WECHAT',
-    createCounterOrder: async () => { events.push('external'); return { counterUrl: 'https://fake.invalid/checkout', payOrderNo: 'T1' } },
+    createCounterOrder: async (args) => {
+      events.push('external'); externalCalls.push(clone(args))
+      if (options.createFn) return options.createFn(args)
+      return { counterUrl: 'https://fake.invalid/checkout', payOrderNo: 'T1' }
+    },
     extractPayPresentation: value => value,
     queryCounterOrder: async () => options.queryFn ? options.queryFn() : options.channelFailure ? Promise.reject(new Error('channel outage')) : { paid: true, tradeState: 'SUCCESS', ...(options.query || {}) },
     parseCounterQueryPaid: value => value,
@@ -118,7 +123,7 @@ function createFixture(options = {}) {
     success: data => ({ code: 0, data }), fail: (ctx, msg, code) => { ctx.status = code; ctx.body = { error: msg } },
   })
   return {
-    service, user, business, dependencies, persistCalls, events, outcomes, billingPhones,
+    service, user, business, dependencies, persistCalls, events, externalCalls, outcomes, billingPhones,
     db: () => shared, durable: () => durable,
     reload: () => { shared = clone(durable); cacheReady = true },
     payment: () => shared.lakalaPayments[0],
@@ -438,11 +443,11 @@ test('pending state writes and mock completion also propagate persistence failur
   assert.equal(f.payment().tradeState, undefined)
 })
 
-async function withRealStorePaymentFixture(t, work) {
+async function withRealStorePaymentFixture(t, work, options = {}) {
   const mongo = require('../src/mongo')
   const store = require('../src/store')
   const { runWithTenant, getCurrentTenantId } = require('../src/tenantContext')
-  const f = createFixture()
+  const f = createFixture(options)
   f.db().orders[0].installmentPlan.push({ period: 2, amount: 100, paid: false })
   f.db().lakalaPayments.push({ ...clone(f.payment()), outTradeNo: 'LP2', period: 2 })
   const tenantId = `payment-recovery-${Date.now()}-${Math.random().toString(36).slice(2)}`
@@ -626,4 +631,90 @@ test('exact recovery refuses to overwrite a newer target while the scope remains
     await f.notify('LP2')
     assert.equal(f.durableRows('orders').find(item => item.id === 'O1').adminNote, 'newer confirmed edit')
   })
+})
+
+for (const bizType of ['order_full', 'bill_repay', 'bill_repay_negotiated']) {
+  test(`preorder ${bizType} revalidates after partial durable recovery before external checkout`, async (t) => {
+    await withRealStorePaymentFixture(t, async (f) => {
+      f.failAt(3)
+      await assert.rejects(f.notify(), /partial Mongo outage/)
+      assert.equal(f.readiness().usable, false)
+      assert.equal(f.read().lakalaPayments.find(item => item.outTradeNo === 'LP1').status, 'pending')
+      await assert.rejects(f.preorder(), /已支付|已还款|暂无待支付的协商款项/)
+      assert.equal(f.externalCalls.length, 0)
+      assert.equal(f.durableRows('lakalaPayments').length, 2, 'rejected preorder must not create a new pending row')
+      assert.equal(f.readiness().usable, true)
+    }, { bizType })
+  })
+}
+
+test('preorder repay-all recalculates amount and targets from the recovered order', async (t) => {
+  await withRealStorePaymentFixture(t, async (f) => {
+    f.failAt(3)
+    await assert.rejects(f.notify(), /partial Mongo outage/)
+    assert.equal(f.readiness().usable, false)
+    const result = await f.preorder({ bizType: 'bill_repay_all' })
+    assert.equal(result.amountYuan, 100)
+    assert.equal(f.externalCalls.length, 1)
+    assert.equal(f.externalCalls[0].totalAmountYuan, 100)
+    const pending = f.durableRows('lakalaPayments').find(item => item.outTradeNo === result.outTradeNo)
+    assert.deepEqual(pending.settlementTargets, [{ orderId: 'O1', period: 2 }])
+    assert.equal(pending.amountYuan, 100)
+  })
+})
+
+test('preorder queued while a settlement is in flight validates only after recovery', async (t) => {
+  await withRealStorePaymentFixture(t, async (f) => {
+    f.failAt(2)
+    const gate = f.block()
+    const rejectedSettlement = assert.rejects(f.notify(), /partial Mongo outage/)
+    await gate.began
+    const rejectedPreorder = assert.rejects(f.preorder(), /该期已还款/)
+    gate.release()
+    await Promise.all([rejectedSettlement, rejectedPreorder])
+    assert.equal(f.externalCalls.length, 0)
+    assert.equal(f.durableRows('lakalaPayments').length, 2)
+  })
+})
+
+for (const bizType of ['order_full', 'bill_repay', 'bill_repay_negotiated', 'bill_repay_all']) {
+  test(`normal ${bizType} preorder preserves its amount and checkout response`, async () => {
+    const f = createFixture({ bizType })
+    const result = await f.preorder()
+    assert.equal(result.amountYuan, bizType === 'bill_repay_negotiated' ? 10 : 100)
+    assert.equal(result.bizType, bizType)
+    assert.equal(result.orderId, 'O1')
+    assert.equal(result.period, bizType === 'order_full' ? undefined : 1)
+    assert.equal(result.counterUrl, 'https://fake.invalid/checkout')
+    assert.equal(result.payCode, result.counterUrl)
+    assert.equal(result.payOrderNo, 'T1')
+    assert.equal(result.tradeNo, 'T1')
+    assert.equal(result.payChannel, 'wechat')
+    assert.equal(result.accountType, 'WECHAT')
+    assert.equal(result.mock, true)
+    assert.deepEqual(Object.keys(result).sort(), ['outTradeNo', 'tradeNo', 'amountYuan', 'payChannel', 'accountType', 'payCode', 'payCodeImage', 'counterUrl', 'payOrderNo', 'mock', 'bizType', 'orderId', 'period'].sort())
+    assert.deepEqual(f.events, ['persist', 'external', 'persist'])
+    assert.equal(f.externalCalls[0].totalAmountYuan, result.amountYuan)
+    assert.equal(f.externalCalls[0].outOrderNo, result.outTradeNo)
+  })
+}
+
+test('external preorder network wait does not hold the scope payment queue', { timeout: 2000 }, async () => {
+  let release
+  let started
+  const gate = new Promise(resolve => { release = resolve })
+  const began = new Promise(resolve => { started = resolve })
+  const f = createFixture({ createFn: async () => {
+    started()
+    await gate
+    return { counterUrl: 'https://fake.invalid/checkout', payOrderNo: 'T1' }
+  } })
+  const preorder = f.preorder()
+  await began
+  try {
+    await f.notify()
+    assert.equal(f.payment().status, 'success')
+  }
+  finally { release() }
+  assert.equal((await preorder).counterUrl, 'https://fake.invalid/checkout')
 })

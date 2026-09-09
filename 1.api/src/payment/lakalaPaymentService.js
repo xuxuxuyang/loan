@@ -262,7 +262,7 @@ async function refreshActualPayChannelBestEffort(outTradeNo) {
   }
 }
 
-async function createMallPayment(ctx, payload, mallUser) {
+async function prepareMallPaymentPending(payload, mallUser) {
   const db = structuredClone(deps.readDb())
   const bizType = String(payload.bizType || '').trim()
   const payChannel = String(payload.payChannel || 'wechat').trim()
@@ -365,8 +365,14 @@ async function createMallPayment(ctx, payload, mallUser) {
     notifyUrl = resolveNotifyUrl()
   }
 
-  await runPaymentWrite(() => persistLakalaEntities(structuredClone(deps.readDb()), [{ entityKey: 'lakalaPayments', item: record }]))
+  await persistLakalaEntities(db, [{ entityKey: 'lakalaPayments', item: record }])
+  return { record, amountYuan, notifyUrl }
+}
 
+async function createMallPayment(ctx, payload, mallUser) {
+  const prepared = await runPaymentWrite(() => prepareMallPaymentPending(payload, mallUser))
+  let { record } = prepared
+  const { amountYuan, notifyUrl } = prepared
   const preorder = await lakala.createCounterOrder({
     outOrderNo: record.outTradeNo,
     totalAmountYuan: amountYuan,
