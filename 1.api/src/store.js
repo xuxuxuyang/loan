@@ -37,6 +37,9 @@ let mongoMemoryDb = null
 let mongoMemoryDbByTenant = new Map()
 const mongoScopeEntityVersionByKey = new Map()
 const mongoScopeDirtyEntityKeysByKey = new Map()
+const mongoScopeFailedEntityKeysByKey = new Map()
+const mongoScopeWriteRevisionByKey = new Map()
+const mongoScopeCacheRevisionByKey = new Map()
 
 /** Request-local dedup uses the scope and requested entity signature. */
 const mongoScopeRefreshDedup = new AsyncLocalStorage()
@@ -47,11 +50,11 @@ const mongoScopeHydrateInflight = new Map()
 const mongoScopeHydrateTail = new Map()
 
 /** 串行写入，避免并发持久化乱序 */
-let persistTail = Promise.resolve()
-let persistTailByTenant = new Map()
+const persistTailByTenant = new Map()
+const persistResultByTenant = new Map()
 
 function runWithMongoRequestDedup(fn) {
-  return mongoScopeRefreshDedup.run(new Set(), fn)
+  return mongoScopeRefreshDedup.run({ refreshed: new Set(), persistJobs: [] }, fn)
 }
 
 function getMongoHydrateDepth() {
@@ -133,17 +136,37 @@ async function readAppMetaUpdatedAtMs(dbm) {
   return appMetaUpdatedAtMs(metaDoc)
 }
 
-function publishScopeSnapshot(cacheKey, nextDb, keys, updatedAt) {
+function bumpScopeCacheRevisions(cacheKey, keys) {
+  const revisions = new Map(mongoScopeCacheRevisionByKey.get(cacheKey))
+  for (const key of [...new Set([...keys, '_meta'])]) revisions.set(key, (revisions.get(key) || 0) + 1)
+  mongoScopeCacheRevisionByKey.set(cacheKey, revisions)
+}
+
+function publishScopeSnapshot(cacheKey, nextDb, keys, updatedAt, readRevisions) {
   const versions = new Map(mongoScopeEntityVersionByKey.get(cacheKey))
   const dirty = new Set(mongoScopeDirtyEntityKeysByKey.get(cacheKey))
+  const failed = new Set(mongoScopeFailedEntityKeysByKey.get(cacheKey))
+  const currentRevisions = mongoScopeCacheRevisionByKey.get(cacheKey) || new Map()
+  const changed = key => readRevisions && readRevisions.get(key) !== currentRevisions.get(key)
+  const current = mongoMemoryDbByTenant.get(cacheKey)
+  if (current && readRevisions) {
+    // A read that began before a newer write cannot publish over that write.
+    for (const key of ALL_ENTITY_KEYS) {
+      if (!keys.includes(key) || changed(key)) nextDb[key] = current[key]
+    }
+    if (changed('_meta')) nextDb._meta = current._meta
+  }
   for (const key of keys) {
+    if (changed(key)) continue
     versions.set(key, updatedAt)
     dirty.delete(key)
+    failed.delete(key)
   }
   // Publish only after every collection and metadata read has succeeded.
   mongoMemoryDbByTenant.set(cacheKey, nextDb)
   mongoScopeEntityVersionByKey.set(cacheKey, versions)
   mongoScopeDirtyEntityKeysByKey.set(cacheKey, dirty)
+  mongoScopeFailedEntityKeysByKey.set(cacheKey, failed)
   if (cacheKey === 'tenant:default') mongoMemoryDb = nextDb
 }
 
@@ -525,7 +548,9 @@ async function persistShardedSnapshot(dbm, snapshot) {
   for (const spec of ENTITY_SPECS) {
     await persistEntityCollection(dbm, spec, snapshot[spec.key])
   }
-  await persistAppMeta(dbm, snapshot)
+  const updatedAt = new Date()
+  await persistAppMeta(dbm, snapshot, updatedAt)
+  return { updatedAtMs: updatedAt.getTime() }
 }
 
 /**
@@ -540,13 +565,12 @@ async function persistShardedSnapshotPartial(dbm, snapshot, entityKeys) {
     }
     await persistEntityCollection(dbm, spec, snapshot[spec.key])
   }
-  await persistAppMeta(dbm, snapshot)
+  const updatedAt = new Date()
+  await persistAppMeta(dbm, snapshot, updatedAt)
+  return { updatedAtMs: updatedAt.getTime() }
 }
 
-async function persistEntityItem(dbm, entityKey, item, snapshot, updatedAt = new Date()) {
-  if (!dbm) {
-    return
-  }
+function validateEntityItem(entityKey, item) {
   const spec = ENTITY_SPECS.find(s => s.key === entityKey)
   if (!spec) {
     throw new Error(`[store] unknown entity key: ${entityKey}`)
@@ -555,6 +579,11 @@ async function persistEntityItem(dbm, entityKey, item, snapshot, updatedAt = new
   if (pk === undefined || pk === null) {
     throw new Error(`[store] missing primary key for ${entityKey}`)
   }
+  return { spec, pk }
+}
+
+async function persistEntityItemDocument(dbm, entityKey, item) {
+  const { spec, pk } = validateEntityItem(entityKey, item)
   const body = JSON.parse(JSON.stringify(item || {}))
   delete body._id
   await dbm.collection(spec.collection).replaceOne(
@@ -562,7 +591,32 @@ async function persistEntityItem(dbm, entityKey, item, snapshot, updatedAt = new
     { ...body, _id: pk },
     { upsert: true },
   )
+}
+
+async function persistEntityItem(dbm, entityKey, item, snapshot, updatedAt = new Date()) {
+  if (!dbm) throw new Error('[store] Mongo database unavailable')
+  await persistEntityItemDocument(dbm, entityKey, item)
   await persistAppMeta(dbm, snapshot || {}, updatedAt)
+  return { updatedAtMs: updatedAt.getTime() }
+}
+
+function dedupeEntityEntries(entries) {
+  if (!Array.isArray(entries)) throw new Error('[store] entity entries must be an array')
+  const unique = new Map()
+  for (const { entityKey, item } of entries) {
+    const { pk } = validateEntityItem(entityKey, item)
+    unique.set(`${entityKey}|${stablePrimaryKeyString(pk)}`, { entityKey, item })
+  }
+  return [...unique.values()]
+}
+
+async function persistEntityItems(dbm, entries, snapshot, updatedAt = new Date()) {
+  const unique = dedupeEntityEntries(entries)
+  for (const { entityKey, item } of unique) {
+    await persistEntityItemDocument(dbm, entityKey, item)
+  }
+  await persistAppMeta(dbm, snapshot, updatedAt)
+  return { updatedAtMs: updatedAt.getTime(), entries: unique }
 }
 
 function legacyAppStateDocToRaw(legacyDoc) {
@@ -570,65 +624,90 @@ function legacyAppStateDocToRaw(legacyDoc) {
   return rest
 }
 
-function scheduleMongoPersistJob(scopeKey, job) {
-  const currentTail = persistTailByTenant.get(scopeKey) || Promise.resolve()
-  const nextTail = currentTail
-    .then(async () => {
-      if (!mongoBacked) {
-        return
-      }
-      try {
-        await job()
-      }
-      catch (err) {
-        console.error('[store] MongoDB 分集合持久化失败:', err?.message || err)
-      }
-    })
-    .catch((err) => {
-      console.error('[store] MongoDB 持久化队列失败:', err?.message || err)
-    })
-  persistTailByTenant.set(scopeKey, nextTail)
-  if (scopeKey === 'tenant:default') {
-    persistTail = nextTail
+function markScopeEntitiesDirty(scopeKey, entityKeys) {
+  bumpScopeCacheRevisions(scopeKey, entityKeys)
+  const dirty = new Set(mongoScopeDirtyEntityKeysByKey.get(scopeKey))
+  const revisions = new Map(mongoScopeWriteRevisionByKey.get(scopeKey))
+  const captured = new Map()
+  revisions.set('_meta', (revisions.get('_meta') || 0) + 1)
+  for (const key of entityKeys) {
+    dirty.add(key)
+    const revision = (revisions.get(key) || 0) + 1
+    revisions.set(key, revision)
+    captured.set(key, revision)
   }
+  mongoScopeDirtyEntityKeysByKey.set(scopeKey, dirty)
+  mongoScopeWriteRevisionByKey.set(scopeKey, revisions)
+  return captured
+}
+
+function markScopeEntitiesPersisted(scopeKey, revisions, updatedAtMs) {
+  const dirty = mongoScopeDirtyEntityKeysByKey.get(scopeKey)
+  const failed = mongoScopeFailedEntityKeysByKey.get(scopeKey)
+  const current = mongoScopeWriteRevisionByKey.get(scopeKey)
+  const versions = mongoScopeEntityVersionByKey.get(scopeKey)
+  for (const [key, revision] of revisions) {
+    // A later working copy or a failed write needs its own durable confirmation.
+    if (current?.get(key) !== revision || failed?.has(key)) continue
+    dirty?.delete(key)
+    if (updatedAtMs != null) versions?.set(key, updatedAtMs)
+  }
+}
+
+function scheduleMongoPersistJob(scopeKey, entityKeys, job, options = {}) {
+  const keys = normalizeEntityKeys(entityKeys)
+  const revisions = options.markDirty === false ? null : markScopeEntitiesDirty(scopeKey, keys)
+  const previousTail = persistTailByTenant.get(scopeKey) || Promise.resolve()
+  const result = previousTail.catch(() => undefined).then(job)
+  // Attach a rejection handler immediately, while returning the original result.
+  const continuation = result.then(value => {
+    if (revisions) markScopeEntitiesPersisted(scopeKey, revisions, options.fullEntities === false ? null : value?.updatedAtMs)
+  }, err => {
+    const failed = new Set(mongoScopeFailedEntityKeysByKey.get(scopeKey))
+    for (const key of keys) failed.add(key)
+    mongoScopeFailedEntityKeysByKey.set(scopeKey, failed)
+    markScopeEntitiesDirty(scopeKey, keys)
+    console.error('[store] MongoDB 分集合持久化失败:', err?.message || err)
+  })
+  persistTailByTenant.set(scopeKey, continuation)
+  persistResultByTenant.set(scopeKey, result)
+  mongoScopeRefreshDedup.getStore()?.persistJobs.push(result)
+  return result
+}
+
+function requireConnectedMongoDb() {
+  const dbm = mongo.getMongoDb()
+  if (!dbm) throw new Error('[store] Mongo database unavailable')
+  return dbm
+}
+
+async function waitForMongoPersistBeforeRefresh(scopeKey) {
+  // New jobs may arrive while a prior tail is settling.
+  let tail
+  do {
+    tail = persistTailByTenant.get(scopeKey)
+    await tail
+  } while (tail !== persistTailByTenant.get(scopeKey))
 }
 
 function scheduleMongoPersist(snapshot) {
   const scopeKey = getScopeState().key
-  scheduleMongoPersistJob(scopeKey, async () => {
-    const dbm = mongo.getMongoDb()
-    if (!dbm) {
-      return
-    }
-    const latest = mongoMemoryDbByTenant.get(scopeKey)
-    await persistShardedSnapshot(dbm, clonePayloadForMongo(latest || snapshot))
-  })
+  return scheduleMongoPersistJob(scopeKey, ALL_ENTITY_KEYS,
+    () => persistShardedSnapshot(requireConnectedMongoDb(), snapshot))
 }
 
 function scheduleMongoPersistPartial(snapshot, entityKeys) {
   const scopeKey = getScopeState().key
   const keys = Array.isArray(entityKeys) ? [...entityKeys] : []
-  scheduleMongoPersistJob(scopeKey, async () => {
-    const dbm = mongo.getMongoDb()
-    if (!dbm) {
-      return
-    }
-    /** 执行落库时取内存最新快照，避免队列中较早任务用旧 csSessions 覆盖较新写入 */
-    const latest = mongoMemoryDbByTenant.get(scopeKey)
-    await persistShardedSnapshotPartial(dbm, clonePayloadForMongo(latest || snapshot), keys)
-  })
+  return scheduleMongoPersistJob(scopeKey, keys,
+    () => persistShardedSnapshotPartial(requireConnectedMongoDb(), snapshot, keys))
 }
 
 function scheduleMongoPersistEntity(snapshot, entityKey, item) {
   const scopeKey = getScopeState().key
   const itemSnapshot = JSON.parse(JSON.stringify(item || {}))
-  scheduleMongoPersistJob(scopeKey, async () => {
-    const dbm = mongo.getMongoDb()
-    if (!dbm) {
-      return
-    }
-    await persistEntityItem(dbm, entityKey, itemSnapshot, clonePayloadForMongo(snapshot))
-  })
+  return scheduleMongoPersistJob(scopeKey, [entityKey],
+    () => persistEntityItem(requireConnectedMongoDb(), entityKey, itemSnapshot, snapshot), { fullEntities: false })
 }
 
 function assertDatastoreReady() {
@@ -694,6 +773,7 @@ async function hydrateTenantDbFromMongo(workspaceType, tenantId) {
   mongoHydrateDepth++
   try {
     return await runWithWorkspace(workspaceType, tenantId, async () => {
+      const readRevisions = new Map(mongoScopeCacheRevisionByKey.get(getScopeState().key))
       const dbm = mongo.getMongoDb()
       if (!dbm) {
         throw mongoSnapshotUnavailable(getScopeState().key)
@@ -711,7 +791,7 @@ async function hydrateTenantDbFromMongo(workspaceType, tenantId) {
         nextDb = shapeDbFromParsed(raw)
       }
       const scoped = getScopeState()
-      publishScopeSnapshot(scoped.key, nextDb, ALL_ENTITY_KEYS, updatedAt)
+      publishScopeSnapshot(scoped.key, nextDb, ALL_ENTITY_KEYS, updatedAt, readRevisions)
       return true
     })
   }
@@ -732,6 +812,7 @@ async function hydrateTenantDbPartialFromMongo(workspaceType, tenantId, entityKe
   try {
     return await runWithWorkspace(workspaceType, tenantId, async () => {
       const scoped = getScopeState()
+      const readRevisions = new Map(mongoScopeCacheRevisionByKey.get(scoped.key))
       const existing = mongoMemoryDbByTenant.get(scoped.key)
       const dbm = mongo.getMongoDb()
       if (!dbm) {
@@ -749,7 +830,7 @@ async function hydrateTenantDbPartialFromMongo(workspaceType, tenantId, entityKe
       })
       rawMerge._meta = { ...partialRaw._meta }
       const nextDb = shapeDbFromParsed(rawMerge)
-      publishScopeSnapshot(scoped.key, nextDb, keys, updatedAt)
+      publishScopeSnapshot(scoped.key, nextDb, keys, updatedAt, readRevisions)
       return true
     })
   }
@@ -784,13 +865,13 @@ function writeDb(db) {
     if (scope.key === 'tenant:default') {
       mongoMemoryDb = db
     }
-    scheduleMongoPersist(clonePayloadForMongo(db))
-    return
+    return scheduleMongoPersist(clonePayloadForMongo(db))
   }
   assertDatastoreReady()
   ensureDbFile()
   const file = tenantDbFile(scope.tenantId)
   fs.writeFileSync(file, JSON.stringify(db, null, 2), 'utf-8')
+  return Promise.resolve()
 }
 
 /**
@@ -805,10 +886,9 @@ function writeDbPartial(db, entityKeys) {
     if (scope.key === 'tenant:default') {
       mongoMemoryDb = db
     }
-    scheduleMongoPersistPartial(clonePayloadForMongo(db), entityKeys)
-    return
+    return scheduleMongoPersistPartial(clonePayloadForMongo(db), entityKeys)
   }
-  writeDb(db)
+  return writeDb(db)
 }
 
 /** Mongo 模式下仅持久化单条实体；JSON 回退模式仍写完整快照以保持原语义。 */
@@ -819,16 +899,60 @@ function writeDbEntity(db, entityKey, item) {
     if (scope.key === 'tenant:default') {
       mongoMemoryDb = db
     }
-    scheduleMongoPersistEntity(clonePayloadForMongo(db), entityKey, item)
-    return
+    return scheduleMongoPersistEntity(clonePayloadForMongo(db), entityKey, item)
   }
-  writeDb(db)
+  return writeDb(db)
+}
+
+function mergeEntityEntries(db, entries, meta) {
+  const nextDb = { ...db, _meta: meta }
+  for (const { entityKey, item } of entries) {
+    const pk = stablePrimaryKeyString(entityMongoPrimaryKey(item, entityKey))
+    const rows = [...(nextDb[entityKey] || [])]
+    const index = rows.findIndex(row => stablePrimaryKeyString(entityMongoPrimaryKey(row, entityKey)) === pk)
+    if (index === -1) rows.push(item)
+    else rows[index] = item
+    nextDb[entityKey] = rows
+  }
+  return nextDb
+}
+
+function writeDbEntities(db, entries) {
+  const scope = getScopeState()
+  const captured = JSON.parse(JSON.stringify(entries))
+  const snapshot = { _meta: JSON.parse(JSON.stringify(db?._meta || {})) }
+  if (!mongoBacked) {
+    return writeDb(mergeEntityEntries(db, dedupeEntityEntries(captured), snapshot._meta))
+  }
+  const revisions = new Map(mongoScopeWriteRevisionByKey.get(scope.key))
+  return scheduleMongoPersistJob(scope.key, captured.map(entry => entry.entityKey), async () => {
+    const result = await persistEntityItems(requireConnectedMongoDb(), captured, snapshot)
+    const current = mongoMemoryDbByTenant.get(scope.key) || buildEmptyRaw()
+    const currentRevisions = mongoScopeWriteRevisionByKey.get(scope.key) || new Map()
+    // Legacy writers publish immediately; preserve any newer queued working copy.
+    const publishable = result.entries.filter(entry => revisions.get(entry.entityKey) === currentRevisions.get(entry.entityKey))
+    const newerWorkingCopy = [...currentRevisions].some(([key, revision]) => revisions.get(key) !== revision)
+    const nextDb = mergeEntityEntries(current, publishable, newerWorkingCopy ? current._meta : snapshot._meta)
+    bumpScopeCacheRevisions(scope.key, publishable.map(entry => entry.entityKey))
+    mongoMemoryDbByTenant.set(scope.key, nextDb)
+    if (scope.key === 'tenant:default') mongoMemoryDb = nextDb
+    return result
+  }, { markDirty: false })
 }
 
 /** 供脚本在 writeDb 后 await，确保 Mongo 持久化已完成再断开连接 */
-function flushMongoPersist() {
-  const scope = getScopeState()
-  return persistTailByTenant.get(scope.key) || persistTail
+async function flushMongoPersist() {
+  const context = mongoScopeRefreshDedup.getStore()
+  if (!context) return persistResultByTenant.get(getScopeState().key)
+  let count = 0
+  let failure
+  do {
+    const jobs = context.persistJobs.slice(count)
+    count += jobs.length
+    const results = await Promise.allSettled(jobs)
+    failure ||= results.find(result => result.status === 'rejected')
+  } while (count < context.persistJobs.length)
+  if (failure) throw failure.reason
 }
 
 function isMongoPersistenceEnabled() {
@@ -845,6 +969,9 @@ function evictTenantMemoryCache(rawTenantId) {
   mongoMemoryDbByTenant.delete(key)
   mongoScopeEntityVersionByKey.delete(key)
   mongoScopeDirtyEntityKeysByKey.delete(key)
+  mongoScopeFailedEntityKeysByKey.delete(key)
+  mongoScopeWriteRevisionByKey.delete(key)
+  mongoScopeCacheRevisionByKey.delete(key)
 }
 
 async function shouldSkipScopeMongoRefresh(workspaceType, tenantId, cacheKey, keys, refreshMode) {
@@ -870,12 +997,13 @@ function runScopeMongoHydrate(workspaceType, rawTenantIdFromRequest, entityKeys,
     ? ALL_ENTITY_KEYS
     : entityKeys
   const signature = `${cacheKey}|${[...keys].sort().join(',')}`
-  const dedup = mongoScopeRefreshDedup.getStore()
+  const dedup = mongoScopeRefreshDedup.getStore()?.refreshed
   if (dedup?.has(signature) && getScopeCacheReadiness(ws, hydrateTenantId, keys).usable) return Promise.resolve()
   const inflight = mongoScopeHydrateInflight.get(signature)
   if (inflight) return inflight
   const refreshMode = mongoConfig.getMongoRefreshMode()
   const hydrateWork = () => runWithWorkspace(ws, hydrateTenantId, async () => {
+    await waitForMongoPersistBeforeRefresh(cacheKey)
     // Recheck after prior partial jobs have published their own entity versions.
     if (!await shouldSkipScopeMongoRefresh(ws, hydrateTenantId, cacheKey, keys, refreshMode)) {
       if (keys.length === ALL_ENTITY_KEYS.length) {
@@ -946,7 +1074,9 @@ module.exports = {
   writeDb,
   writeDbPartial,
   writeDbEntity,
+  writeDbEntities,
   flushMongoPersist,
+  waitForMongoPersistBeforeRefresh,
   hydrateFromMongoAfterConnect,
   hydrateTenantDbFromMongo,
   hasScopeCache,
