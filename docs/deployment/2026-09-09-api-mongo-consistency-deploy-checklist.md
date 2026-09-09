@@ -18,14 +18,7 @@
 
 - [ ] Read the Lakala config endpoint and the products endpoint.
 - [ ] Read the shop billing view and the admin repayment-record view; do not create, update, or delete business data during verification.
-- [ ] Let the business owner control any test payment. Before opening full traffic, confirm API logs have no `refresh` or `persist` error.
 
-## Rollback And Historical Exceptions
+## Code-Only Rollback
 
 - [ ] If rollback is required, roll back application code only and restart the API service. Never roll back, overwrite, or delete Mongo data.
-- [ ] For historical exceptions, produce only a read-only checklist containing `outTradeNo`, `orderId`, and current status. Do not repair, backfill, or otherwise alter historical data; any follow-up requires separate authorization.
-
-## Sign-Off
-
-- [ ] Deployment operator confirms every item above was completed without Mongo data operations.
-- [ ] Business owner confirms the read-only UI and API verification results before full traffic is opened.
