@@ -4295,7 +4295,9 @@ async function withAdminReadCacheAsync(ctx, subKey, computeFn) {
     return hit.data
   }
   const data = await computeFn()
-  adminReadCacheStore.set(fullKey, { at: now, data })
+  if (ctx.response?.get('X-Data-Stale') !== '1') {
+    adminReadCacheStore.set(fullKey, { at: now, data })
+  }
   return data
 }
 
@@ -5134,6 +5136,7 @@ router.get('/products', async (ctx) => {
       if (Array.isArray(products)) {
         return filterProductListForQuery(products, filterOpts)
       }
+      requireMongoFallbackSnapshot(ctx, workspaceType, tenantId, ['products'])
     }
     const db = readDb()
     return filterProductListForQuery(db.products || [], filterOpts)
@@ -5896,6 +5899,17 @@ function resolveMongoScopedDbName(workspaceType, tenantId) {
   return dbName
 }
 
+function requireMongoFallbackSnapshot(ctx, workspaceType, tenantId, keys, { markStale = true } = {}) {
+  if (!isMongoPersistenceEnabled()) return
+  if (!getScopeCacheReadiness(workspaceType, tenantId, keys).usable) {
+    const error = new Error('Required Mongo snapshot entities are unavailable')
+    error.code = 'MONGO_SNAPSHOT_UNAVAILABLE'
+    error.statusCode = 503
+    throw error
+  }
+  if (markStale) ctx.set('X-Data-Stale', '1')
+}
+
 function getMongoScopedCollection(workspaceType, tenantId, collectionName) {
   const client = mongo.getMongoClient && mongo.getMongoClient()
   if (!client || !collectionName) {
@@ -5919,7 +5933,8 @@ async function readMongoEntityDocsByIds(workspaceType, tenantId, collectionName,
   return docs.map(mapMongoEntityDoc).filter(Boolean)
 }
 
-async function buildAdminOrderMongoEnrichDb(workspaceType, tenantId, fallbackDb, pageOrders) {
+async function buildAdminOrderMongoEnrichDb(workspaceType, tenantId, fallbackDb, pageOrders, ctx) {
+  if (!pageOrders.length) return { users: [], orders: [], trafficChannels: [] }
   try {
     const userIds = [...new Set((Array.isArray(pageOrders) ? pageOrders : [])
       .map(order => String(order && order.mallUserId || '').trim())
@@ -5927,11 +5942,13 @@ async function buildAdminOrderMongoEnrichDb(workspaceType, tenantId, fallbackDb,
     const users = await readMongoEntityDocsByIds(workspaceType, tenantId, mongo.COLLECTIONS.users, userIds)
     const ordersColl = getMongoScopedCollection(workspaceType, tenantId, mongo.COLLECTIONS.orders)
     if (!ordersColl || !Array.isArray(users)) {
+      requireMongoFallbackSnapshot(ctx, workspaceType, tenantId, ['orders', 'users', 'trafficChannels'])
       return fallbackDb
     }
     const orders = userIds.length
       ? (await ordersColl.find({ mallUserId: { $in: userIds } }).toArray()).map(mapMongoEntityDoc).filter(Boolean)
       : []
+    requireMongoFallbackSnapshot(ctx, workspaceType, tenantId, ['trafficChannels'], { markStale: false })
     return {
       ...(fallbackDb || {}),
       users,
@@ -6156,6 +6173,7 @@ router.get('/admin/accounts', async (ctx) => {
         accounts = normalizeAdminAccountsListInTenantContext(tenantId, accounts)
         return buildAdminAccountsListView(accounts, scopeTypeQuery, currentAccount)
       }
+      requireMongoFallbackSnapshot(ctx, workspaceType, tenantId, ['adminAccounts'])
     }
     const db = readDb()
     ensureAdminAccounts(db)
@@ -6940,6 +6958,7 @@ router.get('/platform/accounts', async (ctx) => {
         accounts = normalizeAdminAccountsListInTenantContext(DEFAULT_TENANT_ID, accounts)
         return buildPlatformAccountsListView(accounts)
       }
+      requireMongoFallbackSnapshot(ctx, 'core', DEFAULT_TENANT_ID, ['adminAccounts'])
     }
     await migrateLegacyMainAccountsToCore()
     const db = await readCoreDb()
@@ -8377,7 +8396,7 @@ router.get('/users', async (ctx) => {
   if (!await requireAdminUsersListView(ctx, '查看用户列表')) {
     return
   }
-  const db = readDb()
+  let db
   const key = String(ctx.query.keyword || '').trim()
   const viewRaw = String(ctx.query.view || 'registered').trim()
   const view = viewRaw === 'ordering'
@@ -8399,8 +8418,13 @@ router.get('/users', async (ctx) => {
     if (isMongoPersistenceEnabled()) {
       const tenantId = normalizeTenantId(ctx.state && ctx.state.tenantId ? ctx.state.tenantId : DEFAULT_TENANT_ID)
       const workspaceType = normalizeWorkspaceType(ctx.state && ctx.state.workspaceType ? ctx.state.workspaceType : 'tenant')
+      let collectionUnavailable = false
       const mongoPage = await adminMongoReadOptimize.readAdminUsersPageFromMongoScoped(
-        name => getMongoScopedCollection(workspaceType, tenantId, name),
+        (name) => {
+          const collection = getMongoScopedCollection(workspaceType, tenantId, name)
+          if (!collection) collectionUnavailable = true
+          return collection
+        },
         {
           key,
           view,
@@ -8412,6 +8436,10 @@ router.get('/users', async (ctx) => {
         },
       )
       if (mongoPage) {
+        if (mongoPage.users.length) {
+          requireMongoFallbackSnapshot(ctx, workspaceType, tenantId, ['orders', 'trafficChannels'], { markStale: false })
+          db = readDb()
+        }
         const list = mongoPage.users.map(user => attachUserOrderStats(db, user, {
           includeAdminPasswordEcho: true,
         }))
@@ -8423,7 +8451,9 @@ router.get('/users', async (ctx) => {
         })
         return
       }
+      requireMongoFallbackSnapshot(ctx, workspaceType, tenantId, ['orders', 'users', 'trafficChannels'], { markStale: collectionUnavailable })
     }
+    db = readDb()
     ctx.body = success(listAdminUsersPaginatedBeforeEnrich(db, {
       key,
       view,
@@ -8436,6 +8466,7 @@ router.get('/users', async (ctx) => {
     return
   }
 
+  db = readDb()
   let rows = db.users
   if (key) {
     rows = rows.filter(item => item.id.includes(key) || item.name.includes(key) || item.phone.includes(key))
@@ -10776,6 +10807,7 @@ router.get('/admin/orders/sidebar-counts', async (ctx) => {
       if (counted) {
         return counted
       }
+      requireMongoFallbackSnapshot(ctx, workspaceType, tenantId, ['orders'])
     }
     return computeAdminOrderSidebarCountsFromDb(readDb())
   })
@@ -10834,8 +10866,9 @@ router.get('/orders', async (ctx) => {
   if (!await requireAdminPermission(ctx, [ADMIN_ROLES.SUPER, ADMIN_ROLES.REVIEWER, ADMIN_ROLES.COLLECTOR], '查看订单列表', { permissionKey, permissionAction: 'view' })) {
     return
   }
-  const db = readDb()
+  let db
   if (scope === 'card-data') {
+    db = readDb()
     const todayKey = formatDate(new Date().toISOString())
     if (reconcileOverdueUserBlacklistAcrossDb(db, todayKey)) {
       writeUsersDb(db)
@@ -10852,8 +10885,13 @@ router.get('/orders', async (ctx) => {
     if (isMongoPersistenceEnabled()) {
       const tenantId = normalizeTenantId(ctx.state && ctx.state.tenantId ? ctx.state.tenantId : DEFAULT_TENANT_ID)
       const workspaceType = normalizeWorkspaceType(ctx.state && ctx.state.workspaceType ? ctx.state.workspaceType : 'tenant')
+      let collectionUnavailable = false
       const mongoPage = await adminMongoReadOptimize.readAdminOrdersPageFromMongoScoped(
-        name => getMongoScopedCollection(workspaceType, tenantId, name),
+        (name) => {
+          const collection = getMongoScopedCollection(workspaceType, tenantId, name)
+          if (!collection) collectionUnavailable = true
+          return collection
+        },
         {
           keyword,
           status,
@@ -10869,7 +10907,8 @@ router.get('/orders', async (ctx) => {
         pageSize,
       )
       if (mongoPage) {
-        const enrichDb = await buildAdminOrderMongoEnrichDb(workspaceType, tenantId, db, mongoPage.orders)
+        if (mongoPage.orders.length) db = db || readDb()
+        const enrichDb = await buildAdminOrderMongoEnrichDb(workspaceType, tenantId, db, mongoPage.orders, ctx)
         const userOrdersCache = new Map()
         const list = mongoPage.orders.map((order) => {
           prepareAdminOrderListItem(order)
@@ -10887,7 +10926,9 @@ router.get('/orders', async (ctx) => {
         })
         return
       }
+      requireMongoFallbackSnapshot(ctx, workspaceType, tenantId, ['orders', 'users', 'trafficChannels'], { markStale: collectionUnavailable })
     }
+    db = db || readDb()
     ctx.body = success(listAdminOrdersPaginatedBeforeEnrich(db, {
       keyword,
       status,
@@ -10902,6 +10943,7 @@ router.get('/orders', async (ctx) => {
     return
   }
 
+  db = db || readDb()
   const list = db.orders.filter((item) => {
     ensureOrderInstallmentPlan(item)
     ensureOrderCardPackage(item)

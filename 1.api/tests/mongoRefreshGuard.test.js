@@ -69,6 +69,165 @@ function loadFunction(name, dependencies) {
   return vm.runInNewContext(`(${match[0]})`, dependencies)
 }
 
+function loadHandler(route, dependencies) {
+  const start = source.indexOf(`router.get('${route}', `)
+  assert.ok(start >= 0)
+  const body = source.slice(start + `router.get('${route}', `.length)
+  return vm.runInNewContext(`(${body.slice(0, body.indexOf('\n})') + 2)})`, dependencies)
+}
+
+for (const [route, keys] of [
+  ['/products', ['products']], ['/admin/accounts', ['adminAccounts']], ['/platform/accounts', ['adminAccounts']],
+  ['/admin/orders/sidebar-counts', ['orders']],
+  ['/orders', ['orders', 'users', 'trafficChannels']], ['/users', ['orders', 'users', 'trafficChannels']],
+]) {
+  const scenarios = ['never-loaded', 'dirty', 'covered', 'genuine-empty', 'json']
+  if (route === '/orders' || route === '/users') scenarios.push('unsupported')
+  for (const scenario of scenarios) {
+    test(`actual ${route} handler direct fallback ${scenario}`, async () => {
+      const mongoEnabled = scenario !== 'json'
+      const unavailable = scenario !== 'genuine-empty'
+      const headers = {}
+      const durableRows = scenario === 'covered' ? [{ id: 'durable-record' }] : []
+      const snapshot = { products: durableRows, adminAccounts: durableRows, users: durableRows, orders: durableRows, trafficChannels: [] }
+      const query = { page: '1', ...(scenario === 'unsupported' ? { keyword: 'complex-filter' } : {}) }
+      const app = new Koa()
+      const response = { statusCode: 404, getHeader: key => headers[key], setHeader: (key, value) => { headers[key] = value }, removeHeader: key => { delete headers[key] } }
+      const ctx = app.createContext({ method: 'GET', url: route + '?' + new URLSearchParams(query), headers: {} }, response)
+      ctx.state = { workspaceType: 'tenant', tenantId: 'fake' }
+      let readinessCalls = 0
+      const dependencies = {
+        isMongoPersistenceEnabled: () => mongoEnabled,
+        getScopeCacheReadiness: (workspace, tenant, needed) => {
+          assert.equal(workspace, route === '/platform/accounts' ? 'core' : 'tenant')
+          assert.equal(tenant, route === '/platform/accounts' ? 'default' : 'fake')
+          assert.deepEqual(Array.from(needed), keys)
+          readinessCalls++
+          return { usable: scenario === 'covered' || scenario === 'unsupported', dirtyKeys: scenario === 'dirty' ? [keys[0]] : [] }
+        },
+        isAdminReadOptimizeEnabled: () => true, normalizeTenantId: value => value, normalizeWorkspaceType: value => value,
+        DEFAULT_TENANT_ID: 'default', ADMIN_ROLES: {},
+        requireAdminPermission: async () => true, requireAdminPermissionOnAny: async () => true,
+        requireAdminUsersListView: async () => true, resolveAdminAccount: async () => ({}),
+        requirePlatformScope: async () => ({}), migrateLegacyMainAccountsToCore: async () => {},
+        readCoreDb: async () => snapshot, buildPlatformAccountsListView: rows => rows, platformAuditRecord: async () => {},
+        readDb: () => { assert.notEqual(scenario, 'genuine-empty', 'direct empty results must not need a snapshot'); return snapshot },
+        withAdminReadCacheAsync: (context, key, compute) => compute(), success: data => ({ data }),
+        readProductsFromMongoScoped: async () => unavailable ? null : [], filterProductListForQuery: rows => rows,
+        readAdminAccountsFromMongoScoped: async () => unavailable ? null : [],
+        normalizeAdminAccountsListInTenantContext: (tenant, rows) => rows, ensureAdminAccounts() {}, buildAdminAccountsListView: rows => rows,
+        computeAdminOrderSidebarCountsFromDb: db => ({ pendingReview: db.orders.length, reviewedOrdersList: 0 }),
+        adminOrderPermissionKeyForListScope: () => 'orders', normalizeRegisteredWhitelistStatus: () => '',
+        getMongoScopedCollection: () => unavailable ? null : {
+          countDocuments: async () => 0,
+          find() { return this }, sort() { return this }, skip() { return this }, limit() { return this }, toArray: async () => [],
+        },
+        buildAdminOrderMongoEnrichDb: async () => snapshot,
+        listAdminOrdersPaginatedBeforeEnrich: db => ({ list: db.orders, total: db.orders.length, page: 1, pageSize: 20 }),
+        listAdminUsersPaginatedBeforeEnrich: db => ({ list: db.users, total: db.users.length, page: 1, pageSize: 20 }),
+        adminMongoReadOptimize: require('../src/adminMongoReadOptimize'),
+      }
+      if (source.includes('function requireMongoFallbackSnapshot(')) {
+        dependencies.requireMongoFallbackSnapshot = loadFunction('requireMongoFallbackSnapshot', dependencies)
+      }
+      const handler = loadHandler(route, dependencies)
+      const boundary = loadFunction('mongoReadErrorBoundary', {
+        fail: (context, message, status) => { context.status = status; context.body = { message } },
+      })
+      await boundary(ctx, () => handler(ctx))
+      const blocked = scenario === 'never-loaded' || scenario === 'dirty'
+      assert.equal(ctx.status, blocked ? 503 : 200)
+      assert.equal(headers['X-Data-Stale'], scenario === 'covered' ? '1' : undefined)
+      assert.equal(readinessCalls > 0, mongoEnabled && unavailable)
+      if (!blocked) assert.ok(ctx.body.data)
+      if (scenario === 'covered') {
+        if (route === '/admin/orders/sidebar-counts') assert.equal(ctx.body.data.pendingReview, 1)
+        else assert.equal((ctx.body.data.list || ctx.body.data)[0].id, 'durable-record')
+      }
+    })
+  }
+}
+
+test('order enrichment cannot use uncovered fallback entities and marks covered fallback stale', async () => {
+  for (const usable of [false, true]) {
+    const headers = {}
+    const ctx = { state: {}, set: (key, value) => { headers[key] = value } }
+    const snapshot = { users: [], orders: [], trafficChannels: [] }
+    const dependencies = {
+      mongo, MongoDirectReadError: require('../src/adminMongoReadOptimize').MongoDirectReadError,
+      readMongoEntityDocsByIds: async () => null, getMongoScopedCollection: () => null,
+      isMongoPersistenceEnabled: () => true,
+      getScopeCacheReadiness: (workspace, tenant, keys) => {
+        assert.deepEqual(Array.from(keys), ['orders', 'users', 'trafficChannels'])
+        return { usable }
+      },
+    }
+    if (source.includes('function requireMongoFallbackSnapshot(')) {
+      dependencies.requireMongoFallbackSnapshot = loadFunction('requireMongoFallbackSnapshot', dependencies)
+    }
+    const enrich = loadFunction('buildAdminOrderMongoEnrichDb', dependencies)
+    if (usable) {
+      assert.equal(await enrich('tenant', 'fake', snapshot, [{ mallUserId: 'U1' }], ctx), snapshot)
+      assert.equal(headers['X-Data-Stale'], '1')
+    }
+    else {
+      await assert.rejects(() => enrich('tenant', 'fake', snapshot, [{ mallUserId: 'U1' }], ctx))
+    }
+  }
+})
+
+test('empty direct order pages do not require an enrichment fallback', async () => {
+  const enrich = loadFunction('buildAdminOrderMongoEnrichDb', {
+    mongo, MongoDirectReadError: require('../src/adminMongoReadOptimize').MongoDirectReadError,
+    readMongoEntityDocsByIds: async () => { assert.fail('empty pages need no reads') },
+  })
+  const result = await enrich('tenant', 'fake', null, [], { state: {}, set() {} })
+  assert.deepEqual(Array.from(result.users), [])
+  assert.deepEqual(Array.from(result.orders), [])
+})
+
+test('async read cache does not retain data served with a stale fallback header', async () => {
+  const cache = loadFunction('withAdminReadCacheAsync', {
+    adminReadCacheTtlMs: () => 45000, adminReadCacheScopeKey: () => 'tenant:fake', adminReadCacheStore: new Map(),
+  })
+  let reads = 0
+  const staleCtx = { response: { get: () => '1' } }
+  await cache(staleCtx, 'products', async () => { reads++; return ['old'] })
+  const result = await cache({ response: { get: () => '' } }, 'products', async () => { reads++; return ['new'] })
+  assert.equal(reads, 2)
+  assert.deepEqual(result, ['new'])
+})
+
+test('successful direct order enrichment still requires covered channel snapshot data', async () => {
+  const dependencies = {
+    mongo, MongoDirectReadError: require('../src/adminMongoReadOptimize').MongoDirectReadError,
+    readMongoEntityDocsByIds: async () => [{ id: 'U1', registerChannelCode: 'legacy' }],
+    getMongoScopedCollection: () => ({ find: () => ({ toArray: async () => [] }) }), mapMongoEntityDoc: value => value,
+    isMongoPersistenceEnabled: () => true,
+    getScopeCacheReadiness: (workspace, tenant, keys) => {
+      assert.deepEqual(Array.from(keys), ['trafficChannels'])
+      return { usable: false }
+    },
+  }
+  if (source.includes('function requireMongoFallbackSnapshot(')) {
+    dependencies.requireMongoFallbackSnapshot = loadFunction('requireMongoFallbackSnapshot', dependencies)
+  }
+  const enrich = loadFunction('buildAdminOrderMongoEnrichDb', dependencies)
+  await assert.rejects(() => enrich('tenant', 'fake', { trafficChannels: [] }, [{ mallUserId: 'U1' }], { set() {} }))
+})
+
+test('legacy tenant account merge still falls back for a genuinely empty Mongo account list', async () => {
+  const accounts = [{ id: 'legacy-account' }]
+  let legacyReads = 0
+  const resolve = loadFunction('resolveTenantAdminAccountsList', {
+    readTenantAdminAccountsFromMongo: async () => [],
+    readDbByTenantId: async () => { legacyReads++; return { adminAccounts: accounts } },
+    ensureAdminAccounts() {},
+  })
+  assert.equal(await resolve('fake'), accounts)
+  assert.equal(legacyReads, 1)
+})
+
 test('entrypoint uses safe pagination plans for every accepted orders path variant', () => {
   const resolve = loadFunction('resolveApiMongoRefreshPlan', {
     zheyinTrafficGateway: null, halfFlowTrafficGateway: null, resolveDuodiandianMongoRefreshPlan: () => null,
