@@ -9997,7 +9997,7 @@ lakalaPayment.initLakalaPayment({
   writeDbEntities,
   getPaymentScopeKey: () => `${getCurrentWorkspaceType()}:${getCurrentTenantId()}`,
   isPaymentCacheReady: () => !isMongoPersistenceEnabled()
-    || getScopeCacheReadiness(getCurrentWorkspaceType(), getCurrentTenantId(), ['orders', 'lakalaPayments']).usable,
+    || getScopeCacheReadiness(getCurrentWorkspaceType(), getCurrentTenantId(), ['users', 'orders', 'lakalaPayments']).usable,
   orderBelongsToRegisteredMallUser,
   resolveRegisteredMallUserByNormalizedPhone,
   normalizePhone,

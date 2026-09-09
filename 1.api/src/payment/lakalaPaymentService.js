@@ -34,6 +34,12 @@ function runPaymentWrite(work) {
       }
       failedPaymentWrites.delete(key)
     }
+    // Request-start refresh cannot certify a working copy changed during a queue or network wait.
+    if (!deps.isPaymentCacheReady?.()) {
+      throw Object.assign(new Error('支付数据尚未确认，请稍后重试'), {
+        code: 'MONGO_SNAPSHOT_UNAVAILABLE', statusCode: 503, lakalaPersistenceError: true,
+      })
+    }
     return work()
   })
   paymentWriteQueues.set(key, job)
@@ -471,7 +477,7 @@ function fulfillPaymentRecord(outTradeNo, { tradeState, notifyRaw, actualPayChan
 
     let billing
     if (!already && /^1\d{10}$/.test(phone)) {
-      const dbAfter = structuredClone(deps.readDb())
+      const dbAfter = structuredClone(db)
       billing = deps.buildMallBillsSuccessData(dbAfter, phone)
     }
     return { already, billing }

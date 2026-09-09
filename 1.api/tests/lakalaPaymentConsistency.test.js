@@ -563,7 +563,7 @@ test('pending state writes and mock completion also propagate persistence failur
 async function withRealStorePaymentFixture(t, work, options = {}) {
   const mongo = require('../src/mongo')
   const store = require('../src/store')
-  const { runWithTenant, getCurrentTenantId } = require('../src/tenantContext')
+  const { runWithTenant, getCurrentTenantId, getCurrentWorkspaceType } = require('../src/tenantContext')
   const f = createFixture(options)
   f.db().orders[0].installmentPlan.push({ period: 2, amount: 100, paid: false })
   f.db().lakalaPayments.push({ ...clone(f.payment()), outTradeNo: 'LP2', period: 2 })
@@ -576,7 +576,12 @@ async function withRealStorePaymentFixture(t, work, options = {}) {
   let failurePositions = new Set()
   let gate
   const dbm = { collection: name => ({
-    find: () => {
+    find: (filter, findOptions) => {
+      if (!bootstrapping && options.legacyWriteContext?.getStore()) {
+        assert.equal(name, mongo.COLLECTIONS.orders)
+        assert.deepEqual(findOptions?.projection, { _id: 1 })
+        return { toArray: async () => data.get(name).map(row => ({ _id: row._id })) }
+      }
       assert.equal(bootstrapping, true, 'payment execution must never scan a collection')
       return { toArray: async () => structuredClone(data.get(name) || []) }
     },
@@ -600,16 +605,20 @@ async function withRealStorePaymentFixture(t, work, options = {}) {
       if (name !== mongo.APP_META) data.set(name, [...data.get(name).filter(row => row._id !== filter._id), clone(item)])
     },
     deleteMany: () => assert.fail('payment execution must never delete'),
-    bulkWrite: () => assert.fail('payment execution must never bulkWrite'),
+    bulkWrite: operations => {
+      assert.equal(options.legacyWriteContext?.getStore(), true, 'payment execution must never bulkWrite')
+      assert.equal(name, mongo.COLLECTIONS.orders)
+      return options.legacyBulkWrite(operations)
+    },
   }) }
   t.mock.method(mongo, 'getMongoDb', () => dbm)
   await runWithTenant(tenantId, async () => {
     await store.hydrateFromMongoAfterConnect()
     bootstrapping = false
-    f.service.initLakalaPayment({
-      ...f.dependencies, readDb: store.readDb, writeDbEntities: store.writeDbEntities,
-      getPaymentScopeKey: () => `tenant:${getCurrentTenantId()}`,
-      isPaymentCacheReady: () => store.getScopeCacheReadiness('tenant', tenantId, ['orders', 'lakalaPayments']).usable,
+    const initialization = indexSource.match(/lakalaPayment\.initLakalaPayment\(\{[^]*?\n\}\)/)
+    assert.ok(initialization)
+    vm.runInNewContext(initialization[0], {
+      ...f.dependencies, ...store, lakalaPayment: f.service, getCurrentWorkspaceType, getCurrentTenantId,
     })
     await work({
       ...f, calls, failures, read: store.readDb,
@@ -627,6 +636,154 @@ async function withRealStorePaymentFixture(t, work, options = {}) {
     })
   })
 }
+
+test('payment status fails closed when a legacy order write starts after strict refresh and fails', { timeout: 2000 }, async (t) => {
+  const store = require('../src/store')
+  const mongoConfig = require('../src/mongoConfig')
+  const tenant = require('../src/tenantContext')
+  const { resolveCoreApiMongoRefreshPlan } = require('../src/apiMongoRefreshPlan')
+  const { shouldBlockRequestOnMongoRefreshError } = require('../src/mongoRefreshGuard')
+  t.mock.method(mongoConfig, 'getMongoRefreshMode', () => 'single_instance')
+  const legacyWriteContext = new AsyncLocalStorage()
+  let queryStarted
+  let releaseQuery
+  let legacyStarted
+  let releaseLegacy
+  const queryBegan = new Promise(resolve => { queryStarted = resolve })
+  const queryGate = new Promise(resolve => { releaseQuery = resolve })
+  const legacyBegan = new Promise(resolve => { legacyStarted = resolve })
+  const legacyGate = new Promise(resolve => { releaseLegacy = resolve })
+  const load = (name, dependencies) => {
+    const match = indexSource.match(new RegExp(`(?:async )?function ${name}\\([^]*?\\n\\}`))
+    assert.ok(match, `${name} must exist`)
+    return vm.runInNewContext(`(${match[0]})`, dependencies)
+  }
+  await withRealStorePaymentFixture(t, async (f) => {
+    const middlewareDependencies = {
+      ...store, ...tenant, isManagedApiPath: () => true,
+      resolveApiMongoRefreshPlan: resolveCoreApiMongoRefreshPlan, shouldBlockRequestOnMongoRefreshError,
+      fail: (ctx, message, status) => { ctx.status = status; ctx.body = { message } },
+      console: { error() {}, warn() {} },
+    }
+    const refresh = load('refreshMongoForRequest', middlewareDependencies)
+    const flush = load('flushMongoForRequest', middlewareDependencies)
+    let ordinaryJob
+    const writeOrdersDb = load('writeOrdersDb', {
+      writeDbPartial: (...args) => { ordinaryJob = store.writeDbPartial(...args); return ordinaryJob },
+    })
+    const paymentCtx = {
+      method: 'GET', path: '/api/payment/lakala/status/LP1', status: 200,
+      state: { workspaceType: 'tenant', tenantId: tenant.getCurrentTenantId() },
+    }
+    let refreshed = false
+    const paymentRequest = store.runWithMongoRequestDedup(() => refresh(paymentCtx, async () => {
+      assert.equal(f.readiness().usable, true)
+      refreshed = true
+      await flush(paymentCtx, async () => {
+        Object.assign(paymentCtx, await f.route('/payment/lakala/status/:outTradeNo'))
+      })
+    }))
+    await queryBegan
+    assert.equal(refreshed, true, 'strict request refresh must complete before the external query pauses')
+    const ordinaryCtx = { method: 'POST', path: '/api/admin/orders/repay', status: 200, state: paymentCtx.state }
+    const ordinaryRequest = legacyWriteContext.run(true, () => store.runWithMongoRequestDedup(() => flush(ordinaryCtx, async () => {
+      const working = f.read()
+      working.orders.find(row => row.id === 'O1').installmentPlan[0].paid = true
+      writeOrdersDb(working)
+    })))
+    const ordinaryRejected = assert.rejects(ordinaryJob, /legacy order write outage/)
+    try {
+      await legacyBegan
+      assert.equal(f.read().orders[0].installmentPlan[0].paid, true)
+      assert.equal(f.readiness().usable, false)
+      releaseQuery()
+      await new Promise(resolve => setImmediate(resolve))
+      releaseLegacy()
+      await Promise.all([ordinaryRejected, ordinaryRequest, paymentRequest])
+      assert.equal(ordinaryCtx.status, 503)
+      assert.equal(f.durableRows('orders').find(row => row.id === 'O1').installmentPlan[0].paid, false)
+      assert.equal(paymentCtx.status, 503, `unconfirmed working copy must not produce ${JSON.stringify(paymentCtx.body)}`)
+      assert.equal(f.durableRows('lakalaPayments').find(row => row.outTradeNo === 'LP1').status, 'pending')
+      assert.equal(f.calls.length, 0, 'payment must fail before enqueueing any exact write')
+      assert.equal(f.readiness().usable, false)
+    }
+    finally {
+      releaseQuery()
+      releaseLegacy()
+      await Promise.allSettled([ordinaryRequest, paymentRequest, ordinaryRejected])
+    }
+  }, {
+    legacyWriteContext,
+    legacyBulkWrite: async operations => {
+      assert.equal(operations.find(op => op.replaceOne.filter._id === 'O1').replaceOne.replacement.installmentPlan[0].paid, true)
+      legacyStarted()
+      await legacyGate
+      throw new Error('legacy order write outage')
+    },
+    queryFn: async () => {
+      queryStarted()
+      await queryGate
+      return { paid: true, tradeState: 'SUCCESS', account_type: 'WECHAT' }
+    },
+  })
+})
+
+for (const entityKey of ['users', 'orders', 'lakalaPayments']) {
+  for (const state of ['pending', 'failed']) {
+    test(`payment business calculation rejects ${state} legacy ${entityKey} snapshots`, { timeout: 2000 }, async (t) => {
+      const store = require('../src/store')
+      await withRealStorePaymentFixture(t, async (f) => {
+        f.failAt(1)
+        const gate = state === 'pending' ? f.block() : null
+        const item = { ...f.read()[entityKey][0], unconfirmedNote: 'another request' }
+        const ordinaryRejected = assert.rejects(store.writeDbEntity(f.read(), entityKey, item), /partial Mongo outage/)
+        if (gate) await gate.began
+        else await ordinaryRejected
+        const writesBeforePayment = f.calls.length
+        const paymentResults = Promise.allSettled([f.notify(), f.preorder()])
+        try {
+          await new Promise(resolve => setImmediate(resolve))
+          gate?.release()
+          await ordinaryRejected
+          for (const result of await paymentResults) {
+            assert.equal(result.status, 'rejected', `${entityKey} ${state} must not enter payment calculation`)
+            assert.equal(result.reason.code, 'MONGO_SNAPSHOT_UNAVAILABLE')
+            assert.equal(result.reason.statusCode, 503)
+            assert.equal(result.reason.lakalaPersistenceError, true)
+          }
+          assert.equal(f.calls.length, writesBeforePayment)
+          assert.equal(f.externalCalls.length, 0)
+          assert.equal(f.durableRows('lakalaPayments').find(row => row.outTradeNo === 'LP1').status, 'pending')
+        }
+        finally {
+          gate?.release()
+          await Promise.allSettled([ordinaryRejected, paymentResults])
+        }
+      })
+    })
+  }
+}
+
+test('confirmed payment billing excludes an unrelated dirty order published during persistence', async (t) => {
+  const store = require('../src/store')
+  await withRealStorePaymentFixture(t, async (f) => {
+    f.failAt(4)
+    const gate = f.block()
+    const payment = f.service.syncPaymentStatus('LP1')
+    await gate.began
+    const unrelated = { ...f.read().orders.find(row => row.id === 'unrelated'), mallUserId: f.user.id }
+    const ordinaryRejected = assert.rejects(store.writeDbEntity(f.read(), 'orders', unrelated), /partial Mongo outage/)
+    gate.release()
+    const result = await payment
+    await ordinaryRejected
+    assert.equal(result.status, 'success')
+    assert.equal(f.durableRows('orders').find(row => row.id === 'O1').installmentPlan[0].paid, true)
+    assert.equal(f.durableRows('orders').find(row => row.id === 'unrelated').mallUserId, 'U2')
+    assert.equal(f.read().orders.find(row => row.id === 'unrelated').mallUserId, f.user.id)
+    assert.equal(f.readiness().usable, false)
+    assert.equal(result.billing.list.some(row => row.orderId === 'unrelated'), false, 'billing must use the isolated confirmed settlement snapshot')
+  }, { realBilling: true })
+})
 
 test('generic request flush preserves core payment ACK when only channel enrichment fails', async (t) => {
   const store = require('../src/store')
@@ -734,6 +891,10 @@ test('billing and best-effort channel errors never register a failed core batch'
 
   const channel = createFixture({ query: { account_type: 'ALIPAY' }, persistOutcomes: ['resolve', 'reject'] })
   await channel.service.handleNotifyPayload({ out_order_no: 'LP1', order_status: 'SUCCESS' })
+  assert.equal(channel.payment().status, 'success', 'optional failure must preserve the confirmed core ACK')
+  await assert.rejects(channel.notify(), error => error.code === 'MONGO_SNAPSHOT_UNAVAILABLE' && error.statusCode === 503)
+  assert.equal(channel.persistCalls.length, 2, 'an unconfirmed cache must not start a new core batch')
+  channel.reload()
   await channel.notify()
   assert.equal(channel.persistCalls.length, 3)
   assert.equal(channel.persistCalls[2].length, 1)
