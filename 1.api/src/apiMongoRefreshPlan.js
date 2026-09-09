@@ -8,7 +8,7 @@ function resolveCoreApiMongoRefreshPlan({ method = 'GET', path = '', query = {},
   method = String(method).trim().toUpperCase()
   // Match Router defaults using a local copy; never rewrite request paths or parameter values.
   path = String(path).toLowerCase().replace(/\/$/, '')
-  if (method === 'GET' && path === '/api/payment/lakala/config') return plan('skip', [], false)
+  if (method === 'GET' && ['/api/health', '/api/payment/lakala/config'].includes(path)) return plan('skip', [], false)
 
   const paymentKeys = ['users', 'orders', 'lakalaPayments']
   if (method === 'GET' && path === '/api/admin/orders/repayment-records') {

@@ -1,6 +1,7 @@
 const fs = require('node:fs')
 const path = require('node:path')
 const { AsyncLocalStorage } = require('node:async_hooks')
+const { isDeepStrictEqual } = require('node:util')
 const mongo = require('./mongo')
 const mongoConfig = require('./mongoConfig')
 const {
@@ -42,6 +43,10 @@ const mongoScopeFailedEntityTargetsByKey = new Map()
 const mongoScopePendingEntityCountsByKey = new Map()
 const mongoScopeWriteRevisionByKey = new Map()
 const mongoScopeCacheRevisionByKey = new Map()
+const mongoSnapshotOrigins = new WeakMap()
+const mongoScopeExactFences = new Map()
+const mongoScopeConfirmedExactFences = new Map()
+const mongoScopeExactTargets = new Map()
 
 /** Request-local dedup uses the scope and requested entity signature. */
 const mongoScopeRefreshDedup = new AsyncLocalStorage()
@@ -144,6 +149,79 @@ function bumpScopeCacheRevisions(cacheKey, keys) {
   mongoScopeCacheRevisionByKey.set(cacheKey, revisions)
 }
 
+function rememberSnapshotOrigin(scopeKey, db) {
+  mongoSnapshotOrigins.set(db, { scopeKey, fences: new Map(mongoScopeConfirmedExactFences.get(scopeKey)) })
+  return db
+}
+
+function exactTargetKey(entityKey, item) {
+  return `${entityKey}|${stablePrimaryKeyString(entityMongoPrimaryKey(item, entityKey))}`
+}
+
+function reserveExactFences(scopeKey, entries) {
+  const fences = new Map(mongoScopeExactFences.get(scopeKey))
+  const keys = [...new Set(entries.map(entry => entry.entityKey))]
+  const tokens = [...new Set([...keys, ...entries.map(entry => exactTargetKey(entry.entityKey, entry.item))])]
+  const reservation = new Map()
+  for (const token of tokens) {
+    const revision = (fences.get(token) || 0) + 1
+    fences.set(token, revision)
+    reservation.set(token, revision)
+  }
+  mongoScopeExactFences.set(scopeKey, fences)
+  bumpScopeCacheRevisions(scopeKey, keys)
+  return reservation
+}
+
+function snapshotItemsByTarget(db, keys, entries) {
+  const items = new Map()
+  if (entries) {
+    for (const { entityKey, item } of entries) items.set(exactTargetKey(entityKey, item), item)
+  }
+  else {
+    for (const key of keys) {
+      for (const item of db[key] || []) items.set(exactTargetKey(key, item), item)
+    }
+  }
+  return items
+}
+
+function updateProtectedExactTargets(scopeKey, snapshot, keys, entries) {
+  const protectedTargets = new Map(mongoScopeExactTargets.get(scopeKey))
+  if (!protectedTargets.size) return
+  const affected = entries ? new Set(entries.map(entry => exactTargetKey(entry.entityKey, entry.item))) : null
+  const items = snapshotItemsByTarget(snapshot, keys, entries)
+  for (const [token, target] of protectedTargets) {
+    if (!keys.includes(target.entityKey) || (affected && !affected.has(token))) continue
+    protectedTargets.set(token, { entityKey: target.entityKey, item: structuredClone(items.get(token) || null) })
+  }
+  mongoScopeExactTargets.set(scopeKey, protectedTargets)
+}
+
+function legacySnapshotConflict(scopeKey, db, keys, entries) {
+  const origin = mongoSnapshotOrigins.get(db)
+  const fences = mongoScopeExactFences.get(scopeKey) || new Map()
+  const confirmed = mongoScopeConfirmedExactFences.get(scopeKey) || new Map()
+  const tokens = entries ? entries.map(entry => exactTargetKey(entry.entityKey, entry.item)) : keys
+  let conflict = origin && origin.scopeKey !== scopeKey
+  if (origin) {
+    conflict ||= tokens.some(token => (origin.fences.get(token) || 0) !== (fences.get(token) || 0))
+  }
+  else {
+    // Untracked clones may preserve confirmed targets, but cannot rewrite or omit them.
+    conflict ||= tokens.some(token => (fences.get(token) || 0) !== (confirmed.get(token) || 0))
+    const items = snapshotItemsByTarget(db, keys, entries)
+    for (const [token, target] of mongoScopeExactTargets.get(scopeKey) || []) {
+      if (!keys.includes(target.entityKey) || (entries && !tokens.includes(token))) continue
+      if (!isDeepStrictEqual(items.get(token) || null, target.item)) conflict = true
+    }
+  }
+  if (!conflict) return null
+  return Object.assign(new Error(`[store] stale Mongo snapshot write conflict for ${scopeKey}`), {
+    code: 'MONGO_WRITE_CONFLICT', statusCode: 503,
+  })
+}
+
 function publishScopeSnapshot(cacheKey, nextDb, keys, updatedAt, readRevisions) {
   const versions = new Map(mongoScopeEntityVersionByKey.get(cacheKey))
   const dirty = new Set(mongoScopeDirtyEntityKeysByKey.get(cacheKey))
@@ -166,8 +244,15 @@ function publishScopeSnapshot(cacheKey, nextDb, keys, updatedAt, readRevisions) 
     failed.delete(key)
     failedTargets.delete(key)
   }
+  const confirmedFences = new Map(mongoScopeConfirmedExactFences.get(cacheKey))
+  const confirmedKeys = keys.filter(key => !changed(key))
+  for (const [token, revision] of mongoScopeExactFences.get(cacheKey) || []) {
+    if (confirmedKeys.some(key => token === key || token.startsWith(`${key}|`))) confirmedFences.set(token, revision)
+  }
+  mongoScopeConfirmedExactFences.set(cacheKey, confirmedFences)
+  updateProtectedExactTargets(cacheKey, nextDb, confirmedKeys)
   // Publish only after every collection and metadata read has succeeded.
-  mongoMemoryDbByTenant.set(cacheKey, nextDb)
+  mongoMemoryDbByTenant.set(cacheKey, rememberSnapshotOrigin(cacheKey, nextDb))
   mongoScopeEntityVersionByKey.set(cacheKey, versions)
   mongoScopeDirtyEntityKeysByKey.set(cacheKey, dirty)
   mongoScopeFailedEntityKeysByKey.set(cacheKey, failed)
@@ -642,18 +727,20 @@ function entityEntryTargets(entries) {
   return targets
 }
 
-function markScopeEntitiesDirty(scopeKey, entityKeys, targets) {
+function markScopeEntitiesDirty(scopeKey, entityKeys, targets, recordWriteRevisions = true) {
   bumpScopeCacheRevisions(scopeKey, entityKeys)
   const dirty = new Set(mongoScopeDirtyEntityKeysByKey.get(scopeKey))
   const revisions = new Map(mongoScopeWriteRevisionByKey.get(scopeKey))
   const pending = new Map(mongoScopePendingEntityCountsByKey.get(scopeKey))
-  revisions.set('_meta', (revisions.get('_meta') || 0) + 1)
+  if (recordWriteRevisions) revisions.set('_meta', (revisions.get('_meta') || 0) + 1)
   for (const key of entityKeys) {
     dirty.add(key)
     pending.set(key, (pending.get(key) || 0) + 1)
     const conflicts = targets?.get(key)
     const revisionKeys = conflicts ? [...conflicts].map(pk => `${key}|${pk}`) : [key]
-    for (const revisionKey of revisionKeys) revisions.set(revisionKey, (revisions.get(revisionKey) || 0) + 1)
+    if (recordWriteRevisions) {
+      for (const revisionKey of revisionKeys) revisions.set(revisionKey, (revisions.get(revisionKey) || 0) + 1)
+    }
   }
   mongoScopeDirtyEntityKeysByKey.set(scopeKey, dirty)
   mongoScopeWriteRevisionByKey.set(scopeKey, revisions)
@@ -703,9 +790,17 @@ function scheduleMongoPersistJob(scopeKey, entityKeys, job, options = {}) {
   const keys = normalizeEntityKeys(entityKeys)
   const targets = entityEntryTargets(options.entries)
   const wasPending = options.markDirty !== false
-  if (wasPending) markScopeEntitiesDirty(scopeKey, keys, targets)
+  if (wasPending) markScopeEntitiesDirty(scopeKey, keys, targets, options.recordWriteRevisions !== false)
   const previousTail = persistTailByTenant.get(scopeKey) || Promise.resolve()
-  const result = previousTail.catch(() => undefined).then(job)
+  const result = previousTail.catch(() => undefined).then(async () => {
+    try { return await job() }
+    catch (cause) {
+      const error = cause instanceof Error ? cause : new Error(String(cause?.message || cause))
+      error.code ||= 'MONGO_PERSIST_FAILED'
+      error.statusCode ||= 503
+      throw error
+    }
+  })
   // Attach a rejection handler immediately, while returning the original result.
   const continuation = result.then(value => {
     settleScopeEntities(scopeKey, keys, targets, { succeeded: true, wasPending, updatedAtMs: value?.updatedAtMs })
@@ -716,7 +811,7 @@ function scheduleMongoPersistJob(scopeKey, entityKeys, job, options = {}) {
   })
   persistTailByTenant.set(scopeKey, continuation)
   persistResultByTenant.set(scopeKey, result)
-  mongoScopeRefreshDedup.getStore()?.persistJobs.push(result)
+  if (options.requiredForResponse !== false) mongoScopeRefreshDedup.getStore()?.persistJobs.push(result)
   return result
 }
 
@@ -735,24 +830,28 @@ async function waitForMongoPersistBeforeRefresh(scopeKey) {
   } while (tail !== persistTailByTenant.get(scopeKey))
 }
 
-function scheduleMongoPersist(snapshot) {
+function writeLegacyMongoSnapshot(db, entityKeys, entries) {
   const scopeKey = getScopeState().key
-  return scheduleMongoPersistJob(scopeKey, ALL_ENTITY_KEYS,
-    () => persistShardedSnapshot(requireConnectedMongoDb(), snapshot))
-}
-
-function scheduleMongoPersistPartial(snapshot, entityKeys) {
-  const scopeKey = getScopeState().key
-  const keys = Array.isArray(entityKeys) ? [...entityKeys] : []
-  return scheduleMongoPersistJob(scopeKey, keys,
-    () => persistShardedSnapshotPartial(requireConnectedMongoDb(), snapshot, keys))
-}
-
-function scheduleMongoPersistEntity(snapshot, entityKey, item) {
-  const scopeKey = getScopeState().key
-  const itemSnapshot = JSON.parse(JSON.stringify(item || {}))
-  return scheduleMongoPersistJob(scopeKey, [entityKey],
-    () => persistEntityItem(requireConnectedMongoDb(), entityKey, itemSnapshot, snapshot), { entries: [{ entityKey, item: itemSnapshot }] })
+  const keys = normalizeEntityKeys(entityKeys)
+  const captured = entries && structuredClone(entries)
+  const snapshot = clonePayloadForMongo(db)
+  // Capture the preceding exact fence now: later queued exact jobs must not invalidate this FIFO job.
+  const conflict = legacySnapshotConflict(scopeKey, db, keys, captured)
+  if (!conflict) {
+    const current = mongoMemoryDbByTenant.get(scopeKey) || buildEmptyRaw()
+    const nextDb = captured ? mergeEntityEntries(current, captured, snapshot._meta) : { ...current, _meta: db._meta }
+    if (!captured) for (const key of keys) nextDb[key] = db[key]
+    mongoMemoryDbByTenant.set(scopeKey, rememberSnapshotOrigin(scopeKey, nextDb))
+    if (scopeKey === 'tenant:default') mongoMemoryDb = nextDb
+  }
+  return scheduleMongoPersistJob(scopeKey, keys, async () => {
+    if (conflict) throw conflict
+    const result = captured
+      ? await persistEntityItems(requireConnectedMongoDb(), captured, snapshot)
+      : await persistShardedSnapshotPartial(requireConnectedMongoDb(), snapshot, keys)
+    updateProtectedExactTargets(scopeKey, snapshot, keys, captured)
+    return result
+  }, { entries: captured, recordWriteRevisions: !conflict })
 }
 
 function assertDatastoreReady() {
@@ -887,6 +986,7 @@ async function hydrateTenantDbPartialFromMongo(workspaceType, tenantId, entityKe
 function mongoSnapshotUnavailable(cacheKey) {
   const error = new Error(`[store] Mongo snapshot unavailable for ${cacheKey}`)
   error.code = 'MONGO_SNAPSHOT_UNAVAILABLE'
+  error.statusCode = 503
   return error
 }
 
@@ -906,11 +1006,7 @@ function readDb() {
 function writeDb(db) {
   const scope = getScopeState()
   if (mongoBacked) {
-    mongoMemoryDbByTenant.set(scope.key, db)
-    if (scope.key === 'tenant:default') {
-      mongoMemoryDb = db
-    }
-    return scheduleMongoPersist(clonePayloadForMongo(db))
+    return writeLegacyMongoSnapshot(db, ALL_ENTITY_KEYS)
   }
   assertDatastoreReady()
   ensureDbFile()
@@ -925,26 +1021,16 @@ function writeDb(db) {
  * @param {string[]} entityKeys 如 ['products']
  */
 function writeDbPartial(db, entityKeys) {
-  const scope = getScopeState()
   if (mongoBacked) {
-    mongoMemoryDbByTenant.set(scope.key, db)
-    if (scope.key === 'tenant:default') {
-      mongoMemoryDb = db
-    }
-    return scheduleMongoPersistPartial(clonePayloadForMongo(db), entityKeys)
+    return writeLegacyMongoSnapshot(db, entityKeys)
   }
   return writeDb(db)
 }
 
 /** Mongo 模式下仅持久化单条实体；JSON 回退模式仍写完整快照以保持原语义。 */
 function writeDbEntity(db, entityKey, item) {
-  const scope = getScopeState()
   if (mongoBacked) {
-    mongoMemoryDbByTenant.set(scope.key, db)
-    if (scope.key === 'tenant:default') {
-      mongoMemoryDb = db
-    }
-    return scheduleMongoPersistEntity(clonePayloadForMongo(db), entityKey, item)
+    return writeLegacyMongoSnapshot(db, [entityKey], [{ entityKey, item }])
   }
   return writeDb(db)
 }
@@ -962,16 +1048,23 @@ function mergeEntityEntries(db, entries, meta) {
   return nextDb
 }
 
-function writeDbEntities(db, entries) {
+function writeDbEntities(db, entries, { requiredForResponse = true } = {}) {
   const scope = getScopeState()
   const captured = JSON.parse(JSON.stringify(entries))
   const snapshot = { _meta: JSON.parse(JSON.stringify(db?._meta || {})) }
   if (!mongoBacked) {
     return writeDb(mergeEntityEntries(db, dedupeEntityEntries(captured), snapshot._meta))
   }
+  const reservation = reserveExactFences(scope.key, captured)
   const revisions = new Map(mongoScopeWriteRevisionByKey.get(scope.key))
   return scheduleMongoPersistJob(scope.key, captured.map(entry => entry.entityKey), async () => {
     const result = await persistEntityItems(requireConnectedMongoDb(), captured, snapshot)
+    const confirmedFences = new Map(mongoScopeConfirmedExactFences.get(scope.key))
+    for (const [token, revision] of reservation) confirmedFences.set(token, revision)
+    mongoScopeConfirmedExactFences.set(scope.key, confirmedFences)
+    const protectedTargets = new Map(mongoScopeExactTargets.get(scope.key))
+    for (const entry of result.entries) protectedTargets.set(exactTargetKey(entry.entityKey, entry.item), structuredClone(entry))
+    mongoScopeExactTargets.set(scope.key, protectedTargets)
     const current = mongoMemoryDbByTenant.get(scope.key) || buildEmptyRaw()
     const currentRevisions = mongoScopeWriteRevisionByKey.get(scope.key) || new Map()
     // Legacy writers publish immediately; preserve any newer queued working copy.
@@ -983,10 +1076,10 @@ function writeDbEntities(db, entries) {
     const newerWorkingCopy = [...currentRevisions].some(([key, revision]) => revisions.get(key) !== revision)
     const nextDb = mergeEntityEntries(current, publishable, newerWorkingCopy ? current._meta : snapshot._meta)
     bumpScopeCacheRevisions(scope.key, publishable.map(entry => entry.entityKey))
-    mongoMemoryDbByTenant.set(scope.key, nextDb)
+    mongoMemoryDbByTenant.set(scope.key, rememberSnapshotOrigin(scope.key, nextDb))
     if (scope.key === 'tenant:default') mongoMemoryDb = nextDb
     return result
-  }, { markDirty: false, entries: captured })
+  }, { markDirty: false, entries: captured, requiredForResponse })
 }
 
 /** 供脚本在 writeDb 后 await，确保 Mongo 持久化已完成再断开连接 */
@@ -1023,6 +1116,9 @@ function evictTenantMemoryCache(rawTenantId) {
   mongoScopePendingEntityCountsByKey.delete(key)
   mongoScopeWriteRevisionByKey.delete(key)
   mongoScopeCacheRevisionByKey.delete(key)
+  mongoScopeExactFences.delete(key)
+  mongoScopeConfirmedExactFences.delete(key)
+  mongoScopeExactTargets.delete(key)
 }
 
 async function shouldSkipScopeMongoRefresh(workspaceType, tenantId, cacheKey, keys, refreshMode) {
@@ -1049,9 +1145,13 @@ function runScopeMongoHydrate(workspaceType, rawTenantIdFromRequest, entityKeys,
     : entityKeys
   const signature = `${cacheKey}|${[...keys].sort().join(',')}`
   const dedup = mongoScopeRefreshDedup.getStore()?.refreshed
+  const confirmRefresh = () => {
+    if (!getScopeCacheReadiness(ws, hydrateTenantId, keys).usable) throw mongoSnapshotUnavailable(cacheKey)
+    if (dedup) dedup.add(signature)
+  }
   if (dedup?.has(signature) && getScopeCacheReadiness(ws, hydrateTenantId, keys).usable) return Promise.resolve()
   const inflight = mongoScopeHydrateInflight.get(signature)
-  if (inflight) return inflight
+  if (inflight) return dedup ? inflight.then(confirmRefresh) : inflight
   const refreshMode = mongoConfig.getMongoRefreshMode()
   const hydrateWork = () => runWithWorkspace(ws, hydrateTenantId, async () => {
     await waitForMongoPersistBeforeRefresh(cacheKey)
@@ -1064,7 +1164,7 @@ function runScopeMongoHydrate(workspaceType, rawTenantIdFromRequest, entityKeys,
         await hydrateTenantDbPartialFromMongo(ws, hydrateTenantId, keys, { allowColdPartial })
       }
     }
-    if (dedup) dedup.add(signature)
+    confirmRefresh()
   })
   const prev = mongoScopeHydrateTail.get(cacheKey) || Promise.resolve()
   const job = prev.then(hydrateWork, hydrateWork).finally(() => {

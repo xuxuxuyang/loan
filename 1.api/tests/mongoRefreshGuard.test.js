@@ -401,7 +401,7 @@ test('Mongo read error boundary maps known storage errors to 503 and preserves u
   const boundary = loadFunction('mongoReadErrorBoundary', {
     fail: (ctx, message, status) => { ctx.status = status; ctx.body = { code: status, message } },
   })
-  for (const code of ['MONGO_DIRECT_READ_FAILED', 'MONGO_SNAPSHOT_UNAVAILABLE']) {
+  for (const code of ['MONGO_DIRECT_READ_FAILED', 'MONGO_SNAPSHOT_UNAVAILABLE', 'MONGO_WRITE_CONFLICT', 'MONGO_PERSIST_FAILED']) {
     const ctx = {}
     await boundary(ctx, async () => { throw Object.assign(new Error('private query detail'), { code }) })
     assert.equal(ctx.status, 503)
@@ -412,6 +412,73 @@ test('Mongo read error boundary maps known storage errors to 503 and preserves u
   await assert.rejects(() => boundary({}, async () => { throw cause }), error => error === cause)
   assert.ok(source.indexOf('app.use(mongoReadErrorBoundary)') < source.indexOf('app.use(enforceAdminLoginSession)'))
   assert.match(source, /app\.use\(refreshMongoForRequest\)/)
+})
+
+test('refresh middleware verifies readiness even when hydration resolves', async () => {
+  const middleware = loadFunction('refreshMongoForRequest', {
+    isManagedApiPath: () => true, isMongoPersistenceEnabled: () => true,
+    normalizeTenantId: value => value, normalizeWorkspaceType: value => value, DEFAULT_TENANT_ID: 'default',
+    resolveApiMongoRefreshPlan: () => ({ mode: 'partial', keys: ['orders'], requiresFresh: true }),
+    refreshScopePartialFromMongo: async () => {}, getScopeCacheReadiness: () => ({ usable: false }),
+    shouldBlockRequestOnMongoRefreshError,
+    fail: (ctx, message, status) => { ctx.status = status }, console: { error() {}, warn() {} },
+  })
+  const ctx = { method: 'POST', path: '/api/orders', state: {} }
+  let called = false
+  await middleware(ctx, async () => { called = true; ctx.status = 200 })
+  assert.equal(ctx.status, 503)
+  assert.equal(called, false)
+})
+
+test('audited default-scope health and config checks bypass hydration and tenant registration writes', async () => {
+  const { resolveTenantIdFromRequest, resolveWorkspaceTypeFromRequest } = require('../src/tenantResolver')
+  const { createAdminLoginSessionMiddleware } = require('../src/adminLoginHttp')
+  const routePolicy = require('../src/adminLoginRoutePolicy')
+  const registryStart = source.indexOf('app.use(async (ctx, next) => {', source.indexOf('app.use(refreshMongoForRequest)'))
+  const registryTail = source.slice(registryStart + 'app.use('.length)
+  let writes = 0
+  const denyWrite = () => { writes++; throw new Error('read-only checks cannot write') }
+  const registry = vm.runInNewContext(`(${registryTail.slice(0, registryTail.indexOf('\n})') + 2)})`, {
+    isManagedApiPath: () => true, normalizeWorkspaceType: value => value, normalizeTenantId: value => value,
+    DEFAULT_TENANT_ID: 'default', readDb: () => ({ _meta: {} }),
+    ensureTenantRegistered: loadFunction('ensureTenantRegistered', { normalizeTenantId: value => value, DEFAULT_TENANT_ID: 'default',
+      parseKnownTenantIdsFromMeta: () => [], parseTenantCreatedAtMapFromMeta: () => ({}),
+      writeKnownTenantIdsMeta: denyWrite, writeTenantCreatedAtMapMeta: denyWrite, writeAppMetaDb: denyWrite }),
+  })
+  const auth = createAdminLoginSessionMiddleware({ routePolicy, securityService: { resolveSession: denyWrite } })
+  const fakeMongo = { ...mongo, getMongoDb: () => ({ databaseName: 'fake', collection: () => ({
+    estimatedDocumentCount: async () => 0, findOne: async () => null,
+    replaceOne: denyWrite, bulkWrite: denyWrite, deleteMany: denyWrite,
+  }) }), getMongoHealthSummary: () => ({ connected: true }) }
+  const health = loadHandler('/health', { mongo: fakeMongo, cloudConfig: { getCloudConfigSummary: () => ({}) },
+    isMongoPersistenceEnabled: () => true, success: data => ({ code: 0, data }) })
+  const paymentRoutes = new Map()
+  const paymentSource = fs.readFileSync(path.join(__dirname, '../src/payment/registerLakalaRoutes.js'), 'utf8')
+  const routeModule = { exports: {} }
+  vm.runInNewContext(paymentSource, { module: routeModule, require: name => name === './lakalaClient'
+    ? { isLakalaConfigured: () => true, isLakalaMockEnabled: () => false } : {} })
+  routeModule.exports.registerLakalaRoutes({ get: (route, handler) => paymentRoutes.set(route, handler), post() {} }, { success: data => ({ code: 0, data }) })
+  for (const requestPath of ['/api/health', '/api/payment/lakala/config']) {
+    const ctx = { method: 'GET', path: requestPath, host: 'unregistered.example.invalid', query: {},
+      headers: { 'x-tenant-id': 'default', 'x-workspace-type': 'tenant' }, state: {}, set() {} }
+    ctx.state.tenantId = resolveTenantIdFromRequest(ctx)
+    ctx.state.workspaceType = resolveWorkspaceTypeFromRequest(ctx)
+    let refreshes = 0
+    const refresh = loadFunction('refreshMongoForRequest', {
+      isManagedApiPath: () => true, isMongoPersistenceEnabled: () => true,
+      normalizeTenantId: value => value, normalizeWorkspaceType: value => value, DEFAULT_TENANT_ID: 'default',
+      resolveApiMongoRefreshPlan: request => resolveCoreApiMongoRefreshPlan({ ...request, optimizeEnabled: false }),
+      refreshScopeCacheFromMongo: async () => { refreshes++ }, refreshScopePartialFromMongo: async () => { refreshes++ },
+      getScopeCacheReadiness: () => ({ usable: true }), shouldBlockRequestOnMongoRefreshError,
+      fail: (context, message, status) => { context.status = status }, console: { error() {}, warn() {} },
+    })
+    const handler = requestPath === '/api/health' ? health : paymentRoutes.get('/payment/lakala/config')
+    await auth(ctx, () => refresh(ctx, () => registry(ctx, () => handler(ctx))))
+    assert.equal(ctx.body.code, 0)
+    assert.equal(ctx.state.tenantId, 'default')
+    assert.equal(refreshes, 0, `${requestPath} must not enter seed-writing hydration`)
+    assert.equal(writes, 0)
+  }
 })
 
 test('all audited side-effect routes stop before handlers on refresh rejection', async () => {

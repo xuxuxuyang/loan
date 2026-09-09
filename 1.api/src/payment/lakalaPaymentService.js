@@ -54,12 +54,12 @@ function runSettlementOnce(outTradeNo, work) {
   return job
 }
 
-async function persistLakalaEntities(db, entries, { recoverOnFailure = true } = {}) {
+async function persistLakalaEntities(db, entries, { recoverOnFailure = true, bestEffort = false } = {}) {
   const recovery = recoverOnFailure
     ? structuredClone({ db, entries, baseTargets: paymentTargetSnapshots(deps.readDb(), entries) })
     : null
   try {
-    await deps.writeDbEntities(db, entries)
+    await deps.writeDbEntities(db, entries, { requiredForResponse: !bestEffort })
   }
   catch (cause) {
     if (recovery) failedPaymentWrites.set(paymentScopeKey(), recovery)
@@ -248,7 +248,7 @@ async function refreshActualPayChannelFromLakala(db, record) {
   await persistPaymentObservation(record.outTradeNo, (current) => {
     current.actualPayChannel = channel.actualPayChannel
     if (channel.actualPayChannelRaw) current.actualPayChannelRaw = channel.actualPayChannelRaw
-  }, { recoverOnFailure: false })
+  }, { recoverOnFailure: false, bestEffort: true })
   return true
 }
 
@@ -418,30 +418,35 @@ function fulfillPaymentRecord(outTradeNo, { tradeState, notifyRaw, actualPayChan
     const phone = deps.normalizePhone(mallUser?.phone || record.mallUserPhone)
     let touchedOrders = []
 
-    // A durable success has already applied its business result; still confirm its exact upsert.
-    if (!already) {
-      if (!mallUser) throw new Error('支付关联用户不存在')
-      if (record.bizType === 'order_full') {
-        const target = db.orders.find(item => String(item.id) === String(record.orderId))
-        if (!target) throw new Error('关联订单不存在')
-        if (!deps.orderBelongsToRegisteredMallUser(db, target, mallUser)) throw new Error('关联订单不存在')
-        if (!target.paid) {
-          deps.markOrderPaidInDb(target, record.payChannel)
-          touchedOrders = [target]
-        }
+    // Payment status alone cannot prove that its exact business targets are complete.
+    if (!mallUser) throw new Error('支付关联用户不存在')
+    if (record.bizType === 'order_full') {
+      const target = db.orders.find(item => String(item.id) === String(record.orderId))
+      if (!target) throw new Error('关联订单不存在')
+      if (!deps.orderBelongsToRegisteredMallUser(db, target, mallUser)) throw new Error('关联订单不存在')
+      if (!deps.installmentItemIsPaid(target) || !Array.isArray(target.installmentPlan)
+        || !target.installmentPlan.every(deps.installmentItemIsPaid)) {
+        deps.markOrderPaidInDb(target, record.payChannel)
+        touchedOrders = [target]
       }
-      else if (record.bizType === 'bill_repay') {
-        touchedOrders = deps.applyBillRepayInDb(db, mallUser, { orderId: record.orderId, period: record.period })
+    }
+    else if (record.bizType === 'bill_repay') {
+      touchedOrders = deps.applyBillRepayInDb(db, mallUser, { orderId: record.orderId, period: record.period })
+    }
+    else if (record.bizType === 'bill_repay_negotiated') {
+      touchedOrders = deps.applyBillNegotiatedPayInDb(db, mallUser, {
+        orderId: record.orderId, period: record.period, outTradeNo,
+        requirePaymentMatch: already, amountYuan: record.amountYuan, createdAt: record.createdAt,
+      })
+    }
+    else if (record.bizType === 'bill_repay_all') {
+      if (already && (!Array.isArray(record.settlementTargets) || record.settlementTargets.length === 0)) {
+        throw new Error('成功支付单缺少可安全确认的还款目标')
       }
-      else if (record.bizType === 'bill_repay_negotiated') {
-        touchedOrders = deps.applyBillNegotiatedPayInDb(db, mallUser, { orderId: record.orderId, period: record.period, outTradeNo })
-      }
-      else if (record.bizType === 'bill_repay_all') {
-        touchedOrders = deps.applyBillRepayAllInDb(db, mallUser, { settlementTargets: record.settlementTargets })
-      }
-      else {
-        throw new Error('不支持的支付业务类型')
-      }
+      touchedOrders = deps.applyBillRepayAllInDb(db, mallUser, { settlementTargets: record.settlementTargets })
+    }
+    else {
+      throw new Error('不支持的支付业务类型')
     }
 
     record.tradeState = tradeState || record.tradeState || 'SUCCESS'

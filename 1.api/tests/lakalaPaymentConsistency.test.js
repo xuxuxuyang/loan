@@ -53,6 +53,9 @@ function createFixture(options = {}) {
     mallUserId: user.id, mallUserPhone: user.phone, amountYuan: 100, status: 'pending',
     payChannel: 'wechat', createdAt: new Date().toISOString(), paidAt: '', ...options.payment,
   }
+  if (payment.bizType === 'bill_repay_all' && !Object.hasOwn(options.payment || {}, 'settlementTargets')) {
+    payment.settlementTargets = [{ orderId: 'O1', period: 1 }]
+  }
   if (payment.bizType === 'order_full') order.payType = 'full'
   if (payment.bizType === 'bill_repay_negotiated') {
     const pending = { negotiatedAmount: 10, remainderAmount: 100, remainderDueDate: '2026-10-09', createdAt: '2026-09-01' }
@@ -196,6 +199,49 @@ test('status and sync-pending expose durable settlement failures', async () => {
 })
 
 for (const bizType of ['order_full', 'bill_repay', 'bill_repay_negotiated', 'bill_repay_all']) {
+  test(`${bizType}: durable success repairs its incomplete target before ACK`, async () => {
+    const f = createFixture({ bizType, payment: { status: 'success', paidAt: '2026-09-09T00:00:00.000Z', createdAt: '2026-09-02T00:00:00.000Z' } })
+    if (bizType === 'bill_repay_all') f.db().orders[0].installmentPlan.push({ period: 2, amount: 200, paid: false })
+    await f.notify()
+    const order = f.durable().orders[0]
+    const plan = order.installmentPlan[0]
+    if (bizType === 'bill_repay_negotiated') {
+      assert.equal(plan.negotiationPayPending, null)
+      assert.ok(plan.negotiationHistory[0].userPaidAt)
+      assert.deepEqual(plan.negotiationPaymentOutTradeNos, ['LP1'])
+    }
+    else assert.equal(plan.paid, true)
+    if (bizType === 'order_full') assert.equal(order.paid, true)
+    if (bizType === 'bill_repay_all') assert.equal(order.installmentPlan[1].paid, false)
+    assert.deepEqual(f.persistCalls[0].map(entry => entry.entityKey), ['orders', 'lakalaPayments'])
+    const confirmed = clone(f.durable().orders)
+    await f.notify()
+    assert.deepEqual(f.durable().orders, confirmed)
+    assert.deepEqual(f.persistCalls[1].map(entry => entry.entityKey), ['lakalaPayments'])
+    assert.equal(f.payment().paidAt, '2026-09-09T00:00:00.000Z')
+  })
+
+  test(`${bizType}: incomplete success waits for repair durability and returns FAIL on rejection`, async () => {
+    let release
+    let started
+    const began = new Promise(resolve => { started = resolve })
+    const gate = new Promise(resolve => { release = resolve })
+    const f = createFixture({ bizType, payment: { status: 'success', createdAt: '2026-09-02T00:00:00.000Z' }, persistOutcomes: [async (entries) => {
+      started(entries)
+      await gate
+      throw new Error('repair write outage')
+    }] })
+    let replied = false
+    const request = f.route('/payment/lakala/notify', { out_order_no: 'LP1', order_status: 'SUCCESS' }).then(ctx => { replied = true; return ctx })
+    const entries = await began
+    const repairIncluded = entries.some(entry => entry.entityKey === 'orders')
+    assert.equal(replied, false)
+    release()
+    const response = await request
+    assert.equal(response.body.code, 'FAIL')
+    assert.equal(repairIncluded, true)
+  })
+
   test(`${bizType}: duplicate success is durable and business result is idempotent`, async () => {
     const f = createFixture({ bizType })
     await f.notify()
@@ -223,6 +269,77 @@ for (const bizType of ['order_full', 'bill_repay', 'bill_repay_negotiated', 'bil
     await f.notify()
     assert.deepEqual(f.durable().orders, applied)
     assert.equal(f.payment().status, 'success')
+  })
+}
+
+test('full-order success also repairs an unpaid plan behind its paid order flag', async () => {
+  const f = createFixture({ bizType: 'order_full', payment: { status: 'success' } })
+  f.db().orders[0].paid = true
+  await f.notify()
+  assert.equal(f.durable().orders[0].installmentPlan[0].paid, true)
+})
+
+for (const settlementTargets of [undefined, []]) {
+  test(`legacy success repay-all without ${settlementTargets ? 'nonempty' : 'fixed'} targets fails closed`, async () => {
+    const f = createFixture({ bizType: 'bill_repay_all', payment: { status: 'success', settlementTargets } })
+    f.db().orders[0].installmentPlan.push({ period: 2, amount: 100, paid: false })
+    await assert.rejects(f.notify(), /还款目标/)
+    assert.equal(f.persistCalls.length, 0)
+    assert.equal(f.db().orders[0].installmentPlan[1].paid, false)
+  })
+}
+
+for (const mismatch of ['other-payment', 'newer-pending', 'missing-history']) {
+  test(`negotiated success rejects ${mismatch} instead of confirming the wrong business result`, async () => {
+    const f = createFixture({ bizType: 'bill_repay_negotiated', payment: { status: 'success', createdAt: '2026-09-02T00:00:00.000Z' } })
+    const plan = f.db().orders[0].installmentPlan[0]
+    if (mismatch === 'other-payment') {
+      plan.negotiationPayPending = null
+      plan.negotiationHistory[0].userPaidAt = '2026-09-03'
+      plan.negotiationPaymentOutTradeNos = ['LP-other']
+    }
+    if (mismatch === 'newer-pending') {
+      plan.negotiationPayPending.createdAt = '2026-09-04'
+      plan.negotiationHistory[0].createdAt = '2026-09-04'
+    }
+    if (mismatch === 'missing-history') {
+      plan.negotiationPayPending = null
+      plan.negotiationHistory = []
+      plan.negotiationPaymentOutTradeNos = ['LP1']
+    }
+    const before = clone(f.db().orders)
+    await assert.rejects(f.notify(), /协商/)
+    assert.equal(f.persistCalls.length, 0)
+    assert.deepEqual(f.db().orders, before)
+  })
+}
+
+test('negotiated success matched to this payment preserves a later pending negotiation', async () => {
+  const f = createFixture({ bizType: 'bill_repay_negotiated' })
+  await f.notify()
+  const plan = f.db().orders[0].installmentPlan[0]
+  const pending = { negotiatedAmount: 20, createdAt: '2026-10-01', remainderDueDate: '2026-11-09' }
+  plan.negotiationPayPending = clone(pending)
+  plan.negotiationHistory.push(clone(pending))
+  await f.notify()
+  assert.deepEqual(f.db().orders[0].installmentPlan[0].negotiationPayPending, pending)
+  assert.equal(f.persistCalls[1].length, 1)
+})
+
+for (const incomplete of ['restored-pending', 'unpaid-current-history']) {
+  test(`negotiated success repairs ${incomplete} even when its payment marker exists`, async () => {
+    const f = createFixture({ bizType: 'bill_repay_negotiated', payment: { status: 'success', createdAt: '2026-09-02T00:00:00.000Z' } })
+    const plan = f.db().orders[0].installmentPlan[0]
+    plan.negotiationPaymentOutTradeNos = ['LP1']
+    if (incomplete === 'restored-pending') plan.negotiationHistory[0].userPaidAt = '2026-09-02T01:00:00.000Z'
+    else plan.negotiationHistory.unshift({ negotiatedAmount: 10, createdAt: '2026-08-01', userPaidAt: '2026-08-02' })
+    await f.notify()
+    const result = f.durable().orders[0].installmentPlan[0]
+    assert.equal(result.negotiationPayPending, null)
+    assert.deepEqual(result.negotiationPaymentOutTradeNos, ['LP1'])
+    assert.ok(result.negotiationHistory.at(-1).userPaidAt)
+    if (incomplete === 'restored-pending') assert.equal(result.negotiationHistory[0].userPaidAt, '2026-09-02T01:00:00.000Z')
+    assert.equal(f.persistCalls[0][0].entityKey, 'orders')
   })
 }
 
@@ -510,6 +627,28 @@ async function withRealStorePaymentFixture(t, work, options = {}) {
     })
   })
 }
+
+test('generic request flush preserves core payment ACK when only channel enrichment fails', async (t) => {
+  const store = require('../src/store')
+  const match = indexSource.match(/async function flushMongoForRequest\([^]*?\n\}/)
+  assert.ok(match)
+  const middleware = vm.runInNewContext(`(${match[0]})`, {
+    isMongoPersistenceEnabled: () => true, isManagedApiPath: () => true,
+    flushMongoPersist: store.flushMongoPersist,
+    fail: (ctx, message, status) => { ctx.status = status; ctx.body = { code: status } }, console: { error() {} },
+  })
+  await withRealStorePaymentFixture(t, async (f) => {
+    f.failAt(4)
+    const ctx = { method: 'POST', path: '/api/payment/lakala/notify', state: {} }
+    await store.runWithMongoRequestDedup(() => middleware(ctx, async () => {
+      Object.assign(ctx, await f.route('/payment/lakala/notify', { out_order_no: 'LP1', order_status: 'SUCCESS' }))
+    }))
+    assert.equal(ctx.body.code, 'SUCCESS')
+    assert.equal(f.durableRows('orders').find(row => row.id === 'O1').installmentPlan[0].paid, true)
+    assert.equal(f.durableRows('lakalaPayments').find(row => row.outTradeNo === 'LP1').status, 'success')
+    assert.equal(f.readiness().usable, false, 'optional failed target still requires recovery before stale serving')
+  }, { query: { account_type: 'ALIPAY' } })
+})
 
 for (const failAt of [2, 3]) {
   test(`partial precise write at position ${failAt} recovers before queued payment without reloading memory`, async (t) => {

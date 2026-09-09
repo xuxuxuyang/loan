@@ -9910,20 +9910,39 @@ function applyBillRepayInDb(db, mallUser, { orderId, period }) {
   return [target]
 }
 
-function applyBillNegotiatedPayInDb(db, mallUser, { orderId, period, outTradeNo }) {
+function applyBillNegotiatedPayInDb(db, mallUser, { orderId, period, outTradeNo, requirePaymentMatch = false, amountYuan, createdAt }) {
   const target = assertBillRepayTargetOrder(db, mallUser, orderId)
   ensureOrderInstallmentPlan(target)
   const planItem = findInstallmentPlanItemByPeriod(target.installmentPlan, period)
   if (!planItem) throw Object.assign(new Error('账单期次不存在'), { statusCode: 404 })
   const appliedPayments = planItem.negotiationPaymentOutTradeNos || []
-  if (outTradeNo && appliedPayments.includes(String(outTradeNo))) return []
-  const last = Array.isArray(planItem.negotiationHistory) ? planItem.negotiationHistory.at(-1) : null
-  if (!planItem.negotiationPayPending && (installmentItemIsPaid(planItem) || last?.userPaidAt)) return []
+  const history = Array.isArray(planItem.negotiationHistory) ? planItem.negotiationHistory : []
+  const last = history.at(-1)
+  const pending = planItem.negotiationPayPending
+  const paymentAt = Date.parse(createdAt)
+  const hasPaymentIdentity = Number.isFinite(paymentAt) && Number.isFinite(Number(amountYuan))
+  const paymentHistory = hasPaymentIdentity
+    ? history.filter(item => Date.parse(item?.createdAt) <= paymentAt && Number(item?.negotiatedAmount) === Number(amountYuan)).at(-1)
+    : (requirePaymentMatch ? null : last)
+  const recorded = outTradeNo && appliedPayments.includes(String(outTradeNo))
+  if (recorded && paymentHistory?.userPaidAt && (!pending || pending.createdAt !== paymentHistory.createdAt)) return []
+  if (requirePaymentMatch || recorded) {
+    const pendingAt = Date.parse(pending?.createdAt)
+    if (!pending || !last || last !== paymentHistory || (!recorded && last.userPaidAt)
+      || !Number.isFinite(pendingAt) || !Number.isFinite(paymentAt)
+      || pendingAt > paymentAt || pending.createdAt !== last.createdAt
+      || Number(pending.negotiatedAmount) !== Number(amountYuan)) {
+      throw new Error('无法安全匹配本流水的协商还款目标')
+    }
+  }
+  if (!pending && (installmentItemIsPaid(planItem) || last?.userPaidAt)) return []
+  const previousPaidAt = last?.userPaidAt
   const applied = applyInstallmentNegotiationPayCompleted(planItem)
   if (!applied.ok) {
     throw new Error(applied.msg || '协商支付落库失败')
   }
-  if (outTradeNo) planItem.negotiationPaymentOutTradeNos = [...appliedPayments, String(outTradeNo)]
+  if (recorded && previousPaidAt) last.userPaidAt = previousPaidAt
+  if (outTradeNo && !recorded) planItem.negotiationPaymentOutTradeNos = [...appliedPayments, String(outTradeNo)]
   target.installmentScheduleExplicit = true
   applyInstallmentCompletionOrderStatus(target, { ignoreAdminSkip: true })
   return [target]
@@ -9984,6 +10003,7 @@ lakalaPayment.initLakalaPayment({
   normalizePhone,
   buildMallBillsSuccessData,
   markOrderPaidInDb,
+  installmentItemIsPaid,
   calcBillRepayAmount,
   calcBillNegotiatedPayAmount,
   calcBillRepayAllAmount,
@@ -13156,8 +13176,8 @@ async function mongoReadErrorBoundary(ctx, next) {
     await next()
   }
   catch (error) {
-    if (error?.code !== 'MONGO_DIRECT_READ_FAILED' && error?.code !== 'MONGO_SNAPSHOT_UNAVAILABLE') throw error
-    fail(ctx, '数据库读取暂时不可用，请稍后重试', 503)
+    if (!['MONGO_DIRECT_READ_FAILED', 'MONGO_SNAPSHOT_UNAVAILABLE', 'MONGO_WRITE_CONFLICT', 'MONGO_PERSIST_FAILED'].includes(error?.code)) throw error
+    fail(ctx, '数据库暂时不可用，请稍后重试', 503)
   }
 }
 
@@ -13217,6 +13237,9 @@ async function refreshMongoForRequest(ctx, next) {
       else {
         await refreshScopeCacheFromMongo(workspaceType, tenantId)
       }
+      if (plan.mode !== 'skip' && !getScopeCacheReadiness(workspaceType, tenantId, plan.keys).usable) {
+        throw Object.assign(new Error('Mongo snapshot is not usable after refresh'), { code: 'MONGO_SNAPSHOT_UNAVAILABLE' })
+      }
     }
     catch (err) {
       const readiness = getScopeCacheReadiness(workspaceType, tenantId, plan.keys)
@@ -13260,14 +13283,8 @@ app.use(async (ctx, next) => {
   }
   await next()
 })
-/**
- * Mongo 一致性：
- * - 默认：POST/PUT/PATCH/DELETE 在响应结束前 await 当前 workspace 的异步落库，避免下一请求的
- *   refreshScopeCacheFromMongo 读到陈旧快照（线上「要刷新才对齐」）。
- * - MONGO_SKIP_MUTATION_FLUSH=true：关闭上述「仅写请求」等待（追求极限吞吐）。
- * - MONGO_AWAIT_PERSIST=true：所有 /api（含 GET）结束后都等待落库。
- */
-app.use(async (ctx, next) => {
+/** Every request confirms its required writes before returning, including side-effect GETs. */
+async function flushMongoForRequest(ctx, next) {
   await next()
   if (!isMongoPersistenceEnabled()) {
     return
@@ -13276,25 +13293,15 @@ app.use(async (ctx, next) => {
   if (!isManagedApiPath(pathRaw)) {
     return
   }
-  const awaitAll = mongoConfig.isMongoAwaitPersistEnabled()
-  let shouldFlush = awaitAll
-  if (!awaitAll && !mongoConfig.isMongoMutationPersistFlushSkipped()) {
-    const method = String(ctx.method || 'GET').toUpperCase()
-    shouldFlush = method === 'POST' || method === 'PUT' || method === 'PATCH' || method === 'DELETE'
-  }
-  if (!shouldFlush) {
-    return
-  }
-  if (ctx.state && ctx.state.mongoPersistFlushed) {
-    return
-  }
   try {
     await flushMongoPersist()
   }
   catch (err) {
     console.error('[store] Mongo 落库等待失败:', err?.message || err)
+    if (!ctx.status || ctx.status < 400) fail(ctx, '数据库写入暂时不可用，请稍后重试', 503)
   }
-})
+}
+app.use(flushMongoForRequest)
 app.use(router.routes())
 app.use(router.allowedMethods())
 app.use(duodiandianPublicRouter.routes())

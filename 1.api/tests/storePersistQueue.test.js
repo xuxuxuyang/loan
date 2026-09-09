@@ -1,5 +1,8 @@
 const assert = require('node:assert/strict')
 const test = require('node:test')
+const fs = require('node:fs')
+const path = require('node:path')
+const vm = require('node:vm')
 const mongo = require('../src/mongo')
 const store = require('../src/store')
 const { getCurrentTenantId, runWithTenant } = require('../src/tenantContext')
@@ -78,12 +81,13 @@ async function fixture({ orders = [{ id: 'O1', status: 'old' }] } = {}) {
   await run(() => store.hydrateFromMongoAfterConnect())
   calls.length = 0
   return {
-    run, calls,
+    run, calls, tenantId,
     read: () => run(() => store.readDb()),
     durable: (entityKey = 'orders') => structuredClone(data.get(mongo.COLLECTIONS[entityKey])).map(({ _id, ...item }) => item),
     snapshot: status => ({ ...structuredClone(run(() => store.readDb())), orders: [{ id: 'O1', status }] }),
     readiness: () => store.getScopeCacheReadiness('tenant', tenantId, ['orders']),
     refresh: () => store.refreshScopePartialFromMongo('tenant', tenantId, ['orders']),
+    fullRefresh: () => store.refreshScopeCacheFromMongo('tenant', tenantId),
     fail: (after = 1) => { failAfter = after },
     disconnect: () => { disconnected = true },
     block: () => { gate = { ...deferred(), started: deferred() }; return gate },
@@ -110,7 +114,7 @@ test('the scheduled persist job rejects but the next job still runs', async () =
   await f.run(async () => {
     f.fail()
     const first = store.writeDbPartial(f.snapshot('first'), ['orders'])
-    await assert.rejects(first, /simulated write outage/)
+    await assert.rejects(first, { code: 'MONGO_PERSIST_FAILED', statusCode: 503 })
     await assert.rejects(store.flushMongoPersist(), /simulated write outage/)
     assert.equal(f.readiness().usable, false)
     const second = store.writeDbPartial(f.snapshot('second'), ['orders'])
@@ -236,7 +240,7 @@ test('a completed write cannot clear dirtiness for a later pending write', async
   })
 })
 
-test('a hydrate already reading cannot clear a newer pending write or publish over its memory', async () => {
+test('a hydrate already reading rejects if a newer pending write leaves required keys unusable', async () => {
   const f = await fixture()
   const readGate = f.blockRead()
   const refresh = f.refresh()
@@ -245,8 +249,8 @@ test('a hydrate already reading cannot clear a newer pending write or publish ov
   const job = f.run(() => store.writeDbPartial(f.snapshot('newer'), ['orders']))
   await writeGate.started.promise
   readGate.resolve()
-  await refresh
   try {
+    await assert.rejects(refresh, { code: 'MONGO_SNAPSHOT_UNAVAILABLE' })
     assert.deepEqual(f.readiness().dirtyKeys, ['orders'])
     assert.equal(f.read().orders[0].status, 'newer')
   }
@@ -256,6 +260,97 @@ test('a hydrate already reading cannot clear a newer pending write or publish ov
   }
   assert.equal(f.read().orders[0].status, 'newer')
   assert.equal(f.readiness().usable, true)
+})
+
+function loadRequestMiddleware(name, overrides = {}) {
+  const source = fs.readFileSync(path.join(__dirname, '../src/index.js'), 'utf8')
+  let body = source.match(new RegExp(`async function ${name}\\([^]*?\\n\\}`))?.[0]
+  if (!body && name === 'flushMongoForRequest') {
+    const start = source.indexOf('app.use(async (ctx, next) => {', source.indexOf(' * Mongo 一致性：'))
+    const tail = source.slice(start + 'app.use('.length)
+    body = tail.slice(0, tail.indexOf('\n})') + 2)
+  }
+  assert.ok(body, `${name} must exist`)
+  return vm.runInNewContext(`(${body})`, {
+    ...store, normalizeTenantId: value => value, normalizeWorkspaceType: value => value,
+    isManagedApiPath: () => true, DEFAULT_TENANT_ID: 'default',
+    shouldBlockRequestOnMongoRefreshError: require('../src/mongoRefreshGuard').shouldBlockRequestOnMongoRefreshError,
+    mongoConfig: { isMongoAwaitPersistEnabled: () => false, isMongoMutationPersistFlushSkipped: () => false },
+    fail: (ctx, message, status) => { ctx.status = status; ctx.body = { code: status, message } },
+    console: { error() {}, warn() {} }, ...overrides,
+  })
+}
+
+for (const mode of ['partial', 'full']) {
+  test(`${mode} refresh blocks the handler when a write starts during hydration and later fails`, async () => {
+    const f = await fixture()
+    const middleware = loadRequestMiddleware('refreshMongoForRequest', {
+      resolveApiMongoRefreshPlan: () => ({ mode, keys: ['orders'], requiresFresh: true }),
+    })
+    const ctx = { method: 'POST', path: '/api/orders', state: { tenantId: f.tenantId }, set() {} }
+    let handled = false
+    const readGate = f.blockRead()
+    const request = f.run(() => middleware(ctx, async () => { handled = true; ctx.status = 200 }))
+    await readGate.started.promise
+    const writeGate = f.block()
+    f.fail()
+    const job = f.run(() => store.writeDbPartial(f.snapshot('unconfirmed'), ['orders']))
+    await writeGate.started.promise
+    readGate.resolve()
+    try {
+      await request
+      assert.equal(ctx.status, 503)
+      assert.equal(handled, false)
+    }
+    finally {
+      writeGate.resolve()
+      await assert.rejects(job, /simulated write outage/)
+    }
+    assert.equal(f.readiness().usable, false)
+    await f.refresh()
+    assert.equal(f.readiness().usable, true)
+    assert.equal(f.read().orders[0].status, 'old')
+  })
+}
+
+for (const failure of ['persist', 'conflict', 'side-effect-get']) {
+  test(`generic middleware replaces a false success after ${failure}`, async () => {
+    const f = await fixture()
+    const old = f.read()
+    if (failure === 'conflict') {
+      await f.run(() => store.writeDbEntities(old, [{ entityKey: 'orders', item: { id: 'O1', status: 'paid' } }]))
+    }
+    else f.fail()
+    const ctx = { method: failure === 'side-effect-get' ? 'GET' : 'POST', path: '/api/orders', state: {} }
+    const middleware = loadRequestMiddleware('flushMongoForRequest')
+    await f.run(() => store.runWithMongoRequestDedup(() => middleware(ctx, async () => {
+      const job = store.writeDbPartial(old, ['orders'])
+      if (failure === 'conflict') await job.catch(() => {})
+      ctx.status = 200
+      ctx.body = { code: 0, data: { saved: true } }
+    })))
+    assert.equal(ctx.status, 503)
+    assert.equal(ctx.body.code, 503)
+    assert.equal(ctx.body.data, undefined)
+    assert.equal(f.readiness().usable, false)
+  })
+}
+
+test('explicit optional exact metadata failure stays observable without failing the response flush', async () => {
+  const f = await fixture()
+  await f.run(() => store.runWithMongoRequestDedup(async () => {
+    f.fail()
+    await assert.rejects(store.writeDbEntities(f.read(), [
+      { entityKey: 'orders', item: { id: 'O1', status: 'optional' } },
+    ], { requiredForResponse: false }), /simulated write outage/)
+    await assert.doesNotReject(store.flushMongoPersist())
+    assert.equal(f.readiness().usable, false)
+    f.fail()
+    await assert.rejects(store.writeDbEntities(f.read(), [
+      { entityKey: 'orders', item: { id: 'O1', status: 'required' } },
+    ]), /simulated write outage/)
+    await assert.rejects(store.flushMongoPersist(), /simulated write outage/)
+  }))
 })
 
 for (const laterKind of ['different-target', 'same-target', 'collection-snapshot']) {
@@ -272,15 +367,18 @@ for (const laterKind of ['different-target', 'same-target', 'collection-snapshot
         ? store.writeDbPartial(laterDb, ['orders'])
         : store.writeDbEntity(laterDb, 'orders', target)
       gate.resolve()
-      await Promise.all([exact, later])
+      const outcomes = await Promise.allSettled([exact, later])
+      assert.equal(outcomes[0].status, 'fulfilled')
+      assert.equal(outcomes[1].status, laterKind === 'different-target' ? 'fulfilled' : 'rejected')
+      if (laterKind !== 'different-target') assert.equal(outcomes[1].reason.code, 'MONGO_WRITE_CONFLICT')
       const expected = [
-        { id: 'O1', status: laterKind === 'different-target' ? 'exact' : laterKind === 'same-target' ? 'later' : 'old' },
-        { id: 'O2', status: laterKind === 'same-target' ? 'old' : 'later' },
+        { id: 'O1', status: 'exact' },
+        { id: 'O2', status: laterKind === 'different-target' ? 'later' : 'old' },
       ]
       const byId = rows => [...rows].sort((a, b) => a.id.localeCompare(b.id))
       assert.deepEqual(byId(f.durable()), expected)
       assert.deepEqual(byId(f.read().orders), expected)
-      assert.equal(f.readiness().usable, true)
+      assert.equal(f.readiness().usable, laterKind === 'different-target')
       process.env.MONGO_REFRESH_MODE = 'single_instance'
       try { await f.refresh() }
       finally { process.env.MONGO_REFRESH_MODE = 'every_request' }
@@ -289,6 +387,111 @@ for (const laterKind of ['different-target', 'same-target', 'collection-snapshot
     })
   })
 }
+
+for (const sourceKind of ['original', 'unknown-clone']) {
+  test(`late ${sourceKind} collection snapshot cannot revert a confirmed exact payment`, async () => {
+    const f = await fixture({ orders: [{ id: 'O1', paid: false }, { id: 'O2', paid: false }] })
+    await f.run(async () => {
+      const old = sourceKind === 'original' ? f.read() : structuredClone(f.read())
+      await store.writeDbEntities(f.read(), [
+        { entityKey: 'orders', item: { id: 'O1', paid: true } },
+        { entityKey: 'lakalaPayments', item: { outTradeNo: 'LP1', status: 'success' } },
+      ])
+      old.orders.find(item => item.id === 'O2').note = 'unrelated request completed'
+      const before = f.calls.length
+      await assert.rejects(store.writeDbPartial(old, ['orders']), { code: 'MONGO_WRITE_CONFLICT', statusCode: 503 })
+      assert.equal(f.calls.length, before, 'conflict must reject before any Mongo operation')
+      assert.equal(f.durable().find(item => item.id === 'O1').paid, true)
+      assert.equal(f.durable('lakalaPayments')[0].status, 'success')
+      assert.equal(f.read().orders.find(item => item.id === 'O1').paid, true)
+      assert.equal(f.readiness().usable, false)
+      await assert.rejects(store.flushMongoPersist(), { code: 'MONGO_WRITE_CONFLICT' })
+    })
+  })
+}
+
+test('a legacy snapshot queued before an exact write remains valid in FIFO order', async () => {
+  const f = await fixture({ orders: [{ id: 'O1', paid: false }, { id: 'O2', paid: false }] })
+  await f.run(async () => {
+    const gate = f.block()
+    const db = f.read()
+    db.orders[1].note = 'legacy first'
+    const legacy = store.writeDbPartial(db, ['orders'])
+    await gate.started.promise
+    const exact = store.writeDbEntities(f.read(), [{ entityKey: 'orders', item: { id: 'O1', paid: true } }])
+    gate.resolve()
+    await Promise.all([legacy, exact])
+    assert.equal(f.durable().find(item => item.id === 'O1').paid, true)
+    assert.equal(f.durable().find(item => item.id === 'O2').note, 'legacy first')
+    assert.equal(f.readiness().usable, true)
+  })
+})
+
+for (const writeKind of ['partial-other-collection', 'single-other-target']) {
+  test(`a stale ${writeKind} only publishes its own changes to memory`, async () => {
+    const f = await fixture({ orders: [{ id: 'O1', paid: false }, { id: 'O2', paid: false }] })
+    await f.run(async () => {
+      const old = f.read()
+      await store.writeDbEntities(f.read(), [{ entityKey: 'orders', item: { id: 'O1', paid: true } }])
+      if (writeKind === 'partial-other-collection') {
+        old.users.push({ id: 'U1' })
+        await store.writeDbPartial(old, ['users'])
+      }
+      else {
+        old.orders[1].note = 'unrelated single update'
+        await store.writeDbEntity(old, 'orders', old.orders[1])
+      }
+      assert.equal(f.read().orders.find(item => item.id === 'O1').paid, true)
+      assert.equal(f.durable().find(item => item.id === 'O1').paid, true)
+      assert.equal(f.readiness().usable, true)
+    })
+  })
+}
+
+test('a freshly read legacy update after exact confirmation is permitted', async () => {
+  const f = await fixture()
+  await f.run(async () => {
+    await store.writeDbEntities(f.read(), [{ entityKey: 'orders', item: { id: 'O1', status: 'paid' } }])
+    const fresh = f.read()
+    fresh.orders[0].note = 'audited after payment'
+    await store.writeDbPartial(fresh, ['orders'])
+    assert.equal(f.durable()[0].status, 'paid')
+    assert.equal(f.durable()[0].note, 'audited after payment')
+  })
+})
+
+test('an untracked single write cannot hide a conflicting item behind a current database clone', async () => {
+  const f = await fixture()
+  await f.run(async () => {
+    await store.writeDbEntities(f.read(), [{ entityKey: 'orders', item: { id: 'O1', status: 'paid' } }])
+    const clone = structuredClone(f.read())
+    await assert.rejects(store.writeDbEntity(clone, 'orders', { id: 'O1', status: 'old' }), { code: 'MONGO_WRITE_CONFLICT' })
+    assert.equal(f.durable()[0].status, 'paid')
+  })
+})
+
+test('single writes track the actual committed item for subsequent untracked snapshots', async () => {
+  const f = await fixture()
+  await f.run(async () => {
+    await store.writeDbEntities(f.read(), [{ entityKey: 'orders', item: { id: 'O1', status: 'paid' } }])
+    await store.writeDbEntity(f.read(), 'orders', { id: 'O1', status: 'paid', note: 'confirmed' })
+    const clone = structuredClone(f.read())
+    delete clone.orders[0].note
+    await assert.rejects(store.writeDbPartial(clone, ['orders']), { code: 'MONGO_WRITE_CONFLICT' })
+    assert.equal(f.durable()[0].note, 'confirmed')
+  })
+})
+
+test('snapshot provenance never crosses tenant scopes', async () => {
+  const first = await fixture()
+  const second = await fixture()
+  await second.run(async () => {
+    await assert.rejects(store.writeDbPartial(first.read(), ['orders']), { code: 'MONGO_WRITE_CONFLICT' })
+    assert.equal(second.calls.length, 0)
+    assert.equal(first.readiness().usable, true)
+    assert.equal(second.readiness().usable, false)
+  })
+})
 
 test('identical exact retry recovers its target without hydration', async () => {
   const f = await fixture()
@@ -341,7 +544,7 @@ test('a partially durable exact batch recovers after the whole target batch retr
   })
 })
 
-test('complete collection success clears target failures but arbitrary single success cannot clear an unknown collection failure', async () => {
+test('collection recovery requires hydration after an exact failure and single success cannot clear collection failure', async () => {
   for (const failureKind of ['exact', 'collection']) {
     const f = await fixture()
     await f.run(async () => {
@@ -350,12 +553,18 @@ test('complete collection success clears target failures but arbitrary single su
         ? store.writeDbEntities(f.read(), [{ entityKey: 'orders', item: { id: 'O1', status: 'failed' } }])
         : store.writeDbPartial(f.snapshot('failed'), ['orders'])
       await assert.rejects(failed, /simulated write outage/)
+      if (failureKind === 'exact') {
+        await assert.rejects(store.writeDbPartial(f.snapshot('recovered'), ['orders']), { code: 'MONGO_WRITE_CONFLICT' })
+        await f.refresh()
+      }
       if (failureKind === 'collection') {
         const single = f.snapshot('single')
         await store.writeDbEntity(single, 'orders', single.orders[0])
         assert.deepEqual(f.readiness().dirtyKeys, ['orders'])
       }
-      await store.writeDbPartial(f.snapshot('recovered'), ['orders'])
+      const recovered = f.read()
+      recovered.orders[0].status = 'recovered'
+      await store.writeDbPartial(recovered, ['orders'])
       assert.deepEqual(f.readiness().dirtyKeys, [])
       assert.equal(f.readiness().usable, true)
       assert.deepEqual(f.read().orders, f.durable())

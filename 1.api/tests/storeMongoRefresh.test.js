@@ -236,6 +236,21 @@ test('request dedup does not suppress different keys or a later full refresh', a
   })
 })
 
+test('a joining request records the shared refresh in its own local dedup set', async () => {
+  process.env.MONGO_REFRESH_MODE = 'every_request'
+  const fixture = createMongoFixture()
+  const gate = fixture.deferNextRead('orders')
+  const first = store.runWithMongoRequestDedup(() => fixture.partialRefresh(['orders'], { allowColdPartial: true }))
+  await gate.started.promise
+  const joiner = store.runWithMongoRequestDedup(async () => {
+    await fixture.partialRefresh(['orders'], { allowColdPartial: true })
+    await fixture.partialRefresh(['orders'], { allowColdPartial: true })
+  })
+  gate.resolve()
+  await Promise.all([first, joiner])
+  assert.equal(fixture.readCount('orders'), 1)
+})
+
 test('version refresh uses the target workspace and requested entity coverage', async () => {
   for (const workspaceType of ['tenant', 'core', 'self']) {
     const fixture = createMongoFixture({ workspaceType })

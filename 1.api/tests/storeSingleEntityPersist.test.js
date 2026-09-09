@@ -119,7 +119,7 @@ test('writeDbEntities validates every entry before performing any write', async 
   })
 })
 
-test('an earlier exact write cannot overwrite the memory of a later queued single-entity write', async (t) => {
+test('a later single-entity write from before exact confirmation rejects its conflicting snapshot', async (t) => {
   await withEntityFixture(t, async ({ block }) => {
     let release
     block(new Promise(resolve => { release = resolve }))
@@ -128,8 +128,11 @@ test('an earlier exact write cannot overwrite the memory of a later queued singl
     laterDb.orders[0] = { id: 'O1', status: 'later' }
     const later = store.writeDbEntity(laterDb, 'orders', laterDb.orders[0])
     release()
-    await Promise.all([first, later])
-    assert.equal(store.readDb().orders[0].status, 'later')
+    const results = await Promise.allSettled([first, later])
+    assert.equal(results[0].status, 'fulfilled')
+    assert.equal(results[1].status, 'rejected')
+    assert.equal(results[1].reason.code, 'MONGO_WRITE_CONFLICT')
+    assert.equal(store.readDb().orders[0].status, 'first')
   })
 })
 
