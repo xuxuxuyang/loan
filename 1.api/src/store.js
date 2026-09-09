@@ -38,6 +38,8 @@ let mongoMemoryDbByTenant = new Map()
 const mongoScopeEntityVersionByKey = new Map()
 const mongoScopeDirtyEntityKeysByKey = new Map()
 const mongoScopeFailedEntityKeysByKey = new Map()
+const mongoScopeFailedEntityTargetsByKey = new Map()
+const mongoScopePendingEntityCountsByKey = new Map()
 const mongoScopeWriteRevisionByKey = new Map()
 const mongoScopeCacheRevisionByKey = new Map()
 
@@ -146,6 +148,7 @@ function publishScopeSnapshot(cacheKey, nextDb, keys, updatedAt, readRevisions) 
   const versions = new Map(mongoScopeEntityVersionByKey.get(cacheKey))
   const dirty = new Set(mongoScopeDirtyEntityKeysByKey.get(cacheKey))
   const failed = new Set(mongoScopeFailedEntityKeysByKey.get(cacheKey))
+  const failedTargets = new Map(mongoScopeFailedEntityTargetsByKey.get(cacheKey))
   const currentRevisions = mongoScopeCacheRevisionByKey.get(cacheKey) || new Map()
   const changed = key => readRevisions && readRevisions.get(key) !== currentRevisions.get(key)
   const current = mongoMemoryDbByTenant.get(cacheKey)
@@ -161,12 +164,14 @@ function publishScopeSnapshot(cacheKey, nextDb, keys, updatedAt, readRevisions) 
     versions.set(key, updatedAt)
     dirty.delete(key)
     failed.delete(key)
+    failedTargets.delete(key)
   }
   // Publish only after every collection and metadata read has succeeded.
   mongoMemoryDbByTenant.set(cacheKey, nextDb)
   mongoScopeEntityVersionByKey.set(cacheKey, versions)
   mongoScopeDirtyEntityKeysByKey.set(cacheKey, dirty)
   mongoScopeFailedEntityKeysByKey.set(cacheKey, failed)
+  mongoScopeFailedEntityTargetsByKey.set(cacheKey, failedTargets)
   if (cacheKey === 'tenant:default') mongoMemoryDb = nextDb
 }
 
@@ -624,49 +629,89 @@ function legacyAppStateDocToRaw(legacyDoc) {
   return rest
 }
 
-function markScopeEntitiesDirty(scopeKey, entityKeys) {
+function entityEntryTargets(entries) {
+  if (!entries) return null
+  const targets = new Map()
+  for (const { entityKey, item } of entries) {
+    const pk = entityMongoPrimaryKey(item, entityKey)
+    if (pk == null) continue
+    const keys = targets.get(entityKey) || new Set()
+    keys.add(stablePrimaryKeyString(pk))
+    targets.set(entityKey, keys)
+  }
+  return targets
+}
+
+function markScopeEntitiesDirty(scopeKey, entityKeys, targets) {
   bumpScopeCacheRevisions(scopeKey, entityKeys)
   const dirty = new Set(mongoScopeDirtyEntityKeysByKey.get(scopeKey))
   const revisions = new Map(mongoScopeWriteRevisionByKey.get(scopeKey))
-  const captured = new Map()
+  const pending = new Map(mongoScopePendingEntityCountsByKey.get(scopeKey))
   revisions.set('_meta', (revisions.get('_meta') || 0) + 1)
   for (const key of entityKeys) {
     dirty.add(key)
-    const revision = (revisions.get(key) || 0) + 1
-    revisions.set(key, revision)
-    captured.set(key, revision)
+    pending.set(key, (pending.get(key) || 0) + 1)
+    const conflicts = targets?.get(key)
+    const revisionKeys = conflicts ? [...conflicts].map(pk => `${key}|${pk}`) : [key]
+    for (const revisionKey of revisionKeys) revisions.set(revisionKey, (revisions.get(revisionKey) || 0) + 1)
   }
   mongoScopeDirtyEntityKeysByKey.set(scopeKey, dirty)
   mongoScopeWriteRevisionByKey.set(scopeKey, revisions)
-  return captured
+  mongoScopePendingEntityCountsByKey.set(scopeKey, pending)
 }
 
-function markScopeEntitiesPersisted(scopeKey, revisions, updatedAtMs) {
-  const dirty = mongoScopeDirtyEntityKeysByKey.get(scopeKey)
-  const failed = mongoScopeFailedEntityKeysByKey.get(scopeKey)
-  const current = mongoScopeWriteRevisionByKey.get(scopeKey)
-  const versions = mongoScopeEntityVersionByKey.get(scopeKey)
-  for (const [key, revision] of revisions) {
-    // A later working copy or a failed write needs its own durable confirmation.
-    if (current?.get(key) !== revision || failed?.has(key)) continue
-    dirty?.delete(key)
-    if (updatedAtMs != null) versions?.set(key, updatedAtMs)
+function settleScopeEntities(scopeKey, entityKeys, targets, { succeeded, wasPending, updatedAtMs }) {
+  const dirty = new Set(mongoScopeDirtyEntityKeysByKey.get(scopeKey))
+  const failed = new Set(mongoScopeFailedEntityKeysByKey.get(scopeKey))
+  const failedTargets = new Map(mongoScopeFailedEntityTargetsByKey.get(scopeKey))
+  const pending = new Map(mongoScopePendingEntityCountsByKey.get(scopeKey))
+  const versions = new Map(mongoScopeEntityVersionByKey.get(scopeKey))
+  for (const key of entityKeys) {
+    if (wasPending) pending.set(key, Math.max(0, (pending.get(key) || 0) - 1))
+    const confirmedTargets = targets?.get(key)
+    const remaining = new Set(failedTargets.get(key))
+    if (succeeded) {
+      if (!targets) {
+        failed.delete(key)
+        remaining.clear()
+        if (updatedAtMs != null) versions.set(key, updatedAtMs)
+      }
+      else {
+        for (const pk of confirmedTargets || []) remaining.delete(pk)
+      }
+    }
+    else if (confirmedTargets?.size) {
+      for (const pk of confirmedTargets) remaining.add(pk)
+    }
+    else {
+      failed.add(key)
+    }
+    if (remaining.size) failedTargets.set(key, remaining)
+    else failedTargets.delete(key)
+    // Item confirmation cannot certify an unknown collection or another target.
+    if (pending.get(key) > 0 || failed.has(key) || remaining.size) dirty.add(key)
+    else dirty.delete(key)
   }
+  mongoScopeDirtyEntityKeysByKey.set(scopeKey, dirty)
+  mongoScopeFailedEntityKeysByKey.set(scopeKey, failed)
+  mongoScopeFailedEntityTargetsByKey.set(scopeKey, failedTargets)
+  mongoScopePendingEntityCountsByKey.set(scopeKey, pending)
+  mongoScopeEntityVersionByKey.set(scopeKey, versions)
 }
 
 function scheduleMongoPersistJob(scopeKey, entityKeys, job, options = {}) {
   const keys = normalizeEntityKeys(entityKeys)
-  const revisions = options.markDirty === false ? null : markScopeEntitiesDirty(scopeKey, keys)
+  const targets = entityEntryTargets(options.entries)
+  const wasPending = options.markDirty !== false
+  if (wasPending) markScopeEntitiesDirty(scopeKey, keys, targets)
   const previousTail = persistTailByTenant.get(scopeKey) || Promise.resolve()
   const result = previousTail.catch(() => undefined).then(job)
   // Attach a rejection handler immediately, while returning the original result.
   const continuation = result.then(value => {
-    if (revisions) markScopeEntitiesPersisted(scopeKey, revisions, options.fullEntities === false ? null : value?.updatedAtMs)
+    settleScopeEntities(scopeKey, keys, targets, { succeeded: true, wasPending, updatedAtMs: value?.updatedAtMs })
   }, err => {
-    const failed = new Set(mongoScopeFailedEntityKeysByKey.get(scopeKey))
-    for (const key of keys) failed.add(key)
-    mongoScopeFailedEntityKeysByKey.set(scopeKey, failed)
-    markScopeEntitiesDirty(scopeKey, keys)
+    bumpScopeCacheRevisions(scopeKey, keys)
+    settleScopeEntities(scopeKey, keys, targets, { succeeded: false, wasPending })
     console.error('[store] MongoDB 分集合持久化失败:', err?.message || err)
   })
   persistTailByTenant.set(scopeKey, continuation)
@@ -707,7 +752,7 @@ function scheduleMongoPersistEntity(snapshot, entityKey, item) {
   const scopeKey = getScopeState().key
   const itemSnapshot = JSON.parse(JSON.stringify(item || {}))
   return scheduleMongoPersistJob(scopeKey, [entityKey],
-    () => persistEntityItem(requireConnectedMongoDb(), entityKey, itemSnapshot, snapshot), { fullEntities: false })
+    () => persistEntityItem(requireConnectedMongoDb(), entityKey, itemSnapshot, snapshot), { entries: [{ entityKey, item: itemSnapshot }] })
 }
 
 function assertDatastoreReady() {
@@ -930,14 +975,18 @@ function writeDbEntities(db, entries) {
     const current = mongoMemoryDbByTenant.get(scope.key) || buildEmptyRaw()
     const currentRevisions = mongoScopeWriteRevisionByKey.get(scope.key) || new Map()
     // Legacy writers publish immediately; preserve any newer queued working copy.
-    const publishable = result.entries.filter(entry => revisions.get(entry.entityKey) === currentRevisions.get(entry.entityKey))
+    const publishable = result.entries.filter(({ entityKey, item }) => {
+      const targetKey = `${entityKey}|${stablePrimaryKeyString(entityMongoPrimaryKey(item, entityKey))}`
+      return revisions.get(entityKey) === currentRevisions.get(entityKey)
+        && revisions.get(targetKey) === currentRevisions.get(targetKey)
+    })
     const newerWorkingCopy = [...currentRevisions].some(([key, revision]) => revisions.get(key) !== revision)
     const nextDb = mergeEntityEntries(current, publishable, newerWorkingCopy ? current._meta : snapshot._meta)
     bumpScopeCacheRevisions(scope.key, publishable.map(entry => entry.entityKey))
     mongoMemoryDbByTenant.set(scope.key, nextDb)
     if (scope.key === 'tenant:default') mongoMemoryDb = nextDb
     return result
-  }, { markDirty: false })
+  }, { markDirty: false, entries: captured })
 }
 
 /** 供脚本在 writeDb 后 await，确保 Mongo 持久化已完成再断开连接 */
@@ -970,6 +1019,8 @@ function evictTenantMemoryCache(rawTenantId) {
   mongoScopeEntityVersionByKey.delete(key)
   mongoScopeDirtyEntityKeysByKey.delete(key)
   mongoScopeFailedEntityKeysByKey.delete(key)
+  mongoScopeFailedEntityTargetsByKey.delete(key)
+  mongoScopePendingEntityCountsByKey.delete(key)
   mongoScopeWriteRevisionByKey.delete(key)
   mongoScopeCacheRevisionByKey.delete(key)
 }

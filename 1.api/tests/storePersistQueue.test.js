@@ -14,16 +14,25 @@ function deferred() {
   return { promise, resolve }
 }
 
-async function fixture() {
+async function fixture({ orders = [{ id: 'O1', status: 'old' }] } = {}) {
   const tenantId = `persist-test-${++sequence}`
   const data = new Map(mongo.SHARDED_ENTITY_KEYS.map(key => [mongo.COLLECTIONS[key], []]))
-  data.set('orders', [{ _id: 'O1', id: 'O1', status: 'old' }])
+  data.set('orders', orders.map(item => ({ ...item, _id: item.id })))
   const calls = []
-  let failNext = false
+  let failAfter = Infinity
   let gate
   let readGate
   let disconnected = false
   let meta = { _id: 'main', updatedAt: new Date(1), meta: { fixture: tenantId } }
+  async function beforeWrite() {
+    if (gate) {
+      const current = gate
+      gate = null
+      current.started.resolve()
+      await current.promise
+    }
+    if (--failAfter === 0) throw new Error('simulated write outage')
+  }
   const dbm = {
     collection(name) {
       return {
@@ -49,16 +58,7 @@ async function fixture() {
         },
         async bulkWrite(ops) {
           calls.push({ name, method: 'bulkWrite', ops: structuredClone(ops) })
-          if (gate) {
-            const current = gate
-            gate = null
-            current.started.resolve()
-            await current.promise
-          }
-          if (failNext) {
-            failNext = false
-            throw new Error('simulated write outage')
-          }
+          await beforeWrite()
           for (const { replaceOne: op } of ops) {
             const rows = data.get(name).filter(item => item._id !== op.filter._id)
             data.set(name, [...rows, structuredClone(op.replacement)])
@@ -66,10 +66,7 @@ async function fixture() {
         },
         async replaceOne(filter, replacement) {
           calls.push({ name, method: 'replaceOne', replacement: structuredClone(replacement) })
-          if (failNext) {
-            failNext = false
-            throw new Error('simulated write outage')
-          }
+          await beforeWrite()
           if (name === mongo.APP_META) meta = structuredClone(replacement)
           else data.set(name, [...data.get(name).filter(item => item._id !== filter._id), structuredClone(replacement)])
         },
@@ -83,10 +80,11 @@ async function fixture() {
   return {
     run, calls,
     read: () => run(() => store.readDb()),
+    durable: (entityKey = 'orders') => structuredClone(data.get(mongo.COLLECTIONS[entityKey])).map(({ _id, ...item }) => item),
     snapshot: status => ({ ...structuredClone(run(() => store.readDb())), orders: [{ id: 'O1', status }] }),
     readiness: () => store.getScopeCacheReadiness('tenant', tenantId, ['orders']),
     refresh: () => store.refreshScopePartialFromMongo('tenant', tenantId, ['orders']),
-    fail: () => { failNext = true },
+    fail: (after = 1) => { failAfter = after },
     disconnect: () => { disconnected = true },
     block: () => { gate = { ...deferred(), started: deferred() }; return gate },
     blockRead: () => { readGate = { ...deferred(), started: deferred() }; return readGate },
@@ -258,4 +256,156 @@ test('a hydrate already reading cannot clear a newer pending write or publish ov
   }
   assert.equal(f.read().orders[0].status, 'newer')
   assert.equal(f.readiness().usable, true)
+})
+
+for (const laterKind of ['different-target', 'same-target', 'collection-snapshot']) {
+  test(`exact publication respects ${laterKind} overlap including single_instance refresh`, async () => {
+    const f = await fixture({ orders: [{ id: 'O1', status: 'old' }, { id: 'O2', status: 'old' }] })
+    await f.run(async () => {
+      const gate = f.block()
+      const exact = store.writeDbEntities(f.read(), [{ entityKey: 'orders', item: { id: 'O1', status: 'exact' } }])
+      await gate.started.promise
+      const laterDb = structuredClone(f.read())
+      const target = laterDb.orders[laterKind === 'same-target' ? 0 : 1]
+      target.status = 'later'
+      const later = laterKind === 'collection-snapshot'
+        ? store.writeDbPartial(laterDb, ['orders'])
+        : store.writeDbEntity(laterDb, 'orders', target)
+      gate.resolve()
+      await Promise.all([exact, later])
+      const expected = [
+        { id: 'O1', status: laterKind === 'different-target' ? 'exact' : laterKind === 'same-target' ? 'later' : 'old' },
+        { id: 'O2', status: laterKind === 'same-target' ? 'old' : 'later' },
+      ]
+      const byId = rows => [...rows].sort((a, b) => a.id.localeCompare(b.id))
+      assert.deepEqual(byId(f.durable()), expected)
+      assert.deepEqual(byId(f.read().orders), expected)
+      assert.equal(f.readiness().usable, true)
+      process.env.MONGO_REFRESH_MODE = 'single_instance'
+      try { await f.refresh() }
+      finally { process.env.MONGO_REFRESH_MODE = 'every_request' }
+      assert.deepEqual(byId(f.read().orders), expected)
+      assert.deepEqual(f.readiness().dirtyKeys, [])
+    })
+  })
+}
+
+test('identical exact retry recovers its target without hydration', async () => {
+  const f = await fixture()
+  await f.run(async () => {
+    const entries = [{ entityKey: 'orders', item: { id: 'O1', status: 'retried' } }]
+    f.fail()
+    await assert.rejects(store.writeDbEntities(f.read(), entries), /simulated write outage/)
+    assert.deepEqual(f.readiness().dirtyKeys, ['orders'])
+    await store.writeDbEntities(f.read(), entries)
+    assert.deepEqual(f.read().orders, entries.map(entry => entry.item))
+    assert.deepEqual(f.durable(), f.read().orders)
+    assert.deepEqual(f.readiness().dirtyKeys, [])
+    assert.equal(f.readiness().usable, true)
+  })
+})
+
+test('exact recovery clears only confirmed typed targets and retains any other target failure', async () => {
+  const f = await fixture({ orders: [{ id: 1, status: 'old' }, { id: '1', status: 'old' }] })
+  await f.run(async () => {
+    const entries = [1, '1'].map(id => ({ entityKey: 'orders', item: { id, status: 'retried' } }))
+    for (const entry of entries) {
+      f.fail()
+      await assert.rejects(store.writeDbEntities(f.read(), [entry]), /simulated write outage/)
+    }
+    await store.writeDbEntities(f.read(), [entries[0]])
+    assert.deepEqual(f.readiness().dirtyKeys, ['orders'])
+    assert.equal(f.readiness().usable, false)
+    await store.writeDbEntities(f.read(), [entries[1]])
+    assert.deepEqual(f.readiness().dirtyKeys, [])
+    assert.equal(f.readiness().usable, true)
+    assert.deepEqual(f.durable(), entries.map(entry => entry.item))
+  })
+})
+
+test('a partially durable exact batch recovers after the whole target batch retries', async () => {
+  const f = await fixture({ orders: [{ id: 'O1', status: 'old' }, { id: 'O2', status: 'old' }] })
+  await f.run(async () => {
+    const entries = ['O1', 'O2'].map(id => ({ entityKey: 'orders', item: { id, status: 'retried' } }))
+    const previous = f.read()
+    f.fail(2)
+    await assert.rejects(store.writeDbEntities(previous, entries), /simulated write outage/)
+    assert.equal(f.durable().find(item => item.id === 'O1').status, 'retried')
+    assert.strictEqual(f.read(), previous)
+    assert.deepEqual(f.readiness().dirtyKeys, ['orders'])
+    await store.writeDbEntities(previous, entries)
+    assert.deepEqual(f.read().orders, entries.map(entry => entry.item))
+    assert.deepEqual(f.durable(), f.read().orders)
+    assert.deepEqual(f.readiness().dirtyKeys, [])
+    assert.equal(f.readiness().usable, true)
+  })
+})
+
+test('complete collection success clears target failures but arbitrary single success cannot clear an unknown collection failure', async () => {
+  for (const failureKind of ['exact', 'collection']) {
+    const f = await fixture()
+    await f.run(async () => {
+      f.fail()
+      const failed = failureKind === 'exact'
+        ? store.writeDbEntities(f.read(), [{ entityKey: 'orders', item: { id: 'O1', status: 'failed' } }])
+        : store.writeDbPartial(f.snapshot('failed'), ['orders'])
+      await assert.rejects(failed, /simulated write outage/)
+      if (failureKind === 'collection') {
+        const single = f.snapshot('single')
+        await store.writeDbEntity(single, 'orders', single.orders[0])
+        assert.deepEqual(f.readiness().dirtyKeys, ['orders'])
+      }
+      await store.writeDbPartial(f.snapshot('recovered'), ['orders'])
+      assert.deepEqual(f.readiness().dirtyKeys, [])
+      assert.equal(f.readiness().usable, true)
+      assert.deepEqual(f.read().orders, f.durable())
+    })
+  }
+})
+
+test('request flush includes jobs appended while waiting and settles all before rejecting', async () => {
+  const f = await fixture()
+  await f.run(() => store.runWithMongoRequestDedup(async () => {
+    const firstGate = f.block()
+    store.writeDbPartial(f.snapshot('first'), ['orders'])
+    await firstGate.started.promise
+    let settled = false
+    const flush = store.flushMongoPersist().then(() => { settled = true }, error => { settled = true; return error })
+    const secondGate = f.block()
+    store.writeDbPartial(f.snapshot('second'), ['orders'])
+    f.fail()
+    firstGate.resolve()
+    await secondGate.started.promise
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(settled, false)
+    secondGate.resolve()
+    assert.match((await flush).message, /simulated write outage/)
+    assert.equal(f.durable()[0].status, 'second')
+  }))
+})
+
+test('simultaneous request scopes wait only for their own gated jobs and failures', async () => {
+  const first = await fixture()
+  const second = await fixture()
+  const firstGate = first.block()
+  const secondGate = second.block()
+  first.fail()
+  const failedRequest = first.run(() => store.runWithMongoRequestDedup(async () => {
+    store.writeDbPartial(first.snapshot('failed'), ['orders'])
+    return store.flushMongoPersist().catch(error => error)
+  }))
+  let secondSettled = false
+  const goodRequest = second.run(() => store.runWithMongoRequestDedup(async () => {
+    store.writeDbPartial(second.snapshot('success'), ['orders'])
+    await store.flushMongoPersist()
+    secondSettled = true
+  }))
+  await Promise.all([firstGate.started.promise, secondGate.started.promise])
+  firstGate.resolve()
+  assert.match((await failedRequest).message, /simulated write outage/)
+  assert.equal(secondSettled, false)
+  secondGate.resolve()
+  await goodRequest
+  assert.equal(secondSettled, true)
+  assert.equal(second.durable()[0].status, 'success')
 })
