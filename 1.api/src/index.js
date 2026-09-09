@@ -50,6 +50,7 @@ const {
   writeDb,
   writeDbPartial,
   writeDbEntity,
+  writeDbEntities,
   hydrateFromMongoAfterConnect,
   isMongoPersistenceEnabled,
   flushMongoPersist,
@@ -70,6 +71,7 @@ const {
   setCurrentTenant,
   setCurrentWorkspace,
   getCurrentTenantId,
+  getCurrentWorkspaceType,
 } = require('./tenantContext')
 const { resolveTenantIdFromRequest, resolveWorkspaceTypeFromRequest } = require('./tenantResolver')
 const { DEFAULT_SUPER_ADMIN_USERNAME, BOOTSTRAP_ADMIN_ACCOUNTS } = require('./defaultBootstrap')
@@ -9848,6 +9850,7 @@ function calcBillRepayAllAmount(db, mallUser) {
     .filter(item => item.status !== 'reviewing')
   let total = 0
   const unpaidOrders = []
+  const settlementTargets = []
   for (const order of loanOrders) {
     ensureOrderInstallmentPlan(order)
     let orderTotal = 0
@@ -9860,6 +9863,7 @@ function calcBillRepayAllAmount(db, mallUser) {
           throw err
         }
         orderTotal += Number(planItem.amount || order.totalAmount || 0)
+        settlementTargets.push({ orderId: String(order.id), period: Number(planItem.period) || 1 })
         if (!firstUnpaidPeriod) {
           firstUnpaidPeriod = Number(planItem.period) || 1
         }
@@ -9887,6 +9891,7 @@ function calcBillRepayAllAmount(db, mallUser) {
     subject: '账单一键还款',
     orderId: matchedOrder ? String(matchedOrder.order.id || '') : '',
     period: matchedOrder ? matchedOrder.period : undefined,
+    settlementTargets,
   }
 }
 
@@ -9894,37 +9899,59 @@ function applyBillRepayInDb(db, mallUser, { orderId, period }) {
   const target = assertBillRepayTargetOrder(db, mallUser, orderId)
   ensureOrderInstallmentPlan(target)
   const planItem = findInstallmentPlanItemByPeriod(target.installmentPlan, period)
-  if (!planItem || installmentItemIsPaid(planItem)) {
-    return
-  }
+  if (!planItem) throw Object.assign(new Error('账单期次不存在'), { statusCode: 404 })
+  if (installmentItemIsPaid(planItem)) return []
   if (planItem.negotiationPayPending && Number(planItem.negotiationPayPending.negotiatedAmount || 0) > 0) {
     planItem.negotiationPayPending = null
   }
   planItem.paid = true
   target.installmentScheduleExplicit = true
   applyInstallmentCompletionOrderStatus(target, { ignoreAdminSkip: true })
+  return [target]
 }
 
-function applyBillNegotiatedPayInDb(db, mallUser, { orderId, period }) {
+function applyBillNegotiatedPayInDb(db, mallUser, { orderId, period, outTradeNo }) {
   const target = assertBillRepayTargetOrder(db, mallUser, orderId)
   ensureOrderInstallmentPlan(target)
   const planItem = findInstallmentPlanItemByPeriod(target.installmentPlan, period)
-  if (!planItem) {
-    return
-  }
+  if (!planItem) throw Object.assign(new Error('账单期次不存在'), { statusCode: 404 })
+  const appliedPayments = planItem.negotiationPaymentOutTradeNos || []
+  if (outTradeNo && appliedPayments.includes(String(outTradeNo))) return []
+  const last = Array.isArray(planItem.negotiationHistory) ? planItem.negotiationHistory.at(-1) : null
+  if (!planItem.negotiationPayPending && (installmentItemIsPaid(planItem) || last?.userPaidAt)) return []
   const applied = applyInstallmentNegotiationPayCompleted(planItem)
   if (!applied.ok) {
     throw new Error(applied.msg || '协商支付落库失败')
   }
+  if (outTradeNo) planItem.negotiationPaymentOutTradeNos = [...appliedPayments, String(outTradeNo)]
   target.installmentScheduleExplicit = true
   applyInstallmentCompletionOrderStatus(target, { ignoreAdminSkip: true })
+  return [target]
 }
 
-function applyBillRepayAllInDb(db, mallUser) {
+function applyBillRepayAllInDb(db, mallUser, { settlementTargets } = {}) {
+  if (Array.isArray(settlementTargets)) {
+    // Validate the entire creation-time target set before applying any installment.
+    for (const { orderId, period } of settlementTargets) {
+      const target = assertBillRepayTargetOrder(db, mallUser, String(orderId))
+      ensureOrderInstallmentPlan(target)
+      if (!findInstallmentPlanItemByPeriod(target.installmentPlan, period)) {
+        throw Object.assign(new Error('账单期次不存在'), { statusCode: 404 })
+      }
+    }
+    const touched = new Map()
+    for (const { orderId, period } of settlementTargets) {
+      for (const order of applyBillRepayInDb(db, mallUser, { orderId: String(orderId), period })) {
+        touched.set(String(order.id), order)
+      }
+    }
+    return [...touched.values()]
+  }
   const loanOrders = db.orders
     .filter(item => orderBelongsToRegisteredMallUser(db, item, mallUser))
     .filter(item => item.payType === 'installment')
     .filter(item => item.status !== 'reviewing')
+  const touchedOrders = []
   for (const order of loanOrders) {
     ensureOrderInstallmentPlan(order)
     let touched = false
@@ -9940,16 +9967,16 @@ function applyBillRepayAllInDb(db, mallUser) {
     if (touched) {
       order.installmentScheduleExplicit = true
       applyInstallmentCompletionOrderStatus(order, { ignoreAdminSkip: true })
+      touchedOrders.push(order)
     }
   }
+  return touchedOrders
 }
 
 lakalaPayment.initLakalaPayment({
   readDb,
-  writeDb,
-  writeDbPartial,
-  flushMongoPersist,
-  reconcileInstallmentCompletionAcrossDb,
+  writeDbEntities,
+  getPaymentScopeKey: () => `${getCurrentWorkspaceType()}:${getCurrentTenantId()}`,
   orderBelongsToRegisteredMallUser,
   resolveRegisteredMallUserByNormalizedPhone,
   normalizePhone,

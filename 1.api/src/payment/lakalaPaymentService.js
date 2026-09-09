@@ -2,6 +2,58 @@ const lakala = require('./lakalaClient')
 
 /** @type {Record<string, Function>} */
 let deps = {}
+const settlementInflight = new Map()
+const paymentWriteQueues = new Map()
+
+function paymentScopeKey() {
+  return deps.getPaymentScopeKey ? deps.getPaymentScopeKey() : 'default'
+}
+
+function runPaymentWrite(work) {
+  const key = paymentScopeKey()
+  const previous = paymentWriteQueues.get(key) || Promise.resolve()
+  // Read the working copy after earlier settlements publish, including other periods of this order.
+  const job = previous.catch(() => {}).then(work)
+  paymentWriteQueues.set(key, job)
+  const clean = () => {
+    if (paymentWriteQueues.get(key) === job) paymentWriteQueues.delete(key)
+  }
+  job.then(clean, clean)
+  return job
+}
+
+function runSettlementOnce(outTradeNo, work) {
+  const key = `${paymentScopeKey()}|${String(outTradeNo)}`
+  if (settlementInflight.has(key)) return settlementInflight.get(key)
+  const job = runPaymentWrite(work).finally(() => {
+    if (settlementInflight.get(key) === job) settlementInflight.delete(key)
+  })
+  settlementInflight.set(key, job)
+  return job
+}
+
+async function persistLakalaEntities(db, entries) {
+  try {
+    await deps.writeDbEntities(db, entries)
+  }
+  catch (cause) {
+    const err = cause instanceof Error ? cause : new Error(String(cause?.message || cause))
+    err.lakalaPersistenceError = true
+    err.statusCode = 500
+    throw err
+  }
+}
+
+function persistPaymentObservation(outTradeNo, update) {
+  return runPaymentWrite(async () => {
+    const db = structuredClone(deps.readDb())
+    const record = findPayment(db, outTradeNo)
+    if (!record) throw Object.assign(new Error('未知支付单'), { statusCode: 500 })
+    update(record)
+    await persistLakalaEntities(db, [{ entityKey: 'lakalaPayments', item: record }])
+    return record
+  })
+}
 
 function initLakalaPayment(dependencies) {
   deps = dependencies
@@ -167,27 +219,25 @@ async function refreshActualPayChannelFromLakala(db, record) {
   if (!channel.actualPayChannel) {
     return false
   }
-  record.actualPayChannel = channel.actualPayChannel
-  if (channel.actualPayChannelRaw) {
-    record.actualPayChannelRaw = channel.actualPayChannelRaw
-  }
-  persistLakalaDb(db, ['lakalaPayments'])
-  await deps.flushMongoPersist()
+  await persistPaymentObservation(record.outTradeNo, (current) => {
+    current.actualPayChannel = channel.actualPayChannel
+    if (channel.actualPayChannelRaw) current.actualPayChannelRaw = channel.actualPayChannelRaw
+  })
   return true
 }
 
-function persistLakalaDb(db, entityKeys) {
-  if (deps.writeDbPartial && Array.isArray(entityKeys) && entityKeys.length) {
-    deps.writeDbPartial(db, entityKeys)
+async function refreshActualPayChannelBestEffort(outTradeNo) {
+  try {
+    const db = deps.readDb()
+    await refreshActualPayChannelFromLakala(db, findPayment(db, outTradeNo))
   }
-  else {
-    deps.writeDb(db)
+  catch (err) {
+    console.warn('[lakala] channel enrichment failed', outTradeNo, err.message)
   }
 }
 
 async function createMallPayment(ctx, payload, mallUser) {
-  const db = deps.readDb()
-  deps.reconcileInstallmentCompletionAcrossDb(db)
+  const db = structuredClone(deps.readDb())
   const bizType = String(payload.bizType || '').trim()
   const payChannel = String(payload.payChannel || 'wechat').trim()
   const orderId = String(payload.orderId || '').trim()
@@ -274,6 +324,7 @@ async function createMallPayment(ctx, payload, mallUser) {
       period: calc.period,
       subject,
     })
+    record.settlementTargets = calc.settlementTargets
   }
   else {
     throw Object.assign(new Error('不支持的支付业务类型'), { statusCode: 400 })
@@ -288,6 +339,8 @@ async function createMallPayment(ctx, payload, mallUser) {
     notifyUrl = resolveNotifyUrl()
   }
 
+  await persistLakalaEntities(db, [{ entityKey: 'lakalaPayments', item: record }])
+
   const preorder = await lakala.createCounterOrder({
     outOrderNo: record.outTradeNo,
     totalAmountYuan: amountYuan,
@@ -297,14 +350,11 @@ async function createMallPayment(ctx, payload, mallUser) {
     payChannel: record.payChannel,
   })
   const presentation = lakala.extractPayPresentation(preorder)
-  record.tradeNo = presentation.payOrderNo || presentation.tradeNo
-  record.payCode = presentation.counterUrl || presentation.payCode
-  record.payCodeImage = presentation.payCodeImage
-
-  ensurePaymentStore(db)
-  db.lakalaPayments.unshift(record)
-  persistLakalaDb(db, ['lakalaPayments'])
-  await deps.flushMongoPersist()
+  record = await persistPaymentObservation(record.outTradeNo, (current) => {
+    current.tradeNo = presentation.payOrderNo || presentation.tradeNo
+    current.payCode = presentation.counterUrl || presentation.payCode
+    current.payCodeImage = presentation.payCodeImage
+  })
 
   return {
     outTradeNo: record.outTradeNo,
@@ -323,53 +373,72 @@ async function createMallPayment(ctx, payload, mallUser) {
   }
 }
 
-async function fulfillPaymentRecord(db, record, { tradeState, notifyRaw, actualPayChannelPayload } = {}) {
-  if (!record || record.status === 'success') {
-    return { already: true }
-  }
-  record.tradeState = tradeState || record.tradeState || 'SUCCESS'
-  record.status = 'success'
-  record.paidAt = new Date().toISOString()
-  const channel = resolveActualPayChannel(actualPayChannelPayload || notifyRaw)
-  if (channel.actualPayChannel) {
-    record.actualPayChannel = channel.actualPayChannel
-  }
-  if (channel.actualPayChannelRaw) {
-    record.actualPayChannelRaw = channel.actualPayChannelRaw
-  }
-  if (notifyRaw) {
-    record.notifyRaw = notifyRaw
-  }
+function fulfillPaymentRecord(outTradeNo, { tradeState, notifyRaw, actualPayChannelPayload, tradeNo } = {}) {
+  return runSettlementOnce(outTradeNo, async () => {
+    const db = structuredClone(deps.readDb())
+    const record = findPayment(db, outTradeNo)
+    if (!record) throw Object.assign(new Error('未知支付单'), { statusCode: 500 })
+    const already = record.status === 'success'
+    const userId = String(record.mallUserId || '').trim()
+    const mallUser = userId
+      ? (db.users || []).find(item => String(item.id) === userId)
+      : deps.resolveRegisteredMallUserByNormalizedPhone(db, deps.normalizePhone(record.mallUserPhone))
+    const phone = deps.normalizePhone(mallUser?.phone || record.mallUserPhone)
+    let touchedOrders = []
 
-  const phone = deps.normalizePhone(record.mallUserPhone)
-  const mallUser = deps.resolveRegisteredMallUserByNormalizedPhone(db, phone)
-
-  if (record.bizType === 'order_full') {
-    const target = db.orders.find(item => String(item.id) === String(record.orderId))
-    if (!target) {
-      throw new Error('关联订单不存在')
+    // A durable success has already applied its business result; still confirm its exact upsert.
+    if (!already) {
+      if (!mallUser) throw new Error('支付关联用户不存在')
+      if (record.bizType === 'order_full') {
+        const target = db.orders.find(item => String(item.id) === String(record.orderId))
+        if (!target) throw new Error('关联订单不存在')
+        if (!deps.orderBelongsToRegisteredMallUser(db, target, mallUser)) throw new Error('关联订单不存在')
+        if (!target.paid) {
+          deps.markOrderPaidInDb(target, record.payChannel)
+          touchedOrders = [target]
+        }
+      }
+      else if (record.bizType === 'bill_repay') {
+        touchedOrders = deps.applyBillRepayInDb(db, mallUser, { orderId: record.orderId, period: record.period })
+      }
+      else if (record.bizType === 'bill_repay_negotiated') {
+        touchedOrders = deps.applyBillNegotiatedPayInDb(db, mallUser, { orderId: record.orderId, period: record.period, outTradeNo })
+      }
+      else if (record.bizType === 'bill_repay_all') {
+        touchedOrders = deps.applyBillRepayAllInDb(db, mallUser, { settlementTargets: record.settlementTargets })
+      }
+      else {
+        throw new Error('不支持的支付业务类型')
+      }
     }
-    deps.markOrderPaidInDb(target, record.payChannel)
-  }
-  else if (record.bizType === 'bill_repay') {
-    deps.applyBillRepayInDb(db, mallUser, { orderId: record.orderId, period: record.period })
-  }
-  else if (record.bizType === 'bill_repay_negotiated') {
-    deps.applyBillNegotiatedPayInDb(db, mallUser, { orderId: record.orderId, period: record.period })
-  }
-  else if (record.bizType === 'bill_repay_all') {
-    deps.applyBillRepayAllInDb(db, mallUser)
-  }
 
-  persistLakalaDb(db, ['orders', 'lakalaPayments'])
-  await deps.flushMongoPersist()
+    record.tradeState = tradeState || record.tradeState || 'SUCCESS'
+    record.status = 'success'
+    record.paidAt = record.paidAt || new Date().toISOString()
+    if (tradeNo) record.tradeNo = tradeNo
+    const channel = resolveActualPayChannel(actualPayChannelPayload || notifyRaw)
+    if (channel.actualPayChannel) {
+      record.actualPayChannel = channel.actualPayChannel
+    }
+    if (channel.actualPayChannelRaw) {
+      record.actualPayChannelRaw = channel.actualPayChannelRaw
+    }
+    if (notifyRaw) {
+      record.notifyRaw = notifyRaw
+    }
 
-  let billing
-  if (/^1\d{10}$/.test(phone)) {
-    const dbAfter = deps.readDb()
-    billing = deps.buildMallBillsSuccessData(dbAfter, phone)
-  }
-  return { already: false, billing }
+    await persistLakalaEntities(db, [
+      ...touchedOrders.map(item => ({ entityKey: 'orders', item })),
+      { entityKey: 'lakalaPayments', item: record },
+    ])
+
+    let billing
+    if (!already && /^1\d{10}$/.test(phone)) {
+      const dbAfter = deps.readDb()
+      billing = deps.buildMallBillsSuccessData(dbAfter, phone)
+    }
+    return { already, billing }
+  })
 }
 
 async function syncPaymentStatus(outTradeNo, { mallUser } = {}) {
@@ -382,7 +451,8 @@ async function syncPaymentStatus(outTradeNo, { mallUser } = {}) {
     throw Object.assign(new Error('无权查询该支付单'), { statusCode: 403 })
   }
   if (record.status === 'success') {
-    await refreshActualPayChannelFromLakala(db, record)
+    await fulfillPaymentRecord(outTradeNo)
+    await refreshActualPayChannelBestEffort(outTradeNo)
     return {
       status: 'success',
       tradeState: record.tradeState || 'SUCCESS',
@@ -397,9 +467,8 @@ async function syncPaymentStatus(outTradeNo, { mallUser } = {}) {
   })
   const payState = lakala.parseCounterQueryPaid(queried)
   const tradeState = payState.tradeState
-  record.tradeState = tradeState
   if (payState.paid) {
-    const result = await fulfillPaymentRecord(db, record, { tradeState, actualPayChannelPayload: queried })
+    const result = await fulfillPaymentRecord(outTradeNo, { tradeState, actualPayChannelPayload: queried })
     return {
       status: 'success',
       tradeState,
@@ -408,11 +477,12 @@ async function syncPaymentStatus(outTradeNo, { mallUser } = {}) {
     }
   }
 
-  persistLakalaDb(db, ['lakalaPayments'])
-  await deps.flushMongoPersist()
+  const pendingRecord = await persistPaymentObservation(outTradeNo, (current) => {
+    if (current.status !== 'success') current.tradeState = tradeState
+  })
   return {
-    status: 'pending',
-    tradeState,
+    status: pendingRecord.status === 'success' ? 'success' : 'pending',
+    tradeState: pendingRecord.tradeState,
     outTradeNo: record.outTradeNo,
   }
 }
@@ -450,6 +520,7 @@ async function syncAllPendingPayments(mallUser, {
       }
     }
     catch (err) {
+      if (err.lakalaPersistenceError) throw err
       console.warn('[lakala] sync pending failed', item.outTradeNo, err.message)
     }
   }
@@ -472,21 +543,21 @@ async function handleNotifyPayload(notifyBody) {
   const db = deps.readDb()
   const record = findPayment(db, outTradeNo)
   if (!record) {
-    console.warn('[lakala-notify] 未知支付单', outTradeNo)
-    return { ok: true }
-  }
-  if (nested.pay_order_no || raw.pay_order_no) {
-    record.tradeNo = String(nested.pay_order_no || raw.pay_order_no)
+    throw Object.assign(new Error('未知支付单'), { statusCode: 500 })
   }
   if (lakala.isOrderPaidStatus(tradeStatus) || lakala.isTradeSuccessState(tradeStatus)) {
-    await fulfillPaymentRecord(db, record, { tradeState: tradeStatus, notifyRaw: notifyBody })
-    await refreshActualPayChannelFromLakala(db, record)
+    await fulfillPaymentRecord(outTradeNo, {
+      tradeState: tradeStatus, notifyRaw: notifyBody,
+      tradeNo: String(nested.pay_order_no || raw.pay_order_no || ''),
+    })
+    await refreshActualPayChannelBestEffort(outTradeNo)
   }
   else {
-    record.tradeState = tradeStatus
-    record.notifyRaw = notifyBody
-    persistLakalaDb(db, ['lakalaPayments'])
-    await deps.flushMongoPersist()
+    await persistPaymentObservation(outTradeNo, (current) => {
+      if (current.status !== 'success') current.tradeState = tradeStatus
+      current.notifyRaw = notifyBody
+      if (nested.pay_order_no || raw.pay_order_no) current.tradeNo = String(nested.pay_order_no || raw.pay_order_no)
+    })
   }
   return { ok: true }
 }
@@ -503,7 +574,7 @@ async function mockCompletePayment(outTradeNo, mallUser) {
   if (mallUser && String(record.mallUserId) !== String(mallUser.id)) {
     throw Object.assign(new Error('无权操作'), { statusCode: 403 })
   }
-  const result = await fulfillPaymentRecord(db, record, { tradeState: 'SUCCESS', notifyRaw: { mock: true } })
+  const result = await fulfillPaymentRecord(outTradeNo, { tradeState: 'SUCCESS', notifyRaw: { mock: true } })
   return { status: 'success', billing: result.billing }
 }
 
