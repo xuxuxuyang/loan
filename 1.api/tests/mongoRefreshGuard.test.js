@@ -198,11 +198,12 @@ test('async read cache does not retain data served with a stale fallback header'
   assert.deepEqual(result, ['new'])
 })
 
-test('successful direct order enrichment still requires covered channel snapshot data', async () => {
+test('unavailable channel collection still requires covered channel snapshot data', async () => {
   const dependencies = {
     mongo, MongoDirectReadError: require('../src/adminMongoReadOptimize').MongoDirectReadError,
     readMongoEntityDocsByIds: async () => [{ id: 'U1', registerChannelCode: 'legacy' }],
-    getMongoScopedCollection: () => ({ find: () => ({ toArray: async () => [] }) }), mapMongoEntityDoc: value => value,
+    getMongoScopedCollection: (workspace, tenant, name) => name === mongo.COLLECTIONS.trafficChannels
+      ? null : ({ find: () => ({ toArray: async () => [] }) }), mapMongoEntityDoc: value => value,
     isMongoPersistenceEnabled: () => true,
     getScopeCacheReadiness: (workspace, tenant, keys) => {
       assert.deepEqual(Array.from(keys), ['trafficChannels'])
@@ -214,6 +215,129 @@ test('successful direct order enrichment still requires covered channel snapshot
   }
   const enrich = loadFunction('buildAdminOrderMongoEnrichDb', dependencies)
   await assert.rejects(() => enrich('tenant', 'fake', { trafficChannels: [] }, [{ mallUserId: 'U1' }], { set() {} }))
+})
+
+function fakeKoaContext(route, query = {}) {
+  const headers = {}
+  const response = { statusCode: 404, getHeader: key => headers[key], setHeader: (key, value) => { headers[key] = value }, removeHeader: key => { delete headers[key] } }
+  const ctx = new Koa().createContext({ method: 'GET', url: route + '?' + new URLSearchParams(query), headers: {} }, response)
+  ctx.state = { workspaceType: 'tenant', tenantId: 'fake', adminRole: 'super' }
+  return ctx
+}
+
+for (const scenario of ['healthy-twice', 'query-reject', 'unavailable-cold', 'unavailable-dirty', 'unavailable-covered', 'empty-channels', 'stored-label']) {
+  test(`actual direct order page channel enrichment ${scenario}`, async () => {
+    const snapshot = {
+      users: [], orders: [],
+      trafficChannels: ['unavailable-covered', 'unavailable-dirty'].includes(scenario)
+        ? [{ code: 'legacy', name: 'Durable Channel' }] : [],
+    }
+    const user = { id: 'U1', registerChannelCode: 'legacy', ...(scenario === 'stored-label' ? { registerChannelName: 'Stored Channel' } : {}) }
+    const order = { id: 'O1', mallUserId: 'U1', createdAt: '2026-01-01' }
+    let channelReads = 0
+    let channelLookups = 0
+    const getMongoScopedCollection = (workspace, tenant, name) => {
+      if (name === mongo.COLLECTIONS.trafficChannels) {
+        channelLookups++
+        if (scenario.startsWith('unavailable') || scenario === 'stored-label') return null
+      }
+      const docs = name === mongo.COLLECTIONS.orders ? [order] : name === mongo.COLLECTIONS.users ? [user] : [{ code: 'legacy', name: 'Mongo Channel' }]
+      return {
+        countDocuments: async () => docs.length,
+        find(filter) {
+          let limit
+          const isChannels = name === mongo.COLLECTIONS.trafficChannels
+          if (isChannels) assert.equal(JSON.stringify(filter), JSON.stringify({ code: { $in: ['legacy'] } }))
+          return {
+            sort() { return this }, skip() { return this }, limit(value) { limit = value; return this },
+            async toArray() {
+              if (isChannels) {
+                channelReads++
+                assert.equal(limit, 1, 'channel reads must be bounded by requested codes')
+                if (scenario === 'query-reject') throw new Error('fake channel query failure')
+                if (scenario === 'empty-channels') return []
+              }
+              return docs
+            },
+          }
+        },
+      }
+    }
+    const dependencies = {
+      mongo, MongoDirectReadError: require('../src/adminMongoReadOptimize').MongoDirectReadError,
+      getMongoScopedCollection, mapMongoEntityDoc: value => value,
+      isMongoPersistenceEnabled: () => true, isAdminReadOptimizeEnabled: () => true,
+      getScopeCacheReadiness: (workspace, tenant, keys) => {
+        assert.deepEqual(Array.from(keys), ['trafficChannels'])
+        return { usable: scenario === 'unavailable-covered', dirtyKeys: scenario === 'unavailable-dirty' ? ['trafficChannels'] : [] }
+      },
+      normalizeTenantId: value => value, normalizeWorkspaceType: value => value, DEFAULT_TENANT_ID: 'default', ADMIN_ROLES: {},
+      requireAdminPermission: async () => true, adminOrderPermissionKeyForListScope: () => 'orders',
+      readDb: () => snapshot, success: data => ({ data }), adminMongoReadOptimize: require('../src/adminMongoReadOptimize'),
+      prepareAdminOrderListItem() {}, isOldCustomerAtOrder: () => false,
+    }
+    dependencies.readMongoEntityDocsByIds = loadFunction('readMongoEntityDocsByIds', dependencies)
+    dependencies.requireMongoFallbackSnapshot = loadFunction('requireMongoFallbackSnapshot', dependencies)
+    dependencies.buildAdminOrderMongoEnrichDb = loadFunction('buildAdminOrderMongoEnrichDb', dependencies)
+    const ensureTrafficChannels = loadFunction('ensureTrafficChannels', {})
+    const resolveUserRegisterChannelLabel = loadFunction('resolveUserRegisterChannelLabel', { ensureTrafficChannels })
+    const resolveOrderRegisterChannelView = loadFunction('resolveOrderRegisterChannelView', { resolveUserRegisterChannelLabel })
+    dependencies.enrichMallOrderWithBuyerFields = (db, item) => ({ ...item, ...resolveOrderRegisterChannelView(db, db.users.find(buyer => buyer.id === item.mallUserId)) })
+    const handler = loadHandler('/orders', dependencies)
+    const refresh = loadFunction('refreshMongoForRequest', {
+      ...dependencies, isManagedApiPath: () => true,
+      resolveApiMongoRefreshPlan: ctx => resolveCoreApiMongoRefreshPlan({ method: ctx.method, path: ctx.path, query: ctx.query, optimizeEnabled: true, safeOrderFilter: {} }),
+      refreshScopePartialFromMongo: async () => { assert.fail('safe pagination must preserve skip') },
+      refreshScopeCacheFromMongo: async () => { assert.fail('safe pagination must preserve skip') },
+    })
+    const boundary = loadFunction('mongoReadErrorBoundary', { fail: (ctx, message, status) => { ctx.status = status; ctx.body = { message } } })
+    const attempts = scenario === 'healthy-twice' ? 2 : 1
+    for (let attempt = 0; attempt < attempts; attempt++) {
+      const ctx = fakeKoaContext('/api/orders', { page: '1' })
+      await boundary(ctx, () => refresh(ctx, () => handler(ctx)))
+      const blocked = ['query-reject', 'unavailable-cold', 'unavailable-dirty'].includes(scenario)
+      assert.equal(ctx.status, blocked ? 503 : 200)
+      assert.equal(ctx.response.get('X-Data-Stale') || '', scenario === 'unavailable-covered' ? '1' : '')
+      if (!blocked) {
+        const expected = scenario === 'unavailable-covered' ? 'Durable Channel' : scenario === 'stored-label' ? 'Stored Channel' : scenario === 'empty-channels' ? 'legacy' : 'Mongo Channel'
+        assert.equal(ctx.body.data.list[0].registerChannelLabel, expected)
+      }
+    }
+    assert.equal(channelReads, ['healthy-twice', 'query-reject', 'empty-channels'].includes(scenario) ? attempts : 0)
+    assert.equal(channelLookups, scenario === 'stored-label' ? 0 : attempts)
+  })
+}
+
+test('actual dashboard GET recomputes after stale response and keeps normal synchronous cache hits', async () => {
+  let currentValue = 'old'
+  let refreshFails = true
+  let computations = 0
+  const cache = loadFunction('withAdminReadCache', {
+    adminReadCacheTtlMs: () => 45000, adminReadCacheScopeKey: () => 'tenant:fake', adminReadCacheStore: new Map(),
+  })
+  const handler = loadHandler('/admin/dashboard/kpis', {
+    ADMIN_ROLES: { SUPER: 'super' }, requireAdminPermission: async () => true, withAdminReadCache: cache,
+    readDb: () => ({ value: currentValue }),
+    computeAdminDashboardKpisFromDb: db => { computations++; return { value: db.value } }, success: data => ({ data }),
+  })
+  const middleware = loadFunction('refreshMongoForRequest', {
+    isManagedApiPath: () => true, isMongoPersistenceEnabled: () => true,
+    normalizeTenantId: value => value, normalizeWorkspaceType: value => value, DEFAULT_TENANT_ID: 'default',
+    resolveApiMongoRefreshPlan: ctx => resolveCoreApiMongoRefreshPlan({ method: ctx.method, path: ctx.path, optimizeEnabled: true }),
+    refreshScopePartialFromMongo: async () => { if (refreshFails) throw new Error('fake refresh failure') },
+    getScopeCacheReadiness: () => ({ usable: true }), shouldBlockRequestOnMongoRefreshError,
+    console: { warn() {}, error() {} },
+  })
+  for (const expected of ['old', 'fresh', 'fresh']) {
+    const ctx = fakeKoaContext('/api/admin/dashboard/kpis')
+    await middleware(ctx, () => handler(ctx))
+    assert.equal(ctx.status, 200)
+    assert.equal(ctx.body.data.value, expected)
+    assert.equal(ctx.response.get('X-Data-Stale') || '', refreshFails ? '1' : '')
+    currentValue = 'fresh'
+    refreshFails = false
+  }
+  assert.equal(computations, 2, 'stale response must not cache; subsequent normal responses should cache')
 })
 
 test('legacy tenant account merge still falls back for a genuinely empty Mongo account list', async () => {

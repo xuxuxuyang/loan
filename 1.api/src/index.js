@@ -4278,7 +4278,9 @@ function withAdminReadCache(ctx, subKey, computeFn) {
     return hit.data
   }
   const data = computeFn()
-  adminReadCacheStore.set(fullKey, { at: now, data })
+  if (ctx.response?.get('X-Data-Stale') !== '1') {
+    adminReadCacheStore.set(fullKey, { at: now, data })
+  }
   return data
 }
 
@@ -5948,11 +5950,28 @@ async function buildAdminOrderMongoEnrichDb(workspaceType, tenantId, fallbackDb,
     const orders = userIds.length
       ? (await ordersColl.find({ mallUserId: { $in: userIds } }).toArray()).map(mapMongoEntityDoc).filter(Boolean)
       : []
-    requireMongoFallbackSnapshot(ctx, workspaceType, tenantId, ['trafficChannels'], { markStale: false })
+    const channelCodes = [...new Set(users
+      .filter(user => !String(user.registerChannelName || '').trim())
+      .map(user => String(user.registerChannelCode || '').trim())
+      .filter(Boolean))]
+    let trafficChannels = []
+    if (channelCodes.length) {
+      const channelsColl = getMongoScopedCollection(workspaceType, tenantId, mongo.COLLECTIONS.trafficChannels)
+      if (!channelsColl) {
+        requireMongoFallbackSnapshot(ctx, workspaceType, tenantId, ['trafficChannels'])
+        trafficChannels = fallbackDb.trafficChannels
+      }
+      else {
+        // Channel codes are unique; cap the lookup to the codes needed by this page's buyers.
+        trafficChannels = (await channelsColl.find({ code: { $in: channelCodes } })
+          .limit(channelCodes.length).toArray()).map(mapMongoEntityDoc).filter(Boolean)
+      }
+    }
     return {
       ...(fallbackDb || {}),
       users,
       orders,
+      trafficChannels,
     }
   }
   catch (error) {
