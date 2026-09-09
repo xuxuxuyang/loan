@@ -8,10 +8,7 @@ const {
   getCurrentWorkspaceType,
   DEFAULT_TENANT_ID,
   normalizeTenantId,
-  runWithTenant,
   runWithWorkspace,
-  setCurrentTenant,
-  setCurrentWorkspace,
 } = require('./tenantContext')
 const {
   BOOTSTRAP_ADMIN_ACCOUNTS,
@@ -29,6 +26,7 @@ const ENTITY_SPECS = mongo.SHARDED_ENTITY_KEYS.map((key) => ({
   key,
   collection: mongo.COLLECTIONS[key],
 }))
+const ALL_ENTITY_KEYS = ENTITY_SPECS.map(spec => spec.key)
 
 let mongoBacked = false
 /**
@@ -37,17 +35,16 @@ let mongoBacked = false
  */
 let mongoMemoryDb = null
 let mongoMemoryDbByTenant = new Map()
-/** version 模式：scopeKey → app_meta.updatedAt 毫秒时间戳，用于跳过无变更的全量 hydrate */
-const mongoScopeMetaUpdatedAtByKey = new Map()
+const mongoScopeEntityVersionByKey = new Map()
+const mongoScopeDirtyEntityKeysByKey = new Map()
 
-/** 单次 HTTP 请求内已对某 scopeKey 执行过 refresh 时跳过，避免重复全库拉取 */
+/** Request-local dedup uses the scope and requested entity signature. */
 const mongoScopeRefreshDedup = new AsyncLocalStorage()
 /** hydrateTenantDbFromMongo 正在执行时 >0，防止 refresh→hydrate→再次 refresh 递归 */
 let mongoHydrateDepth = 0
 /** 同 scope 并发 refresh 合并为一次 hydrate（多 tab 并行 GET 时避免重复全库读 Mongo） */
 const mongoScopeHydrateInflight = new Map()
-/** scopeKey → 仅加载过部分实体（冷启动账号页）；下一笔非 partial refresh 须全量 hydrate */
-const mongoScopeHydrateIncomplete = new Set()
+const mongoScopeHydrateTail = new Map()
 
 /** 串行写入，避免并发持久化乱序 */
 let persistTail = Promise.resolve()
@@ -97,6 +94,34 @@ function hasScopeCache(workspaceType, tenantId) {
   return mongoMemoryDbByTenant.has(buildScopeKey(workspaceType, tenantId))
 }
 
+function normalizeEntityKeys(entityKeys) {
+  return [...new Set((Array.isArray(entityKeys) ? entityKeys : []).filter(key => ALL_ENTITY_KEYS.includes(key)))]
+}
+
+function getScopeCacheReadiness(workspaceType, tenantId, entityKeys = ALL_ENTITY_KEYS) {
+  const cacheKey = buildScopeKey(workspaceType, tenantId)
+  const versions = mongoScopeEntityVersionByKey.get(cacheKey) || new Map()
+  const dirty = mongoScopeDirtyEntityKeysByKey.get(cacheKey) || new Set()
+  const keys = normalizeEntityKeys(entityKeys)
+  const coveredKeys = keys.filter(key => versions.has(key) && !dirty.has(key))
+  const exists = mongoMemoryDbByTenant.has(cacheKey)
+  return {
+    exists,
+    usable: exists && coveredKeys.length === keys.length,
+    complete: ALL_ENTITY_KEYS.every(key => versions.has(key) && !dirty.has(key)),
+    coveredKeys,
+    dirtyKeys: keys.filter(key => dirty.has(key)),
+  }
+}
+
+function appMetaUpdatedAtMs(metaDoc) {
+  if (!metaDoc || metaDoc.updatedAt == null) return null
+  const t = metaDoc.updatedAt instanceof Date
+    ? metaDoc.updatedAt.getTime()
+    : new Date(metaDoc.updatedAt).getTime()
+  return Number.isFinite(t) ? t : null
+}
+
 async function readAppMetaUpdatedAtMs(dbm) {
   if (!dbm) {
     return null
@@ -105,23 +130,21 @@ async function readAppMetaUpdatedAtMs(dbm) {
     { _id: MAIN_STATE_ID },
     { projection: { updatedAt: 1 } },
   )
-  if (!metaDoc || metaDoc.updatedAt == null) {
-    return null
-  }
-  const t = metaDoc.updatedAt instanceof Date
-    ? metaDoc.updatedAt.getTime()
-    : new Date(metaDoc.updatedAt).getTime()
-  return Number.isFinite(t) ? t : null
+  return appMetaUpdatedAtMs(metaDoc)
 }
 
-async function syncScopeMetaUpdatedAtCache(cacheKey, dbm) {
-  const at = await readAppMetaUpdatedAtMs(dbm)
-  if (at != null) {
-    mongoScopeMetaUpdatedAtByKey.set(cacheKey, at)
+function publishScopeSnapshot(cacheKey, nextDb, keys, updatedAt) {
+  const versions = new Map(mongoScopeEntityVersionByKey.get(cacheKey))
+  const dirty = new Set(mongoScopeDirtyEntityKeysByKey.get(cacheKey))
+  for (const key of keys) {
+    versions.set(key, updatedAt)
+    dirty.delete(key)
   }
-  else {
-    mongoScopeMetaUpdatedAtByKey.delete(cacheKey)
-  }
+  // Publish only after every collection and metadata read has succeeded.
+  mongoMemoryDbByTenant.set(cacheKey, nextDb)
+  mongoScopeEntityVersionByKey.set(cacheKey, versions)
+  mongoScopeDirtyEntityKeysByKey.set(cacheKey, dirty)
+  if (cacheKey === 'tenant:default') mongoMemoryDb = nextDb
 }
 
 function ensureDbFile() {
@@ -370,24 +393,11 @@ function isRawShardedPayloadEmpty(raw) {
  * 从分集合读取为与 db.json / 旧 appState 相同结构的原始对象（供 shapeDbFromParsed）。
  */
 async function loadShardedRawFromDb(dbm) {
-  const lists = await Promise.all(
-    ENTITY_SPECS.map(spec => dbm.collection(spec.collection).find({}).toArray()),
-  )
-  const metaDoc = await dbm.collection(mongo.APP_META).findOne({ _id: MAIN_STATE_ID })
-  const meta = metaDoc && metaDoc.meta && typeof metaDoc.meta === 'object' && !Array.isArray(metaDoc.meta)
-    ? { ...metaDoc.meta }
-    : {}
-  const out = {
-    _meta: meta,
-  }
-  ENTITY_SPECS.forEach((spec, i) => {
-    out[spec.key] = lists[i].map(fromMongoEntityDoc).filter(Boolean)
-  })
-  return out
+  return loadShardedPartialRawFromDb(dbm, ALL_ENTITY_KEYS)
 }
 
 /**
- * 仅读取指定实体分集合 + app_meta（供账号管理等轻量 GET，须已有全量内存快照再合并）。
+ * Read entity collections and metadata together for an atomic cache publication.
  */
 async function loadShardedPartialRawFromDb(dbm, entityKeys) {
   const allowed = new Set(Array.isArray(entityKeys) ? entityKeys : [])
@@ -405,7 +415,7 @@ async function loadShardedPartialRawFromDb(dbm, entityKeys) {
   specs.forEach((spec, i) => {
     out[spec.key] = lists[i].map(fromMongoEntityDoc).filter(Boolean)
   })
-  return out
+  return { raw: out, updatedAt: appMetaUpdatedAtMs(metaDoc) }
 }
 
 const BULK_CHUNK = 400
@@ -644,13 +654,16 @@ async function hydrateFromMongoAfterConnect() {
 
   const legacyColl = dbm.collection(mongo.APP_STATE)
   const legacyDoc = await legacyColl.findOne({ _id: MAIN_STATE_ID })
+  let nextDb
+  let updatedAt
 
   if (legacyDoc) {
     const raw = legacyAppStateDocToRaw(legacyDoc)
-    mongoMemoryDb = shapeDbFromParsed(raw)
+    nextDb = shapeDbFromParsed(raw)
     try {
-      await persistShardedSnapshot(dbm, clonePayloadForMongo(mongoMemoryDb))
+      await persistShardedSnapshot(dbm, clonePayloadForMongo(nextDb))
       await legacyColl.deleteOne({ _id: MAIN_STATE_ID })
+      updatedAt = await readAppMetaUpdatedAtMs(dbm)
       console.log('[store] 已从旧版 appState(main) 迁移到分集合持久化，并删除旧文档')
     }
     catch (err) {
@@ -659,62 +672,51 @@ async function hydrateFromMongoAfterConnect() {
     }
   }
   else {
-    const raw = await loadShardedRawFromDb(dbm)
+    const loaded = await loadShardedRawFromDb(dbm)
+    const { raw } = loaded
+    updatedAt = loaded.updatedAt
     if (isRawShardedPayloadEmpty(raw)) {
-      mongoMemoryDb = buildSeedDb()
-      await persistShardedSnapshot(dbm, clonePayloadForMongo(mongoMemoryDb))
+      nextDb = buildSeedDb()
+      await persistShardedSnapshot(dbm, clonePayloadForMongo(nextDb))
+      updatedAt = await readAppMetaUpdatedAtMs(dbm)
     }
     else {
-      mongoMemoryDb = shapeDbFromParsed(raw)
+      nextDb = shapeDbFromParsed(raw)
     }
   }
 
   mongoBacked = true
-  mongoMemoryDbByTenant.set(scope.key, mongoMemoryDb)
+  publishScopeSnapshot(scope.key, nextDb, ALL_ENTITY_KEYS, updatedAt)
   return true
 }
 
 async function hydrateTenantDbFromMongo(workspaceType, tenantId) {
-  const prevTenant = getCurrentTenantId()
-  const prevWorkspace = String(getCurrentWorkspaceType && getCurrentWorkspaceType() || 'tenant').trim().toLowerCase() || 'tenant'
-  const targetWorkspace = String(workspaceType || 'tenant').trim().toLowerCase() || 'tenant'
-  const targetTenant = String(tenantId || DEFAULT_TENANT_ID)
-  const runner = targetWorkspace === 'tenant'
-    ? (fn) => runWithTenant(targetTenant, fn)
-    : (fn) => runWithWorkspace(targetWorkspace, DEFAULT_TENANT_ID, fn)
   mongoHydrateDepth++
   try {
-    return await runner(async () => {
+    return await runWithWorkspace(workspaceType, tenantId, async () => {
       const dbm = mongo.getMongoDb()
       if (!dbm) {
-        return false
+        throw mongoSnapshotUnavailable(getScopeState().key)
       }
-      const raw = await loadShardedRawFromDb(dbm)
+      const loaded = await loadShardedRawFromDb(dbm)
+      const { raw } = loaded
+      let updatedAt = loaded.updatedAt
       let nextDb
       if (isRawShardedPayloadEmpty(raw)) {
         nextDb = buildSeedDb()
         await persistShardedSnapshot(dbm, clonePayloadForMongo(nextDb))
+        updatedAt = await readAppMetaUpdatedAtMs(dbm)
       }
       else {
         nextDb = shapeDbFromParsed(raw)
       }
       const scoped = getScopeState()
-      mongoMemoryDbByTenant.set(scoped.key, nextDb)
-      if (scoped.key === 'tenant:default') {
-        mongoMemoryDb = nextDb
-      }
-      await syncScopeMetaUpdatedAtCache(scoped.key, dbm)
+      publishScopeSnapshot(scoped.key, nextDb, ALL_ENTITY_KEYS, updatedAt)
       return true
     })
   }
   finally {
     mongoHydrateDepth--
-    if (prevWorkspace === 'tenant') {
-      setCurrentTenant(prevTenant || DEFAULT_TENANT_ID)
-    }
-    else {
-      setCurrentWorkspace(prevWorkspace, DEFAULT_TENANT_ID)
-    }
   }
 }
 
@@ -722,79 +724,44 @@ async function hydrateTenantDbFromMongo(workspaceType, tenantId) {
  * 在已有 scope 快照上合并刷新指定实体；无快照时回退全量 hydrate（避免其它接口读到空 orders/users）。
  */
 async function hydrateTenantDbPartialFromMongo(workspaceType, tenantId, entityKeys, { allowColdPartial = false } = {}) {
-  const keys = Array.isArray(entityKeys) ? entityKeys.filter(Boolean) : []
+  const keys = normalizeEntityKeys(entityKeys)
   if (!keys.length) {
     return hydrateTenantDbFromMongo(workspaceType, tenantId)
   }
-  const prevTenant = getCurrentTenantId()
-  const prevWorkspace = String(getCurrentWorkspaceType && getCurrentWorkspaceType() || 'tenant').trim().toLowerCase() || 'tenant'
-  const targetWorkspace = String(workspaceType || 'tenant').trim().toLowerCase() || 'tenant'
-  const targetTenant = String(tenantId || DEFAULT_TENANT_ID)
-  const runner = targetWorkspace === 'tenant'
-    ? (fn) => runWithTenant(targetTenant, fn)
-    : (fn) => runWithWorkspace(targetWorkspace, DEFAULT_TENANT_ID, fn)
   mongoHydrateDepth++
   try {
-    return await runner(async () => {
+    return await runWithWorkspace(workspaceType, tenantId, async () => {
       const scoped = getScopeState()
       const existing = mongoMemoryDbByTenant.get(scoped.key)
       const dbm = mongo.getMongoDb()
       if (!dbm) {
-        return false
+        throw mongoSnapshotUnavailable(scoped.key)
       }
-      const partialRaw = await loadShardedPartialRawFromDb(dbm, keys)
-      if (!existing) {
-        if (!allowColdPartial) {
-          return hydrateTenantDbFromMongo(workspaceType, tenantId)
-        }
-        const rawMerge = buildEmptyRaw()
-        keys.forEach((key) => {
-          if (Array.isArray(partialRaw[key])) {
-            rawMerge[key] = partialRaw[key]
-          }
-        })
-        rawMerge._meta = partialRaw._meta && typeof partialRaw._meta === 'object'
-          ? { ...partialRaw._meta }
-          : {}
-        const nextDb = shapeDbFromParsed(rawMerge)
-        mongoMemoryDbByTenant.set(scoped.key, nextDb)
-        // 单集合冷启动（如账号页）须标记 incomplete；多集合（如流量 overview）则允许 sidebar-counts 等同版本跳过
-        if (keys.length <= 1) {
-          mongoScopeHydrateIncomplete.add(scoped.key)
-        }
-        if (scoped.key === 'tenant:default') {
-          mongoMemoryDb = nextDb
-        }
-        await syncScopeMetaUpdatedAtCache(scoped.key, dbm)
-        return true
+      if (!existing && !allowColdPartial) {
+        return hydrateTenantDbFromMongo(workspaceType, tenantId)
       }
+      const { raw: partialRaw, updatedAt } = await loadShardedPartialRawFromDb(dbm, keys)
       const rawMerge = buildEmptyRaw()
       ENTITY_SPECS.forEach((spec) => {
         rawMerge[spec.key] = keys.includes(spec.key) && Array.isArray(partialRaw[spec.key])
           ? partialRaw[spec.key]
-          : (Array.isArray(existing[spec.key]) ? existing[spec.key] : [])
+          : (Array.isArray(existing?.[spec.key]) ? existing[spec.key] : [])
       })
-      rawMerge._meta = partialRaw._meta && typeof partialRaw._meta === 'object' && Object.keys(partialRaw._meta).length
-        ? { ...partialRaw._meta }
-        : (existing._meta && typeof existing._meta === 'object' ? { ...existing._meta } : {})
+      rawMerge._meta = { ...partialRaw._meta }
       const nextDb = shapeDbFromParsed(rawMerge)
-      mongoMemoryDbByTenant.set(scoped.key, nextDb)
-      if (scoped.key === 'tenant:default') {
-        mongoMemoryDb = nextDb
-      }
-      await syncScopeMetaUpdatedAtCache(scoped.key, dbm)
+      publishScopeSnapshot(scoped.key, nextDb, keys, updatedAt)
       return true
     })
   }
   finally {
     mongoHydrateDepth--
-    if (prevWorkspace === 'tenant') {
-      setCurrentTenant(prevTenant || DEFAULT_TENANT_ID)
-    }
-    else {
-      setCurrentWorkspace(prevWorkspace, DEFAULT_TENANT_ID)
-    }
   }
+}
+
+function mongoSnapshotUnavailable(cacheKey) {
+  const error = new Error(`[store] Mongo snapshot unavailable for ${cacheKey}`)
+  error.code = 'MONGO_SNAPSHOT_UNAVAILABLE'
+  return error
 }
 
 function readDb() {
@@ -804,19 +771,7 @@ function readDb() {
     if (scoped) {
       return scoped
     }
-    const seeded = buildSeedDb()
-    const ws = normalizeWorkspaceForKey(scope.workspaceType)
-    const tid = getCurrentTenantId()
-    // 非 default 租户：禁止在未 hydrate 前把空种子塞进 mongoMemoryDbByTenant。
-    // 否则后续占位曾会导致错误的全量 persist 覆盖 Mongo。
-    const tenantColdMustNotCacheEmpty = ws === 'tenant' && tid !== DEFAULT_TENANT_ID
-    if (!tenantColdMustNotCacheEmpty) {
-      mongoMemoryDbByTenant.set(scope.key, seeded)
-      if (scope.key === 'tenant:default') {
-        mongoMemoryDb = seeded
-      }
-    }
-    return seeded
+    throw mongoSnapshotUnavailable(scope.key)
   }
   assertDatastoreReady()
   return readDbFromFile()
@@ -888,155 +843,75 @@ function evictTenantMemoryCache(rawTenantId) {
   }
   const key = `tenant:${t}`
   mongoMemoryDbByTenant.delete(key)
-  mongoScopeMetaUpdatedAtByKey.delete(key)
-  mongoScopeHydrateIncomplete.delete(key)
+  mongoScopeEntityVersionByKey.delete(key)
+  mongoScopeDirtyEntityKeysByKey.delete(key)
 }
 
-/**
- * 丢弃当前 workspace 在内存中的快照并从 Mongo 重载（与 hasScopeCache / readDb 使用的 key 一致）。
- * 解决多进程、多实例或总部跨库读取时「进程内快照与 Mongo 不一致」。
- */
-async function shouldSkipScopeMongoRefresh(cacheKey, refreshMode) {
-  if (mongoScopeHydrateIncomplete.has(cacheKey)) {
+async function shouldSkipScopeMongoRefresh(workspaceType, tenantId, cacheKey, keys, refreshMode) {
+  if (!getScopeCacheReadiness(workspaceType, tenantId, keys).usable) {
     return false
   }
-  const hasMemory = mongoMemoryDbByTenant.has(cacheKey)
-  if (refreshMode !== 'every_request' && hasMemory) {
-    if (refreshMode === 'single_instance') {
-      return true
-    }
-    if (refreshMode === 'version') {
-      const dbm = mongo.getMongoDb()
-      if (dbm) {
-        const cachedAt = mongoScopeMetaUpdatedAtByKey.get(cacheKey)
-        const remoteAt = await readAppMetaUpdatedAtMs(dbm)
-        if (cachedAt != null && remoteAt != null && cachedAt === remoteAt) {
-          return true
-        }
-      }
-    }
+  if (refreshMode === 'single_instance') return true
+  if (refreshMode === 'version') {
+    const remoteAt = await readAppMetaUpdatedAtMs(mongo.getMongoDb())
+    const versions = mongoScopeEntityVersionByKey.get(cacheKey)
+    return remoteAt != null && keys.every(key => versions.get(key) === remoteAt)
   }
   return false
 }
 
-async function runScopeMongoHydrate(workspaceType, hydrateTenantId, cacheKey, { partialEntityKeys, allowColdPartial = false } = {}) {
-  const ws = normalizeWorkspaceForKey(workspaceType)
-  const keys = Array.isArray(partialEntityKeys) ? partialEntityKeys.filter(Boolean) : []
-  const usePartial = keys.length > 0 && (mongoMemoryDbByTenant.has(cacheKey) || allowColdPartial)
-  const hydrateWork = async () => {
-    if (!usePartial) {
-      mongoMemoryDbByTenant.delete(cacheKey)
-      mongoScopeHydrateIncomplete.delete(cacheKey)
-    }
-    if (usePartial) {
-      const partialOpts = { allowColdPartial }
-      if (ws === 'core') {
-        await hydrateTenantDbPartialFromMongo('core', DEFAULT_TENANT_ID, keys, partialOpts)
-      }
-      else if (ws === 'self') {
-        await hydrateTenantDbPartialFromMongo('self', DEFAULT_TENANT_ID, keys, partialOpts)
-      }
-      else {
-        await hydrateTenantDbPartialFromMongo('tenant', hydrateTenantId, keys, partialOpts)
-      }
-    }
-    else if (ws === 'core') {
-      await hydrateTenantDbFromMongo('core', DEFAULT_TENANT_ID)
-    }
-    else if (ws === 'self') {
-      await hydrateTenantDbFromMongo('self', DEFAULT_TENANT_ID)
-    }
-    else {
-      await hydrateTenantDbFromMongo('tenant', hydrateTenantId)
-    }
-    const dbm = mongo.getMongoDb()
-    if (dbm) {
-      await syncScopeMetaUpdatedAtCache(cacheKey, dbm)
-    }
-  }
-  /** 同 scope 串行队列：accounts / sidebar-counts / badge 并行到达时按序 partial，且不会误用他人集合的快照 */
-  const prev = mongoScopeHydrateInflight.get(cacheKey) || Promise.resolve()
-  const job = prev.then(hydrateWork, hydrateWork)
-  mongoScopeHydrateInflight.set(cacheKey, job)
-  try {
-    await job
-  }
-  finally {
-    if (mongoScopeHydrateInflight.get(cacheKey) === job) {
-      mongoScopeHydrateInflight.delete(cacheKey)
-    }
-  }
-}
-
-async function refreshScopeCacheFromMongo(workspaceType, rawTenantIdFromRequest) {
-  if (!mongoBacked) {
-    return
-  }
+function runScopeMongoHydrate(workspaceType, rawTenantIdFromRequest, entityKeys, { allowColdPartial = false } = {}) {
   const ws = normalizeWorkspaceForKey(workspaceType)
   const hydrateTenantId = ws === 'tenant'
     ? normalizeTenantId(rawTenantIdFromRequest || DEFAULT_TENANT_ID)
     : DEFAULT_TENANT_ID
-  const cacheKey = buildScopeKey(workspaceType, hydrateTenantId)
+  const cacheKey = buildScopeKey(ws, hydrateTenantId)
+  const keys = !mongoMemoryDbByTenant.has(cacheKey) && !allowColdPartial
+    ? ALL_ENTITY_KEYS
+    : entityKeys
+  const signature = `${cacheKey}|${[...keys].sort().join(',')}`
   const dedup = mongoScopeRefreshDedup.getStore()
-  if (dedup && dedup.has(cacheKey)) {
-    return
-  }
+  if (dedup?.has(signature) && getScopeCacheReadiness(ws, hydrateTenantId, keys).usable) return Promise.resolve()
+  const inflight = mongoScopeHydrateInflight.get(signature)
+  if (inflight) return inflight
   const refreshMode = mongoConfig.getMongoRefreshMode()
-  if (await shouldSkipScopeMongoRefresh(cacheKey, refreshMode)) {
-    if (dedup) {
-      dedup.add(cacheKey)
+  const hydrateWork = () => runWithWorkspace(ws, hydrateTenantId, async () => {
+    // Recheck after prior partial jobs have published their own entity versions.
+    if (!await shouldSkipScopeMongoRefresh(ws, hydrateTenantId, cacheKey, keys, refreshMode)) {
+      if (keys.length === ALL_ENTITY_KEYS.length) {
+        await hydrateTenantDbFromMongo(ws, hydrateTenantId)
+      }
+      else {
+        await hydrateTenantDbPartialFromMongo(ws, hydrateTenantId, keys, { allowColdPartial })
+      }
     }
-    return
-  }
-  await runScopeMongoHydrate(workspaceType, hydrateTenantId, cacheKey)
-  if (dedup) {
-    dedup.add(cacheKey)
-  }
+    if (dedup) dedup.add(signature)
+  })
+  const prev = mongoScopeHydrateTail.get(cacheKey) || Promise.resolve()
+  const job = prev.then(hydrateWork, hydrateWork).finally(() => {
+    if (mongoScopeHydrateInflight.get(signature) === job) mongoScopeHydrateInflight.delete(signature)
+    if (mongoScopeHydrateTail.get(cacheKey) === job) mongoScopeHydrateTail.delete(cacheKey)
+  })
+  mongoScopeHydrateInflight.set(signature, job)
+  mongoScopeHydrateTail.set(cacheKey, job)
+  return job
+}
+
+function refreshScopeCacheFromMongo(workspaceType, rawTenantIdFromRequest) {
+  if (!mongoBacked) return Promise.resolve()
+  return runScopeMongoHydrate(workspaceType, rawTenantIdFromRequest, ALL_ENTITY_KEYS)
 }
 
 /**
- * 仅刷新指定实体（须已有全量快照）；无快照时内部回退全量 hydrate。
+ * Refresh requested entities; cold scopes require full hydration unless explicitly allowed.
  */
-async function refreshScopePartialFromMongo(workspaceType, rawTenantIdFromRequest, entityKeys, options = {}) {
-  if (!mongoBacked) {
-    return
-  }
-  const keys = Array.isArray(entityKeys) ? entityKeys.filter(Boolean) : []
+function refreshScopePartialFromMongo(workspaceType, rawTenantIdFromRequest, entityKeys, options = {}) {
+  if (!mongoBacked) return Promise.resolve()
+  const keys = normalizeEntityKeys(entityKeys)
   if (!keys.length) {
-    await refreshScopeCacheFromMongo(workspaceType, rawTenantIdFromRequest)
-    return
+    return refreshScopeCacheFromMongo(workspaceType, rawTenantIdFromRequest)
   }
-  const allowColdPartial = Boolean(options.allowColdPartial)
-  const ws = normalizeWorkspaceForKey(workspaceType)
-  const hydrateTenantId = ws === 'tenant'
-    ? normalizeTenantId(rawTenantIdFromRequest || DEFAULT_TENANT_ID)
-    : DEFAULT_TENANT_ID
-  const cacheKey = buildScopeKey(workspaceType, hydrateTenantId)
-  const dedup = mongoScopeRefreshDedup.getStore()
-  if (dedup && dedup.has(cacheKey)) {
-    return
-  }
-  if (!mongoMemoryDbByTenant.has(cacheKey) && !allowColdPartial) {
-    await refreshScopeCacheFromMongo(workspaceType, rawTenantIdFromRequest)
-    if (dedup) {
-      dedup.add(cacheKey)
-    }
-    return
-  }
-  const refreshMode = mongoConfig.getMongoRefreshMode()
-  if (await shouldSkipScopeMongoRefresh(cacheKey, refreshMode)) {
-    if (dedup) {
-      dedup.add(cacheKey)
-    }
-    return
-  }
-  await runScopeMongoHydrate(workspaceType, hydrateTenantId, cacheKey, {
-    partialEntityKeys: keys,
-    allowColdPartial,
-  })
-  if (dedup) {
-    dedup.add(cacheKey)
-  }
+  return runScopeMongoHydrate(workspaceType, rawTenantIdFromRequest, keys, options)
 }
 
 /** 鉴权等仅需 adminAccounts 时：优化开启且已有快照则 partial，否则全量 */
@@ -1075,6 +950,7 @@ module.exports = {
   hydrateFromMongoAfterConnect,
   hydrateTenantDbFromMongo,
   hasScopeCache,
+  getScopeCacheReadiness,
   isMongoPersistenceEnabled,
   evictTenantMemoryCache,
   refreshScopeCacheFromMongo,

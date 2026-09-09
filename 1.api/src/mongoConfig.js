@@ -95,7 +95,7 @@ function getMongoRefreshMode() {
   if (raw === 'version' || raw === 'every_request' || raw === 'single_instance') {
     return raw
   }
-  return ''
+  return 'version'
 }
 
 /** 管理端只读优化总开关（与 api/src/index.js 一致） */
